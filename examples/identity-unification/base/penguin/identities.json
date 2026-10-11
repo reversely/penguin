@@ -1,0 +1,26 @@
+{
+  "$comment": "Seed agent identities for the demo. In the product an owner creates identities on the dashboard; this file seeds them. Format: a JSON object whose 'identities' array holds one entry per identity with 'handle' ('@<owner>/<name>'), 'owner' (an id from penguin/owners.json), 'vendor' (the agent product the identity runs in: 'claude-code' or 'codex'), 'job' (the work the identity does) and 'charter_scopes' (ids from penguin/scopes.json that the identity may change).",
+  "identities": [
+    {
+      "handle": "@priya/merge-rules",
+      "owner": "priya",
+      "vendor": "claude-code",
+      "job": "Add person_id with merge rules: link on login events and verified email",
+      "charter_scopes": ["identity-map"]
+    },
+    {
+      "handle": "@jun/reports",
+      "owner": "jun",
+      "vendor": "codex",
+      "job": "Build a retention dashboard keyed on user_id",
+      "charter_scopes": ["analytics"]
+    },
+    {
+      "handle": "@sam/campaigns",
+      "owner": "sam",
+      "vendor": "claude-code",
+      "job": "Build an email audience for a re-engagement campaign",
+      "charter_scopes": ["messaging"]
+    }
+  ]
+}

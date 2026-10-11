@@ -8,5 +8,13 @@ dependencies = []
 dev = [
     "detect-secrets>=1.5.0",
     "pre-commit>=4.6.2",
+    "pytest>=9.1.1",
     "ruff==0.17.0",
 ]
+
+[tool.pytest.ini_options]
+# The fixture under examples/ is a separate repository with its own pytest root; the repo's suite
+# builds it and runs its tests from there, never collects it directly.
+testpaths = ["tests"]
+addopts = ["--strict-markers"]
+markers = ["slow: long-running fixture reproductions; excluded from the fast suite"]
