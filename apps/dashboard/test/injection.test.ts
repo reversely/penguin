@@ -99,3 +99,54 @@ test("markup in the owner's name and an issue title renders as text in the shell
   assert.match(html, /&lt;script&gt;globalThis\.pwned = 2&lt;\/script&gt;/);
   assert.doesNotMatch(html, /<img|<script|onerror="/);
 });
+
+test("markup in an owner, a handle, a session, an issue title, a reviewer and a thread renders as text on the board", async () => {
+  const { render } = await load<{ render: (board: unknown) => string }>(`
+    import { renderToStaticMarkup } from "react-dom/server";
+    import { createElement } from "react";
+    import { BoardView } from "./src/board-page.tsx";
+    export function render(board) {
+      return renderToStaticMarkup(createElement(BoardView, { board, viewer: "jun", showAll: false, navigate() {} }));
+    }`);
+  const handle = `@jun/${MARKUP}`;
+  const session = { id: "s1", vendor: "<b>codex</b>", branch: "<i>main</i>", status: "running" };
+  const html = render({
+    owners: [
+      {
+        id: "jun",
+        identities: [{ handle, name: `<u>${MARKUP}</u>`, avatar: null, team: false, sessions: [{ ...session, lastSeen: "2026-10-11T09:00:00.000Z" }] }],
+      },
+      { id: `<em>${MARKUP}</em>`, identities: [{ handle: "@x/<s>idle</s>", name: "idle", avatar: null, team: true, sessions: [] }] },
+    ],
+    issues: [
+      {
+        issue: {
+          id: "7",
+          alias: null,
+          title: "<script>globalThis.pwned = 2</script>",
+          body: MARKUP,
+          state: "in_review",
+          stateReason: null,
+          labels: [],
+          parentId: null,
+          version: 1,
+          assignees: [{ kind: "identity", id: handle, session, waitingFor: null }],
+          commits: [],
+          checks: [],
+          reviews: [{ opId: "r1", reviewer: `<q>${MARKUP}</q>`, verdict: "approve", reason: null, repo: "r", sha: "1", counts: false, uncountedReason: MARKUP }],
+          threads: [{ id: "t1", status: "open", needsPersonIds: [`<kbd>${MARKUP}</kbd>`] }],
+        },
+        subIssues: [],
+        laneOwners: { [handle]: ["jun"] },
+      },
+    ],
+  });
+  assert.match(html, /@jun\/&lt;img src=x onerror=&quot;globalThis\.pwned = 1&quot;&gt;/);
+  assert.match(html, /&lt;script&gt;globalThis\.pwned = 2&lt;\/script&gt;/);
+  assert.match(html, /&lt;b&gt;codex&lt;\/b&gt;/);
+  assert.match(html, /title="&lt;i&gt;main&lt;\/i&gt;"/);
+  assert.match(html, /&lt;em&gt;/);
+  assert.match(html, /@x\/&lt;s&gt;idle&lt;\/s&gt;/);
+  assert.match(html, /Reply from &lt;kbd&gt;/);
+  assert.doesNotMatch(html, /<img|<script|<b>|<i>|<em>|<s>|<u>|<q>|<kbd>|onerror="/);
+});

@@ -1,8 +1,9 @@
 // The board (PRD section 8): columns Detected, Fixing, Verifying, In review and Done; one swimlane per
-// owner with that owner's identities and their running sessions; a card per issue and assignee with
-// the identity's avatar, the session status, the checks, the reviewers and what the issue waits on;
-// and the Penguin character for the whole board. The board reads itself again on every live change,
-// including a session going online or offline. Every value renders as React text, so markup in a title
+// owner, opened by that owner's identities with each running session's status; a card per issue and
+// assignee with the assignee's character or initial, the session status, the checks, the reviewers
+// and what the issue waits on; and the Penguin character for the whole board. A session status always
+// shows as text, with a coloured dot beside it while it runs. The board reads itself again on every
+// live change, including a session going online or offline. Every value renders as React text, so markup in a title
 // or a handle shows as text and runs nothing.
 
 import type { Board, BoardIdentity } from "@penguin/protocol";
@@ -17,8 +18,10 @@ import {
   columnCounts,
   doneCards,
   SESSION_STATUS_LABEL,
+  sessionStatuses,
   type Card,
   type Lane,
+  type SessionStatus,
 } from "./board-view.ts";
 import { Icon } from "./icon.tsx";
 import { PenguinIndicator, SignalTag } from "./issue-page.tsx";
@@ -74,9 +77,21 @@ export function BoardPage({ viewer, showAll, live, navigate, onSignedOut }: Prop
   }
   if (load.kind === "loading") return <div className="board" aria-busy="true" />;
 
-  const { board } = load;
+  return <BoardView board={load.board} viewer={viewer} showAll={showAll} navigate={navigate} />;
+}
+
+interface ViewProps {
+  readonly board: Board;
+  readonly viewer: string;
+  readonly showAll: boolean;
+  readonly navigate: (path: string) => void;
+}
+
+/** The board as read, without the fetch, so it renders on the server in a test. */
+export function BoardView({ board, viewer, showAll, navigate }: ViewProps) {
   const counts = columnCounts(board);
   const lanes = boardLanes(board, viewer);
+  const statuses = sessionStatuses(board);
   return (
     <div className="board">
       <header className="page-header">
@@ -95,25 +110,38 @@ export function BoardPage({ viewer, showAll, live, navigate, onSignedOut }: Prop
         </div>
       )}
       {lanes.map((lane) => (
-        <LaneView key={lane.owner ?? ""} lane={lane} showAll={showAll} navigate={navigate} />
+        <LaneView key={lane.owner ?? ""} lane={lane} statuses={statuses} showAll={showAll} navigate={navigate} />
       ))}
     </div>
   );
 }
 
-function LaneView({ lane, showAll, navigate }: { lane: Lane; showAll: boolean; navigate: (path: string) => void }) {
+interface LaneProps {
+  readonly lane: Lane;
+  readonly statuses: ReadonlyMap<string, SessionStatus>;
+  readonly showAll: boolean;
+  readonly navigate: (path: string) => void;
+}
+
+function LaneView({ lane, statuses, showAll, navigate }: LaneProps) {
   const id = `lane-${lane.owner ?? "unassigned"}`;
+  const running = lane.identities.filter((identity) => identity.sessions.length > 0);
+  const idle = lane.identities.filter((identity) => identity.sessions.length === 0);
   return (
     <section className="lane" aria-labelledby={id}>
       <header className="lane-head">
-        <h2 id={id}>{lane.owner ?? "Unassigned"}</h2>
-        {lane.identities.length === 0 ? null : (
+        <h2 id={id} className="lane-owner">
+          {lane.owner === null ? null : <PersonAvatar id={lane.owner} size="card" />}
+          {lane.owner ?? "Unassigned"}
+        </h2>
+        {running.length === 0 ? null : (
           <ul className="lane-identities">
-            {lane.identities.map((identity) => (
-              <IdentityRow key={identity.handle} identity={identity} />
+            {running.map((identity) => (
+              <IdentityRow key={identity.handle} identity={identity} statuses={statuses} />
             ))}
           </ul>
         )}
+        {idle.length === 0 ? null : <IdleIdentities identities={idle} labelId={`${id}-idle`} />}
       </header>
       <div className="lane-grid">
         {COLUMNS.map((column) => {
@@ -153,23 +181,69 @@ function LaneView({ lane, showAll, navigate }: { lane: Lane; showAll: boolean; n
   );
 }
 
-function IdentityRow({ identity }: { identity: BoardIdentity }) {
+/** A session status as a chip: a dot while a session works, waits or is blocked, then its label. */
+function StatusChip({ status, id }: { status: SessionStatus | null; id?: string }) {
+  const slug = status === null ? "none" : status.replaceAll(" ", "-");
   return (
-    <li className="row lane-identity">
-      <IdentityAvatar handle={identity.handle} image={identity.avatar} size="row" />
+    <span id={id} className={`tag status status-${slug}`}>
+      {status === null ? "No session" : SESSION_STATUS_LABEL[status]}
+    </span>
+  );
+}
+
+interface IdentityRowProps {
+  readonly identity: BoardIdentity;
+  readonly statuses: ReadonlyMap<string, SessionStatus>;
+}
+
+function IdentityName({ identity }: { identity: BoardIdentity }) {
+  return (
+    <div className="lane-identity-name">
       <span className="row-title">{identity.handle}</span>
       {identity.team ? <span className="tag">Team</span> : null}
-      {identity.sessions.length === 0 ? (
-        <span className="tag session-offline">No session</span>
-      ) : (
-        identity.sessions.map((session) => (
-          <span key={session.id} className="lane-session">
-            <span className="tag session-running">{session.vendor}</span>
-            <code className="muted">{session.branch}</code>
-          </span>
-        ))
-      )}
+    </div>
+  );
+}
+
+/** An identity with running sessions as a list row: its character, its handle, then a line per session. */
+function IdentityRow({ identity, statuses }: IdentityRowProps) {
+  return (
+    <li className="lane-identity">
+      <IdentityAvatar handle={identity.handle} image={identity.avatar} size="row" />
+      <div className="lane-identity-text">
+        <IdentityName identity={identity} />
+        {identity.sessions.map((session) => (
+          <div key={session.id} className="lane-session">
+            <StatusChip status={statuses.get(session.id) ?? "working"} />
+            <span className="tag">{session.vendor}</span>
+            {/* A long branch ends in an ellipsis; the title holds it whole for a pointer. */}
+            <code className="lane-branch" title={session.branch}>
+              {session.branch}
+            </code>
+          </div>
+        ))}
+      </div>
     </li>
+  );
+}
+
+/**
+ * The identities with no session under one "No session" status, each as its character and handle.
+ * Repeating the status on every row would make a lane of many identities a long list before its cards.
+ */
+function IdleIdentities({ identities, labelId }: { identities: readonly BoardIdentity[]; labelId: string }) {
+  return (
+    <div className="lane-idle">
+      <StatusChip status={null} id={labelId} />
+      <ul className="lane-idle-list" aria-labelledby={labelId}>
+        {identities.map((identity) => (
+          <li key={identity.handle} className="lane-idle-identity">
+            <IdentityAvatar handle={identity.handle} image={identity.avatar} size="row" />
+            <IdentityName identity={identity} />
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -194,7 +268,7 @@ function CardView({ card, navigate }: { card: Card; navigate: (path: string) => 
           <div>
             <dt>Session</dt>
             <dd>
-              <span className={`tag status status-${status.replaceAll(" ", "-")}`}>{SESSION_STATUS_LABEL[status]}</span>
+              <StatusChip status={status} />
             </dd>
           </div>
         )}

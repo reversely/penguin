@@ -23,6 +23,7 @@ import {
   initial,
   latestReviews,
   sessionStatus,
+  sessionStatuses,
   waitsOn,
 } from "../src/board-view.ts";
 
@@ -142,6 +143,35 @@ test("session status comes from the issue's state and routing", () => {
   // A person runs no session; an unassigned issue has none.
   assert.equal(sessionStatus(issue("1", "fixing", { assignees: [person("jun")] }), person("jun")), null);
   assert.equal(sessionStatus(issue("1", "fixing"), null), null);
+});
+
+test("a running session takes the most pressing status of the issues routed to it", () => {
+  const second = identity("@jun/reports", { ...running, id: "session-2" });
+  const statuses = sessionStatuses({
+    owners: [],
+    issues: [
+      issue("1", "closed", { assignees: [identity("@jun/reports")] }),
+      issue("2", "fixing", { assignees: [identity("@jun/reports")] }),
+      issue("3", "verifying", { assignees: [identity("@jun/reports")] }),
+      issue("4", "closed", { assignees: [second] }),
+      issue("5", "fixing", { assignees: [person("jun"), identity("@jun/idle", null)] }),
+    ],
+  });
+  assert.deepEqual(
+    [...statuses].sort(),
+    [
+      ["session-1", "waiting at a checkpoint"],
+      ["session-2", "done"],
+    ],
+  );
+  const blocked = sessionStatuses({
+    owners: [],
+    issues: [
+      issue("6", "in_review", { assignees: [identity("@jun/reports")] }),
+      issue("7", "fixing", { assignees: [identity("@jun/reports")], threads: [{ id: "t1", status: "open", needsPersonIds: ["sam"], body: "", anchor: null, openedBy: "jun", participants: ["jun"], resolvedBy: null, resolveReason: null }] }),
+    ],
+  });
+  assert.equal(blocked.get("session-1"), "blocked");
 });
 
 test("what the issue waits on follows its routing, its threads and its state", () => {

@@ -96,6 +96,28 @@ export function sessionStatus(issue: BoardIssue, assignee: IssuePageAssignee | n
   return "working";
 }
 
+/** Session statuses in the order they call for attention, the most pressing first. */
+const STATUS_ATTENTION: readonly SessionStatus[] = ["blocked", "waiting at a checkpoint", "working", "done"];
+
+/**
+ * Each routed session's status, by session id: the most pressing status of the issues routed to it.
+ * A lane's identity row shows it beside each running session. A running session that holds no issue
+ * on the board has none here and shows as working, the status a card takes when nothing blocks it.
+ */
+export function sessionStatuses(board: Board): ReadonlyMap<string, SessionStatus> {
+  const statuses = new Map<string, SessionStatus>();
+  for (const issue of board.issues) {
+    for (const assignee of issue.issue.assignees) {
+      const status = sessionStatus(issue, assignee);
+      const id = assignee.session?.id;
+      if (status === null || id === undefined) continue;
+      const known = statuses.get(id);
+      if (known === undefined || STATUS_ATTENTION.indexOf(status) < STATUS_ATTENTION.indexOf(known)) statuses.set(id, status);
+    }
+  }
+  return statuses;
+}
+
 /** What the issue waits on, as one short noun phrase, or null once it is closed. */
 export function waitsOn(issue: BoardIssue, assignee: IssuePageAssignee | null): string | null {
   const { state, assignees, checks, reviews } = issue.issue;
