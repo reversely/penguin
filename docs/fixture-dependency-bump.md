@@ -1,6 +1,6 @@
 # Dependency-bump fixture
 
-The dependency-bump fixture is a small Git repository for the PRD's third use case: the dependency
+The dependency-bump fixture is a small Git repository for case 3 in [design.md](design.md): the dependency
 bump. Hugo owns the shared HTTP client. Hugo upgrades it from wire 1.4.0 to wire 2.0.0 to fix a
 dropped request in Hugo's carrier integration. wire 2.0.0 retries a timed-out request by default.
 Ana's payment webhook charges an order through that client. On the merged checkpoints a charge whose
@@ -36,7 +36,7 @@ it.
 ## Expected failures
 
 Merging the two checkpoints fails one test in Ana's scope. The `platform` tests pass on the merged
-tree. The PRD names no test ID for this use case.
+tree. The case names no test ID.
 
 | Pytest node ID | Merged tree | Failure |
 |---|---|---|
@@ -47,7 +47,7 @@ order as unconfirmed. The processor holds one charge.
 
 ## Fixes
 
-The fix follows the PRD's third use case. Ana's session adds idempotency keys to the payment calls.
+The fix follows case 3. Ana's session adds idempotency keys to the payment calls.
 Hugo keeps the upgrade.
 
 | Pytest node ID | Fix commit | Fix |

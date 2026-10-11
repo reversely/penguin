@@ -1,7 +1,7 @@
 # Helpful-fix fixture
 
-The helpful-fix fixture is a small Git repository for the PRD's second use case: the helpful fix.
-Priya owns the shared date helper `start_of_day()` (the PRD's `startOfDay()`). Priya changes it to
+The helpful-fix fixture is a small Git repository for case 2 in [design.md](design.md): the helpful fix.
+Priya owns the shared date helper `start_of_day()` . Priya changes it to
 return a UTC midnight to fix a bug in Priya's own ingestion batches. That change breaks Jun's weekly
 report and Sam's reminder scheduling. `examples/helpful-fix/build.py` builds the repository from the
 source directories next to the builder. Every build produces the same commit SHAs.
@@ -15,7 +15,7 @@ source directories next to the builder. Every build produces the same commit SHA
 | `owner-priya-checkpoint` (tag) | Priya | `start_of_day()` returns midnight UTC of the UTC day. Two events recorded at one instant with different offsets fall into one daily ingestion batch. `ingestion/tests/test_batches.py` adds `test_events_at_one_instant_share_a_batch`. |
 | `owner-jun-checkpoint` (tag) | Jun | The weekly activity report in `analytics/weekly.py` with `test_weekly.py`. The report converts each event to its user's UTC offset and calls `start_of_day()`. |
 | `owner-sam-checkpoint` (tag) | Sam | Reminder scheduling in `messaging/reminders.py` with `test_reminders.py`. The scheduler converts the current time to the contact's UTC offset and adds the reminder hour to `start_of_day()`. |
-| `owner-priya` | Priya | On `owner-priya-checkpoint`: `start_of_local_day(moment, utc_offset)` in `shared/dates.py` (the PRD's `startOfLocalDay()`) |
+| `owner-priya` | Priya | On `owner-priya-checkpoint`: `start_of_local_day(moment, utc_offset)` in `shared/dates.py` |
 | `owner-jun` | Jun | On `owner-jun-checkpoint`: the weekly report buckets events with `start_of_local_day()` |
 | `owner-sam` | Sam | On `owner-sam-checkpoint`: reminder scheduling starts from `start_of_local_day()` |
 
@@ -32,7 +32,7 @@ test to the commit that fixes it.
 
 Merging the three checkpoints fails two tests, one in Jun's scope and one in Sam's scope. The
 ingestion tests pass on the merged tree. Each test sets its user's UTC offset itself, so the host
-timezone does not change the result. The PRD names no test IDs for this use case.
+timezone does not change the result. The case names no test IDs.
 
 | Pytest node ID | Merged tree | Failure |
 |---|---|---|
@@ -41,7 +41,7 @@ timezone does not change the result. The PRD names no test IDs for this use case
 
 ## Fixes
 
-The fixes follow the PRD's second use case. Priya adds `start_of_local_day()`. Jun and Sam switch
+The fixes follow case 2. Priya adds `start_of_local_day()`. Jun and Sam switch
 their own code to it. Merged with `owner-priya`, each fix makes its own test pass. Merged with
 `owner-priya` alone, without Jun's or Sam's switch, each test still fails.
 

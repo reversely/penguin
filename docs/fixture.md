@@ -25,7 +25,7 @@ SHA of every branch head and tag. It also maps each failing test to the commit t
 ## Expected failures
 
 Merging Priya's checkpoint with Jun's or Sam's checkpoint fails three tests. All three belong to Jun's
-and Sam's work. The PRD names each test by module and test name without the `test_` prefix.
+and Sam's work. Case 1 names each test by module and test name without the `test_` prefix.
 
 | PRD test ID | Pytest node ID | Merged tree | Failure |
 |---|---|---|---|
@@ -35,7 +35,7 @@ and Sam's work. The PRD names each test by module and test name without the `tes
 
 ## Fixes
 
-The fixes follow the PRD's worked Huddle (section 6, steps 4 and 7). Merged with the other owner's
+The fixes follow case 1 in [design.md](design.md). Merged with the other owner's
 checkpoint, each fix makes its own test pass without help from another fix.
 
 | Pytest node ID | Fix commit | Fix |
@@ -44,7 +44,7 @@ checkpoint, each fix makes its own test pass without help from another fix.
 | `analytics/tests/test_identity.py::test_shared_device_split` | `owner-priya` | A login links a device to at most one user identity. The tablet's later patrons stay separate people. |
 | `messaging/tests/test_consent.py::test_unsubscribe_survives` | `owner-sam` | The audience reads each identity's latest consent event. A person with any unsubscribed identity is left out. |
 
-`owner-priya-limit-five` is the commit that Jun's review on #33 answers in the PRD: "a limit of five
+`owner-priya-limit-five` is the commit that Jun's review answers in case 1: "a limit of five
 still joins the tablet's users." Merged with `owner-jun`, it still fails `test_shared_device_split`,
 because the tablet's three patrons are under the limit.
 
