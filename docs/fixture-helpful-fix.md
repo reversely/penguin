@@ -65,13 +65,14 @@ In the approved design ([design.md](design.md#procedure)) this case runs as foll
 2. **Plan.** The signature stays the same, so the contract diff alone shows nothing. Penguin's
    side-by-side run shows `start_of_day()` returning a different day for users west of UTC, which
    makes the change a behaviour change. Priya's agent adds `start_of_local_day()` in its own feature.
-   It proposes switching Jun's and Sam's calls to the new helper. Penguin classifies that switch as
-   mechanical: a codemod on each call site.
+   It proposes switching Jun's and Sam's calls to the new helper. Each new call also passes the
+   user's offset, so the switch is a behavioural fix that Priya's agent writes, not a codemod.
 3. **Advance notice.** Jun and Sam each approve their part. Their review forms cite the two tests in
    [Expected failures](#expected-failures).
-4. **Build.** Penguin's codemod writes the switch into Jun's and Sam's existing forks. No agent
-   writes a fix. Today Jun and Sam write the switch themselves (`owner-jun`, `owner-sam`), so those
-   commits become the codemod's expected output.
+4. **Build.** Priya's agent writes the switch into Jun's and Sam's existing forks. Today Jun and Sam
+   write the switch themselves (`owner-jun`, `owner-sam`), so those commits are the expected result.
+   A pure rename of `start_of_day`, with no new argument, is mechanical; #94's exit check shows a
+   LibCST codemod making that rename in every affected fork with no agent.
 5. **Block promotion.** One promotion. Neither Jun's report nor Sam's reminders ever runs on the UTC
    helper. Jun and Sam are each asked once, for approval.
 
