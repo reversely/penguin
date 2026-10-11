@@ -2,8 +2,10 @@
 // handle derives. A person shows a round initial and never a character, so a reader tells people
 // from agents at a glance. The vendor of a session never changes the character.
 
+import { createContext, useContext } from "react";
+
 import { initial } from "./board-view.ts";
-import { BODIES, characterFor, EYE, eyes, personHue } from "./character.ts";
+import { BODIES, characterFor, EYE, eyes, personHue, type PersonHue } from "./character.ts";
 
 /** 24px in cards and bylines, 32px in rows, 56px in the identity header. */
 export type AvatarSize = "card" | "row" | "header";
@@ -47,10 +49,22 @@ export function IdentityAvatar({ handle, image, size }: { handle: string; image:
   );
 }
 
+// The team's person hues (assignPersonHues in character.ts), which the shell derives from the team
+// map's people, so every badge, square and box shows a person in one hue on every page. Until the
+// team is read, and for anyone outside it, a person shows the hue their id hashes to.
+const PersonHues = createContext<ReadonlyMap<string, PersonHue>>(new Map());
+export const PersonHuesProvider = PersonHues.Provider;
+
+/** A person's hue in the team's assignment. */
+export function usePersonHue(id: string): PersonHue {
+  return personHue(id, useContext(PersonHues));
+}
+
 /** A person's avatar: the initial of their id in a round badge filled with their hue. */
 export function PersonAvatar({ id, size }: { id: string; size: AvatarSize }) {
+  const hue = usePersonHue(id);
   return (
-    <span className={`avatar avatar-${size} avatar-initial person-${personHue(id)}`} aria-hidden="true">
+    <span className={`avatar avatar-${size} avatar-initial person-${hue}`} aria-hidden="true">
       {initial(id)}
     </span>
   );

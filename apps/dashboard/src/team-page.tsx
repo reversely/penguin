@@ -1,20 +1,24 @@
-// The team map (the dashboard's home): one square per person, edged in the hue their owner id
-// derives, holding their agents as smaller boxes tinted in that hue. Each box shows the agent's
-// character, handle, session status and the number of the issue it holds, and opens the agent's card
-// on the identities page. Each square counts what needs the person and opens the person's view: their
-// scopes, their agents and the issues that involve them. The map reads the board and the identities
-// again on every live change, so a session going online or offline and an issue moving show without
-// reload. Every value renders as React text, so markup in a name, handle or title shows as text.
+// The team map (the dashboard's home): one square per person, edged in the person's hue
+// (assignPersonHues in character.ts), holding their agents as smaller boxes tinted in that hue. Each
+// box shows the agent's character, handle, session status and the number of the issue it holds, and
+// opens the agent's card on the identities page. Each square counts what needs the person and opens
+// the person's view: their scopes, their agents and the issues that involve them. The map reads the
+// board and the identities again on every live change, so a session going online or offline and an
+// issue moving show without reload. Every value renders as React text, so markup in a name, handle
+// or title shows as text.
+//
+// The shell reads the board and the identities for the map (useTeam), because the person hues every
+// page shows come from the map's people: one read gives the squares and every badge the same hues.
 
 import type { Board, IdentitiesPage } from "@penguin/protocol";
-import { useMemo } from "react";
+import { useMemo, type ReactNode } from "react";
 
 import { fetchBoard, fetchIdentities } from "./api.ts";
-import { IdentityAvatar, PersonAvatar } from "./avatar.tsx";
+import { IdentityAvatar, PersonAvatar, PersonHuesProvider, usePersonHue } from "./avatar.tsx";
 import { boardPenguinState } from "./board-view.ts";
-import { personHue } from "./character.ts";
+import { assignPersonHues } from "./character.ts";
 import { Icon } from "./icon.tsx";
-import { useRead } from "./inbox-page.tsx";
+import { useRead, type Read } from "./inbox-page.tsx";
 import { PenguinIndicator } from "./issue-page.tsx";
 import { STATE_LABEL } from "./issue-view.ts";
 import { linkHandler } from "./links.ts";
@@ -25,6 +29,7 @@ import {
   INVOLVEMENT_LABEL,
   personIssues,
   teamMap,
+  teamPeople,
   type Agent,
   type Needs,
   type Person,
@@ -32,21 +37,41 @@ import {
 } from "./team-view.ts";
 import type { Live } from "./use-live.ts";
 
-interface Props {
-  readonly viewer: string;
-  /** The person whose view is open, or null for the whole map. */
-  readonly person: string | null;
-  readonly live: Live;
-  readonly navigate: (path: string) => void;
-  readonly onSignedOut: () => void;
+/** The board and the identities as the team map reads them. */
+export interface Team {
+  readonly board: Read<Board>;
+  readonly identities: Read<IdentitiesPage>;
 }
 
-export function TeamPage({ viewer, person, live, navigate, onSignedOut }: Props) {
+/** Reads the team for the shell. */
+export function useTeam(live: Live, onSignedOut: () => void): Team {
   // A session going online or offline and an identity change each read both again, as a reconnect does.
   const revision = `${live.revision}:${live.identitiesRevision}:${live.status === "live"}`;
   const board = useRead(fetchBoard, revision, onSignedOut);
   const identities = useRead(fetchIdentities, revision, onSignedOut);
+  return { board, identities };
+}
 
+/** Gives every person avatar and square below it the hues of the team's people. */
+export function TeamHues({ team, children }: { readonly team: Team; readonly children: ReactNode }) {
+  const { board, identities } = team;
+  const hues = useMemo(
+    () => assignPersonHues(board.kind === "ready" && identities.kind === "ready" ? teamPeople(board.value, identities.value) : []),
+    [board, identities],
+  );
+  return <PersonHuesProvider value={hues}>{children}</PersonHuesProvider>;
+}
+
+interface Props {
+  readonly team: Team;
+  readonly viewer: string;
+  /** The person whose view is open, or null for the whole map. */
+  readonly person: string | null;
+  readonly navigate: (path: string) => void;
+}
+
+export function TeamPage({ team, viewer, person, navigate }: Props) {
+  const { board, identities } = team;
   if (board.kind === "failed" || identities.kind === "failed") {
     return (
       <div className="team">
@@ -100,8 +125,9 @@ export function TeamMapView({ board, page, viewer, navigate }: ViewProps) {
 
 function PersonSquare({ person, navigate }: { person: Person; navigate: (path: string) => void }) {
   const path = personPath(person.id);
+  const hue = usePersonHue(person.id);
   return (
-    <li className={`person-square person-${personHue(person.id)}`}>
+    <li className={`person-square person-${hue}`}>
       <h2 className="person-square-head">
         <a className="person-square-link" href={path} onClick={linkHandler(navigate, path)}>
           <PersonAvatar id={person.id} size="row" />
@@ -199,6 +225,7 @@ function AgentBox({ owner, agent, navigate }: { owner: string; agent: Agent; nav
 
 /** One person: their scopes, their agents and the issues that involve them. */
 export function PersonView({ board, page, viewer, navigate, person }: ViewProps & { readonly person: string }) {
+  const hue = usePersonHue(person);
   const found = useMemo(() => teamMap(board, page, viewer).people.find((entry) => entry.id === person), [board, page, viewer, person]);
   const issues = useMemo(() => personIssues(board, person), [board, person]);
   const back = (
@@ -220,7 +247,7 @@ export function PersonView({ board, page, viewer, navigate, person }: ViewProps 
   return (
     <article className="team person-view" aria-labelledby="person-heading">
       {back}
-      <header className={`person-head person-${personHue(person)}`}>
+      <header className={`person-head person-${hue}`}>
         <PersonAvatar id={person} size="header" />
         <h1 id="person-heading">{person}</h1>
         <NeedsTags needs={found.needs} />
@@ -241,7 +268,7 @@ export function PersonView({ board, page, viewer, navigate, person }: ViewProps 
           </ul>
         )}
       </section>
-      <section className={`team-section person-${personHue(person)}`} aria-labelledby="person-agents">
+      <section className={`team-section person-${hue}`} aria-labelledby="person-agents">
         <h2 id="person-agents" className="team-section-heading">
           Agents <span className="tab-count">{found.agents.length}</span>
         </h2>

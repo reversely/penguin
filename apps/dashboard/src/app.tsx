@@ -11,7 +11,7 @@ import { linkHandler } from "./links.ts";
 import { NewIssuePage } from "./new-issue-page.tsx";
 import { NAVIGATION, parseRoute, signInProblem, type Route, type SignInProblem } from "./routes.ts";
 import { SidebarSlotProvider } from "./sidebar-slot.tsx";
-import { TeamPage } from "./team-page.tsx";
+import { TeamHues, TeamPage, useTeam, type Team } from "./team-page.tsx";
 import { useLive, type Live } from "./use-live.ts";
 
 type SessionState = { readonly kind: "loading" } | { readonly kind: "signed-out" } | { readonly kind: "signed-in"; readonly session: Session };
@@ -84,6 +84,8 @@ function Shell({ session, onSignedOut }: { session: Session; onSignedOut: () => 
   const live = useLive();
   // The shell holds the inbox, so the navigation's unread count and the inbox page read it once.
   const inbox = useInbox(live, onSignedOut);
+  // The shell holds the team too, so the team map and every person's hue on any page come from one read.
+  const team = useTeam(live, onSignedOut);
   const unread = inbox.load.kind === "ready" ? unreadCount(inbox.load.items) : 0;
   const details = useDetails(route?.page === "issue" ? `issue:${route.issueId}` : (route?.page ?? ""));
   const covered = details.shown && !details.docked;
@@ -92,45 +94,47 @@ function Shell({ session, onSignedOut }: { session: Session; onSignedOut: () => 
 
   return (
     <DetailsProvider value={details}>
-      <SidebarSlotProvider value={slot}>
-        <div className="shell" data-details={details.shown && details.docked ? "docked" : undefined}>
-          <header className="sidebar" inert={covered}>
-            <a className="wordmark" href="/" onClick={linkHandler(navigate, "/")}>
-              Penguin
-            </a>
-            <nav className="nav" aria-label="Main">
-              {NAVIGATION.map((entry) => (
-                <a
-                  key={entry.page}
-                  href={entry.path}
-                  className="nav-link"
-                  aria-current={route?.page === entry.page ? "page" : undefined}
-                  onClick={linkHandler(navigate, entry.path)}
-                >
-                  {entry.label}
-                  {entry.page === "inbox" && unread > 0 ? (
-                    <span className="count" aria-label={`${unread} unread`}>
-                      {unread}
-                    </span>
-                  ) : null}
-                </a>
-              ))}
-            </nav>
-            {/* The route's list; on a route without one the space keeps the owner at the foot of the
-                sidebar. The inbox's rows belong to the shell, so they stay mounted, with their scroll,
-                between the inbox and an open issue. */}
-            <div className="sidebar-list" ref={setSlot} />
-            <InboxSidebar route={route} inbox={inbox} viewer={session.owner} live={live} navigate={navigate} onSignedOut={onSignedOut} />
-            <AccountMenu session={session} status={live.status} />
-          </header>
-          <main className="centre" inert={covered}>
-            <div className={route?.page === "team" ? "page page-wide" : "page"} data-audit-center>
-              <Page route={route} session={session} live={live} inbox={inbox} navigate={navigate} onSignedOut={onSignedOut} />
-            </div>
-          </main>
-          <DetailsPane details={details} />
-        </div>
-      </SidebarSlotProvider>
+      <TeamHues team={team}>
+        <SidebarSlotProvider value={slot}>
+          <div className="shell" data-details={details.shown && details.docked ? "docked" : undefined}>
+            <header className="sidebar" inert={covered}>
+              <a className="wordmark" href="/" onClick={linkHandler(navigate, "/")}>
+                Penguin
+              </a>
+              <nav className="nav" aria-label="Main">
+                {NAVIGATION.map((entry) => (
+                  <a
+                    key={entry.page}
+                    href={entry.path}
+                    className="nav-link"
+                    aria-current={route?.page === entry.page ? "page" : undefined}
+                    onClick={linkHandler(navigate, entry.path)}
+                  >
+                    {entry.label}
+                    {entry.page === "inbox" && unread > 0 ? (
+                      <span className="count" aria-label={`${unread} unread`}>
+                        {unread}
+                      </span>
+                    ) : null}
+                  </a>
+                ))}
+              </nav>
+              {/* The route's list; on a route without one the space keeps the owner at the foot of the
+                  sidebar. The inbox's rows belong to the shell, so they stay mounted, with their scroll,
+                  between the inbox and an open issue. */}
+              <div className="sidebar-list" ref={setSlot} />
+              <InboxSidebar route={route} inbox={inbox} viewer={session.owner} live={live} navigate={navigate} onSignedOut={onSignedOut} />
+              <AccountMenu session={session} status={live.status} />
+            </header>
+            <main className="centre" inert={covered}>
+              <div className={route?.page === "team" ? "page page-wide" : "page"} data-audit-center>
+                <Page route={route} session={session} live={live} inbox={inbox} team={team} navigate={navigate} onSignedOut={onSignedOut} />
+              </div>
+            </main>
+            <DetailsPane details={details} />
+          </div>
+        </SidebarSlotProvider>
+      </TeamHues>
     </DetailsProvider>
   );
 }
@@ -140,16 +144,17 @@ interface PageProps {
   readonly session: Session;
   readonly live: Live;
   readonly inbox: InboxState;
+  readonly team: Team;
   readonly navigate: (path: string) => void;
   readonly onSignedOut: () => void;
 }
 
-function Page({ route, session, live, inbox, navigate, onSignedOut }: PageProps) {
+function Page({ route, session, live, inbox, team, navigate, onSignedOut }: PageProps) {
   if (route?.page === "issue") {
     return <IssuePageView key={route.issueId} issueId={route.issueId} viewer={session.owner} live={live} navigate={navigate} onSignedOut={onSignedOut} />;
   }
   if (route?.page === "team") {
-    return <TeamPage viewer={session.owner} person={route.person} live={live} navigate={navigate} onSignedOut={onSignedOut} />;
+    return <TeamPage team={team} viewer={session.owner} person={route.person} navigate={navigate} />;
   }
   if (route?.page === "inbox") {
     return <InboxPage inbox={inbox} viewer={session.owner} live={live} showAll={route.showAll} navigate={navigate} onSignedOut={onSignedOut} />;

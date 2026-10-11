@@ -3,9 +3,10 @@ import { test } from "node:test";
 
 import type { Board, IdentitiesPage, IdentityEntry } from "@penguin/protocol";
 
-import { PERSON_HUES, personHue } from "../src/character.ts";
-import { agentStatus, agentWork, heldIssues, personIssues, sessionIssue, teamMap } from "../src/team-view.ts";
+import { assignPersonHues, fnv1a, PERSON_HUES, personHue, type PersonHue } from "../src/character.ts";
+import { agentStatus, agentWork, heldIssues, personIssues, sessionIssue, teamMap, teamPeople } from "../src/team-view.ts";
 import { boardIdentity, identity, issue, person, running, thread } from "./board-fixtures.ts";
+import { load } from "./render.ts";
 
 function page(owners: string[], handles: string[]): IdentitiesPage {
   return {
@@ -159,9 +160,101 @@ test("a session's issue is its delivered fix task, else the open issue routed to
   assert.equal(sessionIssue(undefined, "@jun/reports", session), null);
 });
 
-test("a person's hue comes from their owner id alone and every person hue is reachable", () => {
-  assert.equal(personHue("jun"), personHue("jun"));
-  assert.ok(PERSON_HUES.includes(personHue("<em>x</em>")));
-  const seen = new Set(Array.from({ length: 200 }, (_, n) => personHue(`owner-${n}`)));
-  assert.equal(seen.size, PERSON_HUES.length);
+/** The hue an owner id hashes to before any other owner is considered. */
+function hashed(id: string): string {
+  return PERSON_HUES[fnv1a(id) % PERSON_HUES.length]!;
+}
+
+/** Teams of every size up to the palette's, drawn from a pool whose hashes clash often. */
+const pool = Array.from({ length: 40 }, (_, n) => `owner-${n}`);
+const teams = Array.from({ length: 300 }, (_, n) => pool.filter((_, at) => (fnv1a(`${n}:${at}`) & 3) === 0).slice(0, 1 + (n % PERSON_HUES.length)));
+
+test("no two people on a team of up to the palette's size share a hue", () => {
+  assert.equal(PERSON_HUES.length, 8);
+  assert.ok(teams.some((team) => team.length === PERSON_HUES.length), "some teams fill the palette");
+  assert.ok(teams.some((team) => new Set(team.map(hashed)).size < team.length), "some teams' hashes clash");
+  for (const team of teams) {
+    const hues = assignPersonHues(team);
+    assert.equal(new Set(hues.values()).size, team.length, team.join(","));
+  }
+});
+
+test("a new person whose hashed hue is free leaves every other person's hue as it was", () => {
+  let free = 0;
+  let clashed = 0;
+  for (const team of teams.filter((members) => members.length < PERSON_HUES.length)) {
+    const before = assignPersonHues(team);
+    for (const added of pool.filter((id) => !team.includes(id))) {
+      const after = assignPersonHues([...team, added]);
+      if ([...before.values()].includes(hashed(added) as PersonHue)) {
+        clashed += 1;
+        continue;
+      }
+      free += 1;
+      assert.equal(after.get(added), hashed(added));
+      for (const [id, hue] of before) assert.equal(after.get(id), hue, `${id} after adding ${added}`);
+    }
+  }
+  assert.ok(free > 0 && clashed > 0, `free ${free}, clashed ${clashed}`);
+});
+
+test("the same team gives the same hues whatever order its ids arrive in, and a repeated id counts once", () => {
+  for (const team of teams) {
+    const hues = assignPersonHues(team);
+    assert.deepEqual(new Map([...assignPersonHues([...team].reverse())].sort()), new Map([...hues].sort()));
+    assert.deepEqual(assignPersonHues([...team, ...team]), hues);
+  }
+});
+
+test("a person outside the team takes the hue their id hashes to and moves no one else's", () => {
+  const hues = assignPersonHues(["jun", "priya", "sam"]);
+  assert.equal(personHue("<em>x</em>", hues), hashed("<em>x</em>"));
+  assert.equal(personHue("jun", new Map()), hashed("jun"));
+  assert.deepEqual(assignPersonHues(["jun", "priya", "sam"]), hues);
+  for (const id of ["jun", "priya", "sam"]) assert.equal(personHue(id, hues), hues.get(id));
+});
+
+test("past the palette's size hues repeat as evenly as they can", () => {
+  const hues = assignPersonHues(pool.slice(0, 19));
+  const counts = PERSON_HUES.map((hue) => [...hues.values()].filter((held) => held === hue).length);
+  assert.deepEqual([...counts].sort(), [2, 2, 2, 2, 2, 3, 3, 3]);
+});
+
+test("the team's people are the map's squares", () => {
+  const people = teamPeople(board(), page(["jun", "priya", "mia"], []));
+  assert.deepEqual([...people].sort(), teamMap(board(), page(["jun", "priya", "mia"], []), "jun").people.map(({ id }) => id).sort());
+});
+
+test("the team map's squares and a person's badge on any page show the shell's one assignment", async () => {
+  const { render } = await load<{ render: (board: Board, page: IdentitiesPage, ids: readonly string[]) => string }>(`
+    import { renderToStaticMarkup } from "react-dom/server";
+    import { createElement } from "react";
+    import { PersonAvatar } from "./src/avatar.tsx";
+    import { TeamHues, TeamMapView } from "./src/team-page.tsx";
+    export function render(board, page, ids) {
+      const team = { board: { kind: "ready", value: board }, identities: { kind: "ready", value: page } };
+      return renderToStaticMarkup(createElement(TeamHues, { team },
+        createElement(TeamMapView, { board, page, viewer: "jun", navigate() {} }),
+        ...ids.map((id) => createElement("p", { key: id, "data-badge": id }, createElement(PersonAvatar, { id, size: "card" })))));
+    }`);
+  const owners = ["jun", "priya", "sam", "lee", "mia", "ana", "kai", "noor"];
+  const team = page(owners, []);
+  const html = render(board(), team, [...owners, "outsider"]);
+  const squares = new Map(
+    [...html.matchAll(/class="person-square person-(\w+)">.*?avatar-initial person-(\w+)".*?person-square-name">([^<]+)</g)].map(
+      ([, square = "", badge = "", id = ""]) => {
+        assert.equal(badge, square, `${id}'s badge and square`);
+        return [id, square];
+      },
+    ),
+  );
+  const badges = new Map([...html.matchAll(/data-badge="([^"]+)"><span class="[^"]*person-(\w+)"/g)].map(([, id = "", hue = ""]) => [id, hue]));
+  const assigned = assignPersonHues(teamPeople(board(), team));
+  assert.equal(squares.size, owners.length);
+  assert.equal(new Set(squares.values()).size, owners.length, "eight people, eight hues");
+  for (const id of owners) {
+    assert.equal(squares.get(id), assigned.get(id), id);
+    assert.equal(badges.get(id), assigned.get(id), id);
+  }
+  assert.equal(badges.get("outsider"), hashed("outsider"));
 });

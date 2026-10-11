@@ -104,11 +104,16 @@ function byAttention(agents: readonly Agent[]): Agent[] {
   return [...agents].sort((a, b) => rank(a) - rank(b) || (a.identity.handle < b.identity.handle ? -1 : 1));
 }
 
+/** The team: every person the map gives a square, in no particular order. */
+export function teamPeople(board: Board, page: IdentitiesPage): ReadonlySet<string> {
+  return new Set([...board.owners.map((owner) => owner.id), ...page.owners, ...board.waiting.map((item) => item.personId)]);
+}
+
 export function teamMap(board: Board, page: IdentitiesPage, viewer: string): TeamMap {
   const statuses = sessionStatuses(board);
   const ids = new Map(page.identities.map((identity) => [identity.handle, identity.id]));
   const issues = new Map(board.issues.map((issue) => [issue.issue.id, issue] as const));
-  const people = new Set([...board.owners.map((owner) => owner.id), ...page.owners, ...board.waiting.map((item) => item.personId)]);
+  const people = teamPeople(board, page);
   const agentsOf = new Map<string, Agent[]>();
 
   for (const owner of board.owners) {
