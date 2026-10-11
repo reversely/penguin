@@ -10,10 +10,14 @@
   // assets. The Worker runs first on every request, so it decides which paths are dashboard files
   // and adds the Content Security Policy to them (src/dashboard.ts).
   //
-  // Dashboard sign-in reads two secrets, GITHUB_OAUTH_CLIENT_ID and GITHUB_OAUTH_CLIENT_SECRET
-  // (`wrangler secret put`), and the PENGUIN_DASHBOARD_OWNERS variable, which maps GitHub logins to
-  // owner ids as `<login>:<owner>,<login>:<owner>`. Without the map nobody can sign in.
-  // `wrangler dev` and `wrangler deploy` build the dashboard first.
+  // Dashboard sign-in reads GITHUB_OAUTH_CLIENT_ID (public, so a plain variable below), the
+  // GITHUB_OAUTH_CLIENT_SECRET secret (`wrangler secret put`), and PENGUIN_DASHBOARD_OWNERS, which
+  // maps GitHub logins to owner ids as `<login>:<owner>,<login>:<owner>`. Without the map nobody can
+  // sign in. `wrangler dev` and `wrangler deploy` build the dashboard first.
+  "vars": {
+    "GITHUB_OAUTH_CLIENT_ID": "Ov23liQdtDavAZ3IhIVQ",
+    "PENGUIN_DASHBOARD_OWNERS": "reversely:priya"
+  },
   "build": {
     "command": "npm run build -w @penguin/dashboard",
     "cwd": "../..",
