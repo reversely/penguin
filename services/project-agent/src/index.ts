@@ -71,6 +71,7 @@ import { reassignUpstream } from "./upstream.ts";
 import { IngestLedger, ingestPush, type IngestReport } from "./push-ingest.ts";
 import { rebuildIndex, type RebuildReport } from "./rebuild.ts";
 import { OWNERS_PATH, parseOwnersFile, parseScopeFile, SCOPE_MAP_PATH } from "./scope-file.ts";
+import { ReviewStore, submitReview, type ReviewInput, type ReviewOutcome } from "./review-submit.ts";
 import { CloseOutStore, FixApprovalStore } from "./approval-store.ts";
 import type { HuddleReviewer, ReviewCollection } from "./huddle-reviews.ts";
 import type { HuddleThread, HuddleThreadKeeper } from "./huddle-threads.ts";
@@ -117,7 +118,7 @@ import {
   type IssuePage,
   type VerificationRunSpec,
 } from "@penguin/protocol";
-import type { ScopeMap } from "@penguin/scope-map";
+import { INVARIANTS_PATH, type ScopeMap } from "@penguin/scope-map";
 
 import {
   BridgeRegistry,
@@ -240,6 +241,16 @@ export {
   type StoredFeatureRecord,
   type UnsignedFeatureRecord,
 } from "./feature-store.ts";
+export {
+  REVIEW_TABLE_SCHEMA,
+  ReviewStore,
+  submitReview,
+  type ReviewDeps,
+  type ReviewInput,
+  type ReviewOutcome,
+  type ReviewState,
+  type StoredReview,
+} from "./review-submit.ts";
 export { fixTask, type FailingTest, type FixTask } from "./fix-task.ts";
 export {
   changedPaths,
@@ -422,6 +433,7 @@ export class ProjectAgent extends Agent {
   #mcpTokens: McpTokenStore | undefined;
   #forks: OwnerForkStore | undefined;
   #featureRows: FeatureStore | undefined;
+  #reviewRows: ReviewStore | undefined;
   #ledger: IngestLedger | undefined;
   #live: LiveFeed | undefined;
   /** Ingests run one at a time, so two pushes never interleave their walks and applies. */
@@ -1244,6 +1256,28 @@ export class ProjectAgent extends Agent {
   #featureStore(): FeatureStore {
     this.#featureRows ??= new FeatureStore(this.#database());
     return this.#featureRows;
+  }
+
+  /**
+   * Checks and keeps the review form `owner`'s session submits for its own scope on feature
+   * `input.feature` (review-submit.ts): against the scope's invariants in `penguin/invariants.json`
+   * on main and the evidence in the feature's fork at its latest checkpoint.
+   */
+  submitReview(owner: string, sessionId: string, input: ReviewInput, repos: ProjectRepos): Promise<ReviewOutcome> {
+    this.#reviewRows ??= new ReviewStore(this.#database());
+    return submitReview(
+      {
+        features: this.#featureStore(),
+        reviews: this.#reviewRows,
+        scopeMap: () => this.#scopeMap(repos),
+        invariantsFile: () => this.#baseFile(repos, INVARIANTS_PATH),
+        readForkFile: (repo, sha, path) => withRepo(this.env.ARTIFACTS, repo, (fork) => fork.readFile({ ref: sha, path })),
+        heartbeat: (caller, session) => this.sessionHeartbeat(caller, session),
+      },
+      owner,
+      sessionId,
+      input,
+    );
   }
 
   /** An owner's fork record with its latest reported checkpoint, or undefined before the first report. */

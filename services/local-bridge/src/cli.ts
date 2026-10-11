@@ -15,6 +15,7 @@ import { ISSUE_USAGE, runIssueCommand, runKeyCommand } from "./issue-cli.ts";
 import { KeychainStore, type KeyStore } from "./key-store.ts";
 import { bridgeRemotes, registerBridge, type Fetch } from "./penguin-client.ts";
 import { WorktreeRegistry } from "./registry.ts";
+import { REVIEW_USAGE, runReviewCommand } from "./review-cli.ts";
 import { RUNNER_USAGE, runRunnerCommand } from "./runner-cli.ts";
 import {
   afterPublish,
@@ -69,8 +70,9 @@ export async function runCli(argv: readonly string[], io: CliIo, deps: CliDepend
   if (command === "worktree-id") return runWorktreeIdCommand(rest, io);
   if (command === "consent") return runConsentCommand(rest, io, stateDir);
   if (command === "impact") return runImpactCommand(rest, io);
+  if (command === "review") return runReviewCommand(rest, io);
   if (command !== "checkpoint") {
-    io.write(USAGE + CONSENT_USAGE + ISSUE_USAGE + SPOOL_USAGE + RUNNER_USAGE + SESSION_CHECKPOINT_USAGE + IMPACT_USAGE);
+    io.write(USAGE + CONSENT_USAGE + ISSUE_USAGE + SPOOL_USAGE + RUNNER_USAGE + SESSION_CHECKPOINT_USAGE + IMPACT_USAGE + REVIEW_USAGE);
     return 2;
   }
   const { values } = parseArgs({

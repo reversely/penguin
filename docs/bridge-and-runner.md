@@ -276,6 +276,51 @@ tests run. `--json` prints the full report. `--python <path>` names another inte
 On a test repository of 1,000 modules with 50 changed, the analysis of base, head and three forks
 takes about 1.8 seconds on an Apple silicon laptop. 5,000 modules take about 9.8 seconds.
 
+### Side-by-side runs
+
+`analysis:side-by-side` runs a scope's public functions on main and on a fork for the review
+harness ([design.md](design.md#review-harness)). The ID resolves to
+`services/local-bridge/analysis/side_by_side.py`, the bridge's own script (`command-allowlist.ts`).
+For each side the runner adds a throwaway detached worktree at the commit. It starts
+`python3 -I side_by_side.py --tree <worktree>` with an argument vector and no shell
+(`side-by-side.ts`). The environment is the scrubbed one above, plus `PYTHONDONTWRITEBYTECODE=1`
+and `PYTHONHASHSEED=0`. Each side stops after 5 minutes. The runner reads at most 16 MiB of its
+report. The worktree is removed afterwards.
+
+The request goes in on standard input as JSON: the declared contracts and one call per input, each
+a contract and keyword arguments. The script checks every call against the function's signature
+before any call runs. A call that does not fit comes back `invalid` with the reason. The script then
+imports the tree's code and runs each remaining call. It reports the returned value as canonical
+JSON, or the exception raised, with the call's time. Anything the tree's code prints goes to
+standard error, so only the report reaches standard output.
+
+| Input | Handling |
+|---|---|
+| `str`, `int`, `float`, `bool`, `None`, `Literal` | The same JSON value; a bool is no int |
+| Lists, tuples, sets, iterables, sequences | A JSON array, each item built by its own annotation |
+| Dicts and mappings | A JSON object with string keys |
+| Dataclasses and enums | An object of the dataclass's fields; an enum's value |
+| Unions and `X \| None` | Each member tried in turn |
+| `Any`, `object` or no annotation | The JSON value as it is |
+| Any other type | Only `{"$call": "<contract>", "args": {...}}`, which calls a contract declared in `penguin/scopes.json`. A declared class covers its methods, such as `IdentityMap.from_events` |
+| A contract no scope declares | `invalid`; nothing is imported for it |
+
+A review on the runner runs the whole harness (`review-harness.ts`): it checks the form, makes the
+contract diff for the stored data rule and runs both sides.
+
+```sh
+penguin-bridge review --repo <path> --base main --fork <commit> --scope analytics \
+  --form form.json [--out review.json] [--json] [--no-diff]
+```
+
+The text form prints the verdict with each refusal, the stored shapes the diff found, the
+exceptions for the scope's owner and each input that differs, with both outcomes. `--out` writes the
+full record as JSON. `--no-diff` leaves out the contract diff. The command exits 0 when the form is
+accepted and 1 when it is refused.
+
+On the identity-unification fixture one side of a run of two recorded examples takes about 110 ms
+of wall time on an Apple silicon laptop, worktree included. The two calls take under 1.5 ms together.
+
 ### Colour handling
 
 The runner finds failing tests from pytest's `FAILED <node id>` summary lines. Coloured output wraps

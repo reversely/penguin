@@ -118,6 +118,8 @@ export interface McpFeatures {
   token(sessionId: string, feature: string): Promise<FeatureCallResult>;
   declare(sessionId: string, feature: string, area: unknown): Promise<FeatureCallResult>;
   checkpoint(sessionId: string, feature: string, sha: string): Promise<FeatureCallResult>;
+  /** Checks and keeps a review form for `scope`, the caller's own scope, on feature `feature`. */
+  review(sessionId: string, feature: string, scope: string, form: unknown): Promise<FeatureCallResult>;
 }
 
 /** The project's repos as the Worker names them for one request's owner. */
@@ -328,6 +330,55 @@ const area = z
   .describe("The feature's area: the scopes, paths and contracts it expects to touch.");
 
 const openFeatureInput = z.strictObject({ sessionId, feature: featureId, area: area.optional() });
+
+// The review form (PRD 0.4 section 6). These caps match REVIEW_LIMITS in @penguin/protocol, which
+// the ProjectAgent checks again with the form's full rules.
+const evidence = z
+  .string()
+  .min(1)
+  .max(600)
+  .describe(
+    'A test or definition in the fork as a pytest node ID, such as "analytics/tests/test_identity.py::test_shared_device_split" ' +
+      'or "tax/invoice.py::Invoice::tax", or a line, such as "tax/invoice.py:42".',
+  );
+const reviewForm = z
+  .strictObject({
+    rows: z
+      .array(
+        z.strictObject({
+          invariant: z.string().min(1).max(64).describe("The invariant's id from penguin/invariants.json."),
+          verdict: z.enum(["holds", "breaks", "unknown"]),
+          evidence: z.array(evidence).max(10).describe('Evidence in the fork; "unknown" needs at least one test.'),
+          storedData: z.string().max(2_000).describe("The effect on data stored before the change."),
+        }),
+      )
+      .max(200)
+      .describe("One row per invariant of your scope."),
+    riskyInputs: z
+      .array(
+        z.strictObject({
+          name: z.string().min(1).max(200),
+          contract: z.string().min(1).max(512).describe('A public function of your scope, "path::symbol" from penguin/scopes.json.'),
+          invariant: z.string().min(1).max(64).optional(),
+          args: z.record(z.string(), z.unknown()).describe("Keyword arguments as JSON data, built into the parameter types."),
+        }),
+      )
+      .max(50)
+      .optional()
+      .describe("Inputs you expect to behave differently; Penguin runs each on main and on the fork."),
+    storedDataMarker: z
+      .strictObject({ kind: z.enum(["migration", "backfill", "cutover"]), evidence })
+      .nullable()
+      .optional()
+      .describe("Where the fork handles data stored before the change, when its shape or meaning changes."),
+  })
+  .describe("The review form.");
+const submitReviewInput = z.strictObject({
+  sessionId,
+  feature: featureId.describe("The feature whose change you review."),
+  scope: z.string().min(1).max(128).describe("Your scope, from penguin/scopes.json."),
+  form: reviewForm,
+});
 const featureTokenInput = z.strictObject({ sessionId, feature: featureId });
 const declareAreaInput = z.strictObject({ sessionId, feature: featureId, area });
 
@@ -572,6 +623,29 @@ function registerFeatureTools(server: McpServer, features: McpFeatures): void {
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async ({ sessionId: id, feature, area: declared }) => answer(await features.declare(id, feature, declared)),
+  );
+
+  server.registerTool(
+    "submit_review",
+    {
+      title: "Submit review",
+      description:
+        "Submits the review form for the part of a feature's change that touches your scope: one row per " +
+        "invariant of the scope in penguin/invariants.json, each with holds, breaks or unknown, evidence in the " +
+        "feature's fork and the effect on data stored before the change. Penguin refuses a form with a missing " +
+        "row, evidence that does not exist in the fork at its latest checkpoint, or \"unknown\" without a test, " +
+        "and answers every reason; fix the form and submit again. The check runner then runs your scope's " +
+        "public functions on main and on the fork, with your risky inputs, and checks the stored data rule. " +
+        "A broken invariant, or a difference on a protected invariant, goes to your scope's owner.",
+      inputSchema: submitReviewInput,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    },
+    async ({ sessionId: id, feature, scope, form }) => {
+      const outcome = await features.review(id, feature, scope, form);
+      // A refused form is an answer with its reasons, marked as an error so the agent fixes it.
+      if (outcome.status === "ok" && outcome.value.state === "refused") return { ...result({ ...outcome.value }), isError: true };
+      return answer(outcome);
+    },
   );
 }
 

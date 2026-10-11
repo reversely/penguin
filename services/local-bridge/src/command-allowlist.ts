@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
 
 import { isObjectId, runGit } from "@penguin/git-analysis";
-import { IMPACT_COMMAND_ID } from "@penguin/protocol";
+import { IMPACT_COMMAND_ID, SIDE_BY_SIDE_COMMAND_ID } from "@penguin/protocol";
 import { parseScopeMap, type ScopeMap } from "@penguin/scope-map";
 
 /** The repository config that maps command IDs to shell commands, relative to the repo root. */
@@ -62,6 +62,7 @@ export async function resolveCommand(
 // objects as data.
 const ANALYSIS_SCRIPTS: Readonly<Record<string, string>> = {
   [IMPACT_COMMAND_ID]: "../analysis/python_impact.py",
+  [SIDE_BY_SIDE_COMMAND_ID]: "../analysis/side_by_side.py",
 };
 
 /** One of the bridge's own analysis commands, resolved to the script it runs. */

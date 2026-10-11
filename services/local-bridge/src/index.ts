@@ -11,6 +11,10 @@ export {
 export type { AnalysisCommand, ResolvedCommand } from "./command-allowlist.ts";
 export { formatImpactReport, ImpactAnalysisError, pythonImpactAnalyzer } from "./impact-analysis.ts";
 export type { ImpactAnalyzer, ImpactForkRequest, ImpactRequest, PythonImpactOptions } from "./impact-analysis.ts";
+export { loadReviewConfig, readCommittedFile, runSideBySide, SideBySideError } from "./side-by-side.ts";
+export type { SideBySideOptions, SideBySideRequest } from "./side-by-side.ts";
+export { formatReviewResult, runReview } from "./review-harness.ts";
+export type { ReviewOptions, ReviewRequest, ReviewResult } from "./review-harness.ts";
 
 export {
   AGENT_TRAILER_KEY,

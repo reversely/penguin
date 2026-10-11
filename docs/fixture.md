@@ -76,9 +76,32 @@ In the approved design ([design.md](design.md#procedure)) this case runs as foll
 Before it can run this way, the fixture needs three additions:
 
 - `penguin/invariants.json` in the base commit, with the analytics invariant above and the
-  messaging invariant on unsubscribes
+  messaging invariant on unsubscribes, in the format in [design.md](design.md#invariants-and-examples)
 - contracts per scope in `penguin/scopes.json`, starting with the identity map's `person_id`
 - Jun's and Sam's work as running features: forks of `main` in place of the `owner-*-checkpoint` tags
+
+## Review harness on this fixture
+
+`services/local-bridge/test/review-harness.test.ts` runs the review harness on a fresh build. The
+test commits its own `penguin/invariants.json` to `main`: analytics declares "patrons who log in on
+one library tablet stay separate people" as protected. It also declares the contracts
+`analytics/models.py::daily_active_users` and `ingestion/identity_map.py::IdentityMap`. Its examples
+file runs `daily_active_users` on two patrons on their own devices and on three patrons on one
+tablet. Each argument builds its identity map with `IdentityMap.from_events`. Each fork is one of
+Priya's commits merged onto that `main`.
+
+| Fork | Input | Main | Fork |
+|---|---|---|---|
+| `owner-priya-checkpoint` | Three patrons on one library tablet | 3 people | 1 person |
+| `owner-priya-checkpoint` | Two patrons on their own devices | 2 people | 2 people |
+| `owner-priya-limit-five` | Six patrons on one tablet, a risky input | 6 people | 2 people |
+| `owner-priya` | Six patrons on one tablet, a risky input | 6 people | 6 people |
+
+On Priya's checkpoint a form claiming "holds" without evidence is refused with `no_evidence`. The
+tablet difference still goes to Jun as a `protected_difference`. Citing Jun's
+`analytics/tests/test_identity.py::test_shared_device_split` is refused with `evidence_not_found`,
+because that test is only in Jun's fork. The contract diff shows `Profile` changing
+shape, so the form needs a cutover marker.
 
 ## Manual reproduction
 

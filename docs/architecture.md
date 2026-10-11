@@ -80,7 +80,7 @@ flowchart TB
 | `penguin-bridge` | `services/local-bridge/src/` | One owner on one machine | Checkpoint publishing with consent, the issue command line, the safe-checkpoint hook, the outbound spool |
 | Integration runner | `penguin-bridge runner` on a designated machine | The project | Pushing queued operations, combined runs, verification runs, the `approved` branch |
 | Dashboard | `apps/dashboard/src/` | People in a browser | The team map, the inbox, the issue page, the identities page |
-| MCP tools | `services/mcp/src/tools.ts` | Agent sessions | `register_session`, `get_work`, `get_issue`, `post_update`, `report_checkpoint`, `open_feature`, `feature_token`, `declare_area` |
+| MCP tools | `services/mcp/src/tools.ts` | Agent sessions | `register_session`, `get_work`, `get_issue`, `post_update`, `report_checkpoint`, `open_feature`, `feature_token`, `declare_area`, `submit_review` |
 
 Shared rules live in packages that both the Worker and the bridge import: the operation schema and
 wire formats in `packages/protocol`, the scope map in `packages/scope-map`, charters, review rights,

@@ -260,6 +260,96 @@ differently.
 5. **Stored data rule.** If the contract diff shows that stored data changes meaning or shape, the
    plan needs a migration, a backfill or a cutover marker before anyone can approve it.
 
+#### Invariants and examples
+
+`penguin/invariants.json` sits beside `penguin/scopes.json` on main. Each invariant has an `id`, the
+`scope` that declares it, a one-line `statement` and `protected` (false when absent). Each entry of
+`examples` names a scope, a JSON file inside that scope's paths and the scope's invariants the file
+bears on. Only the scope's owner therefore writes the data its functions run on.
+
+```json
+{
+  "invariants": [
+    { "id": "tablet-patrons-separate", "scope": "analytics",
+      "statement": "Patrons who log in on one library tablet stay separate people", "protected": true }
+  ],
+  "examples": [
+    { "scope": "analytics", "file": "analytics/examples/daily_active_users.json",
+      "invariants": ["tablet-patrons-separate"] }
+  ]
+}
+```
+
+An examples file names one of the scope's contracts and its recorded cases:
+`{ "contract": "analytics/models.py::daily_active_users", "cases": [{ "name": "...", "args": {...} }] }`.
+The scope's public functions are its contracts in `penguin/scopes.json`. `parseInvariantsFile`
+(`packages/scope-map`) refuses a file with an unknown field, a repeated id, a scope or invariant from
+elsewhere, a statement over 500 characters or an examples file outside its scope. It lists every
+problem.
+
+#### The review form
+
+A form holds `rows`, one per invariant of the reviewing scope, each with `invariant`, `verdict`
+(`holds`, `breaks` or `unknown`), `evidence` and `storedData`. It may add `riskyInputs`, each a name,
+one of the scope's contracts, an optional invariant and keyword arguments as JSON. It may add a
+`storedDataMarker`: a `kind` (`migration`, `backfill` or `cutover`) and the marker's place in the fork.
+
+Evidence is a test or definition written as a pytest node ID, such as
+`analytics/tests/test_identity.py::test_shared_device_split`, or a line, such as `tax/invoice.py:42`.
+A node ID counts as a test when its file is `test_*.py` or `*_test.py` and its last name starts
+with `test`. Penguin looks each piece up in the fork's files at the reviewed commit: the file must
+exist, the definition must be in it at the named nesting and the line must be in range. A path with
+`..`, a leading `/` or a character outside letters, digits, `_`, `.` and `-` is refused. Penguin never
+runs evidence. `validateReviewForm` (`packages/protocol`) refuses a form with each of these reasons:
+
+| Refusal | Cause |
+|---|---|
+| `missing_row` | An invariant of the scope has no row |
+| `unknown_invariant`, `duplicate_row` | A row names an invariant the scope does not declare, or repeats one |
+| `no_evidence` | A row has no evidence, whatever its verdict |
+| `invalid_evidence`, `evidence_not_found` | Evidence is malformed, or the fork lacks it |
+| `unknown_without_test` | An `unknown` row cites no test |
+| `stored_data_without_marker` | The contract diff shows a stored data shape changed and the form names no marker |
+| `invalid_form` | A field is missing, unknown or over its limit, such as 600 characters of evidence or 64 KiB of one input's arguments |
+
+#### Submitting a review
+
+An agent submits the form with the MCP tool `submit_review`, naming the feature under review and its
+own scope. Penguin checks that the session's person owns the scope and that the feature's fork has a
+checkpoint. It reads the invariants from main and each evidence file from the fork at that
+checkpoint. It answers at once with `accepted` or `refused` and every reason. A refused answer is
+marked as a tool error so the agent fixes the form. The ProjectAgent keeps every well-formed form in
+`FeatureReview`, keyed by feature and scope until merge plans give it a plan part. The form's text,
+the reviewer's invariant names and the owner's statements come back inside `personWritten`.
+
+The stored data rule needs the contract diff. The side-by-side run needs the scope's code run. Both
+therefore happen on the check runner. The answer says both are waiting for it.
+
+#### Side-by-side runs on the runner
+
+The runner's review (`penguin-bridge review`, [bridge-and-runner.md](bridge-and-runner.md#side-by-side-runs))
+checks the form again against the fork's Git objects. It makes the contract diff with
+`analysis:python-impact` and applies the stored data rule to its stored data shapes. It then runs
+the scope's examples files and the form's risky inputs on main and on the fork through
+`analysis:side-by-side`. Inputs reach the scope's code as JSON data built into the parameter types.
+Each input is checked against the function's signature before any input runs.
+
+The record of a run names the base and fork commits and the scope. Each set in the record gives the
+contract, the examples file or the risky inputs, the invariants it bears on and every input's name.
+It lists each input whose outcome differs, with its arguments and both outcomes. It lists each input
+not run with the reason. It sums the call time on each side. The run proceeds for a refused form too, because its differences
+are what the reviewer needs next.
+
+`reviewExceptions` gives what goes to the scope's owner in person. It raises a `broken_invariant` for
+each row of an accepted form whose verdict is `breaks`. It raises a `protected_difference` for each
+protected invariant whose set shows a difference, whatever the form says. An empty list means the
+agent's review stands without the owner.
+
+On identity unification, with "patrons who log in on one library tablet stay separate people" as
+analytics' protected invariant, the run on Priya's checkpoint shows `daily_active_users` returning
+3 people on main and 1 on the fork for three patrons on one tablet. A risky input of six patrons on
+one tablet still differs on Priya's limit of five and matches main on Priya's limit of one.
+
 ## Exceptions
 
 People see only the exceptions in this table. Everything else proceeds without them.

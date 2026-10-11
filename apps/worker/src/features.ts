@@ -24,11 +24,13 @@ import type {
   FeatureOpenOutcome,
   FeatureOutcome,
   ProjectRepos,
+  ReviewInput,
+  ReviewOutcome,
   TokenGrant,
 } from "@penguin/project-agent";
 
 import type { FeatureCallResult, McpFeatures } from "@penguin/mcp";
-import { SEGMENT_PATTERN } from "@penguin/protocol";
+import { REVIEW_SCHEMA_VERSION, SEGMENT_PATTERN } from "@penguin/protocol";
 
 import { artifactsErrorCode, type FeatureForkOptions } from "./repos.ts";
 import type { MintedToken } from "./tokens.ts";
@@ -58,6 +60,7 @@ export interface FeatureDirectory {
     repos: ProjectRepos,
   ): Promise<FeatureCheckpointOutcome>;
   features(): MaybePromise<readonly Feature[]>;
+  submitReview(owner: string, sessionId: string, input: ReviewInput, repos: ProjectRepos): Promise<ReviewOutcome>;
 }
 
 export interface FeatureConfig {
@@ -213,6 +216,11 @@ export function mcpFeatures(ports: FeaturePorts, owner: string): McpFeatures {
       const declared = await (await ports.directory()).declareFeatureArea(owner, feature, area, sessionId, ports.repos);
       return declared.status === "ok" ? { status: "ok", value: { feature: featureView(declared.feature) } } : declared;
     },
+    review: (sessionId, feature, scope, form) =>
+      guarded(async () => {
+        const outcome = await (await ports.directory()).submitReview(owner, sessionId, { feature, scope, form }, ports.repos);
+        return outcome.status === "ok" ? { status: "ok", value: reviewFields(outcome) } : outcome;
+      }),
     checkpoint: (sessionId, feature, sha) =>
       guarded(async () => {
         const reported = await (await ports.directory()).reportFeatureCheckpoint(owner, sessionId, feature, sha, ports.repos);
@@ -252,4 +260,32 @@ export async function issueFeatureToken(
   const grant = await (await ports.directory()).featureTokenGrant(owner, sessionId, featureId, ports.repos);
   if (grant.status === "rejected") return grant;
   return { status: "ok", fork: `feature-${grant.featureId}`, token: await ports.mintWrite(grant.repo, ttl) };
+}
+
+/**
+ * A review as the MCP tool answers it. Text people wrote (the reviewer's invariant names and evidence,
+ * the owner's invariant statements) is echoed only inside `personWritten`.
+ */
+function reviewFields(outcome: Extract<ReviewOutcome, { status: "ok" }>): Record<string, unknown> {
+  return {
+    schemaVersion: REVIEW_SCHEMA_VERSION,
+    reviewId: outcome.reviewId,
+    feature: outcome.featureId,
+    scope: outcome.scopeId,
+    forkSha: outcome.forkSha,
+    state: outcome.state,
+    refusals: outcome.refusals.map(({ code, message, invariant, evidence }) => ({
+      code,
+      message,
+      personWritten: { ...(invariant === undefined ? {} : { invariant }), ...(evidence === undefined ? {} : { evidence }) },
+    })),
+    invariants: outcome.invariants.map(({ id, protected: isProtected, statement }) => ({
+      id,
+      protected: isProtected,
+      personWritten: { statement },
+    })),
+    // Both need the check runner: the contract diff, and running the scope's code.
+    storedDataRule: "waiting for the contract diff on the check runner",
+    sideBySide: "waiting for the check runner",
+  };
 }

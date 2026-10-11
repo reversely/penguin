@@ -362,3 +362,14 @@ export function affectedOwners(map: ScopeMap, changedPaths: Iterable<string>): A
     unmapped: [...unmapped].sort(),
   };
 }
+
+export {
+  INVARIANT_LIMITS,
+  INVARIANTS_PATH,
+  InvariantsFileError,
+  parseInvariantsBytes,
+  parseInvariantsFile,
+  type ExampleSource,
+  type Invariant,
+  type InvariantsFile,
+} from "./invariants.ts";
