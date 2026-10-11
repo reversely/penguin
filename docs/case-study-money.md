@@ -83,19 +83,26 @@ approves the part that touches their code:
 
 ### 4. Build: everyone keeps working
 
-Ines's agent writes the change and all nine agreed fixes into the feature's fork, including the fixes
-to code in other people's scopes. Penguin's tools push the seven codemod fixes into the same fork. The
-other 23 agents carry on in their own features' forks, knowing the plan.
+Each agreed fix goes where its code lives:
+
+- **Code already on main**, in the nine scopes: Ines's agent and Penguin's codemods write these fixes
+  into Ines's feature fork, next to the change itself.
+- **Unfinished work** in the 23 running features: Penguin mints a short write token on each of those
+  features' forks, and the fix for that feature's unfinished code is written straight into its fork,
+  under the plan its owner approved.
+
+The other 23 agents carry on in their own forks, now carrying the adaptation.
 
 Midway through, Noor's pagination feature starts returning prices. Penguin sees this at Noor's next
 checkpoint, not at merge. Ines's agent adds a mechanical fix for it to the plan, and Noor approves.
 
 ### 5. Land as a block
 
-The feature's fork is the block: the change and every agreed fix, together in one repo.
+The block is every write the plan makes: Ines's feature fork, plus the fixes written into the 23
+overlapping forks. It is checked as one set and lands as one set.
 
-1. **Check it.** Penguin merges the feature's fork onto main and onto each of the now 24 affected
-   running features' forks, and runs the deterministic checks on each result:
+1. **Check it.** Penguin merges Ines's feature fork onto main, and onto each of the now 24
+   overlapping forks with its fix in place. It runs the deterministic checks on each result:
    - the merge itself
    - ruff
    - the type checker
@@ -104,14 +111,16 @@ The feature's fork is the block: the change and every agreed fix, together in on
 2. **Owners try it.** Jun gets a read-only fork of the feature to clone and checks the protected file
    before confirming. There is no branch to check out or rebuild.
 3. **Promote.** When everything is green, Penguin moves main to the feature's commit in one push, with a
-   write token on main that only Penguin holds, for minutes. Main changes once, never in pieces.
+   write token on main that only Penguin holds, for minutes. Main changes once, never in pieces, and
+   every overlapping fork already carries its adaptation, so none of them breaks when it next takes
+   main.
 4. **Keep the record.** The feature's fork turns read-only and shows exactly what landed.
 
 | Result | Count | What happens |
 |---|---|---|
 | Clean | 21 branches | Nothing |
 | Routine merge conflicts: imports and formatting | 2 branches | Resolved by Penguin's tools |
-| A failing test in `promotions` | 1 | Lena's promotion stacking, which landed first, still adds floats. Penguin classifies this as mechanical, writes the codemod into the feature's fork and checks again. The checks pass |
+| A failing test in `promotions` | 1 | Lena's promotion stacking, which landed first, still adds floats. Penguin classifies this as mechanical, writes the codemod where that code lives and checks again. The checks pass |
 | Protected file | `analytics/revenue_report` | Jun confirms after trying the read-only fork |
 
 Main is never red.
