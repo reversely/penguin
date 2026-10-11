@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { access, mkdir, mkdtemp, readFile, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
@@ -260,27 +261,73 @@ async function trailersOf(sha: string): Promise<string> {
 }
 
 test("a checkpoint built for an agent session ends with one Penguin-Agent trailer naming the identity and vendor", async () => {
+  await identitiesInWorktreeA("by merge-rules");
   const h = await harness([true]);
-  for (const [identity, vendor] of [
-    ["@priya/merge-rules", "claude-code"],
-    ["@jun/reports", "codex"],
-  ] as const) {
-    if (identity === "@priya/merge-rules") await identitiesInWorktreeA("by merge-rules");
-    else await repo.write(repo.worktreeA, "a.txt", "by reports\n");
-    const result = await h.publisher.publish(h.idOf("feature-a"), { identity });
-    assert.ok(result.status === "published");
-    assert.equal(await trailersOf(result.preview.checkpoint_sha), `Penguin-Agent: ${identity} (${vendor})\n`);
-  }
+  const result = await h.publisher.publish(h.idOf("feature-a"), { identity: "@priya/merge-rules" });
+  assert.ok(result.status === "published");
+  assert.equal(await trailersOf(result.preview.checkpoint_sha), "Penguin-Agent: @priya/merge-rules (claude-code)\n");
   assert.ok(!h.output.join("").includes("Warning"));
 });
 
-test("with the project's agent trailer off, the checkpoint carries no trailer", async () => {
-  await identitiesInWorktreeA("trailer off");
+test("an identity of another owner is refused before the fork is read, naming the identity's owner and the fork owner", async () => {
+  await identitiesInWorktreeA("by reports");
+  const before = await forkRefs();
+  const h = await harness([]);
+  // @jun/not-registered is refused too: a handle's owner half is enough to refuse it.
+  for (const identity of ["@jun/reports", "@jun/not-registered"]) {
+    await assert.rejects(
+      h.publisher.publish(h.idOf("feature-a"), { identity }),
+      new RegExp(`^Error: refusing to publish as ${identity}: the identity belongs to @jun, not to priya, the fork owner$`),
+    );
+  }
+  assert.equal(await forkRefs(), before);
+  assert.deepEqual(h.output, []);
+  assert.equal(h.asked.length, 0);
+
+  // A fork path that does not exist would fail the first Git command on the fork; the refusal comes first.
+  h.fork.repo = join(repo.root, "no-such-fork.git");
+  await assert.rejects(h.publisher.publish(h.idOf("feature-a"), { identity: "@jun/reports" }), /belongs to @jun, not to priya/);
+});
+
+/** Commits a registry holding `@jun/pair` (Jun and Priya) and `@jun/duo` (Jun and Sam) to worktree A. */
+async function teamIdentitiesInWorktreeA() {
+  const team = (handle: string, owners: string[]) => ({ handle, owners, vendor: "codex", job: "pair work", charter_scopes: [] });
+  const registry = { identities: [team("@jun/pair", ["jun", "priya"]), team("@jun/duo", ["jun", "sam"])] };
+  await mkdir(join(repo.worktreeA, "penguin"));
+  await repo.write(repo.worktreeA, "penguin/identities.json", JSON.stringify(registry));
+  await repo.commitAll(repo.worktreeA, "seed team identities");
+  // An uncommitted edit that adds Priya to @jun/duo does not count: the committed registry does.
+  registry.identities[1]!.owners.push("priya");
+  await repo.write(repo.worktreeA, "penguin/identities.json", JSON.stringify(registry));
+}
+
+test("a team identity is accepted when its committed owners include the fork owner and refused otherwise", async () => {
+  await teamIdentitiesInWorktreeA();
   const h = await harness([true]);
+  await assert.rejects(
+    h.publisher.publish(h.idOf("feature-a"), { identity: "@jun/duo" }),
+    /^Error: refusing to publish as @jun\/duo: its owners in penguin\/identities\.json at [0-9a-f]{12} do not include priya, the fork owner$/,
+  );
+  assert.equal(h.asked.length, 0);
+
+  const result = await h.publisher.publish(h.idOf("feature-a"), { identity: "@jun/pair" });
+  assert.ok(result.status === "published");
+  assert.equal(await trailersOf(result.preview.checkpoint_sha), "Penguin-Agent: @jun/pair (codex)\n");
+});
+
+test("with the project's agent trailer off, the checkpoint carries no trailer and the identity's owner is not checked", async () => {
+  await identitiesInWorktreeA("trailer off");
+  const h = await harness([true, true]);
   h.fork.agent_trailer = false;
   const result = await h.publisher.publish(h.idOf("feature-a"), { identity: "@priya/merge-rules" });
   assert.ok(result.status === "published");
   assert.equal(await trailersOf(result.preview.checkpoint_sha), "");
+
+  // The recorded decision to refuse covers only a checkpoint that would carry the trailer.
+  await repo.write(repo.worktreeA, "a.txt", "trailer off, other owner\n");
+  const other = await h.publisher.publish(h.idOf("feature-a"), { identity: "@jun/reports" });
+  assert.ok(other.status === "published");
+  assert.equal(await trailersOf(other.preview.checkpoint_sha), "");
 });
 
 test("an identity absent from the registry publishes without a trailer and logs a warning", async () => {
@@ -367,4 +414,21 @@ test("the checkpoint command passes --identity and --agent-trailer to the publis
   await repo.write(repo.worktreeA, "a.txt", "agent session again\n");
   assert.equal((await run("--identity", "@priya/merge-rules")).code, 0);
   assert.equal(await trailersOf("refs/heads/feature-a"), "Penguin-Agent: @priya/merge-rules (claude-code)\n");
+});
+
+test("the checkpoint command exits non-zero when the identity belongs to another owner", async () => {
+  await identitiesInWorktreeA("agent session of another owner");
+  const before = await forkRefs();
+  const cli = join(import.meta.dirname, "../src/cli.ts");
+  const args = ["checkpoint", "--owner", OWNER, "--project", "p", "--fork", forkPath, "--worktree", repo.worktreeA];
+  const outcome = await new Promise<{ code: number | null; stderr: string }>((done) => {
+    execFile(
+      process.execPath,
+      [cli, ...args, "--identity", "@jun/reports", "--state-dir", join(repo.root, "bridge-state")],
+      (error, _stdout, stderr) => done({ code: error ? (error.code as number | null) : 0, stderr }),
+    );
+  });
+  assert.equal(outcome.code, 1);
+  assert.match(outcome.stderr, /refusing to publish as @jun\/reports: the identity belongs to @jun, not to priya, the fork owner/);
+  assert.equal(await forkRefs(), before);
 });

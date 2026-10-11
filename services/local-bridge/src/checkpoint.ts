@@ -123,12 +123,12 @@ export class CheckpointPublisher {
   /**
    * Builds the checkpoint for one registered worktree, prints the preview, asks for consent and
    * on consent pushes it to the fork branch named after the worktree's branch. With an identity,
-   * a commit the bridge builds carries that identity's `Penguin-Agent` trailer (see `agentTrailer`).
+   * a commit the bridge builds carries that identity's `Penguin-Agent` trailer (see `agentTrailer`),
+   * and an identity that belongs to another owner than the fork's is refused with an error before
+   * the fork is read (see `refuseForeignIdentity`).
    */
   async publish(id: string, { remote, identity }: PublishOptions = {}): Promise<PublishResult> {
     const { registry, fork, confirm, write, spool } = this.#options;
-    const { path: forkPath, reachable: located } = await resolveFork(fork, remote, spool !== undefined);
-    const forkRemote = (this.#options.remotes ?? unregisteredRemotes)(forkPath);
     const record = registry.get(id);
     if (!record) throw new Error(`unknown worktree ${id}`);
     if (record.owner_id !== fork.owner_id) {
@@ -137,6 +137,20 @@ export class CheckpointPublisher {
     if (record.branch === null) throw new Error(`worktree ${id} has a detached HEAD; check out a branch first`);
     const worktree = registry.pathOf(id);
     const forkRef = `refs/heads/${record.branch}`;
+
+    // The identity's owner is checked before the fork is read or anything is built. The check runs
+    // only when a trailer would be stamped: the recorded decision covers that case alone.
+    const stamping = identity !== undefined && fork.agent_trailer !== false;
+    let head: string | undefined;
+    let identities: unknown[] | null = null;
+    if (stamping && isHandle(identity)) {
+      head = await revParse(worktree, "HEAD^{commit}");
+      identities = await committedIdentities(worktree, head);
+      refuseForeignIdentity(identity, identities, fork.owner_id, head);
+    }
+
+    const { path: forkPath, reachable: located } = await resolveFork(fork, remote, spool !== undefined);
+    const forkRemote = (this.#options.remotes ?? unregisteredRemotes)(forkPath);
 
     let reachable = located;
     let forkTips = new Map<string, string>();
@@ -155,7 +169,7 @@ export class CheckpointPublisher {
     const tip = forkTips.get(forkRef);
     const previous = tip !== undefined && localTips.includes(tip) ? tip : null;
 
-    const head = await revParse(worktree, "HEAD^{commit}");
+    head ??= await revParse(worktree, "HEAD^{commit}");
     const tree = await trackedTree(worktree, head);
     if (
       previous !== null &&
@@ -165,8 +179,8 @@ export class CheckpointPublisher {
       return { status: "up-to-date", checkpoint_sha: previous };
     }
     const message = [`Penguin checkpoint of ${record.branch}`];
-    if (identity !== undefined && fork.agent_trailer !== false) {
-      const trailer = await agentTrailer(worktree, head, identity);
+    if (stamping) {
+      const trailer = agentTrailer(identity, identities, head);
       if (typeof trailer === "string") message.push(trailer);
       else write(`Warning: ${trailer.warning}; the checkpoint carries no ${AGENT_TRAILER_KEY} trailer.\n`);
     }
@@ -303,30 +317,63 @@ const HANDLE = new RegExp(IDENTITY_HANDLE_PATTERN, "u");
 const VENDOR = /^[a-z0-9]+(?:[.-][a-z0-9]+)*$/u;
 const VENDOR_MAX_LENGTH = 64;
 
+/** Whether `handle` is an identity handle, `@<owner>/<name>`, safe to put in a commit message. */
+function isHandle(handle: string): boolean {
+  return handle.length <= IDENTITY_HANDLE_MAX_LENGTH && HANDLE.test(handle);
+}
+
 /**
- * The `Penguin-Agent: @<owner>/<name> (<vendor>)` trailer for `handle`, with the vendor read from
- * `penguin/identities.json` as committed at `head`, so an uncommitted edit cannot change it. The
- * trailer carries no email: Penguin strips it before a GitHub export, so no account has to match.
- * Returns a warning instead when the handle is not in the registry or the registry cannot be read;
- * a missing trailer never fails a checkpoint.
+ * The `identities` array of `penguin/identities.json` as committed at `head`, so an uncommitted
+ * edit cannot change what it says; null when the file cannot be read or parsed.
  */
-async function agentTrailer(worktree: string, head: string, handle: string): Promise<string | { warning: string }> {
-  // The handle and vendor go into a commit message, so both are checked before use.
-  if (handle.length > IDENTITY_HANDLE_MAX_LENGTH || !HANDLE.test(handle)) {
-    return { warning: `${JSON.stringify(handle)} is not an identity handle` };
-  }
-  const at = head.slice(0, 12);
-  let entries: unknown;
+async function committedIdentities(worktree: string, head: string): Promise<unknown[] | null> {
   try {
     // `cat-file blob` returns the committed bytes as-is; `git show` could apply a textconv filter.
     const text = await runGit(worktree, ["cat-file", "blob", `${head}:${IDENTITIES_FILE}`]);
-    entries = (JSON.parse(text) as { identities?: unknown } | null)?.identities;
+    const entries = (JSON.parse(text) as { identities?: unknown } | null)?.identities;
+    return Array.isArray(entries) ? entries : [];
   } catch {
-    return { warning: `${IDENTITIES_FILE} at ${at} could not be read` };
+    return null;
   }
-  const entry = Array.isArray(entries)
-    ? entries.find((item: unknown) => (item as { handle?: unknown } | null)?.handle === handle)
-    : undefined;
+}
+
+function registryEntry(identities: unknown[] | null, handle: string): object | undefined {
+  const entry = identities?.find((item: unknown) => (item as { handle?: unknown } | null)?.handle === handle);
+  return typeof entry === "object" && entry !== null ? entry : undefined;
+}
+
+/**
+ * Throws unless `handle` may be stamped on a checkpoint in `forkOwner`'s fork. A team identity, a
+ * registry entry with an `owners` array, must list the fork owner. Any other handle's owner half
+ * must be the fork owner, whether or not the registry lists it or can be read.
+ */
+function refuseForeignIdentity(handle: string, identities: unknown[] | null, forkOwner: string, head: string): void {
+  const owners: unknown = (registryEntry(identities, handle) as { owners?: unknown } | undefined)?.owners;
+  if (Array.isArray(owners)) {
+    if (owners.includes(forkOwner)) return;
+    throw new Error(
+      `refusing to publish as ${handle}: its owners in ${IDENTITIES_FILE} at ${head.slice(0, 12)} do not include ${forkOwner}, the fork owner`,
+    );
+  }
+  const owner = handle.slice(1, handle.indexOf("/"));
+  if (owner !== forkOwner) {
+    throw new Error(`refusing to publish as ${handle}: the identity belongs to @${owner}, not to ${forkOwner}, the fork owner`);
+  }
+}
+
+/**
+ * The `Penguin-Agent: @<owner>/<name> (<vendor>)` trailer for `handle`, with the vendor read from
+ * the registry as committed at `head` (see `committedIdentities`). The trailer carries no email:
+ * Penguin strips it before a GitHub export, so no account has to match. Returns a warning instead
+ * when the handle is not in the registry or the registry cannot be read; a missing trailer never
+ * fails a checkpoint. An identity of another owner is refused earlier by `refuseForeignIdentity`.
+ */
+function agentTrailer(handle: string, identities: unknown[] | null, head: string): string | { warning: string } {
+  // The handle and vendor go into a commit message, so both are checked before use.
+  if (!isHandle(handle)) return { warning: `${JSON.stringify(handle)} is not an identity handle` };
+  const at = head.slice(0, 12);
+  if (identities === null) return { warning: `${IDENTITIES_FILE} at ${at} could not be read` };
+  const entry = registryEntry(identities, handle);
   if (entry === undefined) return { warning: `identity ${handle} is not in ${IDENTITIES_FILE} at ${at}` };
   const vendor: unknown = (entry as { vendor?: unknown }).vendor;
   if (typeof vendor !== "string" || vendor.length > VENDOR_MAX_LENGTH || !VENDOR.test(vendor)) {
