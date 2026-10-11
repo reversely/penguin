@@ -5,6 +5,9 @@
   "description": "Node daemon: checkpoint publishing, issue command line, tests, runner mode, outbound connection",
   "type": "module",
   "exports": "./src/index.ts",
+  "bin": {
+    "penguin-bridge": "./src/cli.ts"
+  },
   "dependencies": {
     "@napi-rs/keyring": "2.1.1",
     "@penguin/git-analysis": "0.0.0",

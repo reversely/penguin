@@ -1,3 +1,5 @@
+#!/usr/bin/env node
+import { realpathSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -166,7 +168,21 @@ async function runRegisterCommand(
   return 0;
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+/**
+ * Whether Node started this file as the program. An installed `penguin-bridge` is a symlink to
+ * this file and `process.argv[1]` keeps the symlink's path, so the check compares real paths.
+ */
+function isMainModule(): boolean {
+  const started = process.argv[1];
+  if (started === undefined) return false;
+  try {
+    return realpathSync(started) === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+}
+
+if (isMainModule()) {
   const readline = createInterface({ input: process.stdin, output: process.stdout });
   const io: CliIo = {
     write: (text) => process.stdout.write(text),

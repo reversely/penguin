@@ -18,16 +18,18 @@ git clone <penguin repo> ~/penguin
 cd ~/penguin && npm install
 ```
 
-The repo has no published package. `services/local-bridge/src/cli.ts` is the entry point; Node runs
-the TypeScript directly. Put a `penguin-bridge` command on `PATH` that runs it, since the hook
-settings and every example call it by that name:
+The hook settings and every example call the bridge as `penguin-bridge`. The package
+`services/local-bridge` declares that command as its `bin`, with `src/cli.ts` as the entry point.
+Node runs the TypeScript directly. Install the command on `PATH` from the clone:
 
 ```sh
-mkdir -p ~/.local/bin
-printf '#!/bin/sh\nexec node "$HOME/penguin/services/local-bridge/src/cli.ts" "$@"\n' > ~/.local/bin/penguin-bridge
-chmod +x ~/.local/bin/penguin-bridge
+cd ~/penguin && npm install -g ./services/local-bridge
 penguin-bridge   # prints the usage of every command
 ```
+
+npm links the global command to the folder in the clone without copying it. The command therefore
+runs the clone's current code with the dependencies `npm install` put in `~/penguin/node_modules`.
+Inside the clone, `npx penguin-bridge` runs the same command without a global install.
 
 ## Registering
 
