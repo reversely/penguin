@@ -13,17 +13,18 @@ import {
   type RemoteResolver,
 } from "./git-remote.ts";
 import { checkpointReportId, type CheckpointReporter } from "./checkpoint-report.ts";
+import { MemoryConsentStore, type ConsentStore, type ConsentTarget } from "./consent-store.ts";
 import type { WorktreeRegistry } from "./registry.ts";
 import type { Spool } from "./spool.ts";
 import { drainSpool } from "./spool-drain.ts";
 
 /**
- * How far one "yes" reaches. PRD open decision 3 (consent per worktree or per project) is still
- * open, so the scope is configurable:
+ * How far one "yes" reaches. PRD open decision 3 decided consent per worktree, the default:
  * - `each-publish`: every publish asks.
- * - `worktree` (default): a yes stands for later publishes from the same worktree.
- * - `project`: a yes stands for every worktree of this bridge's repository.
- * Under every scope the preview is printed before each push.
+ * - `worktree` (default): a yes stands for later publishes from the same worktree to the same fork.
+ * - `project`: a yes stands for every worktree publishing to the same fork.
+ * A standing yes lives in the publisher's `ConsentStore` until revoked. Under every scope the
+ * preview is printed before each push.
  */
 export type ConsentScope = "each-publish" | "worktree" | "project";
 
@@ -105,6 +106,11 @@ export interface CheckpointPublisherOptions {
    * the spool for a drain that has one.
    */
   reporter?: CheckpointReporter;
+  /**
+   * Where standing consent is kept. Defaults to memory, so a yes lasts as long as the publisher;
+   * the command line passes the bridge's consent file so a yes outlives the process.
+   */
+  consent?: ConsentStore;
 }
 
 /**
@@ -114,10 +120,11 @@ export interface CheckpointPublisherOptions {
  */
 export class CheckpointPublisher {
   readonly #options: CheckpointPublisherOptions;
-  readonly #standingConsent = new Set<string>();
+  readonly #consent: ConsentStore;
 
   constructor(options: CheckpointPublisherOptions) {
     this.#options = options;
+    this.#consent = options.consent ?? new MemoryConsentStore();
   }
 
   /**
@@ -197,11 +204,19 @@ export class CheckpointPublisher {
     };
     write(formatPreview(preview, fork.owner_id));
 
-    const grant = fork.publishing_consent === "project" ? "project" : `worktree:${id}`;
-    if (fork.publishing_consent !== "each-publish" && this.#standingConsent.has(grant)) {
+    const target: ConsentTarget = {
+      owner_id: fork.owner_id,
+      project_id: fork.project_id,
+      fork: fork.repo,
+      worktree_id: fork.publishing_consent === "project" ? null : id,
+    };
+    const standing = fork.publishing_consent !== "each-publish";
+    if (standing && (await this.#consent.covers({ ...target, worktree_id: id }))) {
       write(`Standing consent (${fork.publishing_consent}) covers this publish.\n`);
     } else if (await confirm(preview)) {
-      if (fork.publishing_consent !== "each-publish") this.#standingConsent.add(grant);
+      if (standing) {
+        await this.#consent.add({ ...target, worktree_path: worktree, granted_at: new Date().toISOString() });
+      }
     } else {
       write("Not published. The fork is unchanged.\n");
       return { status: "refused", preview };
@@ -231,8 +246,8 @@ export class CheckpointPublisher {
   }
 
   /** Withdraws every standing consent, so the next publish asks again. */
-  revokeConsent(): void {
-    this.#standingConsent.clear();
+  async revokeConsent(): Promise<void> {
+    await this.#consent.revoke();
   }
 }
 

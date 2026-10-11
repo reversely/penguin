@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, unlink, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 
@@ -228,7 +228,7 @@ test("project consent covers every worktree until revoked", async () => {
   assert.equal((await h.publisher.publish(h.idOf("feature-b"))).status, "published");
   assert.equal(h.asked.length, 1);
 
-  h.publisher.revokeConsent();
+  await h.publisher.revokeConsent();
   await repo.write(repo.worktreeB, "b.txt", "three\n");
   assert.equal((await h.publisher.publish(h.idOf("feature-b"))).status, "refused");
 });
@@ -400,6 +400,51 @@ test("the checkpoint command publishes on yes and exits 1 on no", async () => {
   assert.equal(published.code, 0);
   assert.ok((await forkRefs()).includes("refs/heads/feature-a"));
   assert.equal(await repo.git(forkPath, "show", "refs/heads/feature-a:a.txt"), "from the cli\n");
+});
+
+test("the checkpoint command keeps a worktree's yes in the state folder until consent revoke", async () => {
+  const stateDir = join(repo.root, "bridge-state");
+  const asked: string[] = [];
+  const cli = async (args: string[], answer = "n") => {
+    const out: string[] = [];
+    const io = { write: (text: string) => out.push(text), ask: async (q: string) => (asked.push(q), answer) };
+    return { code: await runCli(args, io, { stateDir }), out: out.join("") };
+  };
+  const publish = (worktree: string, answer?: string, ...flags: string[]) =>
+    cli(["checkpoint", "--owner", OWNER, "--project", "p", "--fork", forkPath, "--worktree", worktree, ...flags], answer);
+
+  await repo.write(repo.worktreeA, "a.txt", "one\n");
+  assert.equal((await publish(repo.worktreeA, "y")).code, 0);
+  assert.equal(asked.length, 1);
+  const file = join(stateDir, "consent.json");
+  assert.equal((await stat(file)).mode & 0o777, 0o600);
+
+  // A later process publishing the same worktree runs on the stored yes; the preview still prints.
+  await repo.write(repo.worktreeA, "a.txt", "two\n");
+  const again = await publish(repo.worktreeA);
+  assert.equal(again.code, 0);
+  assert.equal(asked.length, 1);
+  assert.match(again.out, /a\.txt/);
+  assert.match(again.out, /Standing consent \(worktree\) covers this publish/);
+  assert.match((await cli(["consent", "list"])).out, /^\/.+ \(.+\) -> \/.+\/owner-priya\.git for priya in p, since /);
+
+  // Another worktree, the same worktree to another fork and --consent each-publish all still ask.
+  await repo.write(repo.worktreeB, "b.txt", "other\n");
+  assert.equal((await publish(repo.worktreeB)).code, 1);
+  await repo.write(repo.worktreeA, "a.txt", "three\n");
+  assert.equal((await publish(repo.worktreeA, "n", "--consent", "each-publish")).code, 1);
+  const otherFork = join(repo.root, "other.git");
+  await repo.git(repo.root, "init", "--quiet", "--bare", otherFork);
+  const toOtherFork = ["checkpoint", "--owner", OWNER, "--project", "p", "--fork", otherFork, "--worktree", repo.worktreeA];
+  assert.equal((await cli(toOtherFork)).code, 1);
+  assert.equal(asked.length, 4);
+
+  const revoked = await cli(["consent", "revoke", "--worktree", repo.worktreeA]);
+  assert.match(revoked.out, /Revoked 1 standing consent\./);
+  assert.equal((await publish(repo.worktreeA)).code, 1);
+  assert.equal(asked.length, 5);
+  assert.match((await cli(["consent", "list"])).out, /No standing consent/);
+  assert.equal((await cli(["consent", "revoke", "--all", "--worktree", repo.worktreeA])).code, 2);
 });
 
 test("the checkpoint command passes --identity and --agent-trailer to the publisher", async () => {

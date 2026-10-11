@@ -87,6 +87,8 @@ export type {
   SpoolOptions,
 } from "./spool.ts";
 export { bridgeSpool, defaultStateDir, formatDrain } from "./spool-cli.ts";
+export { bridgeConsent, FileConsentStore, MemoryConsentStore } from "./consent-store.ts";
+export type { ConsentFilter, ConsentGrant, ConsentStore, ConsentTarget } from "./consent-store.ts";
 export { drainLocked, drainSpool, RetryLoop } from "./spool-drain.ts";
 export type { DrainResult, RetryLoopOptions } from "./spool-drain.ts";
 export type {

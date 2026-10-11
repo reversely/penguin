@@ -61,6 +61,7 @@ stop working and its key no longer verifies operations.
 | Artifacts repo tokens | Process memory only | Fetched from `POST /tokens` at push time; Git receives each through `GIT_CONFIG_*` environment variables for one command, never an argument, config file or remote URL |
 | Registration record | `~/.penguin/bridge.json`, mode 0600 | Server, bridge id, owner and role; nothing secret |
 | Outbound spool | `~/.penguin/spool.jsonl` | Append-only queue of operations and checkpoint pushes |
+| Publishing consent | `~/.penguin/consent.json`, mode 0600 | Each standing yes for checkpoint publishing; nothing secret |
 | Issues clone | `~/.penguin/issues/<hash>/` | The bridge's clone of the `issues` repo |
 | Runner repository | `~/.penguin/combined/` | Runner mode only |
 
@@ -84,7 +85,8 @@ The command publishes the worktree it runs in (`--worktree <path>` names another
    that checkpoint becomes a second parent, so every push fast-forwards.
 2. It prints a preview: the checkpoint, the destination branch and every tracked file that differs
    from the newest commit the fork already has, with line counts.
-3. It asks "Publish this checkpoint? [y/N]". Only an explicit yes publishes.
+3. It asks "Publish this checkpoint? [y/N]" unless a stored yes covers the worktree. Only an
+   explicit yes publishes.
 4. It appends the push to the spool and pushes to `refs/heads/<branch>` of the fork, without force.
    With the fork unreachable the push stays queued and a later drain sends it.
 5. It reports the checkpoint on `POST /checkpoints`, which records it as the fork's latest checkpoint
@@ -96,11 +98,24 @@ The command publishes the worktree it runs in (`--worktree <path>` names another
 | Value | One yes covers |
 |---|---|
 | `each-publish` | This publish only |
-| `worktree` (default) | Later publishes from the same worktree by the same publisher |
-| `project` | Every worktree of the repository by the same publisher |
+| `worktree` (default) | Later publishes from the same worktree to the same fork |
+| `project` | Later publishes from every worktree to the same fork |
 
-The publisher keeps a yes in memory only. `penguin-bridge checkpoint` publishes once and exits, so
-the command line asks on every publish whichever value is set.
+The bridge stores each `worktree` or `project` yes in `~/.penguin/consent.json`
+(`consent-store.ts`). A grant names the owner, the project, the fork and the worktree id. A later
+`penguin-bridge checkpoint` from that worktree to that fork prints "Standing consent (worktree)
+covers this publish." and pushes without asking. Another worktree or another fork asks. A publish
+with `--consent each-publish` asks even when a grant is stored.
+
+```sh
+penguin-bridge consent list                       # every stored yes, with its worktree path and fork
+penguin-bridge consent revoke                     # the yes for the worktree the command runs in
+penguin-bridge consent revoke --worktree <path>   # the yes for another worktree
+penguin-bridge consent revoke --all               # every yes, including project-wide ones
+```
+
+After a revoke the next publish from that worktree asks again. Deleting `~/.penguin/consent.json`
+has the same effect as `--all`.
 
 `--fork <bare repo path>` publishes to a local bare repository instead, for working without
 Penguin. `--remote` must name the same fork; any other destination is refused before Git runs.
