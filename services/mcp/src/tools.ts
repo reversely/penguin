@@ -446,14 +446,19 @@ function issueDetail(issue: IssueRecord, timeline: readonly OperationView[]): Re
       result: outcome,
       logRef,
     })),
-    reviews: [...issue.reviews.values()].map(({ opId, reviewerOwnerId, verdict, repo, sha, reason }) => ({
-      opId,
-      reviewer: reviewerOwnerId,
-      verdict,
-      repo,
-      sha,
-      personWritten: { reason },
-    })),
+    reviews: [...issue.reviews.values()].map(
+      ({ opId, reviewerOwnerId, verdict, repo, sha, reason, counts, uncountedReason }) => ({
+        opId,
+        reviewer: reviewerOwnerId,
+        verdict,
+        repo,
+        sha,
+        // A review from someone without review rights stays on the issue but does not count toward approval.
+        counts,
+        uncountedReason,
+        personWritten: { reason },
+      }),
+    ),
     threads: [...issue.threads.values()].map(threadFields),
     comments: [...issue.comments.values()].map((comment) => ({
       id: comment.id,

@@ -97,7 +97,7 @@ function sign(unsigned: UnsignedOperation, key: CryptoKey): Promise<Operation> {
 }
 
 const comment = (author: Author, base = 3): UnsignedOperation => draft(author, "comment", { body: "Looks right." }, base);
-const issue33: IssueState = { version: 3, labels: ["scope:identity-map", "scope:analytics"] };
+const issue33: IssueState = { version: 3 };
 
 function expectRejected(verdict: Verdict, reason: string): void {
   assert.equal(verdict.status, "rejected", JSON.stringify(verdict));
@@ -262,16 +262,15 @@ describe("validate: review rights", () => {
     assert.equal((await validate(operation, context(issue33))).status, "accepted");
   });
 
-  test("a review from an owner of no labelled scope is rejected with the rights reason", async () => {
+  // The reducer keeps a review without rights as one that does not count (#49).
+  test("a review from an owner of no labelled scope is accepted", async () => {
     const operation = await sign(review({ person: "sam" }), service.privateKey);
-    const verdict = await validate(operation, context(issue33));
-    expectRejected(verdict, "no_right");
-    assert.match(verdict.status === "rejected" ? verdict.message : "", /sam owns no scope labelled/u);
+    assert.equal((await validate(operation, context(issue33))).status, "accepted");
   });
 
-  test("a review from an identity is rejected with the rights reason", async () => {
+  test("a review from an identity is accepted", async () => {
     const operation = await sign(review({ identity: "@priya/merge-rules" }), priyaBridge.privateKey);
-    expectRejected(await validate(operation, context(issue33)), "no_right");
+    assert.equal((await validate(operation, context(issue33))).status, "accepted");
   });
 });
 

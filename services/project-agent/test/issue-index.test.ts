@@ -255,7 +255,8 @@ describe("IssueIndex", () => {
         log_ref: null,
       },
     ]);
-    assert.deepEqual(rows(db, `SELECT issue_id, reviewer_owner_id, verdict, reason, repo, commit_sha FROM Review`), [
+    const reviewColumns = "issue_id, reviewer_owner_id, verdict, reason, repo, commit_sha, counts, uncounted_reason";
+    assert.deepEqual(rows(db, `SELECT ${reviewColumns} FROM Review`), [
       {
         issue_id: "33",
         reviewer_owner_id: "priya",
@@ -263,6 +264,8 @@ describe("IssueIndex", () => {
         reason: null,
         repo: "owner-priya",
         commit_sha: "9b2f10",
+        counts: 1,
+        uncounted_reason: null,
       },
     ]);
     assert.deepEqual(rows(db, `SELECT * FROM Thread`), [
@@ -298,10 +301,6 @@ describe("IssueIndex", () => {
       "bad_signature",
     );
     rejectedFor(await writer.apply(jun, "comment", { body: "stale" }, 33, { base: 3 }), "superseded_version");
-    rejectedFor(
-      await writer.apply(jun, "review", { verdict: "approve", commit: "owner-priya@9b2f10" }, 33),
-      "no_right",
-    );
     rejectedFor(await writer.apply(jun, "edit_comment", { comment: "jun-b3f2-9999", body: "x" }, 33), "unknown_comment");
     rejectedFor(await writer.apply(jun, "comment", { body: "nowhere" }, 77), "no_issue");
     rejectedFor(
@@ -313,7 +312,7 @@ describe("IssueIndex", () => {
     for (const table of Object.keys(before).filter((name) => name !== "AppliedOp")) {
       assert.deepEqual(after[table], before[table], `${table} changed`);
     }
-    assert.equal(rows(db, `SELECT COUNT(*) AS n FROM AppliedOp`)[0]?.["n"], appliedBefore + 6);
+    assert.equal(rows(db, `SELECT COUNT(*) AS n FROM AppliedOp`)[0]?.["n"], appliedBefore + 5);
 
     const rejections = index
       .read("33")
@@ -322,11 +321,10 @@ describe("IssueIndex", () => {
     assert.deepEqual(rejections, [
       ["bad_signature", "comment"],
       ["superseded_version", "comment"],
-      ["no_right", "review"],
       ["unknown_comment", "edit_comment"],
       ["malformed", null],
     ]);
-    assert.equal(index.read("33").timeline.length, 18 + 5);
+    assert.equal(index.read("33").timeline.length, 18 + 4);
   });
 
   test("a redelivered operation, applied or rejected, is a duplicate and writes nothing", async () => {
@@ -383,6 +381,68 @@ describe("IssueIndex", () => {
     await script(new Writer(index));
     assert.deepEqual(new IssueIndex(sql).issue("33"), index.issue("33"));
     assert.deepEqual(new IssueIndex(sql).issue("31"), index.issue("31"));
+  });
+
+  test("a review from someone without review rights is kept and does not approve the fix sub-issue", async () => {
+    const { db, sql } = sqlite();
+    const index = new IssueIndex(sql);
+    const writer = new Writer(index);
+    applied(await writer.apply(penguin, "create", { title: "Identity map change breaks analytics" }, 31));
+    applied(await writer.apply(penguin, "create", { title: "Fix the shared-device merge" }, 33));
+    applied(await writer.apply(penguin, "add_label", { label: "scope:identity-map" }, 33));
+    applied(await writer.apply(penguin, "open_sub_issue", { sub_issue: 33 }, 31));
+
+    // jun owns analytics, not identity-map, so the review is kept as a comment that does not count.
+    const review = await writer.apply(jun, "review", { verdict: "approve", commit: "owner-priya@9b2f10" }, 33);
+    applied(review);
+    const fix = index.issue("33");
+    assert.equal(fix?.parentId, "31");
+    const stored = fix?.reviews.get(review.operation.op_id);
+    assert.equal(stored?.counts, false);
+    assert.match(stored?.uncountedReason ?? "", /jun owns no scope labelled on this issue/u);
+    // Approval, as #42 will decide it, needs an approving review that counts; this is the only review.
+    const approved = [...(fix?.reviews.values() ?? [])].some((r) => r.counts && r.verdict === "approve");
+    assert.equal(approved, false);
+    assert.deepEqual(rows(db, `SELECT reviewer_owner_id, verdict, counts FROM Review`), [
+      { reviewer_owner_id: "jun", verdict: "approve", counts: 0 },
+    ]);
+    const [entry] = index.read("33").timeline.filter((e) => e.type === "review");
+    assert.equal(entry?.status, "applied");
+
+    // An identity holds no review right either; its review is kept the same way.
+    const changes = { verdict: "request_changes", commit: "owner-priya@9b2f10", reason: "Keep devices split." };
+    const identityReview = await writer.apply(mergeRules, "review", changes, 33);
+    applied(identityReview);
+    assert.equal(index.issue("33")?.reviews.get(identityReview.operation.op_id)?.counts, false);
+    // The owner of the labelled scope still counts.
+    const ownerReview = await writer.apply(priya, "review", { verdict: "approve", commit: "owner-priya@9b2f10" }, 33);
+    assert.equal(new IssueIndex(sql).issue("33")?.reviews.get(ownerReview.operation.op_id)?.counts, true);
+  });
+
+  test("a Review table from before #49 gains the counts columns, and its reviews count", () => {
+    const { db, sql } = sqlite();
+    sql.exec(`CREATE TABLE Review (
+      op_id TEXT PRIMARY KEY, issue_id TEXT NOT NULL, reviewer_owner_id TEXT NOT NULL, verdict TEXT NOT NULL,
+      reason TEXT, repo TEXT NOT NULL, commit_sha TEXT NOT NULL)`);
+    sql.exec(
+      `INSERT INTO Review VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      "priya-b3f2-0001",
+      "33",
+      "priya",
+      "approve",
+      null,
+      "owner-priya",
+      "9b2f10",
+    );
+    new IssueIndex(sql);
+    new IssueIndex(sql);
+    const columns = rows(db, `PRAGMA table_info(Review)`).map((column) => column["name"]);
+    assert.deepEqual(columns.slice(-2), ["counts", "uncounted_reason"]);
+    assert.deepEqual(rows(db, `SELECT counts, uncounted_reason FROM Review`), [{ counts: 1, uncounted_reason: null }]);
+    // A fresh table has the same columns in the same order, so a rebuild compares them row for row.
+    const fresh = sqlite();
+    new IssueIndex(fresh.sql);
+    assert.deepEqual(rows(fresh.db, `PRAGMA table_info(Review)`), rows(db, `PRAGMA table_info(Review)`));
   });
 
   test("text that looks like SQL is stored as text", async () => {

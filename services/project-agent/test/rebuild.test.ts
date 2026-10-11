@@ -150,8 +150,8 @@ class Project {
 /**
  * The exit-check history: three issues, operations from two bridges, Penguin and the dashboard over
  * six pushes (the dashboard's through a runner pass), with rejections for a bad signature, a
- * superseded version, an unknown version, a review without the right, a file that is not JSON, and
- * an edit of an unknown comment.
+ * superseded version, an unknown version, a file that is not JSON, and an edit of an unknown comment,
+ * and a review without the right, which is kept as a review that does not count.
  */
 async function scriptedHistory(project: Project): Promise<void> {
   const { ops } = project;
@@ -172,22 +172,22 @@ async function scriptedHistory(project: Project): Promise<void> {
     await ops.file(jun, "comment", { body: "stale" }, 33, 1),
     await ops.file(jun, "comment", { body: "from the future" }, 33, 9),
     await ops.file(jun, "review", { verdict: "approve", commit: "owner-priya@9b2f10" }, 33, 3),
-    await ops.file(jun, "edit_comment", { comment: "jun-b3f2-9999", body: "x" }, 33, 3),
+    await ops.file(jun, "edit_comment", { comment: "jun-b3f2-9999", body: "x" }, 33, 4),
     ["issues/32/ops/jun-b3f2-0099.json", "not json"],
   ]);
   // Sam writes only from the dashboard: a bridge and the dashboard writing for one author share
   // one op_id sequence, and this history keeps clear of that open protocol gap.
   const assignee = { identity: "@priya/merge-rules" };
-  await project.submit(sam, { issue: 33, type: "assign", base_version: 3, payload: { assignee } });
+  await project.submit(sam, { issue: 33, type: "assign", base_version: 4, payload: { assignee } });
   await project.submit(sam, { issue: 31, type: "comment", base_version: 1, payload: { body: "Seen on the dashboard" } });
   await project.runnerPass();
   // One commit holding a chain on issue 33: the label gives priya the right to review.
   await project.push([
-    await ops.file(priya, "review", { verdict: "approve", commit: "owner-priya@9b2f10" }, 33, 5),
-    await ops.file(penguin, "add_label", { label: "scope:identity-map" }, 33, 4),
+    await ops.file(priya, "review", { verdict: "approve", commit: "owner-priya@9b2f10" }, 33, 6),
+    await ops.file(penguin, "add_label", { label: "scope:identity-map" }, 33, 5),
     await ops.file(penguin, "open_sub_issue", { sub_issue: 33 }, 31, 2),
   ]);
-  await project.push([await ops.file(penguin, "change_state", { state: "closed", reason: "approved" }, 33, 6)]);
+  await project.push([await ops.file(penguin, "change_state", { state: "closed", reason: "approved" }, 33, 7)]);
 }
 
 describe("rebuildIndex", () => {
@@ -201,11 +201,19 @@ describe("rebuildIndex", () => {
     assert.deepEqual(report.pendingOps, []);
     assert.equal(report.caughtUp?.files, 0);
     assert.equal(report.rebuilt?.commits, 6);
-    assert.deepEqual(report.rebuilt?.outcomes, { applied: 12, rejected: 6 });
+    assert.deepEqual(report.rebuilt?.outcomes, { applied: 13, rejected: 5 });
     const tables = report.comparison.tables;
     assert.equal(tables["Issue"]?.live, 3);
     assert.equal(tables["AppliedOp"]?.live, 18);
-    assert.equal(tables["Review"]?.live, 1);
+    assert.equal(tables["Review"]?.live, 2);
+    const reviews = project.sql.exec(`SELECT reviewer_owner_id, counts FROM Shadow_Review ORDER BY rowid`);
+    assert.deepEqual(
+      reviews.map((row) => [row["reviewer_owner_id"], row["counts"]]),
+      [
+        ["jun", 0],
+        ["priya", 1],
+      ],
+    );
     assert.deepEqual(
       Object.values(tables).map((table) => table.live === table.shadow && table.differing === 0),
       Object.keys(COMPARED_TABLES).map(() => true),

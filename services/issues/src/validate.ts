@@ -1,10 +1,11 @@
 // Decides whether one issue operation counts: its form, its signature, the binding between the
-// signing key and the author, its base version, the author's rights and, for an identity, its
-// charter (PRD sections 4, 5 and 12).
+// signing key and the author, its base version and, for an identity, its charter (PRD sections 4, 5
+// and 12). A review from someone without review rights is accepted: the reducer keeps it as a review
+// that does not count toward approval (#49).
 // The function reads no file and no network, so the Node bridge and the Workers runtime both run it.
 // It never throws on any input: every problem with an operation becomes a rejection with a reason.
 
-import { operationTargets, reviewRight, withinCharter, type CharterIdentity } from "@penguin/policies";
+import { operationTargets, withinCharter, type CharterIdentity } from "@penguin/policies";
 import {
   operationPath,
   parseOpId,
@@ -37,8 +38,6 @@ export const REJECT_REASONS = [
   "superseded_version",
   /** The base version is newer than the issue's current version. */
   "unknown_version",
-  /** The author has no right to perform this operation. */
-  "no_right",
   /** An identity's operation names a scope or path outside the identity's charter. */
   "outside_charter",
 ] as const;
@@ -56,7 +55,6 @@ export interface BridgeKey {
 export interface IssueState {
   /** The number of operations applied to the issue. */
   readonly version: number;
-  readonly labels: readonly string[];
 }
 
 /** The identity records the charter check reads. */
@@ -100,7 +98,7 @@ export type Verdict =
 /**
  * Validate one operation. `input` is the operation file's bytes (or text), or an already parsed
  * JSON value. Checks run in this order: form, path, duplicate, signature, author and writer binding,
- * base version, rights, charter. The first failing check gives the reason.
+ * base version, charter. The first failing check gives the reason.
  */
 export async function validate(input: unknown, context: ValidationContext): Promise<Verdict> {
   try {
@@ -142,11 +140,6 @@ async function validateUnsafe(input: unknown, context: ValidationContext): Promi
   }
   if (operation.base_version > version) {
     return reject("unknown_version", `based on version ${operation.base_version}; the issue is at version ${version}`);
-  }
-
-  if (operation.type === "review") {
-    const right = reviewRight(operation.author, context.issue?.labels ?? [], context.scopeMap);
-    if (!right.allowed) return reject("no_right", right.message);
   }
 
   if ("identity" in operation.author) {

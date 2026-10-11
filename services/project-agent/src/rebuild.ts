@@ -21,8 +21,10 @@
 //   rejects the bridge one as superseded; Git order, and so the rebuild, does the opposite. The
 //   comparison reports both AppliedOp rows and the issue rows they touch.
 // - The rebuild judges every operation with today's keys and scope map. An operation from a bridge
-//   revoked since, or a review by an owner whose scope has moved, verifies or passes live but not in
-//   the rebuild.
+//   revoked since verifies live but not in the rebuild. A review by an owner whose scope has moved
+//   counts live but not in the rebuild, or the other way round: the Review rows differ in `counts`.
+// - A review without rights applied before #49 was rejected live with `no_right`; the rebuild keeps
+//   it as a review that does not count.
 //
 // The comparison is a check; it never changes the live tables.
 

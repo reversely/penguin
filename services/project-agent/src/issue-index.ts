@@ -195,7 +195,6 @@ const DRAFT_FIELDS: ReadonlySet<string> = new Set(["issue", "type", "base_versio
 const AUTHENTICATED_REJECTIONS: ReadonlySet<RejectReason> = new Set([
   "superseded_version",
   "unknown_version",
-  "no_right",
   "outside_charter",
 ]);
 
@@ -225,9 +224,12 @@ export const ISSUE_INDEX_SCHEMA: readonly string[] = [
     sha TEXT NOT NULL, test TEXT, result TEXT NOT NULL, log_ref TEXT)`,
   `CREATE TABLE IF NOT EXISTS SubIssue (
     child_id TEXT PRIMARY KEY, parent_id TEXT NOT NULL, op_id TEXT NOT NULL)`,
+  // `counts` is 0 for a review from someone without review rights; `uncounted_reason` says why.
+  // Both come last, where REVIEW_COLUMNS adds them to a table created before them.
   `CREATE TABLE IF NOT EXISTS Review (
     op_id TEXT PRIMARY KEY, issue_id TEXT NOT NULL, reviewer_owner_id TEXT NOT NULL, verdict TEXT NOT NULL,
-    reason TEXT, repo TEXT NOT NULL, commit_sha TEXT NOT NULL)`,
+    reason TEXT, repo TEXT NOT NULL, commit_sha TEXT NOT NULL, counts INTEGER NOT NULL DEFAULT 1,
+    uncounted_reason TEXT)`,
   `CREATE TABLE IF NOT EXISTS Thread (
     id TEXT PRIMARY KEY, issue_id TEXT NOT NULL, body TEXT NOT NULL, anchor TEXT, opened_by TEXT NOT NULL,
     participants TEXT NOT NULL, needs_person_ids TEXT NOT NULL, status TEXT NOT NULL, resolved_by TEXT,
@@ -247,6 +249,15 @@ export const ISSUE_INDEX_SCHEMA: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS Assignment_session ON Assignment (session_id)`,
 ];
 
+/**
+ * Review columns added after the table first shipped, with the definition that adds each to an older
+ * table. Every review stored before them passed the rights check, so it counts.
+ */
+const REVIEW_COLUMNS: readonly (readonly [string, string])[] = [
+  ["counts", "counts INTEGER NOT NULL DEFAULT 1"],
+  ["uncounted_reason", "uncounted_reason TEXT"],
+];
+
 /** Child tables keyed by issue_id, read back into an IssueRecord's collections. */
 const ISSUE_CHILD_TABLES = ["Assignment", "Comment", "Mention", "LinkedCommit", "IssueCheck", "Review", "Thread"];
 
@@ -262,6 +273,7 @@ export class IssueIndex {
     this.#db = db;
     this.#listener = listener;
     for (const statement of ISSUE_INDEX_SCHEMA) db.exec(statement);
+    addMissingColumns(db, "Review", REVIEW_COLUMNS);
   }
 
   /** Validates, reduces and records one operation. Calls are applied in the order they are made. */
@@ -409,7 +421,7 @@ export class IssueIndex {
 
     const verdict = await validate(file, {
       ...keys,
-      issue: current && { version: current.version, labels: current.labels },
+      issue: current && { version: current.version },
       appliedOpIds: new Set(claimed),
       identities: {
         identity: (handle) => keys.identities.byHandle(handle),
@@ -432,7 +444,10 @@ export class IssueIndex {
 
     const operation = verdict.operation;
     const id = issueKey(operation.issue);
-    const result = reduce(current, operation, { parentOf: (other) => this.issue(other)?.parentId });
+    const result = reduce(current, operation, {
+      parentOf: (other) => this.issue(other)?.parentId,
+      scopeMap: keys.scopeMap,
+    });
     if (!result.ok) {
       if (pending !== undefined) return unrecorded(id, result.reason, result.message);
       return this.#reject(operation.op_id, operation, id, result.reason, result.message, gitCommit);
@@ -640,8 +655,9 @@ export class IssueIndex {
     diff(prev?.reviews, next.reviews, {
       upsert: (r) =>
         db.exec(
-          `INSERT OR REPLACE INTO Review (op_id, issue_id, reviewer_owner_id, verdict, reason, repo, commit_sha)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT OR REPLACE INTO Review (op_id, issue_id, reviewer_owner_id, verdict, reason, repo, commit_sha, counts,
+             uncounted_reason)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           r.opId,
           id,
           r.reviewerOwnerId,
@@ -649,6 +665,8 @@ export class IssueIndex {
           r.reason,
           r.repo,
           r.sha,
+          r.counts ? 1 : 0,
+          r.uncountedReason,
         ),
     });
     diff(prev?.threads, next.threads, {
@@ -772,6 +790,8 @@ export class IssueIndex {
           reason: nullable(r, "reason"),
           repo: text(r, "repo"),
           sha: text(r, "commit_sha"),
+          counts: Number(r["counts"]) === 1,
+          uncountedReason: nullable(r, "uncounted_reason"),
         }),
       ),
       threads: keyed(
@@ -790,6 +810,18 @@ export class IssueIndex {
         }),
       ),
     };
+  }
+}
+
+/**
+ * Adds each of `columns` that `table` lacks. CREATE TABLE IF NOT EXISTS leaves a table created by an
+ * earlier deploy as it was, so a column added since must be added to it here.
+ */
+function addMissingColumns(db: SqlDatabase, table: string, columns: readonly (readonly [string, string])[]): void {
+  // Table names and column definitions come from constants, never from input.
+  const present = new Set(db.exec(`PRAGMA table_info(${table})`).map((row) => row["name"]));
+  for (const [name, definition] of columns) {
+    if (!present.has(name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${definition}`);
   }
 }
 

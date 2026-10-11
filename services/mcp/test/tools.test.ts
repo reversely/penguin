@@ -372,8 +372,8 @@ describe("MCP: get_work and get_issue", () => {
       [["analytics-tests", "fail", "analytics/tests/test_retention.py::test_stable"]],
     );
     assert.deepEqual(
-      value.reviews.map((review: any) => [review.reviewer, review.verdict, review.personWritten.reason]),
-      [["jun", "request_changes", "Keep devices split."]],
+      value.reviews.map((review: any) => [review.reviewer, review.verdict, review.counts, review.personWritten.reason]),
+      [["jun", "request_changes", true, "Keep devices split."]],
     );
     assert.deepEqual(value.comments.map((c: any) => c.personWritten.body), ["The cohort query double-counts."]);
     assert.equal(value.threads.length, 2);

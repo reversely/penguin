@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, test } from "node:test";
 
 import { formatOpId, type Author, type IssueId, type Operation } from "@penguin/protocol";
+import { parseScopeMap } from "@penguin/scope-map";
 
 import { reduce, type IssueRecord, type ReduceContext, type ReduceResult } from "../src/index.ts";
 
@@ -18,7 +21,13 @@ function op(author: Author, type: Operation["type"], payload: Record<string, unk
   return { schema_version: 1, op_id: opId, issue, type, author, base_version: 0, payload, signature: "x".repeat(86) };
 }
 
-const noIssues: ReduceContext = { parentOf: () => undefined };
+const scopeMap = parseScopeMap(
+  JSON.parse(
+    readFileSync(join(import.meta.dirname, "../../../examples/identity-unification/base/penguin/scopes.json"), "utf8"),
+  ),
+);
+
+const noIssues: ReduceContext = { parentOf: () => undefined, scopeMap };
 
 function ok(result: ReduceResult): IssueRecord {
   assert.equal(result.ok, true, JSON.stringify(result));
@@ -107,7 +116,7 @@ describe("reduce", () => {
       ["33", "32"],
       ["40", null],
     ]);
-    const context: ReduceContext = { parentOf: (id) => parents.get(id) };
+    const context: ReduceContext = { parentOf: (id) => parents.get(id), scopeMap };
     const issue = { ...created(), parentId: "32" };
     rejected(reduce(issue, op(jun, "open_sub_issue", { sub_issue: 33 }), context), "sub_issue_self");
     rejected(reduce(issue, op(jun, "open_sub_issue", { sub_issue: 99 }), context), "sub_issue_unknown");
@@ -127,5 +136,30 @@ describe("reduce", () => {
     issue = ok(reduce(issue, op(jun, "change_state", { state: "closed", reason: "cancelled" }), noIssues));
     assert.equal(issue.state, "closed");
     assert.equal(issue.stateReason, "cancelled");
+  });
+
+  test("a review counts only from the owner of a labelled scope; any other review is kept without counting", () => {
+    let issue = ok(reduce(created(), op(jun, "add_label", { label: "scope:identity-map" }), noIssues));
+    const review = (author: Author): Operation =>
+      op(author, "review", { verdict: "approve", commit: "owner-priya@9b2f10", reason: "Two is the cap." });
+    const owner = review(priya);
+    const other = review(jun);
+    const identity = review({ identity: "@priya/merge-rules" });
+    for (const operation of [owner, other, identity]) issue = ok(reduce(issue, operation, noIssues));
+    assert.deepEqual(issue.reviews.get(owner.op_id), {
+      opId: owner.op_id,
+      reviewerOwnerId: "priya",
+      verdict: "approve",
+      reason: "Two is the cap.",
+      repo: "owner-priya",
+      sha: "9b2f10",
+      counts: true,
+      uncountedReason: null,
+    });
+    assert.equal(issue.reviews.get(other.op_id)?.counts, false);
+    assert.match(issue.reviews.get(other.op_id)?.uncountedReason ?? "", /jun owns no scope labelled/u);
+    assert.equal(issue.reviews.get(identity.op_id)?.counts, false);
+    const identityReason = issue.reviews.get(identity.op_id)?.uncountedReason ?? "";
+    assert.match(identityReason, /identity @priya\/merge-rules cannot review/u);
   });
 });

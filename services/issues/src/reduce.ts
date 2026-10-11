@@ -3,10 +3,14 @@
 // Unchanged parts of the state keep their identity, so a store can write only what changed.
 //
 // It runs after the validator, which has already checked form, signature, author, base version and
-// review rights. The reducer checks what needs the issue's contents: that the issue exists, and that
-// a referenced comment, thread or sub-issue exists and is in a state that allows the operation.
+// charter. The reducer checks what needs the issue's contents: that the issue exists, and that a
+// referenced comment, thread or sub-issue exists and is in a state that allows the operation. It also
+// records whether a review counts toward approval, which depends on the issue's scope labels: a review
+// from someone without review rights is kept as a comment that does not count (PRD sections 5 and 14).
 
+import { reviewRight } from "@penguin/policies";
 import { authorSegment, type IssueId, type Operation, type Party } from "@penguin/protocol";
+import type { ScopeMap } from "@penguin/scope-map";
 
 export const REDUCE_REJECT_REASONS = [
   /** The operation is not a create, and its issue does not exist. */
@@ -87,11 +91,19 @@ export interface SubIssue {
 
 export interface Review {
   readonly opId: string;
+  /** The author segment of the reviewer: an owner's person id when the review counts. */
   readonly reviewerOwnerId: string;
   readonly verdict: "approve" | "request_changes";
   readonly reason: string | null;
   readonly repo: string;
   readonly sha: string;
+  /**
+   * True when the reviewer held review rights on the issue when the review was applied. A review
+   * without rights stays on the issue as a comment, and approval must leave it out.
+   */
+  readonly counts: boolean;
+  /** Why the review does not count, or null when it counts. */
+  readonly uncountedReason: string | null;
 }
 
 export interface Thread {
@@ -139,6 +151,8 @@ export interface IssueRecord {
 export interface ReduceContext {
   /** The parent id of an issue, null when it has none, or undefined when no such issue exists. */
   parentOf(issueId: string): string | null | undefined;
+  /** The scope map a review's rights are judged by. */
+  readonly scopeMap: ScopeMap;
 }
 
 export type ReduceResult =
@@ -284,7 +298,16 @@ function apply(issue: IssueRecord, operation: Operation, context: ReduceContext)
     }
     case "review": {
       const { verdict, commit, reason } = p as { verdict: Review["verdict"]; commit: string; reason?: string };
-      const review: Review = { opId, reviewerOwnerId: author, verdict, reason: reason ?? null, ...splitCommit(commit) };
+      const right = reviewRight(operation.author, issue.labels, context.scopeMap);
+      const review: Review = {
+        opId,
+        reviewerOwnerId: author,
+        verdict,
+        reason: reason ?? null,
+        ...splitCommit(commit),
+        counts: right.allowed,
+        uncountedReason: right.allowed ? null : right.message,
+      };
       return { ...issue, reviews: withEntry(issue.reviews, opId, review) };
     }
     case "open_thread": {

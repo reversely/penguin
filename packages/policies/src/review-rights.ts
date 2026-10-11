@@ -1,6 +1,7 @@
-// Who may review an issue. PRD section 5 grants a review to the owner of the fix's scope, the owner
-// whose failing test the fix resolves, or either owner's delegate. Phase 2 implements the first
-// right only: the scopes of a fix are the scope labels on its issue.
+// Whose review counts on an issue. PRD section 5 counts a review from the owner of the fix's scope,
+// the owner whose failing test the fix resolves, or either owner's delegate. Phase 2 implements the
+// first right only: the scopes of a fix are the scope labels on its issue. A review from anyone else
+// is kept on the issue as a review that does not count toward approval (PRD section 14).
 
 import type { Author } from "@penguin/protocol";
 import type { ScopeMap } from "@penguin/scope-map";
@@ -22,9 +23,9 @@ export function labelledScopes(labels: Iterable<string>): string[] {
 }
 
 /**
- * Decide whether `reviewer` may review an issue labelled `labels`. A review counts only from a
- * person who owns at least one scope labelled on the issue. Identities and Penguin hold no review
- * right, because the PRD grants it to owners. A label naming a scope missing from the map grants
+ * Decide whether a review by `reviewer` counts on an issue labelled `labels`. A review counts only
+ * from a person who owns at least one scope labelled on the issue. Identities and Penguin hold no
+ * review right, because the PRD grants it to owners. A label naming a scope missing from the map grants
  * nothing.
  */
 export function reviewRight(reviewer: Author, labels: Iterable<string>, scopeMap: ScopeMap): ReviewRight {
