@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdir, unlink } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 
@@ -164,7 +164,7 @@ test("refuses any remote other than the owner's fork, and a fork of another owne
 
   const h = await harness([]);
   for (const remote of [other, "origin", "https://example.invalid/fork.git", "--upload-pack=touch /tmp/x"]) {
-    await assert.rejects(h.publisher.publish(h.idOf("feature-a"), remote), /refusing to push/);
+    await assert.rejects(h.publisher.publish(h.idOf("feature-a"), { remote }), /refusing to push/);
   }
   assert.equal(await repo.git(other, "for-each-ref"), "");
 
@@ -241,6 +241,70 @@ test("publishing an unchanged checkpoint again does not ask", async () => {
   assert.equal(h.asked.length, 1);
 });
 
+const IDENTITIES = join(import.meta.dirname, "../../../examples/identity-unification/base/penguin/identities.json");
+
+/** Commits the fixture's identity registry to worktree A, then leaves an uncommitted change. */
+async function identitiesInWorktreeA(change: string) {
+  await mkdir(join(repo.worktreeA, "penguin"));
+  await repo.write(repo.worktreeA, "penguin/identities.json", await readFile(IDENTITIES, "utf8"));
+  await repo.commitAll(repo.worktreeA, "seed identities");
+  await repo.write(repo.worktreeA, "a.txt", `${change}\n`);
+}
+
+/** The trailers of a commit's message, as `git interpret-trailers --parse` reads them. */
+async function trailersOf(sha: string): Promise<string> {
+  const message = await repo.git(forkPath, "log", "-1", "--format=%B", sha);
+  const dir = await mkdtemp(join(repo.root, "message-"));
+  await writeFile(join(dir, "MSG"), message);
+  return repo.git(repo.main, "interpret-trailers", "--parse", join(dir, "MSG"));
+}
+
+test("a checkpoint built for an agent session ends with one Penguin-Agent trailer naming the identity and vendor", async () => {
+  const h = await harness([true]);
+  for (const [identity, vendor] of [
+    ["@priya/merge-rules", "claude-code"],
+    ["@jun/reports", "codex"],
+  ] as const) {
+    if (identity === "@priya/merge-rules") await identitiesInWorktreeA("by merge-rules");
+    else await repo.write(repo.worktreeA, "a.txt", "by reports\n");
+    const result = await h.publisher.publish(h.idOf("feature-a"), { identity });
+    assert.ok(result.status === "published");
+    assert.equal(await trailersOf(result.preview.checkpoint_sha), `Penguin-Agent: ${identity} (${vendor})\n`);
+  }
+  assert.ok(!h.output.join("").includes("Warning"));
+});
+
+test("with the project's agent trailer off, the checkpoint carries no trailer", async () => {
+  await identitiesInWorktreeA("trailer off");
+  const h = await harness([true]);
+  h.fork.agent_trailer = false;
+  const result = await h.publisher.publish(h.idOf("feature-a"), { identity: "@priya/merge-rules" });
+  assert.ok(result.status === "published");
+  assert.equal(await trailersOf(result.preview.checkpoint_sha), "");
+});
+
+test("an identity absent from the registry publishes without a trailer and logs a warning", async () => {
+  await identitiesInWorktreeA("unknown identity");
+  const h = await harness([true, true]);
+  const result = await h.publisher.publish(h.idOf("feature-a"), { identity: "@priya/not-registered" });
+  assert.ok(result.status === "published");
+  assert.equal(await trailersOf(result.preview.checkpoint_sha), "");
+  assert.match(
+    h.output.join(""),
+    /^Warning: identity @priya\/not-registered is not in penguin\/identities\.json at [0-9a-f]{12}; the checkpoint carries no Penguin-Agent trailer\.$/m,
+  );
+
+  // Worktree B has no registry at all; a handle that is not one is refused before Git reads it.
+  await repo.write(repo.worktreeB, "b.txt", "no registry\n");
+  const bare = await h.publisher.publish(h.idOf("feature-b"), { identity: "@priya/merge-rules" });
+  assert.ok(bare.status === "published");
+  assert.equal(await trailersOf(bare.preview.checkpoint_sha), "");
+  assert.match(h.output.join(""), /^Warning: penguin\/identities\.json at [0-9a-f]{12} could not be read; /m);
+  await repo.write(repo.worktreeA, "a.txt", "bad handle\n");
+  await h.publisher.publish(h.idOf("feature-a"), { identity: "@priya/x\nCo-authored-by: someone" });
+  assert.match(h.output.join(""), /^Warning: "@priya\/x\\nCo-authored-by: someone" is not an identity handle; /m);
+});
+
 test("the preview keeps fixed columns within 80 and escapes control characters in paths", () => {
   const text = formatPreview(
     {
@@ -283,4 +347,24 @@ test("the checkpoint command publishes on yes and exits 1 on no", async () => {
   assert.equal(published.code, 0);
   assert.ok((await forkRefs()).includes("refs/heads/feature-a"));
   assert.equal(await repo.git(forkPath, "show", "refs/heads/feature-a:a.txt"), "from the cli\n");
+});
+
+test("the checkpoint command passes --identity and --agent-trailer to the publisher", async () => {
+  await identitiesInWorktreeA("agent session");
+  const run = async (...flags: string[]) => {
+    const out: string[] = [];
+    const code = await runCli(
+      ["checkpoint", "--owner", OWNER, "--project", "p", "--fork", forkPath, "--worktree", repo.worktreeA, ...flags],
+      { write: (text) => out.push(text), ask: async () => "y" },
+      { stateDir: join(repo.root, "bridge-state") },
+    );
+    return { code, out: out.join("") };
+  };
+  assert.equal((await run("--identity", "@priya/merge-rules", "--agent-trailer", "maybe")).code, 2);
+  assert.equal((await run("--identity", "@priya/merge-rules", "--agent-trailer", "off")).code, 0);
+  assert.equal(await trailersOf("refs/heads/feature-a"), "");
+
+  await repo.write(repo.worktreeA, "a.txt", "agent session again\n");
+  assert.equal((await run("--identity", "@priya/merge-rules")).code, 0);
+  assert.equal(await trailersOf("refs/heads/feature-a"), "Penguin-Agent: @priya/merge-rules (claude-code)\n");
 });

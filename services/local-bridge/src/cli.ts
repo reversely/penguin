@@ -23,7 +23,8 @@ export interface CliIo {
 const USAGE = `Usage: penguin-bridge register --server <url> --owner <id> --code <code> [--state-dir <dir>]
        penguin-bridge checkpoint --owner <id> --project <id> [--fork penguin:owner-<id>|<bare repo path>]
                       [--worktree <path>] [--consent each-publish|worktree|project]
-                      [--remote <url>] [--state-dir <dir>]
+                      [--remote <url>] [--identity @<owner>/<name>] [--agent-trailer on|off]
+                      [--state-dir <dir>]
 `;
 
 export interface CliDependencies {
@@ -64,12 +65,15 @@ export async function runCli(argv: readonly string[], io: CliIo, deps: CliDepend
       worktree: { type: "string", default: process.cwd() },
       consent: { type: "string", default: "worktree" },
       remote: { type: "string" },
+      identity: { type: "string" },
+      "agent-trailer": { type: "string", default: "on" },
       "state-dir": { type: "string" },
     },
     strict: true,
   });
   const consent = values.consent as ConsentScope;
-  if (!values.owner || !values.project || !CONSENT_SCOPES.includes(consent)) {
+  const agentTrailer = values["agent-trailer"];
+  if (!values.owner || !values.project || !CONSENT_SCOPES.includes(consent) || !["on", "off"].includes(agentTrailer)) {
     io.write(USAGE);
     return 2;
   }
@@ -91,6 +95,7 @@ export async function runCli(argv: readonly string[], io: CliIo, deps: CliDepend
       repo: isPenguinRemote(fork) ? fork : resolve(fork),
       latest_checkpoint_sha: null,
       publishing_consent: consent,
+      agent_trailer: agentTrailer === "on",
     },
     write: io.write,
     spool: bridgeSpool(checkpointStateDir),
@@ -98,7 +103,10 @@ export async function runCli(argv: readonly string[], io: CliIo, deps: CliDepend
     confirm: async () => /^y(es)?$/i.test((await io.ask("Publish this checkpoint? [y/N] ")).trim()),
   });
   const started = performance.now();
-  const result = await publisher.publish(worktreeId(bridgeId, worktree), values.remote);
+  const result = await publisher.publish(worktreeId(bridgeId, worktree), {
+    remote: values.remote,
+    identity: values.identity,
+  });
   if (result.status === "up-to-date") io.write(`The fork already has checkpoint ${result.checkpoint_sha}.\n`);
   if (result.status === "published") io.write(`Publish took ${Math.round(performance.now() - started)} ms.\n`);
   // A queued checkpoint has the owner's consent and waits only for the fork to be reachable.

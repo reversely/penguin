@@ -3,6 +3,7 @@ import { realpath } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 
 import { runGit, splitNul } from "@penguin/git-analysis";
+import { IDENTITY_HANDLE_MAX_LENGTH, IDENTITY_HANDLE_PATTERN } from "@penguin/protocol";
 
 import {
   isPenguinRemote,
@@ -36,6 +37,24 @@ export interface OwnerFork {
   repo: string;
   latest_checkpoint_sha: string | null;
   publishing_consent: ConsentScope;
+  /**
+   * Whether a checkpoint commit built for an agent session ends with a `Penguin-Agent` trailer
+   * naming the identity and its vendor. The owner sets it per project; absent means on.
+   */
+  agent_trailer?: boolean;
+}
+
+/** The identity registry the trailer's vendor is read from, relative to the repo root. */
+export const IDENTITIES_FILE = "penguin/identities.json";
+
+/** The trailer key on checkpoint commits built for an agent session. */
+export const AGENT_TRAILER_KEY = "Penguin-Agent";
+
+export interface PublishOptions {
+  /** Must name the configured fork; any other destination is refused before Git runs. */
+  remote?: string;
+  /** The handle (`@<owner>/<name>`) of the agent identity whose session made this checkpoint. */
+  identity?: string;
 }
 
 /** One tracked file in a checkpoint. Line counts are null for a binary file. */
@@ -97,10 +116,10 @@ export class CheckpointPublisher {
 
   /**
    * Builds the checkpoint for one registered worktree, prints the preview, asks for consent and
-   * on consent pushes it to the fork branch named after the worktree's branch. `remote`, when
-   * given, must be the configured fork; any other destination is refused before Git runs.
+   * on consent pushes it to the fork branch named after the worktree's branch. With an identity,
+   * a commit the bridge builds carries that identity's `Penguin-Agent` trailer (see `agentTrailer`).
    */
-  async publish(id: string, remote?: string): Promise<PublishResult> {
+  async publish(id: string, { remote, identity }: PublishOptions = {}): Promise<PublishResult> {
     const { registry, fork, confirm, write, spool } = this.#options;
     const { path: forkPath, reachable: located } = await resolveFork(fork, remote, spool !== undefined);
     const forkRemote = (this.#options.remotes ?? unregisteredRemotes)(forkPath);
@@ -139,7 +158,12 @@ export class CheckpointPublisher {
     ) {
       return { status: "up-to-date", checkpoint_sha: previous };
     }
-    const message = `Penguin checkpoint of ${record.branch}`;
+    const message = [`Penguin checkpoint of ${record.branch}`];
+    if (identity !== undefined && fork.agent_trailer !== false) {
+      const trailer = await agentTrailer(worktree, head, identity);
+      if (typeof trailer === "string") message.push(trailer);
+      else write(`Warning: ${trailer.warning}; the checkpoint carries no ${AGENT_TRAILER_KEY} trailer.\n`);
+    }
     const checkpoint = await checkpointCommit(worktree, tree, head, previous, message);
     const base = await sharedBase(worktree, checkpoint, localTips);
     const preview: CheckpointPreview = {
@@ -253,7 +277,7 @@ async function checkpointCommit(
   tree: string,
   head: string,
   previous: string | null,
-  message: string,
+  paragraphs: string[],
 ): Promise<string> {
   const parents = [head];
   if (previous !== null && previous !== head && !(await isAncestor(worktree, previous, head))) {
@@ -261,7 +285,45 @@ async function checkpointCommit(
   }
   if (parents.length === 1 && (await revParse(worktree, `${head}^{tree}`)) === tree) return head;
   const parentArgs = parents.flatMap((parent) => ["-p", parent]);
-  return (await runGit(worktree, ["commit-tree", ...parentArgs, "-m", message, tree])).trim();
+  // Each -m is one paragraph, so a trailer passed last becomes the message's trailer block.
+  const messageArgs = paragraphs.flatMap((paragraph) => ["-m", paragraph]);
+  return (await runGit(worktree, ["commit-tree", ...parentArgs, ...messageArgs, tree])).trim();
+}
+
+const HANDLE = new RegExp(IDENTITY_HANDLE_PATTERN, "u");
+const VENDOR = /^[a-z0-9]+(?:[.-][a-z0-9]+)*$/u;
+const VENDOR_MAX_LENGTH = 64;
+
+/**
+ * The `Penguin-Agent: @<owner>/<name> (<vendor>)` trailer for `handle`, with the vendor read from
+ * `penguin/identities.json` as committed at `head`, so an uncommitted edit cannot change it. The
+ * trailer carries no email: Penguin strips it before a GitHub export, so no account has to match.
+ * Returns a warning instead when the handle is not in the registry or the registry cannot be read;
+ * a missing trailer never fails a checkpoint.
+ */
+async function agentTrailer(worktree: string, head: string, handle: string): Promise<string | { warning: string }> {
+  // The handle and vendor go into a commit message, so both are checked before use.
+  if (handle.length > IDENTITY_HANDLE_MAX_LENGTH || !HANDLE.test(handle)) {
+    return { warning: `${JSON.stringify(handle)} is not an identity handle` };
+  }
+  const at = head.slice(0, 12);
+  let entries: unknown;
+  try {
+    // `cat-file blob` returns the committed bytes as-is; `git show` could apply a textconv filter.
+    const text = await runGit(worktree, ["cat-file", "blob", `${head}:${IDENTITIES_FILE}`]);
+    entries = (JSON.parse(text) as { identities?: unknown } | null)?.identities;
+  } catch {
+    return { warning: `${IDENTITIES_FILE} at ${at} could not be read` };
+  }
+  const entry = Array.isArray(entries)
+    ? entries.find((item: unknown) => (item as { handle?: unknown } | null)?.handle === handle)
+    : undefined;
+  if (entry === undefined) return { warning: `identity ${handle} is not in ${IDENTITIES_FILE} at ${at}` };
+  const vendor: unknown = (entry as { vendor?: unknown }).vendor;
+  if (typeof vendor !== "string" || vendor.length > VENDOR_MAX_LENGTH || !VENDOR.test(vendor)) {
+    return { warning: `identity ${handle} has no valid vendor in ${IDENTITIES_FILE} at ${at}` };
+  }
+  return `${AGENT_TRAILER_KEY}: ${handle} (${vendor})`;
 }
 
 async function revParse(cwd: string, rev: string): Promise<string> {

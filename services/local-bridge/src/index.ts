@@ -9,7 +9,13 @@ export {
 } from "./command-allowlist.ts";
 export type { ResolvedCommand } from "./command-allowlist.ts";
 
-export { checkpointEntryId, CheckpointPublisher, formatPreview } from "./checkpoint.ts";
+export {
+  AGENT_TRAILER_KEY,
+  checkpointEntryId,
+  CheckpointPublisher,
+  formatPreview,
+  IDENTITIES_FILE,
+} from "./checkpoint.ts";
 export { pushCheckpoint } from "./checkpoint-push.ts";
 export type { CheckpointPushResult } from "./checkpoint-push.ts";
 export {
@@ -67,6 +73,7 @@ export type {
   CheckpointPublisherOptions,
   ConsentScope,
   OwnerFork,
+  PublishOptions,
   PublishResult,
 } from "./checkpoint.ts";
 export { runCli } from "./cli.ts";
