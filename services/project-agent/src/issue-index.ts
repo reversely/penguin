@@ -346,6 +346,11 @@ export class IssueIndex {
     return (row?.["id"] as string | undefined) ?? id;
   }
 
+  /** Every issue's number, in numeric order. */
+  ids(): string[] {
+    return this.#db.exec(`SELECT id FROM Issue ORDER BY CAST(id AS INTEGER), id`).map((row) => row["id"] as string);
+  }
+
   /** One issue's state, by its number or its temporary ID, or undefined when it does not exist. */
   issue(id: string): IssueRecord | undefined {
     const number = this.resolve(id);

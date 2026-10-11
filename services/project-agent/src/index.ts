@@ -14,6 +14,7 @@ import {
   type SubmitOutcome,
   type TimelineEntry,
 } from "./issue-index.ts";
+import { buildBoard } from "./board.ts";
 import { buildIssuePage } from "./issue-page.ts";
 import { LiveFeed, liveOwner } from "./live-feed.ts";
 import { InboxStore, type InboxItem, type InboxOutcome, type InboxReason } from "./inbox-store.ts";
@@ -51,7 +52,7 @@ import {
   type SessionWork,
 } from "./session-store.ts";
 import type { IssueRecord } from "@penguin/issues";
-import type { Author, IssuePage } from "@penguin/protocol";
+import type { Author, Board, IssuePage } from "@penguin/protocol";
 import type { ScopeMap } from "@penguin/scope-map";
 
 import {
@@ -92,7 +93,8 @@ export {
   type IdentityRejectReason,
   type TeamIdentityInput,
 } from "./identity-store.ts";
-export { buildIssuePage, type IssuePageSources } from "./issue-page.ts";
+export { buildBoard, type BoardSources } from "./board.ts";
+export { buildIssuePage, issueView, type IssuePageSources } from "./issue-page.ts";
 export { LIVE_OWNER_HEADER, LiveFeed, liveOwner } from "./live-feed.ts";
 export { McpTokenStore, type IssuedMcpToken, type McpCaller } from "./mcp-tokens.ts";
 export {
@@ -136,6 +138,7 @@ export {
   type SessionInput,
   type SessionOutcome,
   type SessionRejectReason,
+  type SessionListener,
   type SessionStatus,
   type SessionStoreOptions,
   type SessionWork,
@@ -301,6 +304,35 @@ export class ProjectAgent extends Agent {
   }
 
   /**
+   * The dashboard's board: every issue without its timeline, and every owner with their identities
+   * and those identities' running sessions.
+   */
+  board(): Board {
+    const index = this.#index();
+    const sessions = this.#sessionStore();
+    const identities = this.#identityStore();
+    return buildBoard({
+      ids: () => index.ids(),
+      issue: (issueId) => index.issue(issueId),
+      identities: () => identities.list(),
+      running: () => sessions.running(),
+      routes: (issueId) => sessions.routes(issueId),
+      session: (sessionId) => sessions.get(sessionId),
+      assigningOwner: (issueId, handle) => index.assigningOwner(issueId, handle),
+    });
+  }
+
+  /**
+   * Marks sessions past their offline window, which tells connected dashboards, and schedules the
+   * next sweep for when the next running session's window ends. Called by the Agents SDK scheduler.
+   */
+  async sweepSessions(): Promise<void> {
+    // A new row: this job's own row stays until the callback returns, so an idempotent schedule here
+    // would match it and the chain would end with it.
+    await this.#scheduleSweep(false);
+  }
+
+  /**
    * Applies an operation from MCP, the dashboard or Penguin at once and queues it for the Git log.
    * `author` is the caller the gateway authenticated; the operation cannot name anyone else. The
    * operation is signed here with the service key (K5), which never leaves the Worker.
@@ -365,12 +397,12 @@ export class ProjectAgent extends Agent {
    * waiting assignments route to it.
    */
   registerSession(caller: string, input: SessionInput): SessionOutcome {
-    return this.#sessionStore().register(caller, input);
+    return this.#armSweep(this.#sessionStore().register(caller, input));
   }
 
   /** Records a session's heartbeat. A session with no heartbeat within the offline window goes offline. */
   sessionHeartbeat(caller: string, sessionId: string): SessionOutcome {
-    return this.#sessionStore().heartbeat(caller, sessionId);
+    return this.#armSweep(this.#sessionStore().heartbeat(caller, sessionId));
   }
 
   readSession(sessionId: string): Session | undefined {
@@ -419,7 +451,7 @@ export class ProjectAgent extends Agent {
       {
         // Routes are kept under the issue number, so a temporary ID resolves to it first.
         sessions: {
-          heartbeat: (owner, id) => sessions.heartbeat(owner, id),
+          heartbeat: (owner, id) => this.#armSweep(sessions.heartbeat(owner, id)),
           routes: (issueId) => sessions.routes(index.resolve(issueId)),
         },
         issueVersion: (issueId) => index.issue(issueId)?.version,
@@ -464,6 +496,25 @@ export class ProjectAgent extends Agent {
   /** Where each identity assignment of an issue stands: its session, or what it waits for. */
   issueRoutes(issueId: string): AssignmentRoute[] {
     return this.#sessionStore().routes(this.#index().resolve(issueId));
+  }
+
+  /** Makes sure a sweep is scheduled after a session registered or sent a heartbeat. */
+  #armSweep<T extends { readonly status: string }>(outcome: T): T {
+    if (outcome.status === "ok") {
+      this.#scheduleSweep(true).catch((error: unknown) => console.error("scheduling the session sweep failed", error));
+    }
+    return outcome;
+  }
+
+  /**
+   * Sweeps now and schedules the next sweep, one second after the next running session's window
+   * ends; with no session running, none. `idempotent` reuses a sweep already scheduled, which is
+   * never later than the one needed: a heartbeat only moves a window's end later.
+   */
+  async #scheduleSweep(idempotent: boolean): Promise<void> {
+    const next = this.#sessionStore().sweep();
+    if (next === undefined) return;
+    await this.schedule(new Date(next + 1_000), "sweepSessions", undefined, { idempotent });
   }
 
   #loadServiceKey(): Promise<ServiceKey> {
@@ -609,6 +660,10 @@ export class ProjectAgent extends Agent {
         offlineAfterMs: Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : SESSION_OFFLINE_AFTER_MS,
         assigningOwner: (issueId, handle) => index.assigningOwner(issueId, handle),
         startRequests: this.#inboxStore(),
+        listener: {
+          sessionChanged: (handle) => this.#liveFeed().sessionChanged(handle),
+          routeChanged: (issueId) => this.#liveFeed().issueChanged(issueId),
+        },
       });
     }
     return this.#sessions;

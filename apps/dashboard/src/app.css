@@ -651,3 +651,253 @@ a.row-title {
   cursor: default;
   opacity: 0.55;
 }
+
+/* Board */
+
+.page-wide {
+  max-width: 100rem;
+}
+
+.board {
+  display: grid;
+  gap: 1.25rem;
+}
+
+.board-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+}
+
+.board-columns,
+.lane-grid {
+  display: grid;
+  gap: 0.75rem;
+}
+
+/* The column names head the board once; each lane repeats them only in one column. */
+.board-columns {
+  display: none;
+}
+
+.board-column-head {
+  padding: 0 0.25rem;
+  font-weight: 600;
+}
+
+.lane {
+  display: grid;
+  gap: 0.75rem;
+  min-width: 0;
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.lane-head {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.lane-head h2 {
+  margin: 0;
+  font-size: 1.125rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.lane-identities {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.lane-session {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.375rem;
+  min-width: 0;
+}
+
+.lane-column {
+  display: grid;
+  align-content: start;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.lane-column.empty {
+  display: none;
+}
+
+.lane-column-title {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.4;
+}
+
+.cards {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.card {
+  display: grid;
+  gap: 0.5rem;
+  min-width: 0;
+  padding: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--field);
+}
+
+.card-assignee {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  font-size: 0.875rem;
+}
+
+.card-title {
+  font-weight: 600;
+  line-height: 1.5rem;
+  overflow-wrap: anywhere;
+  text-decoration: none;
+}
+
+.card-title:hover {
+  text-decoration: underline;
+}
+
+.card-facts {
+  display: grid;
+  gap: 0.375rem;
+  margin: 0;
+  font-size: 0.8125rem;
+}
+
+.card-facts > div {
+  display: grid;
+  grid-template-columns: 4.5rem minmax(0, 1fr);
+  gap: 0.5rem;
+  align-items: start;
+}
+
+.card-facts dt {
+  color: var(--ink-muted);
+  line-height: 1.25rem;
+}
+
+.card-facts dd {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  min-width: 0;
+  margin: 0;
+  line-height: 1.25rem;
+  overflow-wrap: break-word;
+}
+
+/* A tag that wraps to a second line keeps a box shape instead of an oval. */
+.card .tag {
+  border-radius: 0.625rem;
+}
+
+/* In a narrow card each label sits above its value, so the value has the card's full width. */
+.card {
+  container-type: inline-size;
+}
+
+@container (max-width: 12rem) {
+  .card-facts > div {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.125rem;
+  }
+}
+
+.avatar {
+  width: 1.5rem;
+  height: 1.5rem;
+  flex: none;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.avatar-initial {
+  display: inline-grid;
+  place-items: center;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+/* Session status: working is live, waiting is the accent, blocked is a failure, done is quiet. */
+.status {
+  font-weight: 600;
+}
+
+.status-working {
+  color: var(--live);
+}
+
+.status-waiting-at-a-checkpoint {
+  color: var(--accent);
+}
+
+.status-blocked {
+  border-color: var(--failure);
+  background: var(--failure-tint);
+  color: var(--failure);
+}
+
+.status-done {
+  color: var(--ink-muted);
+}
+
+@media (min-width: 1024px) {
+  .board-columns,
+  .lane-grid {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+
+  .board-columns {
+    display: grid;
+    padding: 0 1rem;
+  }
+
+  .lane-column.empty {
+    display: grid;
+  }
+
+  .lane-column-title {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  /* The board's column heads carry the counts here; the hidden heading names its column only. */
+  .lane-column-title .muted {
+    display: none;
+  }
+}
+
+.card-review {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  min-width: 0;
+}

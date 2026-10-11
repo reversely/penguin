@@ -27,6 +27,18 @@ export function buildIssuePage(sources: IssuePageSources, id: string): IssuePage
   const { issue, timeline } = sources.read(id);
   if (issue === undefined) return undefined;
   const linkedBy = new Map(timeline.map((entry) => [entry.opId, entry.author]));
+  return { ...issueView(sources, issue, (opId) => linkedBy.get(opId) ?? null), timeline: timeline.map(timelineEntry) };
+}
+
+/**
+ * The issue and its sub-issues as the issue page shows them, without the timeline. `linkedBy` names
+ * the author of the operation that linked a commit, or null when it is not known.
+ */
+export function issueView(
+  sources: Omit<IssuePageSources, "read">,
+  issue: IssueRecord,
+  linkedBy: (opId: string) => string | null,
+): Omit<IssuePage, "timeline"> {
   return {
     issue: {
       id: issue.id,
@@ -44,7 +56,7 @@ export function buildIssuePage(sources: IssuePageSources, id: string): IssuePage
         repo: commit.repo,
         sha: commit.sha,
         kind: commit.kind,
-        linkedBy: linkedBy.get(commit.opId) ?? null,
+        linkedBy: linkedBy(commit.opId),
       })),
       checks: [...issue.checks.values()].map(check),
       reviews: [...issue.reviews.values()].map(review),
@@ -68,11 +80,10 @@ export function buildIssuePage(sources: IssuePageSources, id: string): IssuePage
         },
       ];
     }),
-    timeline: timeline.map(timelineEntry),
   };
 }
 
-function assignees(sources: IssuePageSources, issue: IssueRecord): IssuePageAssignee[] {
+function assignees(sources: Omit<IssuePageSources, "read">, issue: IssueRecord): IssuePageAssignee[] {
   const routes = new Map(sources.routes(issue.id).map((route) => [route.handle, route]));
   return [...issue.assignments.values()].map((assignment: Assignment) => {
     const route = assignment.assigneeKind === "identity" ? routes.get(assignment.assigneeId) : undefined;

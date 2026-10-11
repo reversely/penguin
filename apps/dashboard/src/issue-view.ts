@@ -94,7 +94,7 @@ function approved(reviews: readonly IssuePageReview[]): boolean {
  * issue is ready to approve once every fix (or the issue itself, without sub-issues) holds only
  * approvals, no thread is open and no latest check fails.
  */
-export function penguinState(page: IssuePage): PenguinState {
+export function penguinState(page: Pick<IssuePage, "issue" | "subIssues">): PenguinState {
   const { issue, subIssues } = page;
   const failing = latestChecks(issue.checks).some((check) => check.result !== "pass" && fixedIn(check, subIssues) === undefined);
   switch (issue.state) {

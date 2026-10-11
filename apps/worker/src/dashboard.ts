@@ -9,6 +9,7 @@
  * - /api/*: every route checks the session first and answers 401 without one.
  *   - GET /api/session: the signed-in person.
  *   - GET /api/issues/<id>: the issue page: one issue, its sub-issues and its timeline.
+ *   - GET /api/board: every issue without its timeline, and each owner's identities and sessions.
  *   - GET /api/inbox: the signed-in person's inbox.
  *   - POST /api/operations: one issue operation, applied with the signed-in person as author. An
  *     operation that carries `author` is refused: only the session names the author.
@@ -48,6 +49,8 @@ export type DashboardWriteOutcome =
 export interface DashboardBackend {
   /** The issue page as plain JSON (IssuePage in @penguin/protocol), or undefined for no such issue. */
   readIssue(issueId: string): Promise<unknown>;
+  /** The board as plain JSON (Board in @penguin/protocol). */
+  board(): Promise<unknown>;
   inbox(owner: string): Promise<unknown>;
   submit(owner: string, operation: unknown): Promise<DashboardWriteOutcome>;
   /** Forwards the WebSocket upgrade to the ProjectAgent with `owner` as the connection's person. */
@@ -234,6 +237,10 @@ async function handleApi(
   if (url.pathname === "/api/inbox") {
     if (request.method !== "GET") return methodNotAllowed("GET");
     return json({ items: await (await handlers.dashboard()).inbox(session.owner) });
+  }
+  if (url.pathname === "/api/board") {
+    if (request.method !== "GET") return methodNotAllowed("GET");
+    return json(await (await handlers.dashboard()).board());
   }
   if (url.pathname === "/api/live") {
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {

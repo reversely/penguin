@@ -14,7 +14,7 @@ import type {
   IssuePageSubIssue,
   IssuePageTimelineEntry,
 } from "@penguin/protocol";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ChangeEvent, type FormEvent } from "react";
 
 import { fetchIssue, SignedOut, submitOperation } from "./api.ts";
 import {
@@ -254,11 +254,11 @@ function IssueContent({
   );
 }
 
-function SignalTag({ signal, children }: { signal: Signal; children?: string }) {
+export function SignalTag({ signal, children }: { signal: Signal; children?: string }) {
   return <span className={`tag signal signal-${signal}`}>{children ?? SIGNAL_LABEL[signal]}</span>;
 }
 
-function PenguinIndicator({ state }: { state: PenguinState }) {
+export function PenguinIndicator({ state }: { state: PenguinState }) {
   const slug = state.replaceAll(" ", "-");
   return (
     <span className={`penguin penguin-${slug}`} role="status">
@@ -415,7 +415,7 @@ function CommentBox({
   const [sending, setSending] = useState(false);
   const [problem, setProblem] = useState<string | undefined>(undefined);
 
-  const submit = (event: SubmitEvent) => {
+  const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (body.trim() === "" || sending) return;
     setSending(true);
@@ -446,7 +446,7 @@ function CommentBox({
         maxLength={32768}
         placeholder="Comment"
         value={body}
-        onChange={(event: Event) => setBody((event.target as HTMLTextAreaElement).value)}
+        onChange={(event: ChangeEvent<HTMLTextAreaElement>) => setBody(event.target.value)}
       />
       <div className="comment-actions">
         {problem === undefined ? null : (

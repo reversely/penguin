@@ -185,6 +185,11 @@ export class IdentityStore {
     return row === undefined ? undefined : this.#identity(row);
   }
 
+  /** Every identity, in handle order. */
+  list(): Identity[] {
+    return this.#db.exec(`SELECT * FROM Identity ORDER BY handle`).map((row) => this.#identity(row));
+  }
+
   /** The identity with this handle, or undefined. */
   byHandle(handle: string): Identity | undefined {
     const [row] = this.#db.exec(`SELECT * FROM Identity WHERE handle = ?`, handle);

@@ -8,7 +8,9 @@
 //
 // IndexListener.issueChanged runs inside the operation's transaction, so the feed only collects the
 // issue ids there and sends one message after the current task. A rolled-back operation can still
-// announce its issue; the message carries no data, and the dashboard reads the issue again.
+// announce its issue; the message carries no data, and the dashboard reads the issue again. The
+// session router reports the same way when a session goes online or offline and when an issue's
+// route changes (SessionListener in session-store.ts).
 
 import { indexChangedMessage } from "@penguin/protocol";
 
@@ -24,6 +26,7 @@ export class LiveFeed {
   readonly #send: (message: string) => void;
   readonly #defer: (task: () => void) => void;
   #pending = new Set<string>();
+  #sessions = new Set<string>();
 
   // The default wraps queueMicrotask: workerd throws "Illegal invocation" when it is called unbound.
   constructor(send: (message: string) => void, defer: (task: () => void) => void = (task) => queueMicrotask(task)) {
@@ -32,13 +35,25 @@ export class LiveFeed {
   }
 
   issueChanged(issueId: string): void {
-    if (this.#pending.size === 0) this.#defer(() => this.#flush());
+    this.#schedule();
     this.#pending.add(issueId);
+  }
+
+  /** A session of the identity with this handle went online or offline. */
+  sessionChanged(handle: string): void {
+    this.#schedule();
+    this.#sessions.add(handle);
+  }
+
+  #schedule(): void {
+    if (this.#pending.size === 0 && this.#sessions.size === 0) this.#defer(() => this.#flush());
   }
 
   #flush(): void {
     const issues = this.#pending;
+    const sessions = this.#sessions;
     this.#pending = new Set();
-    if (issues.size > 0) this.#send(indexChangedMessage(issues));
+    this.#sessions = new Set();
+    if (issues.size > 0 || sessions.size > 0) this.#send(indexChangedMessage(issues, sessions));
   }
 }

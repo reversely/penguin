@@ -1,6 +1,6 @@
 // The dashboard API client. Every call sends the session cookie; a 401 means the session ended.
 
-import type { IssuePage } from "@penguin/protocol";
+import type { Board, IssuePage } from "@penguin/protocol";
 
 export interface Session {
   readonly owner: string;
@@ -49,6 +49,10 @@ export async function fetchSession(): Promise<Session | undefined> {
 
 export async function fetchInbox(): Promise<InboxItem[]> {
   return (await getJson<{ items: InboxItem[] }>("/api/inbox")).items;
+}
+
+export async function fetchBoard(): Promise<Board> {
+  return getJson<Board>("/api/board");
 }
 
 /** The issue page, or undefined when no issue has this number or temporary ID. */

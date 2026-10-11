@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { fetchInbox, fetchSession, SignedOut, type Session } from "./api.ts";
+import { BoardPage } from "./board-page.tsx";
 import { IssuePageView } from "./issue-page.tsx";
 import { linkHandler } from "./links.ts";
 import { NAVIGATION, parseRoute, signInProblem, type Route, type SignInProblem } from "./routes.ts";
@@ -104,9 +105,11 @@ function Shell({ session, onSignedOut }: { session: Session; onSignedOut: () => 
           </div>
         </div>
       </header>
-      <main className="page" data-audit-center>
+      <main className={route?.page === "board" ? "page page-wide" : "page"} data-audit-center>
         {route?.page === "issue" ? (
           <IssuePageView key={route.issueId} issueId={route.issueId} live={live} navigate={navigate} onSignedOut={onSignedOut} />
+        ) : route?.page === "board" ? (
+          <BoardPage viewer={session.owner} live={live} navigate={navigate} onSignedOut={onSignedOut} />
         ) : (
           <h1>{pageTitle(route)}</h1>
         )}

@@ -10,7 +10,10 @@
 // session goes offline its issues stay open and assigned, and route again the same way.
 //
 // Offline sessions are found lazily: every call first marks the sessions whose window has passed, so
-// no scheduled task is needed and every read sees the current state.
+// every read sees the current state. `sweep` runs the same check on its own and returns when the next
+// running session's window ends; the ProjectAgent schedules it then, so a session that stops sending
+// heartbeats goes offline on connected dashboards without anyone reading. A SessionListener hears when
+// a session goes online or offline and when an issue's route changes, for the live feed.
 
 import type { Assignment } from "@penguin/issues";
 import { IDENTITY_HANDLE_MAX_LENGTH, SEGMENT_PATTERN } from "@penguin/protocol";
@@ -106,6 +109,17 @@ export interface StartRequestListener {
   startWithdrawn(ownerId: string, issueId: string): void;
 }
 
+/**
+ * Hears of routing changes for the live feed. Runs inside the caller's transaction and must not open
+ * one; the feed only collects the names and sends after the transaction.
+ */
+export interface SessionListener {
+  /** A session of the identity with this handle registered or went offline. */
+  sessionChanged(handle: string): void;
+  /** An issue's routed session or what it waits for may have changed. */
+  routeChanged(issueId: string): void;
+}
+
 export interface SessionStoreOptions {
   readonly now?: () => number;
   readonly newId?: () => string;
@@ -117,6 +131,7 @@ export interface SessionStoreOptions {
   readonly assigningOwner?: (issueId: string, handle: string) => string | undefined;
   /** The inbox (inbox-store.ts), which turns each request to start a session into an inbox item. */
   readonly startRequests?: StartRequestListener;
+  readonly listener?: SessionListener;
 }
 
 /** The routing tables. They hold live state only: a rebuild from the issues repo never routes. */
@@ -153,6 +168,7 @@ export class SessionStore implements AssignmentListener {
   readonly #offlineAfterMs: number;
   readonly #assigningOwner: (issueId: string, handle: string) => string | undefined;
   readonly #startRequests: StartRequestListener | undefined;
+  readonly #listener: SessionListener | undefined;
 
   /** Create after the IssueIndex on the same handle: routing reads and writes its Assignment table. */
   constructor(db: SqlDatabase, identities: IdentityStore, options: SessionStoreOptions = {}) {
@@ -163,6 +179,7 @@ export class SessionStore implements AssignmentListener {
     this.#offlineAfterMs = options.offlineAfterMs ?? SESSION_OFFLINE_AFTER_MS;
     this.#assigningOwner = options.assigningOwner ?? (() => undefined);
     this.#startRequests = options.startRequests;
+    this.#listener = options.listener;
     for (const statement of SESSION_SCHEMA) db.exec(statement);
   }
 
@@ -196,6 +213,7 @@ export class SessionStore implements AssignmentListener {
         fields.branch,
         this.#now(),
       );
+      this.#listener?.sessionChanged(identity.handle);
       this.#routeIdentity(identity);
       return { status: "ok", session: this.#session(id) as Session };
     });
@@ -218,6 +236,29 @@ export class SessionStore implements AssignmentListener {
     return this.#db.transaction(() => {
       this.#expire();
       return this.#session(sessionId);
+    });
+  }
+
+  /** Every running session, most recently seen first. */
+  running(): Session[] {
+    return this.#db.transaction(() => {
+      this.#expire();
+      return this.#db
+        .exec(`SELECT id FROM Session WHERE status = 'running' ORDER BY last_seen DESC, rowid DESC`)
+        .flatMap((row) => this.#session(row["id"] as string) ?? []);
+    });
+  }
+
+  /**
+   * Marks the sessions whose offline window has passed, and returns when the next running session's
+   * window ends, in epoch milliseconds, or undefined when no session is running.
+   */
+  sweep(): number | undefined {
+    return this.#db.transaction(() => {
+      this.#expire();
+      const [row] = this.#db.exec(`SELECT MIN(last_seen) AS oldest FROM Session WHERE status = 'running'`);
+      const oldest = row?.["oldest"];
+      return oldest === null || oldest === undefined ? undefined : Number(oldest) + this.#offlineAfterMs;
     });
   }
 
@@ -262,6 +303,7 @@ export class SessionStore implements AssignmentListener {
         this.#now(),
       );
       this.#dropRequests(issueId, identity.id, "accept");
+      this.#listener?.routeChanged(issueId);
       // Accepting again, or accepting an auto-accepted assignment, leaves a routed issue where it is.
       const routed = this.#routedSession(issueId, identity);
       return { status: "ok", sessionId: routed ?? this.#route(issueId, identity) };
@@ -348,6 +390,7 @@ export class SessionStore implements AssignmentListener {
     );
     if (sessionId === null) this.#request("start", issueId, identity);
     else this.#dropRequests(issueId, identity.id, "start");
+    this.#listener?.routeChanged(issueId);
     return sessionId;
   }
 
@@ -373,12 +416,18 @@ export class SessionStore implements AssignmentListener {
     if (expired.length === 0) return;
     const identities = new Set<string>();
     for (const row of expired) {
-      this.#db.exec(`UPDATE Assignment SET session_id = NULL WHERE session_id = ?`, row["id"] as string);
+      const unrouted = this.#db.exec(
+        `UPDATE Assignment SET session_id = NULL WHERE session_id = ? RETURNING issue_id`,
+        row["id"] as string,
+      );
+      for (const issue of unrouted) this.#listener?.routeChanged(issue["issue_id"] as string);
       identities.add(row["identity_id"] as string);
     }
     for (const id of identities) {
       const identity = this.#identities.get(id);
-      if (identity !== undefined) this.#routeIdentity(identity);
+      if (identity === undefined) continue;
+      this.#listener?.sessionChanged(identity.handle);
+      this.#routeIdentity(identity);
     }
   }
 

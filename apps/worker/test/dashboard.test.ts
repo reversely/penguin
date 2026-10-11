@@ -40,6 +40,9 @@ class Backend implements DashboardBackend {
   async readIssue(issueId: string) {
     return this.issues.get(issueId);
   }
+  async board() {
+    return { owners: [{ id: "jun", identities: [] }], issues: [...this.issues.values()] };
+  }
   async inbox(owner: string) {
     return [{ personId: owner, issueId: "40", reason: "mentioned", read: false, raisedAt: "2026-10-10T12:00:00.000Z" }];
   }
@@ -137,6 +140,7 @@ describe("an unauthenticated visit", () => {
       ["/api/session"],
       ["/api/inbox"],
       ["/api/issues/40"],
+      ["/api/board"],
       ["/api/live", { headers: { Upgrade: "websocket" } }],
       ["/api/operations", { method: "POST", headers: { Origin: ORIGIN }, body: "{}" }],
       ["/api/anything"],
@@ -290,7 +294,7 @@ describe("a signed-in person", () => {
     assert.deepEqual(browser.backend.writes, []);
   });
 
-  test("reads an issue and their own inbox", async () => {
+  test("reads an issue, the board and their own inbox", async () => {
     const browser = new Browser();
     const page = { issue: { id: "40", title: "Board filter" }, subIssues: [], timeline: [] };
     browser.backend.issues.set("40", page);
@@ -299,6 +303,11 @@ describe("a signed-in person", () => {
     assert.equal(read.status, 200);
     assert.deepEqual(await read.json(), page);
     assert.equal((await browser.request("/api/issues/41")).status, 404);
+    const board = await browser.request("/api/board");
+    assert.equal(board.status, 200);
+    assert.ok(board.headers.get("Content-Security-Policy"));
+    assert.deepEqual(await board.json(), { owners: [{ id: "jun", identities: [] }], issues: [page] });
+    assert.equal((await browser.request("/api/board", { method: "POST", headers: { Origin: ORIGIN } })).status, 405);
     const inbox = (await (await browser.request("/api/inbox")).json()) as { items: { personId: string }[] };
     assert.deepEqual(
       inbox.items.map((item) => item.personId),
