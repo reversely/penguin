@@ -1,0 +1,17 @@
+{
+  "$comment": "Owners of this repository. Format: a JSON object whose 'owners' array holds one entry per owner with 'id' (lowercase, referenced by penguin/scopes.json and penguin/identities.json), 'display_name', 'delegate_owner_id' (the id of the owner who reviews in this owner's absence, or null) and 'role' (one of 'owner', 'delegate', 'integrator', 'observer').",
+  "owners": [
+    {
+      "id": "hugo",
+      "display_name": "Hugo",
+      "delegate_owner_id": null,
+      "role": "owner"
+    },
+    {
+      "id": "ana",
+      "display_name": "Ana",
+      "delegate_owner_id": null,
+      "role": "owner"
+    }
+  ]
+}

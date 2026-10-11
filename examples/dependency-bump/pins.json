@@ -1,0 +1,15 @@
+{
+  "$comment": "Commit SHAs a build of this fixture produces. Format: a JSON object with three objects. 'branches' maps each branch build.py creates to its head commit SHA: 'main' holds the base commit, 'owner-hugo' holds Hugo's upgrade of the shared HTTP client (Hugo makes no fix commit, so it equals the checkpoint), and 'owner-ana' holds Ana's fix commit. 'tags' maps each tag build.py creates to its commit SHA: '<branch>-checkpoint' is the owner's checkpoint before the fix. 'fixes' maps the pytest node ID of each test that fails on the merged checkpoints to the SHA of the commit that makes it pass. tests/test_dependency_bump_builder.py checks that a fresh build reproduces every branch and tag SHA; tests/test_dependency_bump_reproduction.py checks the 'fixes' entries.",
+  "branches": {
+    "main": "2c99c3b8ddb6bc6614b97defdbb05f8137522e79",
+    "owner-hugo": "f4cca7502ccff61067a0dbf118962addb89d7115",
+    "owner-ana": "d753140cc4af1eb28a497f56526b65d49b8b898c"
+  },
+  "tags": {
+    "owner-hugo-checkpoint": "f4cca7502ccff61067a0dbf118962addb89d7115",
+    "owner-ana-checkpoint": "d9bcd7b86ff07fbb92c94462405d5841934e9c04"
+  },
+  "fixes": {
+    "payments/tests/test_webhooks.py::test_timed_out_charge_is_charged_once": "d753140cc4af1eb28a497f56526b65d49b8b898c"
+  }
+}
