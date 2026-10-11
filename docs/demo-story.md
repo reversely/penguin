@@ -59,4 +59,4 @@ is sent to.
   one click away for anyone checking.
 - One frame, one point. A frame that needs the caption to make sense fails.
 
-Frame 9 depends on an open decision on the Penguin Build board: where an approved result goes.
+Frame 9 follows PRD section 6 step 8: the Huddle closes with the `approved` branch recorded in its Huddle repo. Merging it is a separate action (PRD section 5).
