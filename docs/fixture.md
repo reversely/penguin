@@ -35,7 +35,7 @@ and Sam's work. Case 1 names each test by module and test name without the `test
 
 ## Fixes
 
-The fixes follow case 1 in [design.md](design.md). Merged with the other owner's
+The fixes follow case 1 in [the README](../README.md#use-cases). Merged with the other owner's
 checkpoint, each fix makes its own test pass without help from another fix.
 
 | Pytest node ID | Fix commit | Fix |

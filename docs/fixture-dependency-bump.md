@@ -1,6 +1,6 @@
 # Dependency-bump fixture
 
-The dependency-bump fixture is a small Git repository for case 3 in [design.md](design.md): the dependency
+The dependency-bump fixture is a small Git repository for case 3 in [the README](../README.md#use-cases): the dependency
 bump. Hugo owns the shared HTTP client. Hugo upgrades it from wire 1.4.0 to wire 2.0.0 to fix a
 dropped request in Hugo's carrier integration. wire 2.0.0 retries a timed-out request by default.
 Ana's payment webhook charges an order through that client. On the merged checkpoints a charge whose

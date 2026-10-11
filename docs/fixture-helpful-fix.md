@@ -1,6 +1,6 @@
 # Helpful-fix fixture
 
-The helpful-fix fixture is a small Git repository for case 2 in [design.md](design.md): the helpful fix.
+The helpful-fix fixture is a small Git repository for case 2 in [the README](../README.md#use-cases): the helpful fix.
 Priya owns the shared date helper `start_of_day()` . Priya changes it to
 return a UTC midnight to fix a bug in Priya's own ingestion batches. That change breaks Jun's weekly
 report and Sam's reminder scheduling. `examples/helpful-fix/build.py` builds the repository from the
