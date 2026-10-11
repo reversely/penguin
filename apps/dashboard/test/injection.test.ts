@@ -92,6 +92,51 @@ test("markup in a handle stays an escaped attribute on a character and an initia
   assert.doesNotMatch(html, /<img|onerror="/);
 });
 
+test("markup in an identity's handle, name, job, charter and owners renders as text in its row, detail and form", async () => {
+  const { render } = await load<{ render: (identity: unknown, scopes: unknown[]) => string }>(`
+    import { renderToStaticMarkup } from "react-dom/server";
+    import { createElement, Fragment } from "react";
+    import { IdentityDetail, IdentityFormView, IdentityList } from "./src/identities-page.tsx";
+    import { formFor } from "./src/identities-view.ts";
+    export function render(identity, scopes) {
+      const limits = { nameLength: 80, jobLength: 1000, rules: 32, ruleLength: 1000, scopes: 32, paths: 64, pathLength: 512, teamOwners: 16, avatarBytes: 65536 };
+      const page = { identities: [identity], scopes, owners: identity.owners, limits };
+      const noop = () => {};
+      return renderToStaticMarkup(createElement(Fragment, null,
+        createElement(IdentityList, { identities: [identity], selectedId: identity.id, onChoose: noop }),
+        createElement(IdentityDetail, { identity, scopes, viewer: identity.owners[0], navigate: noop, onBack: noop, onEdit: noop, onDuplicate: noop }),
+        createElement(IdentityFormView, { initialForm: formFor(identity, "edit", identity.owners[0], new Set()), page, viewer: identity.owners[0], onCancel: noop, onSaved: noop, onSignedOut: noop })));
+    }`);
+  const html = render(
+    {
+      id: "identity-1",
+      handle: `@jun/${MARKUP}`,
+      name: "<b>Reports</b>",
+      avatar: null,
+      job: "<script>globalThis.pwned = 2</script>",
+      team: true,
+      owners: ["jun", "<i>sam</i>"],
+      charterScopes: ["analytics"],
+      charterPaths: ["<u>analytics</u>"],
+      charterRules: ["<em>rule</em>"],
+      autoAccept: true,
+      duplicatedFrom: null,
+      sessions: [{ id: "s1", vendor: "<b>codex</b>", branch: "b", status: "running", lastSeen: "2026-10-11T09:00:00.000Z" }],
+      history: [],
+    },
+    [{ id: "analytics", name: "<s>Analytics</s>", ownerId: "jun", testCommand: "<kbd>pytest</kbd>" }],
+  );
+  assert.match(html, /@jun\/&lt;img src=x onerror=&quot;globalThis\.pwned = 1&quot;&gt;/);
+  assert.match(html, /&lt;b&gt;Reports&lt;\/b&gt;/);
+  assert.match(html, /&lt;script&gt;globalThis\.pwned = 2&lt;\/script&gt;/);
+  assert.match(html, /jun, &lt;i&gt;sam&lt;\/i&gt;/);
+  assert.match(html, /&lt;s&gt;Analytics&lt;\/s&gt;/);
+  assert.match(html, /&lt;kbd&gt;pytest&lt;\/kbd&gt;/);
+  assert.match(html, /&lt;u&gt;analytics&lt;\/u&gt;/);
+  assert.match(html, /&lt;em&gt;rule&lt;\/em&gt;/);
+  assert.doesNotMatch(html, /<img|<script|<b>|<i>|<s>|<kbd>|<u>|<em>|onerror="/);
+});
+
 test("markup in the owner's name and an issue title renders as text in the shell's menu and details panel", async () => {
   const { render } = await load<{ render: (owner: string, title: string) => string }>(`
     import { renderToStaticMarkup } from "react-dom/server";

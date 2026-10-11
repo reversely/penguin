@@ -109,9 +109,9 @@ test("lists each identity with every field, its owners and the scopes and owners
   assert.equal(page.identities[1]?.team, true);
   assert.deepEqual(page.identities[1]?.owners, ["sam", "jun"]);
   assert.deepEqual(page.scopes, [
-    { id: "identity-map", name: "Ingestion and identity map", ownerId: "priya" },
-    { id: "analytics", name: "Analytics models", ownerId: "jun" },
-    { id: "messaging", name: "Messaging and CRM sync", ownerId: "sam" },
+    { id: "identity-map", name: "Ingestion and identity map", ownerId: "priya", testCommand: "python -m pytest ingestion" },
+    { id: "analytics", name: "Analytics models", ownerId: "jun", testCommand: "python -m pytest analytics" },
+    { id: "messaging", name: "Messaging and CRM sync", ownerId: "sam", testCommand: "python -m pytest messaging" },
   ]);
   assert.deepEqual(page.owners, ["jun", "priya", "sam"]);
   assert.deepEqual(page.limits, IDENTITY_LIMITS);

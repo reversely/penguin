@@ -7,6 +7,12 @@ import {
   avatarProblem,
   blankForm,
   canEdit,
+  fieldProblem,
+  handleIsFree,
+  isOnline,
+  ownersLine,
+  scopeTestCommand,
+  tabAfterKey,
   formFor,
   formProblem,
   formRequest,
@@ -30,9 +36,9 @@ const LIMITS: IdentityLimits = {
 };
 
 const SCOPES: IdentityScope[] = [
-  { id: "identity-map", name: "Ingestion and identity map", ownerId: "priya" },
-  { id: "analytics", name: "Analytics models", ownerId: "jun" },
-  { id: "messaging", name: "Messaging and CRM sync", ownerId: "sam" },
+  { id: "identity-map", name: "Ingestion and identity map", ownerId: "priya", testCommand: "python -m pytest ingestion" },
+  { id: "analytics", name: "Analytics models", ownerId: "jun", testCommand: "python -m pytest analytics" },
+  { id: "messaging", name: "Messaging and CRM sync", ownerId: "sam", testCommand: "python -m pytest messaging" },
 ];
 
 const reports: IdentityEntry = {
@@ -150,4 +156,40 @@ test("lines, avatar checks, base64 and the handle cap", () => {
   const bytes = Uint8Array.from({ length: 70_000 }, (_, i) => i % 256);
   assert.equal(toBase64(bytes), Buffer.from(bytes).toString("base64"));
   assert.equal(handleNameMaxLength("jun"), 80 - "@jun/".length);
+});
+
+test("a field shows its own problem when left, and a free handle is one no identity holds", () => {
+  const ok = { ...blankForm("jun"), handleName: "reports", name: "Reports", job: "Fix" };
+  assert.equal(fieldProblem(ok, "handle"), undefined);
+  assert.ok(fieldProblem({ ...ok, handleName: "Bad" }, "handle"));
+  assert.equal(fieldProblem({ ...ok, handleName: "" }, "handle"), "Please enter a handle");
+  assert.ok(fieldProblem({ ...ok, name: " " }, "name"));
+  assert.ok(fieldProblem({ ...ok, job: "" }, "job"));
+  // An edit keeps its handle and a duplicate carries its job over, so neither is checked.
+  assert.equal(fieldProblem(formFor(reports, "edit", "jun", new Set()), "handle"), undefined);
+  assert.equal(fieldProblem({ ...formFor(reports, "duplicate", "jun", new Set()), job: "" }, "job"), undefined);
+  const taken = new Set(["@jun/reports"]);
+  assert.equal(handleIsFree(ok, "jun", taken), false);
+  assert.equal(handleIsFree({ ...ok, handleName: "cohorts" }, "jun", taken), true);
+  assert.equal(handleIsFree({ ...ok, handleName: "Cohorts" }, "jun", taken), false);
+  assert.equal(handleIsFree(formFor(reports, "edit", "jun", taken), "jun", taken), false);
+});
+
+test("the header's owners, the online dot and a scope's test command", () => {
+  assert.equal(ownersLine({ ...reports, owners: ["sam", "jun"] }), "sam, jun");
+  assert.equal(isOnline(reports), false);
+  const session = { id: "s1", vendor: "codex", branch: "b", status: "offline" as const, lastSeen: "2026-10-11T09:00:00Z" };
+  assert.equal(isOnline({ ...reports, sessions: [session] }), false);
+  assert.equal(isOnline({ ...reports, sessions: [session, { ...session, id: "s2", status: "running" as const }] }), true);
+  assert.equal(scopeTestCommand(SCOPES, "analytics"), "python -m pytest analytics");
+  assert.equal(scopeTestCommand(SCOPES, "gone"), undefined);
+});
+
+test("arrow, Home and End keys move between the detail's tabs and wrap at the ends", () => {
+  assert.equal(tabAfterKey("details", "ArrowRight"), "sessions");
+  assert.equal(tabAfterKey("history", "ArrowRight"), "details");
+  assert.equal(tabAfterKey("details", "ArrowLeft"), "history");
+  assert.equal(tabAfterKey("sessions", "Home"), "details");
+  assert.equal(tabAfterKey("sessions", "End"), "history");
+  assert.equal(tabAfterKey("sessions", "Enter"), undefined);
 });

@@ -1931,11 +1931,13 @@ a.row-title {
   }
 }
 
-/* Identities */
+/* Identities (identity plan sections 4 and 5). From 760px the list fills the sidebar's list slot and
+   the centre shows the chosen identity; below 760px the list and the chosen identity are separate
+   screens in the centre. */
 
 .identities {
   display: grid;
-  gap: 1.25rem;
+  gap: var(--space-5);
 }
 
 .identities-header {
@@ -1943,190 +1945,461 @@ a.row-title {
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 0.5rem 1rem;
+  gap: var(--space-2) var(--space-4);
 }
 
-.identities-layout {
+.identity-list {
   display: grid;
-  gap: 1.25rem;
-  align-items: start;
+  gap: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--line);
 }
 
-@container centre (min-width: 960px) {
-  .identities-layout {
-    grid-template-columns: 20rem minmax(0, 1fr);
-  }
+.identity-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding-left: var(--space-1);
 }
 
-/* In one column the chosen identity or the open form comes before the list. */
-@container centre (max-width: 959.98px) {
-  .identity-detail {
-    order: -1;
-  }
+.identity-list-head h2 {
+  margin: 0;
+  color: var(--ink-muted);
+  font: var(--text-meta);
 }
 
 .identity-rows {
   display: grid;
-  gap: 0.25rem;
+  gap: var(--space-1);
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
+/* A row (Grok Bot's list row): 48px, its avatar 4px from the edge and 8px from the text. A selected
+   row takes the raised fill, on which every character hue keeps 3:1 (light 3.42 to 4.11, dark 3.57 to
+   4.29); on --selected the green, teal and blue hues fall to 2.78:1 in light. --row-base is the pane
+   under the row and --row-fill the row's own, which rings the online dot. */
 .identity-row {
+  --row-base: var(--surface);
+  --row-fill: var(--row-base);
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  width: 100%;
-  min-height: 2.75rem;
-  padding: 0.375rem 0.5rem;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  background: none;
+  gap: var(--space-2);
+  min-height: 3rem;
+  padding: var(--space-1) var(--space-2) var(--space-1) var(--space-1);
+  border-radius: var(--radius-row);
+  background: var(--row-fill);
   color: var(--ink);
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
+  text-decoration: none;
+  transition:
+    background-color var(--dur-hover) var(--ease-out),
+    box-shadow var(--dur-hover) var(--ease-out),
+    scale var(--dur-press) var(--ease-out);
 }
 
-.identity-row:hover {
-  background: var(--field);
+.centre .identity-row {
+  --row-base: var(--field);
 }
 
-.identity-row[aria-current="true"] {
-  border-color: var(--line);
-  background: var(--field);
+.identity-row:active {
+  scale: 0.96;
+}
+
+.identity-row[aria-current="page"] {
+  --row-fill: var(--surface-raised);
+  box-shadow: var(--elevation-raised);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .identity-row:not([aria-current="page"]):hover {
+    --row-fill: color-mix(in oklab, var(--surface-raised) 60%, var(--row-base));
+  }
+}
+
+.identity-row-avatar {
+  position: relative;
+  display: inline-grid;
+  flex: none;
+}
+
+.online-dot {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--online);
+  box-shadow: 0 0 0 2px var(--row-fill);
 }
 
 .identity-row-text {
   display: grid;
   flex: 1;
   min-width: 0;
-  line-height: 1.3;
 }
 
-.identity-row-text .row-title {
-  font-weight: 500;
+.identity-row-handle,
+.identity-row-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.identity-row-handle {
+  font: var(--text-title);
+  line-height: 1.2;
 }
 
 .identity-row-name {
+  color: var(--ink-muted);
   font: var(--text-ui);
-  overflow-wrap: anywhere;
 }
 
+/* Detail (Devin's playbook header): back link on a phone, avatar, handle, name, owners, actions. */
 .identity-detail {
-  gap: 1rem;
+  display: grid;
+  gap: var(--space-5);
+  min-width: 0;
+}
+
+.back-link {
+  display: inline-flex;
+  align-items: center;
+  justify-self: start;
+  gap: var(--space-2);
+  min-height: 2.75rem;
+  color: var(--ink-muted);
+  font: var(--text-ui);
+  font-weight: 500;
+  text-decoration: none;
+  transition: color var(--dur-hover) var(--ease-out);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .back-link:hover {
+    color: var(--ink);
+  }
 }
 
 .identity-head {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.75rem;
+  gap: var(--space-3) var(--space-4);
 }
 
 .identity-title {
   display: grid;
-  flex: 1 1 12rem;
+  flex: 1 1 14rem;
+  gap: 2px;
   min-width: 0;
 }
 
-.identity-title h2 {
-  font: var(--text-display);
-  letter-spacing: var(--tracking-display);
+.identity-name,
+.identity-meta {
+  margin: 0;
+  color: var(--ink-muted);
   overflow-wrap: anywhere;
 }
 
-.identity-title p {
-  overflow-wrap: anywhere;
+.identity-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  font: var(--text-meta);
 }
 
 .identity-actions,
 .form-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
+  gap: var(--space-2);
 }
 
 .form-actions {
   justify-content: flex-end;
 }
 
-.identity-facts {
-  display: grid;
-  gap: 0.625rem;
-  margin: 0;
-}
-
-.identity-facts > div {
-  display: grid;
-  grid-template-columns: 8rem minmax(0, 1fr);
-  gap: 0.75rem;
-  align-items: start;
-}
-
-.identity-facts dt {
-  color: var(--ink-muted);
-  line-height: 1.5rem;
-}
-
-.identity-facts dd {
+/* Segmented tabs: the selected tab takes --selected; weight never changes, so labels never shift. */
+.identity-tabs {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
-  gap: 0.375rem;
-  min-width: 0;
-  margin: 0;
-  line-height: 1.5rem;
-  overflow-wrap: anywhere;
+  gap: var(--space-1);
 }
 
-/* On a phone each label sits above its value, so the value has the panel's full width. */
-@media (max-width: 599.98px) {
-  .identity-facts > div {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 0.125rem;
+.identity-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 2.25rem;
+  padding: 0 var(--space-3);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--ink-muted);
+  font: var(--text-ui);
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background-color var(--dur-hover) var(--ease-out),
+    color var(--dur-hover) var(--ease-out);
+}
+
+.identity-tab[aria-selected="true"] {
+  background: var(--selected);
+  color: var(--ink);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .identity-tab:not([aria-selected="true"]):hover {
+    background: color-mix(in oklab, var(--selected) 60%, transparent);
+    color: var(--ink);
   }
 }
 
-.identity-facts .tag {
-  border-radius: 0.625rem;
+.tab-count {
+  color: var(--ink-muted);
+  font: var(--text-meta);
+  font-variant-numeric: tabular-nums;
 }
 
-.identity-facts .identity-paths {
-  flex-direction: column;
-  align-items: flex-start;
-}
-
-.identity-path {
-  max-width: 100%;
-  padding: 0 0.375rem;
-  border-radius: 4px;
-  background: var(--field);
-}
-
-.identity-rules {
+.identity-panel {
   display: grid;
-  gap: 0.375rem;
+  gap: var(--space-4);
+  min-width: 0;
+  border-radius: var(--radius-sm);
+}
+
+/* A raised card on the field, as Devin's description and settings cards. Its footer note runs to the
+   card's edges on --surface. */
+.identity-card {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+  margin: 0;
+  padding: var(--space-4) var(--space-5);
+  border-radius: var(--radius-card);
+  background: var(--surface-raised);
+  box-shadow: var(--elevation-raised);
+}
+
+/* Prose in a card keeps a readable measure however wide the centre grows. */
+.identity-card .body-text,
+.charter-rules {
+  max-width: 72ch;
+}
+
+.identity-card h2 {
+  margin: 0;
+  font: var(--text-heading);
+}
+
+.identity-card-note {
+  margin: var(--space-1) calc(-1 * var(--space-5)) calc(-1 * var(--space-4));
+  padding: var(--space-3) var(--space-5);
+  border-radius: 0 0 var(--radius-card) var(--radius-card);
+  background: var(--surface);
+  color: var(--ink-muted);
+  font: var(--text-meta);
+}
+
+/* Charter sentence rows (Devin's automation rules): connecting words, then token chips. */
+.charter {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+}
+
+.charter-row {
+  display: grid;
+  grid-template-columns: 5rem minmax(0, 1fr);
+  align-items: baseline;
+  gap: var(--space-3);
+}
+
+.charter-row dt,
+.charter-word {
+  color: var(--ink-muted);
+  font: var(--text-ui);
+}
+
+.charter-row dd {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+}
+
+.chip,
+.code-chip {
+  max-width: 100%;
+  background: var(--selected);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 1.75rem;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-sm);
+  font: var(--text-ui);
+}
+
+.code-chip {
+  padding: 0.125rem var(--space-2);
+  border-radius: var(--radius-xs);
+}
+
+.charter-rules {
+  display: grid;
+  flex: 1 1 100%;
+  gap: var(--space-2);
   min-width: 0;
   margin: 0;
   padding-left: 1.25rem;
 }
 
-.identity-section {
-  display: grid;
-  gap: 0.625rem;
+/* Settings rows (Devin's Macro row): label and hint at the left, the control at the right. */
+.settings {
+  gap: 0;
+  padding-block: var(--space-1);
+}
+
+.setting {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-4);
   min-width: 0;
-  padding-top: 1rem;
+  margin: 0;
+  padding: var(--space-3) 0;
   border-top: 1px solid var(--line);
 }
 
-.identity-section h3 {
+.setting:first-child {
+  border-top: 0;
+}
+
+.setting-text {
+  display: grid;
+  flex: 1 1 14rem;
+  gap: 2px;
+  min-width: 0;
+}
+
+.setting-label {
+  color: var(--ink);
+  font: var(--text-ui);
+  font-weight: 500;
+}
+
+.setting-hint,
+.field-problem {
   margin: 0;
-  font: var(--text-heading);
+  font: var(--text-ui);
+}
+
+.setting-hint {
+  color: var(--ink-muted);
+}
+
+.field-problem {
+  color: var(--offline);
+}
+
+.setting-control {
+  display: flex;
+  flex: 0 1 20rem;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.setting-value {
+  margin: 0;
+  font: var(--text-ui);
+  overflow-wrap: anywhere;
+}
+
+.setting-stacked .setting-control {
+  flex-basis: 100%;
+}
+
+.setting-check {
+  cursor: pointer;
+}
+
+.setting-check .setting-control {
+  flex: none;
+}
+
+.setting-check input,
+.chip-check input {
+  flex: none;
+  width: 1.5rem;
+  height: 1.5rem;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+/* Sessions and issue history: rows split by hairlines in one card. */
+.identity-list-rows {
+  gap: 0;
+  padding-block: var(--space-1);
+  list-style: none;
+}
+
+.identity-list-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+  min-width: 0;
+  padding: var(--space-3) 0;
+  border-top: 1px solid var(--line);
+}
+
+.identity-list-row:first-child {
+  border-top: 0;
+}
+
+.session-state {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font: var(--text-ui);
+  font-weight: 500;
+}
+
+.session-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--online);
+}
+
+.session-offline .session-dot {
+  display: none;
+}
+
+.identity-branch {
+  min-width: 0;
+  color: var(--ink-muted);
 }
 
 .identity-time {
+  margin-left: auto;
   font: var(--text-meta);
   font-variant-numeric: tabular-nums;
 }
@@ -2140,6 +2413,153 @@ a.row-title {
   min-width: 0;
   min-height: 1.5rem;
   overflow-wrap: anywhere;
+}
+
+/* The form: settings rows, then the charter with its scopes as chips that toggle. */
+.charter-field {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.charter-field legend {
+  margin-bottom: var(--space-2);
+  padding: 0;
+}
+
+.charter-choices {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.charter-choices li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.chip-check {
+  min-height: 2.25rem;
+  background: none;
+  box-shadow: inset 0 0 0 1px var(--line);
+  cursor: pointer;
+}
+
+.chip-check:has(input:checked) {
+  background: var(--selected);
+  box-shadow: none;
+}
+
+/* The chip carries the focus ring, so its checkbox draws none of its own. */
+.chip-check:has(input:focus-visible) {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.chip-check input:focus-visible {
+  outline: none;
+}
+
+.identity-form [aria-invalid="true"] {
+  border-color: var(--failure);
+}
+
+.chip-owner {
+  color: var(--ink-muted);
+  font: var(--text-meta);
+}
+
+.handle-input {
+  position: relative;
+  display: flex;
+  flex: 1;
+  align-items: stretch;
+  min-width: 0;
+}
+
+.handle-prefix {
+  display: inline-flex;
+  align-items: center;
+  max-width: 50%;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--line);
+  border-right: 0;
+  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+  color: var(--ink-muted);
+  overflow-wrap: anywhere;
+}
+
+.identities .identity-form input:not([type]),
+.identities .identity-form textarea {
+  border-radius: var(--radius-sm);
+}
+
+.identity-form .handle-input input {
+  flex: 1;
+  min-width: 0;
+  padding-right: 2.25rem;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+
+/* The check sits over the input's right edge, so the input's border still marks its whole hit area. */
+.handle-free {
+  position: absolute;
+  top: 50%;
+  right: var(--space-3);
+  display: inline-grid;
+  color: var(--verified);
+  pointer-events: none;
+  translate: 0 -50%;
+}
+
+.avatar-field {
+  flex-wrap: wrap;
+}
+
+/* In a narrow centre a charter's words sit above their chips. */
+@container centre (max-width: 479.98px) {
+  .charter-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-1);
+  }
+
+  .identity-card {
+    padding-inline: var(--space-4);
+  }
+
+  .identity-card-note {
+    margin-inline: calc(-1 * var(--space-4));
+    padding-inline: var(--space-4);
+  }
+}
+
+/* On a phone or a touch screen the page's controls take a 44px target. */
+@media (max-width: 759.98px), (pointer: coarse) {
+  .identities .button,
+  .identity-tab,
+  .chip-check {
+    min-height: 2.75rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .identity-row,
+  .identity-tab,
+  .back-link {
+    transition: none;
+  }
+
+  .identity-row:active {
+    scale: none;
+  }
 }
 
 /* Form */
@@ -2199,37 +2619,6 @@ a.row-title {
   .identity-form .mono {
     font-size: 1rem;
   }
-}
-
-.handle-input {
-  display: flex;
-  align-items: stretch;
-  min-width: 0;
-}
-
-.handle-prefix {
-  display: inline-flex;
-  align-items: center;
-  max-width: 50%;
-  padding: 0 0.5rem;
-  border: 1px solid var(--line);
-  border-right: 0;
-  border-radius: 6px 0 0 6px;
-  color: var(--ink-muted);
-  overflow-wrap: anywhere;
-}
-
-.identity-form .handle-input input {
-  flex: 1;
-  min-width: 0;
-  border-radius: 0 6px 6px 0;
-}
-
-.avatar-field {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.5rem 0.75rem;
 }
 
 .checks {

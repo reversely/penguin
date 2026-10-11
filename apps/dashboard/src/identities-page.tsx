@@ -1,29 +1,54 @@
-// The identities page (PRD section 8): every identity in a list, the chosen one's charter, sessions
-// and issue history, and forms to create, edit and duplicate identities. Edit and duplicate controls
-// show only on the signed-in person's own identities. The page reads the identities again on every
-// live change, so an identity created in another browser shows without reload. Every value renders
-// as React text, so markup in a name, job or rule shows as text and runs nothing.
+// The identities page (PRD section 8; identity plan sections 4 and 5): every identity as a row in
+// the sidebar. The chosen one's detail fills the centre with a header, its actions and three tabs:
+// Details, Sessions and Issue history. Create, edit and duplicate open a form of settings rows in
+// the centre. Edit and duplicate controls show only on the signed-in person's own identities. On a
+// phone the list fills the screen and the chosen identity opens as its own screen with a back link.
+// The page reads the identities again on every live change, so an identity created in another
+// browser shows without reload. Every value renders as React text, so markup in a name, job or rule
+// shows as text and runs nothing.
 
 import type { IdentitiesPage, IdentityEntry, IdentityScope } from "@penguin/protocol";
-import { useCallback, useEffect, useMemo, useState, type ChangeEvent, type FormEvent } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type FormEvent,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
+import { createPortal } from "react-dom";
 
 import { fetchIdentities, SignedOut, writeIdentity } from "./api.ts";
 import { IdentityAvatar } from "./avatar.tsx";
+import { useMediaQuery } from "./details-pane.tsx";
+import { Icon } from "./icon.tsx";
 import {
   AVATAR_TYPES,
   avatarProblem,
   blankForm,
   canEdit,
+  fieldProblem,
   formFor,
   formProblem,
   formRequest,
   HANDLE_NAME_PATTERN,
+  handleIsFree,
   handleNameMaxLength,
+  IDENTITY_TABS,
+  isOnline,
+  ownersLine,
   scopeChoices,
   scopeLabel,
+  scopeTestCommand,
+  tabAfterKey,
   toBase64,
   withOwners,
+  type CheckedField,
   type IdentityForm,
+  type IdentityTab,
 } from "./identities-view.ts";
 import { STATE_LABEL } from "./issue-view.ts";
 import { linkHandler } from "./links.ts";
@@ -38,22 +63,34 @@ interface Props {
   readonly onSignedOut: () => void;
 }
 
-/** Matches app.css, where the identity list and the chosen identity share one column. */
-const ONE_COLUMN = "(max-width: 959.98px)";
+/** Matches app.css, where the sidebar becomes the phone header and the list moves into the centre. */
+const PHONE = "(max-width: 759.98px)";
 
 /** The chosen identity is kept in the address, so a reload or a shared link opens it. */
 function chosenFromAddress(): string | null {
   return new URLSearchParams(window.location.search).get("identity");
 }
 
-function setAddress(id: string | null): void {
-  window.history.replaceState(null, "", id === null ? "/identities" : `/identities?identity=${encodeURIComponent(id)}`);
+/** The history state of an entry this page pushed, so its back link can return through history. */
+const PUSHED = "penguin-identities";
+
+function identityPath(id: string | null): string {
+  return id === null ? "/identities" : `/identities?identity=${encodeURIComponent(id)}`;
+}
+
+/** The shell's sidebar list slot, which the shell renders before the page's effects run. */
+function useSidebarSlot(): HTMLElement | null {
+  const [slot, setSlot] = useState<HTMLElement | null>(null);
+  useLayoutEffect(() => setSlot(document.querySelector<HTMLElement>(".sidebar-list")), []);
+  return slot;
 }
 
 export function IdentitiesPageView({ viewer, live, navigate, onSignedOut }: Props) {
   const [load, setLoad] = useState<Load>({ kind: "loading" });
   const [chosen, setChosen] = useState<string | null>(chosenFromAddress);
   const [form, setForm] = useState<IdentityForm | null>(null);
+  const phone = useMediaQuery(PHONE);
+  const slot = useSidebarSlot();
   const connected = live.status === "live";
 
   useEffect(() => {
@@ -74,13 +111,40 @@ export function IdentitiesPageView({ viewer, live, navigate, onSignedOut }: Prop
     // `connected` reads the page again after a reconnect, which may have missed a change.
   }, [live.revision, live.identitiesRevision, connected, onSignedOut]);
 
-  const choose = useCallback((id: string | null) => {
+  // The browser's back button returns from a phone's detail screen to the list.
+  useEffect(() => {
+    const onPop = () => {
+      setChosen(chosenFromAddress());
+      setForm(null);
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
+  // Whether the open form holds changes, so leaving it asks first.
+  const draft = useRef(false);
+  const leaveForm = (): boolean => form === null || !draft.current || window.confirm("Discard the changes in this form?");
+
+  /** Shows an identity. On a phone a detail is its own screen, so it gets its own history entry. */
+  const choose = (id: string | null, { push = false, ask = true } = {}) => {
+    if (ask && !leaveForm()) return;
+    draft.current = false;
     setChosen(id);
     setForm(null);
-    setAddress(id);
-    // In one column the chosen identity sits above the list, out of view of the row just pressed.
-    if (window.matchMedia(ONE_COLUMN).matches) window.scrollTo({ top: 0 });
-  }, []);
+    if (push) window.history.pushState(PUSHED, "", identityPath(id));
+    else window.history.replaceState(null, "", identityPath(id));
+    // The chosen identity replaces the centre, so it opens at its top.
+    window.scrollTo({ top: 0 });
+  };
+  const back = () => {
+    if (window.history.state === PUSHED) window.history.back();
+    else choose(null);
+  };
+  const openForm = (next: IdentityForm) => {
+    if (!leaveForm()) return;
+    draft.current = false;
+    setForm(next);
+  };
 
   if (load.kind === "failed") {
     return (
@@ -95,67 +159,79 @@ export function IdentitiesPageView({ viewer, live, navigate, onSignedOut }: Prop
   if (load.kind === "loading") return <div className="identities" aria-busy="true" />;
 
   const { page } = load;
-  const shown = page.identities.find((identity) => identity.id === chosen) ?? page.identities[0];
-  return (
-    <div className="identities">
-      <header className="identities-header">
-        <h1>Identities</h1>
-        {form?.kind === "create" ? null : (
-          <button type="button" className="button primary" onClick={() => setForm(blankForm(viewer))}>
+  const picked = page.identities.find((identity) => identity.id === chosen);
+  // On a wide screen the list stays beside the detail, so the first identity shows until one is chosen.
+  const shown = picked ?? (phone ? undefined : page.identities[0]);
+  const create = () => openForm(blankForm(viewer));
+  const selectedId = form === null || form.kind !== "create" ? (form?.sourceId ?? shown?.id) : undefined;
+  const list = <IdentityList identities={page.identities} selectedId={selectedId} onChoose={(id) => choose(id, { push: phone })} />;
+
+  let centre: ReactNode;
+  if (form !== null) {
+    centre = (
+      <IdentityFormView
+        key={`${form.kind}-${form.sourceId ?? "new"}`}
+        initialForm={form}
+        page={page}
+        viewer={viewer}
+        onDraft={(changed) => {
+          draft.current = changed;
+        }}
+        onCancel={() => {
+          draft.current = false;
+          setForm(null);
+        }}
+        onSaved={(id) => choose(id, { ask: false })}
+        onSignedOut={onSignedOut}
+      />
+    );
+  } else if (shown !== undefined) {
+    centre = (
+      <IdentityDetail
+        key={shown.id}
+        identity={shown}
+        scopes={page.scopes}
+        viewer={viewer}
+        navigate={navigate}
+        onBack={phone ? back : undefined}
+        onEdit={() => openForm(formFor(shown, "edit", viewer, takenHandles(page)))}
+        onDuplicate={() => openForm(formFor(shown, "duplicate", viewer, takenHandles(page)))}
+      />
+    );
+  } else {
+    centre = (
+      <>
+        <header className="identities-header">
+          <h1>Identities</h1>
+          <button type="button" className="button primary" onClick={create}>
             Create
           </button>
-        )}
-      </header>
-      <div className="identities-layout">
-        <section className="panel identity-list" aria-labelledby="identity-list-heading">
-          <h2 id="identity-list-heading">
-            All identities <span className="muted">{page.identities.length}</span>
-          </h2>
-          {page.identities.length === 0 ? (
-            <p className="muted">No identities yet</p>
-          ) : (
-            <ul className="identity-rows">
-              {page.identities.map((identity) => (
-                <li key={identity.id}>
-                  <button
-                    type="button"
-                    className="identity-row"
-                    aria-current={form === null && identity.id === shown?.id ? "true" : undefined}
-                    onClick={() => choose(identity.id)}
-                  >
-                    <IdentityAvatar handle={identity.handle} image={identity.avatar} size="row" />
-                    <span className="identity-row-text">
-                      <span className="row-title">{identity.handle}</span>
-                      <span className="muted identity-row-name">{identity.name}</span>
-                    </span>
-                    {identity.team ? <span className="tag">Team</span> : null}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
-        {form !== null ? (
-          <IdentityFormView
-            key={`${form.kind}-${form.sourceId ?? "new"}`}
-            initialForm={form}
-            page={page}
-            viewer={viewer}
-            onCancel={() => setForm(null)}
-            onSaved={(id) => choose(id)}
-            onSignedOut={onSignedOut}
-          />
-        ) : shown === undefined ? null : (
-          <IdentityDetail
-            identity={shown}
-            scopes={page.scopes}
-            viewer={viewer}
-            navigate={navigate}
-            onEdit={() => setForm(formFor(shown, "edit", viewer, takenHandles(page)))}
-            onDuplicate={() => setForm(formFor(shown, "duplicate", viewer, takenHandles(page)))}
-          />
-        )}
-      </div>
+        </header>
+        {page.identities.length === 0 ? <p className="muted">Please create the first identity</p> : phone ? list : null}
+      </>
+    );
+  }
+
+  return (
+    <div className="identities">
+      {centre}
+      {!phone && slot !== null
+        ? createPortal(
+            <section className="identity-list" aria-labelledby="identity-list-heading">
+              <div className="identity-list-head">
+                <h2 id="identity-list-heading">
+                  All identities <span className="tab-count">{page.identities.length}</span>
+                </h2>
+                {/* Disabled rather than removed while the create form is open, so the list keeps its place. */}
+                <button type="button" className="button" disabled={form?.kind === "create"} onClick={create}>
+                  Create
+                </button>
+              </div>
+              {list}
+            </section>,
+            slot,
+          )
+        : null}
     </div>
   );
 }
@@ -164,11 +240,51 @@ function takenHandles(page: IdentitiesPage): ReadonlySet<string> {
   return new Set(page.identities.map((identity) => identity.handle));
 }
 
+interface ListProps {
+  readonly identities: readonly IdentityEntry[];
+  readonly selectedId: string | undefined;
+  readonly onChoose: (id: string) => void;
+}
+
+/** Every identity as a row: its avatar with a dot while a session runs, its handle and its name. */
+export function IdentityList({ identities, selectedId, onChoose }: ListProps) {
+  return (
+    <ul className="identity-rows">
+      {identities.map((identity) => {
+        const path = identityPath(identity.id);
+        const online = isOnline(identity);
+        return (
+          <li key={identity.id}>
+            <a
+              className="identity-row"
+              href={path}
+              aria-current={identity.id === selectedId ? "page" : undefined}
+              onClick={linkHandler(() => onChoose(identity.id), path)}
+            >
+              <span className="identity-row-avatar">
+                <IdentityAvatar handle={identity.handle} image={identity.avatar} size="row" />
+                {online ? <span className="online-dot" /> : null}
+              </span>
+              <span className="identity-row-text">
+                <span className="identity-row-handle">{identity.handle}</span>
+                <span className="identity-row-name">{identity.name}</span>
+              </span>
+              {online ? <span className="visually-hidden">Running</span> : null}
+            </a>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
 interface DetailProps {
   readonly identity: IdentityEntry;
   readonly scopes: readonly IdentityScope[];
   readonly viewer: string;
   readonly navigate: (path: string) => void;
+  /** Set on a phone, where the detail is its own screen and a back link returns to the list. */
+  readonly onBack: (() => void) | undefined;
   readonly onEdit: () => void;
   readonly onDuplicate: () => void;
 }
@@ -180,14 +296,47 @@ function seenLabel(iso: string): string {
   return Number.isNaN(time) ? "" : SEEN_FORMAT.format(time);
 }
 
-function IdentityDetail({ identity, scopes, viewer, navigate, onEdit, onDuplicate }: DetailProps) {
+const TAB_LABEL: Readonly<Record<IdentityTab, string>> = {
+  details: "Details",
+  sessions: "Sessions",
+  history: "Issue history",
+};
+
+/** The chosen identity: its header with the owners' actions, then its Details, Sessions and Issue history tabs. */
+export function IdentityDetail({ identity, scopes, viewer, navigate, onBack, onEdit, onDuplicate }: DetailProps) {
+  const [tab, setTab] = useState<IdentityTab>("details");
+  const tabRefs = useRef(new Map<IdentityTab, HTMLButtonElement>());
+  const counts: Readonly<Record<IdentityTab, number | undefined>> = {
+    details: undefined,
+    sessions: identity.sessions.length,
+    history: identity.history.length,
+  };
+  // Arrow keys move between the tabs; only the selected tab sits in the tab order (WAI-ARIA tabs).
+  const onTabKey = (event: KeyboardEvent<HTMLButtonElement>) => {
+    const next = tabAfterKey(tab, event.key);
+    if (next === undefined) return;
+    event.preventDefault();
+    setTab(next);
+    tabRefs.current.get(next)?.focus();
+  };
+
   return (
-    <section className="panel identity-detail" aria-labelledby="identity-heading">
+    <article className="identity-detail" aria-labelledby="identity-heading">
+      {onBack === undefined ? null : (
+        <a className="back-link" href="/identities" onClick={linkHandler(onBack, "/identities")}>
+          <Icon name="back" />
+          All identities
+        </a>
+      )}
       <header className="identity-head">
         <IdentityAvatar handle={identity.handle} image={identity.avatar} size="header" />
         <div className="identity-title">
-          <h2 id="identity-heading">{identity.handle}</h2>
-          <p className="muted">{identity.name}</p>
+          <h1 id="identity-heading">{identity.handle}</h1>
+          <p className="identity-name">{identity.name}</p>
+          <p className="identity-meta">
+            {identity.team ? "Owners" : "Owner"} {ownersLine(identity)}
+            {identity.team ? <span className="tag">Team</span> : null}
+          </p>
         </div>
         {canEdit(identity, viewer) ? (
           <div className="identity-actions">
@@ -200,121 +349,162 @@ function IdentityDetail({ identity, scopes, viewer, navigate, onEdit, onDuplicat
           </div>
         ) : null}
       </header>
-      <dl className="identity-facts">
-        <div>
-          <dt>{identity.team ? "Owners" : "Owner"}</dt>
-          <dd>
-            {identity.owners.join(" · ")}
-            {identity.team ? <span className="tag">Team</span> : null}
-          </dd>
-        </div>
-        <div>
-          <dt>Job</dt>
-          <dd className="body-text">{identity.job}</dd>
-        </div>
-        <div>
-          <dt>Assignments</dt>
-          <dd>{identity.autoAccept ? <span className="tag">Auto-accept</span> : <span className="tag">Owner accepts</span>}</dd>
+
+      <div className="identity-tabs" role="tablist" aria-label={identity.handle}>
+        {IDENTITY_TABS.map((name) => (
+          <button
+            key={name}
+            ref={(node) => {
+              if (node === null) tabRefs.current.delete(name);
+              else tabRefs.current.set(name, node);
+            }}
+            type="button"
+            role="tab"
+            id={`identity-tab-${name}`}
+            className="identity-tab"
+            aria-selected={tab === name}
+            aria-controls={tab === name ? `identity-panel-${name}` : undefined}
+            tabIndex={tab === name ? 0 : -1}
+            onClick={() => setTab(name)}
+            onKeyDown={onTabKey}
+          >
+            {TAB_LABEL[name]}
+            {counts[name] === undefined ? null : <span className="tab-count">{counts[name]}</span>}
+          </button>
+        ))}
+      </div>
+
+      <div className="identity-panel" role="tabpanel" id={`identity-panel-${tab}`} aria-labelledby={`identity-tab-${tab}`} tabIndex={0}>
+        {tab === "details" ? <DetailsTab identity={identity} scopes={scopes} /> : null}
+        {tab === "sessions" ? <SessionsTab identity={identity} /> : null}
+        {tab === "history" ? <HistoryTab identity={identity} navigate={navigate} /> : null}
+      </div>
+    </article>
+  );
+}
+
+function DetailsTab({ identity, scopes }: { identity: IdentityEntry; scopes: readonly IdentityScope[] }) {
+  return (
+    <>
+      <section className="identity-card" aria-labelledby="identity-job">
+        <h2 id="identity-job">Job</h2>
+        <p className="body-text">{identity.job}</p>
+      </section>
+      <section className="identity-card" aria-labelledby="identity-charter">
+        <h2 id="identity-charter">Charter</h2>
+        <dl className="charter">
+          {identity.charterScopes.length === 0 ? (
+            <CharterRow term="Works in">
+              <span className="muted">None</span>
+            </CharterRow>
+          ) : (
+            identity.charterScopes.map((scope, index) => (
+              <CharterRow key={scope} term={index === 0 ? "Works in" : "and in"}>
+                <span className="chip" title={scope}>
+                  {scopeLabel(scopes, scope)}
+                </span>
+                <TestCommand command={scopeTestCommand(scopes, scope)} />
+              </CharterRow>
+            ))
+          )}
+          <CharterRow term="On paths">
+            {identity.charterPaths.length === 0 ? <span className="muted">None</span> : null}
+            {identity.charterPaths.map((path) => (
+              <code key={path} className="code-chip">
+                {path}
+              </code>
+            ))}
+          </CharterRow>
+          <CharterRow term="Follows">
+            {identity.charterRules.length === 0 ? (
+              <span className="muted">None</span>
+            ) : (
+              <ol className="charter-rules">
+                {identity.charterRules.map((rule, index) => (
+                  <li key={index} className="body-text">
+                    {rule}
+                  </li>
+                ))}
+              </ol>
+            )}
+          </CharterRow>
+        </dl>
+        <p className="identity-card-note">Only scopes of this identity's owners</p>
+      </section>
+      <dl className="identity-card settings">
+        <div className="setting">
+          <dt className="setting-label">Assignments</dt>
+          <dd className="setting-value">{identity.autoAccept ? "Auto-accept" : "Owner accepts"}</dd>
         </div>
         {identity.duplicatedFrom === null ? null : (
-          <div>
-            <dt>Duplicated from</dt>
-            <dd className="row-title">{identity.duplicatedFrom}</dd>
+          <div className="setting">
+            <dt className="setting-label">Duplicated from</dt>
+            <dd className="setting-value">{identity.duplicatedFrom}</dd>
           </div>
         )}
       </dl>
+    </>
+  );
+}
 
-      <section className="identity-section" aria-labelledby="identity-charter">
-        <h3 id="identity-charter">Charter</h3>
-        <dl className="identity-facts">
-          <div>
-            <dt>Scopes</dt>
-            <dd>
-              {identity.charterScopes.length === 0 ? <span className="muted">None</span> : null}
-              {identity.charterScopes.map((scope) => (
-                <span key={scope} className="tag" title={scope}>
-                  {scopeLabel(scopes, scope)}
-                </span>
-              ))}
-            </dd>
-          </div>
-          <div>
-            <dt>Paths</dt>
-            <dd className="identity-paths">
-              {identity.charterPaths.length === 0 ? <span className="muted">None</span> : null}
-              {identity.charterPaths.map((path) => (
-                <code key={path} className="identity-path">
-                  {path}
-                </code>
-              ))}
-            </dd>
-          </div>
-          <div>
-            <dt>Rules</dt>
-            <dd>
-              {identity.charterRules.length === 0 ? (
-                <span className="muted">None</span>
-              ) : (
-                <ol className="identity-rules">
-                  {identity.charterRules.map((rule, index) => (
-                    <li key={index} className="body-text">
-                      {rule}
-                    </li>
-                  ))}
-                </ol>
-              )}
-            </dd>
-          </div>
-        </dl>
-      </section>
+/** One sentence row of a charter: its connecting words, then the tokens they govern. */
+function CharterRow({ term, children }: { term: string; children: ReactNode }) {
+  return (
+    <div className="charter-row">
+      <dt>{term}</dt>
+      <dd>{children}</dd>
+    </div>
+  );
+}
 
-      <section className="identity-section" aria-labelledby="identity-sessions">
-        <h3 id="identity-sessions">
-          Sessions <span className="muted">{identity.sessions.length}</span>
-        </h3>
-        {identity.sessions.length === 0 ? (
-          <p className="muted">None</p>
-        ) : (
-          <ul className="rows">
-            {identity.sessions.map((session) => (
-              <li key={session.id} className="row">
-                <span className={`tag ${session.status === "running" ? "session-running" : "session-offline"}`}>
-                  {session.status === "running" ? "Running" : "Offline"}
-                </span>
-                <span className="tag">{session.vendor}</span>
-                <code className="muted">{session.branch}</code>
-                <time className="muted identity-time" dateTime={session.lastSeen}>
-                  {seenLabel(session.lastSeen)}
-                </time>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
+/** A scope's test command as a read-only chip; owners edit it in penguin/scopes.json. */
+function TestCommand({ command }: { command: string | undefined }) {
+  if (command === undefined) return null;
+  return (
+    <>
+      <span className="charter-word">tested by</span>
+      <code className="code-chip">{command}</code>
+    </>
+  );
+}
 
-      <section className="identity-section" aria-labelledby="identity-history">
-        <h3 id="identity-history">
-          Issue history <span className="muted">{identity.history.length}</span>
-        </h3>
-        {identity.history.length === 0 ? (
-          <p className="muted">None</p>
-        ) : (
-          <ul className="rows">
-            {identity.history.map((entry) => {
-              const path = `/issues/${entry.issueId}`;
-              return (
-                <li key={entry.issueId} className="row identity-issue">
-                  <a className="identity-issue-title" href={path} onClick={linkHandler(navigate, path)}>
-                    <span className="issue-number">#{entry.issueId}</span> {entry.title}
-                  </a>
-                  <span className={`tag state-${entry.state}`}>{STATE_LABEL[entry.state] ?? entry.state}</span>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </section>
-    </section>
+function SessionsTab({ identity }: { identity: IdentityEntry }) {
+  if (identity.sessions.length === 0) return <p className="muted identity-empty">None</p>;
+  return (
+    <ul className="identity-card identity-list-rows">
+      {identity.sessions.map((session) => (
+        <li key={session.id} className="identity-list-row">
+          <span className={`session-state session-${session.status}`}>
+            <span className="session-dot" aria-hidden="true" />
+            {session.status === "running" ? "Running" : "Offline"}
+          </span>
+          <span className="tag">{session.vendor}</span>
+          <code className="identity-branch">{session.branch}</code>
+          <time className="muted identity-time" dateTime={session.lastSeen}>
+            {seenLabel(session.lastSeen)}
+          </time>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function HistoryTab({ identity, navigate }: { identity: IdentityEntry; navigate: (path: string) => void }) {
+  if (identity.history.length === 0) return <p className="muted identity-empty">None</p>;
+  return (
+    <ul className="identity-card identity-list-rows">
+      {identity.history.map((entry) => {
+        const path = `/issues/${entry.issueId}`;
+        return (
+          <li key={entry.issueId} className="identity-list-row identity-issue">
+            <a className="identity-issue-title" href={path} onClick={linkHandler(navigate, path)}>
+              <span className="issue-number">#{entry.issueId}</span> {entry.title}
+            </a>
+            <span className={`tag state-${entry.state}`}>{STATE_LABEL[entry.state] ?? entry.state}</span>
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
@@ -330,30 +520,59 @@ const SUBMIT_LABEL: Readonly<Record<IdentityForm["kind"], string>> = {
   duplicate: "Duplicate",
 };
 
+const SENDING_LABEL: Readonly<Record<IdentityForm["kind"], string>> = {
+  create: "Creating",
+  edit: "Saving",
+  duplicate: "Duplicating",
+};
+
 const REJECTION_TEXT: Readonly<Record<string, string>> = {
   handle_taken: "Please choose another handle",
   forbidden: "Only the identity's owners can change it",
   not_found: "Please reload the page",
 };
 
+const CHECKED_FIELDS: readonly CheckedField[] = ["handle", "name", "job"];
+
 interface FormProps {
   readonly initialForm: IdentityForm;
   readonly page: IdentitiesPage;
   readonly viewer: string;
+  /** Told whether the form now differs from how it opened. */
+  readonly onDraft: (changed: boolean) => void;
   readonly onCancel: () => void;
   readonly onSaved: (id: string) => void;
   readonly onSignedOut: () => void;
 }
 
-function IdentityFormView({ initialForm, page, viewer, onCancel, onSaved, onSignedOut }: FormProps) {
+/** Cmd or Ctrl with Enter sends the form from a text area, where Enter alone starts a new line. */
+function submitOnModEnter(event: KeyboardEvent<HTMLTextAreaElement>): void {
+  if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+    event.preventDefault();
+    event.currentTarget.form?.requestSubmit();
+  }
+}
+
+/** Create, edit or duplicate as settings rows: a label and a one-clause hint at the left, the control at the right. */
+export function IdentityFormView({ initialForm, page, viewer, onDraft, onCancel, onSaved, onSignedOut }: FormProps) {
   const [form, setForm] = useState(initialForm);
+  useEffect(() => onDraft(form !== initialForm), [form, initialForm, onDraft]);
   const [problem, setProblem] = useState<string | undefined>();
   const [sending, setSending] = useState(false);
+  // A field shows its problem once the person leaves it, then again on every change until it is fixed.
+  const [checked, setChecked] = useState<ReadonlySet<CheckedField>>(new Set());
   const { limits } = page;
   const kind = form.kind;
   const choices = useMemo(() => scopeChoices(page.scopes, form.owners), [page.scopes, form.owners]);
+  const taken = useMemo(() => takenHandles(page), [page]);
   const otherOwners = page.owners.filter((owner) => owner !== viewer);
   const update = (changes: Partial<IdentityForm>) => setForm((previous) => ({ ...previous, ...changes }));
+  const check = (field: CheckedField) => setChecked((previous) => (previous.has(field) ? previous : new Set([...previous, field])));
+  const handleTaken = kind !== "edit" && taken.has(`@${viewer}/${form.handleName}`);
+  const problemOf = (field: CheckedField): string | undefined => {
+    if (!checked.has(field)) return undefined;
+    return fieldProblem(form, field) ?? (field === "handle" && handleTaken ? REJECTION_TEXT["handle_taken"] : undefined);
+  };
 
   const chooseAvatar = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.currentTarget.files?.[0];
@@ -376,6 +595,13 @@ function IdentityFormView({ initialForm, page, viewer, onCancel, onSaved, onSign
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    const invalid = CHECKED_FIELDS.find((field) => fieldProblem(form, field) !== undefined || (field === "handle" && handleTaken));
+    if (invalid !== undefined) {
+      setChecked(new Set(CHECKED_FIELDS));
+      setProblem(undefined);
+      event.currentTarget.querySelector<HTMLElement>(`[name="${invalid}"]`)?.focus();
+      return;
+    }
     const found = formProblem(form, limits);
     if (found !== undefined) {
       setProblem(found);
@@ -398,190 +624,217 @@ function IdentityFormView({ initialForm, page, viewer, onCancel, onSaved, onSign
     );
   };
 
+  const handleProblem = problemOf("handle");
   return (
-    <section className="panel identity-detail" aria-labelledby="identity-form-heading">
-      <h2 id="identity-form-heading">{FORM_HEADING[kind]}</h2>
+    <article className="identity-detail" aria-labelledby="identity-form-heading">
+      <header className="identity-head">
+        <div className="identity-title">
+          <h1 id="identity-form-heading">{FORM_HEADING[kind]}</h1>
+          {form.sourceHandle === null ? null : <p className="identity-name">{form.sourceHandle}</p>}
+        </div>
+      </header>
       <form className="identity-form" onSubmit={submit} noValidate>
-        {kind === "edit" ? (
-          <div className="field">
-            <span className="field-label">Handle</span>
-            <span className="row-title">{form.sourceHandle}</span>
-          </div>
-        ) : (
-          <label className="field">
-            <span className="field-label">Handle</span>
-            <span className="handle-input">
-              <span className="handle-prefix" aria-hidden="true">{`@${viewer}/`}</span>
-              <input
-                name="handle"
-                required
-                value={form.handleName}
-                maxLength={handleNameMaxLength(viewer)}
-                pattern={HANDLE_NAME_PATTERN}
-                autoCapitalize="none"
-                spellCheck={false}
-                aria-label={`Handle after @${viewer}/`}
-                onChange={(event) => update({ handleName: event.currentTarget.value })}
+        <div className="identity-card settings">
+          {kind === "edit" ? null : (
+            <SettingRow id="identity-handle" label="Handle" hint="Lowercase letters and digits joined by hyphens" problem={handleProblem}>
+              <span className="handle-input">
+                <span className="handle-prefix" aria-hidden="true">{`@${viewer}/`}</span>
+                <input
+                  id="identity-handle"
+                  name="handle"
+                  required
+                  value={form.handleName}
+                  maxLength={handleNameMaxLength(viewer)}
+                  pattern={HANDLE_NAME_PATTERN}
+                  autoCapitalize="none"
+                  autoComplete="off"
+                  spellCheck={false}
+                  aria-invalid={handleProblem === undefined ? undefined : true}
+                  aria-describedby={describedBy("identity-handle", handleProblem)}
+                  onBlur={() => check("handle")}
+                  onChange={(event) => update({ handleName: event.currentTarget.value })}
+                />
+                {handleIsFree(form, viewer, taken) ? (
+                  <span className="handle-free">
+                    <Icon name="check" label="Handle is free" />
+                  </span>
+                ) : null}
+              </span>
+            </SettingRow>
+          )}
+          <SettingRow id="identity-name" label="Name" hint="Shown under the handle" problem={problemOf("name")}>
+            <input
+              id="identity-name"
+              name="name"
+              required
+              value={form.name}
+              maxLength={limits.nameLength}
+              aria-invalid={problemOf("name") === undefined ? undefined : true}
+              aria-describedby={describedBy("identity-name", problemOf("name"))}
+              onBlur={() => check("name")}
+              onChange={(event) => update({ name: event.currentTarget.value })}
+            />
+          </SettingRow>
+          {kind === "duplicate" ? null : (
+            <>
+              <div className="setting" role="group" aria-labelledby="identity-avatar-label" aria-describedby="identity-avatar-hint">
+                <div className="setting-text">
+                  <span className="setting-label" id="identity-avatar-label">
+                    Avatar
+                  </span>
+                  <p className="setting-hint" id="identity-avatar-hint">
+                    {`Image up to ${Math.floor(limits.avatarBytes / 1024)} KB`}
+                  </p>
+                </div>
+                <div className="setting-control avatar-field">
+                  <IdentityAvatar handle={`@${viewer}/${form.handleName}`} image={form.avatar?.url ?? null} size="row" />
+                  <label className="button">
+                    Choose image
+                    <input type="file" className="visually-hidden" accept={AVATAR_TYPES.join(",")} onChange={chooseAvatar} />
+                  </label>
+                  {form.avatar === null ? null : (
+                    <button type="button" className="button" onClick={() => update({ avatar: null })}>
+                      Remove
+                    </button>
+                  )}
+                </div>
+              </div>
+              {kind === "create" ? (
+                <CheckRow
+                  id="identity-team"
+                  label="Team identity"
+                  hint="Shared with other owners who may each edit it"
+                  checked={form.team}
+                  onChange={(team) => setForm((previous) => ({ ...withOwners(previous, [viewer], page.scopes), team }))}
+                />
+              ) : null}
+              {kind === "create" && form.team ? (
+                <div className="setting" role="group" aria-labelledby="identity-owners-label" aria-describedby="identity-owners-hint">
+                  <div className="setting-text">
+                    <span className="setting-label" id="identity-owners-label">
+                      Owners
+                    </span>
+                    <p className="setting-hint" id="identity-owners-hint">{`Up to ${limits.teamOwners} owners with you`}</p>
+                  </div>
+                  <div className="setting-control checks">
+                    {otherOwners.length === 0 ? <span className="muted">No other owners</span> : null}
+                    {otherOwners.map((owner) => (
+                      <label key={owner} className="check">
+                        <input
+                          type="checkbox"
+                          checked={form.owners.includes(owner)}
+                          onChange={(event) => {
+                            const on = event.currentTarget.checked;
+                            setForm((previous) => {
+                              const owners = on ? [...previous.owners, owner] : previous.owners.filter((o) => o !== owner);
+                              return withOwners(previous, owners.slice(0, limits.teamOwners), page.scopes);
+                            });
+                          }}
+                        />
+                        {owner}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+              <CheckRow
+                id="identity-auto-accept"
+                label="Auto-accept assignments"
+                hint="Takes each assignment without an owner accepting it"
+                checked={form.autoAccept}
+                onChange={(autoAccept) => update({ autoAccept })}
               />
-            </span>
-          </label>
-        )}
-        <label className="field">
-          <span className="field-label">Name</span>
-          <input
-            name="name"
-            required
-            value={form.name}
-            maxLength={limits.nameLength}
-            onChange={(event) => update({ name: event.currentTarget.value })}
-          />
-        </label>
+              <SettingRow id="identity-job" label="Job" hint="What this identity works on" problem={problemOf("job")} stacked>
+                <textarea
+                  id="identity-job"
+                  name="job"
+                  required
+                  rows={3}
+                  value={form.job}
+                  maxLength={limits.jobLength}
+                  aria-invalid={problemOf("job") === undefined ? undefined : true}
+                  aria-describedby={describedBy("identity-job", problemOf("job"))}
+                  onBlur={() => check("job")}
+                  onKeyDown={submitOnModEnter}
+                  onChange={(event) => update({ job: event.currentTarget.value })}
+                />
+              </SettingRow>
+            </>
+          )}
+        </div>
+
         {kind === "duplicate" ? (
           <p className="muted">The charter carries over</p>
         ) : (
-          <>
-            <div className="field">
-              <span className="field-label" id="avatar-label">
-                Avatar
-              </span>
-              <div className="avatar-field">
-                <IdentityAvatar handle={`@${viewer}/${form.handleName}`} image={form.avatar?.url ?? null} size="header" />
-                <label className="button">
-                  Choose image
-                  <input
-                    type="file"
-                    className="visually-hidden"
-                    accept={AVATAR_TYPES.join(",")}
-                    aria-describedby="avatar-hint"
-                    onChange={chooseAvatar}
-                  />
-                </label>
-                {form.avatar === null ? null : (
-                  <button type="button" className="button" onClick={() => update({ avatar: null })}>
-                    Remove
-                  </button>
-                )}
-              </div>
-              <span className="muted field-hint" id="avatar-hint">
-                {`Image up to ${Math.floor(limits.avatarBytes / 1024)} KB`}
-              </span>
-            </div>
-            <label className="field">
-              <span className="field-label">Job</span>
-              <textarea
-                name="job"
-                required
-                rows={3}
-                value={form.job}
-                maxLength={limits.jobLength}
-                onChange={(event) => update({ job: event.currentTarget.value })}
-              />
-            </label>
-            {kind === "create" ? (
-              <fieldset className="field">
-                <legend className="field-label">Owners</legend>
-                <label className="check">
-                  <input
-                    type="checkbox"
-                    checked={form.team}
-                    onChange={(event) => {
-                      const team = event.currentTarget.checked;
-                      setForm((previous) => ({ ...withOwners(previous, [viewer], page.scopes), team }));
-                    }}
-                  />
-                  Team identity
-                </label>
-                {form.team ? (
-                  otherOwners.length === 0 ? (
-                    <span className="muted">No other owners</span>
-                  ) : (
-                    <div className="checks">
-                      {otherOwners.map((owner) => (
-                        <label key={owner} className="check">
-                          <input
-                            type="checkbox"
-                            checked={form.owners.includes(owner)}
-                            onChange={(event) => {
-                              const on = event.currentTarget.checked;
-                              setForm((previous) => {
-                                const owners = on ? [...previous.owners, owner] : previous.owners.filter((o) => o !== owner);
-                                return withOwners(previous, owners.slice(0, limits.teamOwners), page.scopes);
-                              });
-                            }}
-                          />
-                          {owner}
-                        </label>
-                      ))}
-                    </div>
-                  )
-                ) : null}
-              </fieldset>
-            ) : null}
-            <fieldset className="field">
-              <legend className="field-label">Scopes</legend>
+          <section className="identity-card" aria-labelledby="identity-charter-form">
+            <h2 id="identity-charter-form">Charter</h2>
+            <fieldset className="charter-field">
+              <legend className="charter-word">Works in</legend>
               {choices.length === 0 ? (
                 <span className="muted">Please add a scope of yours to penguin/scopes.json</span>
               ) : (
-                <div className="checks">
+                <ul className="charter-choices">
                   {choices.map((scope) => (
-                    <label key={scope.id} className="check">
-                      <input
-                        type="checkbox"
-                        checked={form.charterScopes.includes(scope.id)}
-                        onChange={(event) => {
-                          const on = event.currentTarget.checked;
-                          setForm((previous) => ({
-                            ...previous,
-                            charterScopes: on
-                              ? [...previous.charterScopes, scope.id]
-                              : previous.charterScopes.filter((id) => id !== scope.id),
-                          }));
-                        }}
-                      />
-                      {scope.name}
-                      {form.team ? <span className="muted">{scope.ownerId}</span> : null}
-                    </label>
+                    <li key={scope.id}>
+                      <label className="chip chip-check">
+                        <input
+                          type="checkbox"
+                          checked={form.charterScopes.includes(scope.id)}
+                          onChange={(event) => {
+                            const on = event.currentTarget.checked;
+                            setForm((previous) => ({
+                              ...previous,
+                              charterScopes: on ? [...previous.charterScopes, scope.id] : previous.charterScopes.filter((id) => id !== scope.id),
+                            }));
+                          }}
+                        />
+                        {scope.name}
+                        {form.team ? <span className="chip-owner">{scope.ownerId}</span> : null}
+                      </label>
+                      <TestCommand command={scope.testCommand} />
+                    </li>
                   ))}
-                </div>
+                </ul>
               )}
             </fieldset>
-            <label className="field">
-              <span className="field-label">Paths</span>
+            <div className="charter-field">
+              <label className="charter-word" htmlFor="identity-paths">
+                On paths
+              </label>
               <textarea
+                id="identity-paths"
                 name="paths"
                 rows={3}
                 value={form.paths}
                 spellCheck={false}
-                aria-describedby="paths-hint"
+                aria-describedby="identity-paths-hint"
                 className="mono"
+                onKeyDown={submitOnModEnter}
                 onChange={(event) => update({ paths: event.currentTarget.value })}
               />
-              <span className="muted field-hint" id="paths-hint">
+              <p className="setting-hint" id="identity-paths-hint">
                 One path per line
-              </span>
-            </label>
-            <label className="field">
-              <span className="field-label">Rules</span>
+              </p>
+            </div>
+            <div className="charter-field">
+              <label className="charter-word" htmlFor="identity-rules">
+                Follows
+              </label>
               <textarea
+                id="identity-rules"
                 name="rules"
                 rows={4}
                 value={form.rules}
-                aria-describedby="rules-hint"
+                aria-describedby="identity-rules-hint"
+                onKeyDown={submitOnModEnter}
                 onChange={(event) => update({ rules: event.currentTarget.value })}
               />
-              <span className="muted field-hint" id="rules-hint">
+              <p className="setting-hint" id="identity-rules-hint">
                 One rule per line
-              </span>
-            </label>
-            <label className="check">
-              <input
-                type="checkbox"
-                checked={form.autoAccept}
-                onChange={(event) => update({ autoAccept: event.currentTarget.checked })}
-              />
-              Accept assignments automatically
-            </label>
-          </>
+              </p>
+            </div>
+            <p className="identity-card-note">Only scopes of this identity's owners</p>
+          </section>
         )}
         {problem === undefined ? null : (
           <p className="notice" role="alert">
@@ -593,11 +846,82 @@ function IdentityFormView({ initialForm, page, viewer, onCancel, onSaved, onSign
             Cancel
           </button>
           <button type="submit" className="button primary" disabled={sending}>
-            {SUBMIT_LABEL[kind]}
+            {sending ? SENDING_LABEL[kind] : SUBMIT_LABEL[kind]}
           </button>
         </div>
       </form>
-    </section>
+    </article>
+  );
+}
+
+function describedBy(id: string, problem: string | undefined): string {
+  return problem === undefined ? `${id}-hint` : `${id}-hint ${id}-problem`;
+}
+
+interface SettingRowProps {
+  readonly id: string;
+  readonly label: string;
+  readonly hint: string;
+  readonly problem?: string | undefined;
+  /** Puts the control under the text, for a text area that needs the row's full width. */
+  readonly stacked?: boolean;
+  readonly children: ReactNode;
+}
+
+/** A settings row: the label wired to its control, a one-clause hint, the field's problem and the control. */
+function SettingRow({ id, label, hint, problem, stacked = false, children }: SettingRowProps) {
+  return (
+    <div className={stacked ? "setting setting-stacked" : "setting"}>
+      <div className="setting-text">
+        <label className="setting-label" htmlFor={id}>
+          {label}
+        </label>
+        <p className="setting-hint" id={`${id}-hint`}>
+          {hint}
+        </p>
+        {problem === undefined ? null : (
+          <p className="field-problem" id={`${id}-problem`}>
+            {problem}
+          </p>
+        )}
+      </div>
+      <div className="setting-control">{children}</div>
+    </div>
+  );
+}
+
+interface CheckRowProps {
+  readonly id: string;
+  readonly label: string;
+  readonly hint: string;
+  readonly checked: boolean;
+  readonly onChange: (checked: boolean) => void;
+}
+
+/** A settings row whose control is a checkbox; the whole row is its label, so it has no dead zone. */
+function CheckRow({ id, label, hint, checked, onChange }: CheckRowProps) {
+  return (
+    <label className="setting setting-check" htmlFor={id}>
+      <span className="setting-text">
+        <span className="setting-label" id={`${id}-label`}>
+          {label}
+        </span>
+        <span className="setting-hint" id={`${id}-hint`}>
+          {hint}
+        </span>
+      </span>
+      <span className="setting-control">
+        {/* Named by the label alone; the row-wide label would otherwise read the hint twice. */}
+        <input
+          id={id}
+          type="checkbox"
+          checked={checked}
+          aria-labelledby={`${id}-label`}
+          aria-describedby={`${id}-hint`}
+          onChange={(event) => onChange(event.currentTarget.checked)}
+        />
+      </span>
+    </label>
   );
 }
 

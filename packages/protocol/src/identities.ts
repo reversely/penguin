@@ -49,6 +49,8 @@ export interface IdentityScope {
   readonly id: string;
   readonly name: string;
   readonly ownerId: string;
+  /** The scope's `test_command` from penguin/scopes.json, which owners edit there and not here. */
+  readonly testCommand: string;
 }
 
 /** The caps the ProjectAgent checks every identity field against. */

@@ -27,7 +27,7 @@ export function buildIdentitiesPage(sources: IdentitiesPageSources): IdentitiesP
   const sessions = sources.sessions();
   const history = sources.history();
   const handles = new Map(identities.map((identity) => [identity.id, identity.handle]));
-  const scopes = [...sources.scopeMap.scopes.values()].map(({ id, name, ownerId }) => ({ id, name, ownerId }));
+  const scopes = [...sources.scopeMap.scopes.values()].map(({ id, name, ownerId, testCommand }) => ({ id, name, ownerId, testCommand }));
   const owners = new Set(scopes.map((scope) => scope.ownerId));
   const entries = identities.map((identity): IdentityEntry => {
     const identityOwners = identity.ownerId === null ? identity.teamOwners : [identity.ownerId];

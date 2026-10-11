@@ -123,14 +123,35 @@ export function withOwners(form: IdentityForm, owners: readonly string[], scopes
   return { ...form, owners, charterScopes: form.charterScopes.filter((scope) => allowed.has(scope)) };
 }
 
+/** The form fields checked on their own as the person leaves them. */
+export type CheckedField = "handle" | "name" | "job";
+
+/** What one field needs before the form can be sent, as one clause, or undefined. */
+export function fieldProblem(form: IdentityForm, field: CheckedField): string | undefined {
+  if (field === "handle") {
+    if (form.kind === "edit" || validHandleName(form.handleName)) return undefined;
+    return form.handleName.length === 0 ? "Please enter a handle" : "Please use lowercase letters and digits in the handle";
+  }
+  if (field === "name") return form.name.trim().length === 0 ? "Please enter a name" : undefined;
+  return form.kind === "duplicate" || form.job.trim().length > 0 ? undefined : "Please describe the job";
+}
+
+function validHandleName(name: string): boolean {
+  return new RegExp(`^${HANDLE_NAME_PATTERN}$`, "u").test(name);
+}
+
+/** Whether a new handle is well formed and no identity holds it yet. An edit keeps its handle. */
+export function handleIsFree(form: IdentityForm, viewer: string, taken: ReadonlySet<string>): boolean {
+  return form.kind !== "edit" && validHandleName(form.handleName) && !taken.has(`@${viewer}/${form.handleName}`);
+}
+
 /** The first thing the form needs before it can be sent, as one clause, or undefined. */
 export function formProblem(form: IdentityForm, limits: IdentityLimits): string | undefined {
-  if (form.kind !== "edit" && !new RegExp(`^${HANDLE_NAME_PATTERN}$`, "u").test(form.handleName)) {
-    return "Please use lowercase letters and digits in the handle";
+  for (const field of ["handle", "name", "job"] as const) {
+    const problem = fieldProblem(form, field);
+    if (problem !== undefined) return problem;
   }
-  if (form.name.trim().length === 0) return "Please enter a name";
   if (form.kind === "duplicate") return undefined;
-  if (form.job.trim().length === 0) return "Please describe the job";
   if (form.team && form.owners.length < 2) return "Please choose at least one other owner";
   const paths = lines(form.paths);
   if (paths.length > limits.paths) return `Please keep to ${limits.paths} paths`;
@@ -182,4 +203,34 @@ export function toBase64(bytes: Uint8Array): string {
 /** The scope's name, or its id when the scope map no longer holds it. */
 export function scopeLabel(scopes: readonly IdentityScope[], id: string): string {
   return scopes.find((scope) => scope.id === id)?.name ?? id;
+}
+
+/** The scope's test command, or undefined when the scope map no longer holds the scope. */
+export function scopeTestCommand(scopes: readonly IdentityScope[], id: string): string | undefined {
+  return scopes.find((scope) => scope.id === id)?.testCommand;
+}
+
+/** An identity's owners for its header's meta line, joined with commas. */
+export function ownersLine(identity: IdentityEntry): string {
+  return identity.owners.join(", ");
+}
+
+/** Whether any session of the identity runs now, which its list row marks with a dot. */
+export function isOnline(identity: IdentityEntry): boolean {
+  return identity.sessions.some((session) => session.status === "running");
+}
+
+/** The detail's tabs, in order. */
+export const IDENTITY_TABS = ["details", "sessions", "history"] as const;
+export type IdentityTab = (typeof IDENTITY_TABS)[number];
+
+/** The tab an arrow, Home or End key moves to from `current`, wrapping at the ends; undefined for another key. */
+export function tabAfterKey(current: IdentityTab, key: string): IdentityTab | undefined {
+  const at = IDENTITY_TABS.indexOf(current);
+  const last = IDENTITY_TABS.length - 1;
+  if (key === "ArrowRight") return IDENTITY_TABS[at === last ? 0 : at + 1];
+  if (key === "ArrowLeft") return IDENTITY_TABS[at === 0 ? last : at - 1];
+  if (key === "Home") return IDENTITY_TABS[0];
+  if (key === "End") return IDENTITY_TABS[last];
+  return undefined;
 }
