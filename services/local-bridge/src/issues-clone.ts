@@ -39,7 +39,18 @@ export interface PublishOutcome {
 }
 
 // Hooks off and signing off: the bridge's clone runs no code from the repo or the owner's Git setup.
-const GIT_CONFIG = ["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false"];
+// Automatic maintenance stays in the foreground. Git detaches it by default, and a background repack
+// that packs or deletes objects while the drain's next commit reads them fails that commit.
+const GIT_CONFIG = [
+  "-c",
+  "core.hooksPath=/dev/null",
+  "-c",
+  "commit.gpgsign=false",
+  "-c",
+  "maintenance.autoDetach=false",
+  "-c",
+  "gc.autoDetach=false",
+];
 
 // Fetching every branch into origin's namespace also succeeds on an empty remote.
 const FETCH_REFSPEC = "+refs/heads/*:refs/remotes/origin/*";

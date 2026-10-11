@@ -303,7 +303,8 @@ describe("the spool file", () => {
     const started = performance.now();
     const result = await drainSpool(spool());
     const elapsed = Math.round(performance.now() - started);
-    assert.equal(result.pushed.length, 100);
+    // On failure, name why the drain held the operations back.
+    assert.equal(result.pushed.length, 100, JSON.stringify([...result.waiting, ...result.failed][0]));
     // Recorded for the ticket's time check: one drain of 100 queued operations, local bare repo.
     process.stdout.write(`# spool drain of 100 queued operations (ms): ${elapsed}\n`);
 
