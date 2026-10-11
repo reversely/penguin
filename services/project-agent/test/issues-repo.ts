@@ -10,6 +10,7 @@ import { DatabaseSync } from "node:sqlite";
 
 import type { SqlDatabase } from "../src/issue-index.ts";
 import type { IssuesRepoReader, RepoTreeEntry } from "../src/push-ingest.ts";
+import { artifactsResolvesRef } from "./artifacts-refs.ts";
 
 const tempDirs: string[] = [];
 
@@ -63,7 +64,10 @@ export class GitRepo {
     return this.git("rev-parse", "HEAD");
   }
 
-  /** Counts each method call, like the ProjectAgent's binding report. */
+  /**
+   * Counts each method call, like the ProjectAgent's binding report. Refs resolve as on real
+   * Artifacts (artifacts-refs.ts).
+   */
   readonly calls: Record<string, number> = {};
 
   reader(): IssuesRepoReader {
@@ -73,6 +77,7 @@ export class GitRepo {
     return {
       log: async ({ ref, limit, offset }) => {
         count("log");
+        if (!artifactsResolvesRef(ref)) return [];
         let out: string;
         try {
           out = this.git("log", "--first-parent", "--format=%H %T", `--skip=${offset}`, `-n${limit}`, ref, "--");

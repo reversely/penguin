@@ -60,6 +60,7 @@ import { postSessionUpdate, type SessionUpdate, type SessionUpdateOutcome } from
 import { SessionStore, threadRefs } from "../src/session-store.ts";
 import { VerificationStore } from "../src/verification-store.ts";
 import { reassignUpstream } from "../src/upstream.ts";
+import { artifactsResolvesRef } from "./artifacts-refs.ts";
 import { sqlite } from "./issues-repo.ts";
 
 const FIXTURE = join(import.meta.dirname, "../../../examples/identity-unification/base/penguin");
@@ -452,7 +453,7 @@ export class HuddleProject {
   /**
    * Records a checkpoint reported for `owner`'s fork once `repo` holds the commit, then schedules
    * its combined runs, as ProjectAgent.reportBridgeCheckpoint does. `repo` stands in for both the
-   * owner's fork and the base repo, whose HEAD is the base branch.
+   * owner's fork and the base repo, read by its branch name.
    */
   async report(
     owner: string,
@@ -502,7 +503,8 @@ export class HuddleProject {
 
 /**
  * A Git repo on disk read through the Artifacts binding's `log` and `readTree`, standing in for an
- * owner's fork and for the base repo, whose HEAD is the checked-out branch. Counts each call.
+ * owner's fork and for the base repo. Refs resolve as on real Artifacts (artifacts-refs.ts). Counts
+ * each call.
  */
 export function gitHistory(dir: string): RepoHistoryReader & {
   has(sha: string): boolean;
@@ -524,6 +526,7 @@ export function gitHistory(dir: string): RepoHistoryReader & {
     },
     log: async ({ ref, limit, offset }) => {
       count("log");
+      if (!artifactsResolvesRef(ref)) return [];
       const out = git("log", "--first-parent", "--format=%H %T", `--skip=${offset}`, `-n${limit}`, ref, "--");
       return out === ""
         ? []

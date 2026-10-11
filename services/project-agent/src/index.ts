@@ -16,6 +16,7 @@ import {
   type SubmitOutcome,
   type TimelineEntry,
 } from "./issue-index.ts";
+import { readBaseFile } from "./base-repo.ts";
 import { buildBoard } from "./board.ts";
 import { buildIssuePage } from "./issue-page.ts";
 import { LiveFeed, liveOwner, sendToOwner } from "./live-feed.ts";
@@ -1232,14 +1233,14 @@ export class ProjectAgent extends Agent {
     return { upstreamScopes: (issueId) => this.#huddleStore().fixOf(this.#index().resolve(issueId))?.huddle.triggerScopes };
   }
 
-  /** The scope map in the base repo's `penguin/scopes.json` at HEAD, read fresh for each call. */
+  /** The scope map in the base repo's `penguin/scopes.json` on its branch, read fresh for each call. */
   async #scopeMap(repos: ProjectRepos): Promise<ScopeMap> {
     return parseScopeFile(await this.#baseFile(repos, SCOPE_MAP_PATH));
   }
 
   /**
    * The scope map and each owner's delegate, from the base repo's `penguin/scopes.json` and
-   * `penguin/owners.json` at HEAD, read fresh for each call.
+   * `penguin/owners.json` on its branch, read fresh for each call.
    */
   async #reviewRules(repos: ProjectRepos): Promise<ReviewRules> {
     const [scopes, owners] = await Promise.all([
@@ -1249,12 +1250,9 @@ export class ProjectAgent extends Agent {
     return { scopeMap: parseScopeFile(scopes), delegates: parseOwnersFile(owners) };
   }
 
-  /** A file in the base repo at HEAD, or null when there is none. */
+  /** A file on the base repo's branch, or null when there is none. */
   #baseFile(repos: ProjectRepos, path: string): Promise<Uint8Array | null> {
-    return withRepo(this.env.ARTIFACTS, repos.base, async (repo) => {
-      const blob = await repo.readFile({ ref: "HEAD", path });
-      return blob === null ? null : new Uint8Array(await blob.arrayBuffer());
-    });
+    return withRepo(this.env.ARTIFACTS, repos.base, (repo) => readBaseFile(repo, path));
   }
 
   #approvalStore(): FixApprovalStore {

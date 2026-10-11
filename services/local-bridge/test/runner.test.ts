@@ -34,6 +34,7 @@ import { parseScopeMap } from "@penguin/scope-map";
 import { IssueIndex, type OperationKeys, type SqlDatabase } from "../../project-agent/src/issue-index.ts";
 import { IngestLedger, ingestPush, type IssuesRepoReader } from "../../project-agent/src/push-ingest.ts";
 import { importServiceKey, type ServiceKey } from "../../project-agent/src/service-key.ts";
+import { artifactsResolvesRef } from "../../project-agent/test/artifacts-refs.ts";
 import { FakePenguin } from "./fake-penguin.ts";
 
 const OWNER = "sam";
@@ -151,6 +152,7 @@ function reader(): IssuesRepoReader {
   const git = (...args: string[]) => execFileSync("git", ["-C", bare(), ...args]);
   return {
     log: async ({ ref, limit, offset }) => {
+      if (!artifactsResolvesRef(ref)) return [];
       const out = git("log", "--first-parent", "--format=%H %T", `--skip=${offset}`, `-n${limit}`, ref, "--")
         .toString()
         .trim();

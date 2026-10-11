@@ -18,6 +18,7 @@
 import { COMMAND_ID_PATTERN, type CombinedRunEvent, type CombinedResultStatus } from "@penguin/protocol";
 import { affectedOwners, type ScopeMap } from "@penguin/scope-map";
 
+import { BASE_BRANCH } from "./base-repo.ts";
 import type { BridgeCaller, SqlDatabase, SqlValue } from "./issue-index.ts";
 import type { IssuesRepoReader } from "./push-ingest.ts";
 
@@ -243,7 +244,7 @@ export interface ScheduleDeps {
   readonly scopeMap: ScopeMap;
   /** The trigger owner's fork, which holds the checkpoint. */
   readonly fork: RepoHistoryReader;
-  /** The project base repo; its HEAD's first-parent chain holds the checkpoint's baseline. */
+  /** The project base repo; its branch's first-parent chain holds the checkpoint's baseline. */
   readonly base: Pick<IssuesRepoReader, "log">;
   /** An owner's latest recorded checkpoint, or undefined before their first report. */
   latestCheckpoint(ownerId: string): string | undefined;
@@ -330,7 +331,7 @@ async function findBaseline(
   const chain = await deps.fork.log({ ref: sha, limit: BASELINE_SEARCH_LIMIT, offset: 0 });
   const [head] = chain;
   if (head?.hash !== sha) throw new Error(`checkpoint ${sha} is not in the owner's fork`);
-  const main = new Set((await deps.base.log({ ref: "HEAD", limit: BASELINE_SEARCH_LIMIT, offset: 0 })).map((c) => c.hash));
+  const main = new Set((await deps.base.log({ ref: BASE_BRANCH, limit: BASELINE_SEARCH_LIMIT, offset: 0 })).map((c) => c.hash));
   const baseline = chain.find((commit) => main.has(commit.hash));
   if (baseline === undefined) {
     throw new Error(`no commit of the base repo's main branch is within ${BASELINE_SEARCH_LIMIT} first parents of ${sha}`);
