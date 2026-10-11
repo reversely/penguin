@@ -155,4 +155,24 @@ def test_each_owner_commit_changes_only_its_owner_scope(
     changed = git(built_repo, "diff", "--name-only", f"{commit}^", commit).split()
     paths = tuple(scopes[scope]["paths"])
     assert changed
-    assert all(path.startswith(paths) for path in changed)
+    # A running feature also declares its own contracts and examples in the penguin files.
+    outside = {path for path in changed if not path.startswith(paths)}
+    assert outside <= {"penguin/scopes.json", "penguin/invariants.json"}
+    for name in outside:
+        before, after = (
+            json.loads(git(built_repo, "show", f"{ref}:{name}"))
+            for ref in (f"{commit}^", commit)
+        )
+        assert others(before, scope) == others(after, scope), name
+
+
+def others(declaration: dict, scope: str) -> list[dict]:
+    """The entries of a penguin file that belong to scopes other than ``scope``."""
+    entries = [
+        *declaration.get("scopes", []),
+        *declaration.get("invariants", []),
+        *declaration.get("examples", []),
+    ]
+    return [
+        entry for entry in entries if scope not in (entry.get("id"), entry.get("scope"))
+    ]

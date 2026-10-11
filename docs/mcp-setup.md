@@ -248,7 +248,7 @@ need Priya and Jun signed in to the dashboard in two browsers, plus an integrati
    existing issue with Assign and removes an assignee with Unassign.
 7. Jun asks either session to call `get_work`. The issue is in the result.
 8. Jun asks the session to comment on the issue with `post_update` and to link a commit, such as
-   `owner-jun@4acb1bf94cf8753569e0af7bb26955812e3aa4c6` with kind `fix`. The issue page shows the
+   `owner-jun@0df91904e50f51cdb08e5fda28ab62d9121746c0` with kind `fix`. The issue page shows the
    comment and the commit without a reload.
 9. On its next pass the runner prints `N pending: N pushed in commit <sha>`. The four operation files
    appear under `issues/<number>/ops/` in the issues repo. Once the push event reaches Penguin,

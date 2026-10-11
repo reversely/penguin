@@ -1,7 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
 from messaging.contacts import Contact
-from messaging.reminders import next_reminder
+from messaging.reminders import next_reminder, reminder_times
 
 LONDON_WINTER = Contact("u1", "u1@example.invalid", timedelta(0))
 LOS_ANGELES_WINTER = Contact("u2", "u2@example.invalid", timedelta(hours=-8))
@@ -27,3 +27,12 @@ def test_fires_at_the_local_hour_west_of_utc():
     assert next_reminder(LOS_ANGELES_WINTER, now, 9) == datetime(
         2026, 2, 9, 17, 0, tzinfo=UTC
     )
+
+
+def test_reminder_times_lists_each_contact_in_user_id_order():
+    now = datetime(2026, 2, 9, 8, 0, tzinfo=UTC)
+    later = Contact("u3", "u3@example.invalid", timedelta(0))
+    assert reminder_times([later, LONDON_WINTER], now, 9) == {
+        "u1": "2026-02-09T09:00:00+00:00",
+        "u3": "2026-02-09T09:00:00+00:00",
+    }

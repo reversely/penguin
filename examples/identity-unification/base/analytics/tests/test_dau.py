@@ -1,6 +1,5 @@
-from ingestion.identity_map import Event, IdentityMap
-
 from analytics.models import daily_active_users
+from ingestion.identity_map import Event, IdentityMap
 
 
 def _dau(events):

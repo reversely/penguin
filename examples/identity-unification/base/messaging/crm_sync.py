@@ -1,7 +1,6 @@
 """Rows sent to the CRM: one per profile that has an email address."""
 
 from ingestion.identity_map import IdentityMap
-
 from messaging.subscriptions import is_subscribed
 
 

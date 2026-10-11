@@ -1,5 +1,4 @@
 from ingestion.identity_map import Event, IdentityMap
-
 from messaging.subscriptions import subscription_status
 
 

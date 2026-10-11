@@ -398,11 +398,12 @@ The command asks before each test run unless `--yes`. It exits 1 when any check 
 the dependency bump it prints, for Ana's checkpoint:
 
 ```text
-f4cca7502ccf onto ana@d9bcd7b86ff0 (merged ae12b9e8917a)
+4a56f11d9f6c onto ana@3549d5114a25 (merged 98af161610a7)
   overlap passed: no file changed in both [git diff, git:diff-hunks, 35 ms]
   merge passed: merges cleanly [git merge-tree, git:merge-tree, 26 ms]
-  dependencies failed: shared.http changed version; ana imports it in 3 places [python-dependencies, analysis:python-dependencies, 228 ms]
+  dependencies failed: shared.http changed version; ana imports it in 4 places [python-dependencies, analysis:python-dependencies, 262 ms]
     shared/http.py vendored shared.http 1.4.0 -> 2.0.0, from vendor.wire_v1 to vendor.wire_v2
+    payments/tests/charge_replay.py:6 imports shared.http (shared.http)
     payments/tests/fake_processor.py:3 imports shared.http (shared.http)
     payments/tests/test_webhooks.py:4 imports shared.http (shared.http)
     payments/webhooks.py:4 imports shared.http (shared.http)

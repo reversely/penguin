@@ -1,0 +1,41 @@
+{
+  "contract": "payments/tests/charge_replay.py::charges_for_placed_order",
+  "cases": [
+    {
+      "name": "an order the processor answers at once",
+      "args": {
+        "order": {
+          "id": "ord_1001",
+          "customer_id": "cus_7",
+          "amount_cents": 4999,
+          "currency": "GBP"
+        },
+        "lost_responses": 0
+      }
+    },
+    {
+      "name": "a declined card",
+      "args": {
+        "order": {
+          "id": "ord_1002",
+          "customer_id": "cus_declined",
+          "amount_cents": 4999,
+          "currency": "GBP"
+        },
+        "lost_responses": 0
+      }
+    },
+    {
+      "name": "an order whose charge response times out",
+      "args": {
+        "order": {
+          "id": "ord_1003",
+          "customer_id": "cus_7",
+          "amount_cents": 4999,
+          "currency": "GBP"
+        },
+        "lost_responses": 1
+      }
+    }
+  ]
+}

@@ -176,8 +176,9 @@ test("a scope lists its contracts as path::symbol, normalized and indexed by sco
   assert.deepEqual(withContracts.scopes.get("money")?.contracts, ["money/core.py::Money.add", "money/core.py::round_half_even"]);
   assert.deepEqual(withContracts.scopes.get("billing")?.contracts, []);
   assert.equal(withContracts.contracts.get("money/core.py::Money.add"), "money");
-  // A scope file without contracts still parses, as every existing fixture's does.
-  assert.equal(map.contracts.size, 0);
+  // The identity-unification fixture declares contracts for each of its three scopes.
+  assert.equal(map.contracts.get("analytics/models.py::daily_active_users"), "analytics");
+  assert.equal(map.contracts.get("ingestion/identity_map.py::IdentityMap"), "identity-map");
 });
 
 test("a contract outside its scope's paths, malformed or repeated is refused", () => {

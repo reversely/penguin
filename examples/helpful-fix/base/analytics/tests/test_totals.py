@@ -1,8 +1,7 @@
 from datetime import UTC, datetime
 
-from ingestion.events import Event
-
 from analytics.totals import events_per_user
+from ingestion.events import Event
 
 
 def test_counts_the_events_of_each_user():

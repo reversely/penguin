@@ -3,19 +3,21 @@
 Usage: python build.py TARGET
 
 TARGET must be an empty directory or a path that does not exist yet. The builder creates a Git
-repository there and commits each entry of ``COMMITS`` in order. The first commit's tree is the files
-under its ``source`` directory next to this script. Each later commit resets its branch to its
-``start`` commit and lays the files under its ``source`` directory over that tree, so a source
-directory holds only the files the commit adds or changes. Every value Git hashes is fixed here
-(author, committer, dates, message, file bytes and modes), so every machine gets the same commit
-SHAs. A commit with a ``tag`` also gets a lightweight tag of that name, so a commit stays reachable
-by name after a later commit moves its branch. ``pins.json`` records the SHAs a build produces. When
-the build finishes, the first commit's branch is checked out.
+repository there from ``features.json`` next to this script. The base commit's tree is the files
+under its ``source`` directory. Each feature is a fork of the base branch: its first commit resets
+the feature's ``fork`` branch to the base branch, and every commit lays the files under its
+``source`` directory over the fork's tree, so a source directory holds only the files the commit adds
+or changes. Every value Git hashes is fixed by the data file and the source files (author,
+committer, dates, message, file bytes and modes), so every machine gets the same commit SHAs. A
+commit with a ``tag`` also gets a lightweight tag of that name, so a commit stays reachable by name
+after a later commit moves its branch. ``pins.json`` records the SHAs a build produces. When the
+build finishes, the base branch is checked out.
 
 The builder runs only local Git commands, makes no network request and writes only inside TARGET.
 """
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -23,12 +25,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+FEATURES = HERE / "features.json"
 
 # Files a local test run leaves in a source directory; they never belong in a commit.
 SKIPPED_DIRS = frozenset({"__pycache__", ".pytest_cache"})
 SKIPPED_SUFFIXES = frozenset({".pyc", ".pyo"})
-
-FIXTURE_AUTHOR = ("Penguin Fixture", "fixture@penguin.invalid")
 
 
 @dataclass(frozen=True)
@@ -44,91 +45,42 @@ class Commit:
     tag: str | None = None
 
 
-COMMITS = (
-    Commit(
-        branch="main",
-        source="base",
-        message=(
-            "Base: ingestion, shared date helpers, analytics and messaging\n\n"
-            "Three scopes owned by priya, jun and sam, declared in penguin/scopes.json.\n"
-        ),
-        author=FIXTURE_AUTHOR,
-        date="2026-02-02T09:00:00+00:00",
-    ),
-    Commit(
-        branch="owner-priya",
-        source="owner-priya",
-        message=(
-            "Start each day at UTC midnight in start_of_day\n\n"
-            "Two devices that record one instant with different UTC offsets now put their\n"
-            "events into the same daily ingestion batch.\n"
-        ),
-        author=("Priya", "priya@penguin.invalid"),
-        date="2026-02-09T10:00:00+00:00",
-        start="main",
-        tag="owner-priya-checkpoint",
-    ),
-    Commit(
-        branch="owner-jun",
-        source="owner-jun",
-        message=(
-            "Add the weekly activity report\n\n"
-            "Counts each user's events on the seven days of a week, by the user's local day.\n"
-        ),
-        author=("Jun", "jun@penguin.invalid"),
-        date="2026-02-09T11:00:00+00:00",
-        start="main",
-        tag="owner-jun-checkpoint",
-    ),
-    Commit(
-        branch="owner-sam",
-        source="owner-sam",
-        message=(
-            "Add reminder scheduling\n\n"
-            "Schedules each contact's next reminder at a local hour of the contact's day.\n"
-        ),
-        author=("Sam", "sam@penguin.invalid"),
-        date="2026-02-09T12:00:00+00:00",
-        start="main",
-        tag="owner-sam-checkpoint",
-    ),
-    Commit(
-        branch="owner-priya",
-        source="owner-priya-local-day",
-        message=(
-            "Add start_of_local_day to the shared date helpers\n\n"
-            "Returns the midnight of a user's local day at the user's UTC offset, for code that\n"
-            "groups or schedules by the user's own calendar.\n"
-        ),
-        author=("Priya", "priya@penguin.invalid"),
-        date="2026-02-16T10:00:00+00:00",
-        start="owner-priya",
-    ),
-    Commit(
-        branch="owner-jun",
-        source="owner-jun-local-day",
-        message=(
-            "Bucket the weekly report with start_of_local_day\n\n"
-            "start_of_day now returns a UTC midnight, which moves evening activity west of UTC\n"
-            "onto the next day.\n"
-        ),
-        author=("Jun", "jun@penguin.invalid"),
-        date="2026-02-16T11:00:00+00:00",
-        start="owner-jun",
-    ),
-    Commit(
-        branch="owner-sam",
-        source="owner-sam-local-day",
-        message=(
-            "Schedule reminders from start_of_local_day\n\n"
-            "start_of_day now returns a UTC midnight, which moves a reminder west of UTC off\n"
-            "the contact's local hour.\n"
-        ),
-        author=("Sam", "sam@penguin.invalid"),
-        date="2026-02-16T12:00:00+00:00",
-        start="owner-sam",
-    ),
-)
+def load_commits(path: Path = FEATURES) -> tuple[Commit, ...]:
+    """Read the base commit and each feature's commits from ``path``, in build order."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        base = data["base"]
+        commits = [
+            Commit(
+                branch=base["branch"],
+                source=base["source"],
+                message=base["message"],
+                author=(base["author"]["name"], base["author"]["email"]),
+                date=base["date"],
+            )
+        ]
+        for feature in data["features"]:
+            author = (feature["author"]["name"], feature["author"]["email"])
+            start = base["branch"]
+            for entry in feature["commits"]:
+                commits.append(
+                    Commit(
+                        branch=feature["fork"],
+                        source=entry["source"],
+                        message=entry["message"],
+                        author=author,
+                        date=entry["date"],
+                        start=start,
+                        tag=entry.get("tag"),
+                    )
+                )
+                start = feature["fork"]
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise SystemExit(f"cannot read {path.name}: {error!r}") from None
+    for commit in commits:
+        if not (HERE / commit.source).resolve().is_relative_to(HERE):
+            raise SystemExit(f"refusing a source outside the fixture: {commit.source}")
+    return tuple(commits)
 
 
 def git_env(commit: Commit | None = None) -> dict[str, str]:
@@ -204,16 +156,17 @@ def prepare_target(target: Path) -> Path:
 
 def build(target: Path) -> dict[str, str]:
     """Build the fixture repository in ``target`` and return the SHA of each branch head and tag."""
+    commits = load_commits()
     target = prepare_target(target)
     git(
         target,
         "init",
         "--quiet",
         "--template=",
-        f"--initial-branch={COMMITS[0].branch}",
+        f"--initial-branch={commits[0].branch}",
     )
     refs = {}
-    for commit in COMMITS:
+    for commit in commits:
         if commit.start is not None:
             git(target, "checkout", "--quiet", "-B", commit.branch, commit.start)
         copy_tree(HERE / commit.source, target)
@@ -231,7 +184,7 @@ def build(target: Path) -> dict[str, str]:
         if commit.tag is not None:
             git(target, "tag", commit.tag)
             refs[commit.tag] = refs[commit.branch]
-    git(target, "checkout", "--quiet", COMMITS[0].branch)
+    git(target, "checkout", "--quiet", commits[0].branch)
     return refs
 
 

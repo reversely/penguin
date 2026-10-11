@@ -279,7 +279,7 @@ describe("penguin-bridge check on the fixtures", () => {
 
   test("the dependency bump fails the dependency check where Ana's payments import the client", async () => {
     const output = await check("dependency-bump", "owner-hugo-checkpoint", ["ana=owner-ana-checkpoint"]);
-    assert.match(output, /onto ana@\w+ \(merged \w+\)\n(?:.*\n)*? {2}dependencies failed: shared\.http changed version; ana imports it in 3 places/);
+    assert.match(output, /onto ana@\w+ \(merged \w+\)\n(?:.*\n)*? {2}dependencies failed: shared\.http changed version; ana imports it in 4 places/);
     assert.match(output, /shared\/http\.py vendored shared\.http 1\.4\.0 -> 2\.0\.0, from vendor\.wire_v1 to vendor\.wire_v2/);
     assert.match(output, /payments\/webhooks\.py:4 imports shared\.http/);
   });

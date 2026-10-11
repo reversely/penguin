@@ -1,0 +1,44 @@
+{
+  "$comment": "Scope map for this repository. Format: a JSON object whose 'scopes' array holds one entry per scope with 'id', 'name', 'owner' (an id from penguin/owners.json), 'paths' (path prefixes, relative to the repository root, that the scope owns), 'contracts' (the scope's public symbols as 'path::symbol', which the impact graph, the review harness and other scopes' calls name; a class covers its methods), 'test_command' (a shell command run from the repository root; exit status 0 means the scope's tests pass) and 'depends_on' (one entry per provider scope: 'scope' is the provider's id and 'kind' is 'imports' when the consumer imports the provider's code).",
+  "scopes": [
+    {
+      "id": "identity-map",
+      "name": "Ingestion and identity map",
+      "owner": "priya",
+      "paths": ["ingestion/"],
+      "contracts": [
+        "ingestion/identity_map.py::Event",
+        "ingestion/identity_map.py::IdentityMap",
+        "ingestion/identity_map.py::Profile",
+        "ingestion/identity_map.py::profile_key"
+      ],
+      "test_command": "python -m pytest ingestion",
+      "depends_on": []
+    },
+    {
+      "id": "analytics",
+      "name": "Analytics models",
+      "owner": "jun",
+      "paths": ["analytics/"],
+      "contracts": [
+        "analytics/models.py::daily_active_users",
+        "analytics/retention.py::retention_dashboard"
+      ],
+      "test_command": "python -m pytest analytics",
+      "depends_on": [{ "scope": "identity-map", "kind": "imports" }]
+    },
+    {
+      "id": "messaging",
+      "name": "Messaging and CRM sync",
+      "owner": "sam",
+      "paths": ["messaging/"],
+      "contracts": [
+        "messaging/crm_sync.py::crm_rows",
+        "messaging/subscriptions.py::is_subscribed",
+        "messaging/subscriptions.py::subscription_status"
+      ],
+      "test_command": "python -m pytest messaging",
+      "depends_on": [{ "scope": "identity-map", "kind": "imports" }]
+    }
+  ]
+}

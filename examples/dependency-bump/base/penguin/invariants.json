@@ -1,0 +1,12 @@
+{
+  "$comment": "Invariants each scope's owner declares for this repository, read by the review harness. Format: a JSON object whose 'invariants' array holds one entry per invariant with 'id' (lowercase, unique in the file), 'scope' (an id from penguin/scopes.json), 'statement' (one line of plain text that must hold after every change) and 'protected' (true when a side-by-side difference goes to the scope's owner in person; false when absent). Each entry of 'examples' names a 'scope', a JSON 'file' inside that scope's paths and the 'invariants' of that scope the file bears on. An examples file names one of the scope's contracts and its recorded cases: {\"contract\": \"path::symbol\", \"cases\": [{\"name\": ..., \"args\": {...}}]}.",
+  "invariants": [
+    {
+      "id": "charged-at-most-once",
+      "scope": "payments",
+      "statement": "A payment is charged at most once",
+      "protected": true
+    }
+  ],
+  "examples": []
+}

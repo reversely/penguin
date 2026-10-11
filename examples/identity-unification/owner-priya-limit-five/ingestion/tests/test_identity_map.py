@@ -1,4 +1,5 @@
 import pytest
+
 from ingestion.identity_map import (
     MAX_IDENTITIES_PER_DEVICE,
     Event,

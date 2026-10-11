@@ -1,6 +1,7 @@
 """Checks on the helpful-fix fixture builder (examples/helpful-fix/build.py)."""
 
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -127,3 +128,51 @@ def test_builder_writes_only_inside_the_target(tmp_path: Path):
     target = tmp_path / "repo"
     assert run_builder(target).returncode == 0
     assert [p.name for p in tmp_path.iterdir()] == ["repo"]
+
+
+def test_features_file_names_each_pinned_branch_and_tag():
+    features = json.loads((BUILDER.parent / "features.json").read_text())
+    pins = json.loads((BUILDER.parent / "pins.json").read_text())
+    forks = [feature["fork"] for feature in features["features"]]
+    tags = [
+        commit["tag"]
+        for feature in features["features"]
+        for commit in feature["commits"]
+        if "tag" in commit
+    ]
+    assert sorted([features["base"]["branch"], *forks]) == sorted(pins["branches"])
+    assert sorted(tags) == sorted(pins["tags"])
+    roles = [feature["role"] for feature in features["features"]]
+    assert roles.count("originating") == 1
+    assert set(roles) == {"originating", "running"}
+
+
+def test_builder_refuses_a_source_outside_the_fixture(tmp_path: Path):
+    copy = tmp_path / "fixture"
+    shutil.copytree(BUILDER.parent, copy)
+    features = json.loads((copy / "features.json").read_text())
+    features["features"][0]["commits"][0]["source"] = "../../etc"
+    (copy / "features.json").write_text(json.dumps(features))
+    result = subprocess.run(
+        [sys.executable, str(copy / "build.py"), str(tmp_path / "repo")],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "outside the fixture" in result.stderr
+    assert not (tmp_path / "repo").exists()
+
+
+def test_builder_refuses_a_malformed_features_file(tmp_path: Path):
+    copy = tmp_path / "fixture"
+    shutil.copytree(BUILDER.parent, copy)
+    (copy / "features.json").write_text('{"base": {"branch": "main"}}')
+    result = subprocess.run(
+        [sys.executable, str(copy / "build.py"), str(tmp_path / "repo")],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "cannot read features.json" in result.stderr

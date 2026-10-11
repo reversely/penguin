@@ -234,4 +234,14 @@ def test_each_fix_commit_changes_only_its_owner_scope(
     changed = git(built_repo, "diff", "--name-only", f"{commit}^", commit).split()
     paths = tuple(scopes[scope]["paths"])
     assert changed
-    assert all(path.startswith(paths) for path in changed)
+    # Priya's commit also declares start_of_local_day as a contract of Priya's scope.
+    outside = {path for path in changed if not path.startswith(paths)}
+    assert outside <= {"penguin/scopes.json"}
+    for name in outside:
+        before, after = (
+            json.loads(git(built_repo, "show", f"{ref}:{name}"))["scopes"]
+            for ref in (f"{commit}^", commit)
+        )
+        assert [s for s in before if s["id"] != scope] == [
+            s for s in after if s["id"] != scope
+        ]

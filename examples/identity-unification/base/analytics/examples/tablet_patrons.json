@@ -1,0 +1,223 @@
+{
+  "contract": "analytics/models.py::daily_active_users",
+  "cases": [
+    {
+      "name": "two patrons on their own devices",
+      "args": {
+        "events": [
+          {
+            "source": "mobile",
+            "type": "login",
+            "day": "2026-01-05",
+            "ts": 1,
+            "user_id": "u1",
+            "device_id": "d1"
+          },
+          {
+            "source": "mobile",
+            "type": "login",
+            "day": "2026-01-05",
+            "ts": 2,
+            "user_id": "u2",
+            "device_id": "d2"
+          }
+        ],
+        "identity_map": {
+          "$call": "ingestion/identity_map.py::IdentityMap.from_events",
+          "args": {
+            "events": [
+              {
+                "source": "mobile",
+                "type": "login",
+                "day": "2026-01-05",
+                "ts": 1,
+                "user_id": "u1",
+                "device_id": "d1"
+              },
+              {
+                "source": "mobile",
+                "type": "login",
+                "day": "2026-01-05",
+                "ts": 2,
+                "user_id": "u2",
+                "device_id": "d2"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "three patrons on one library tablet",
+      "args": {
+        "events": [
+          {
+            "source": "mobile",
+            "type": "login",
+            "day": "2026-01-05",
+            "ts": 1,
+            "user_id": "u1",
+            "device_id": "tablet-7"
+          },
+          {
+            "source": "mobile",
+            "type": "login",
+            "day": "2026-01-05",
+            "ts": 2,
+            "user_id": "u2",
+            "device_id": "tablet-7"
+          },
+          {
+            "source": "mobile",
+            "type": "login",
+            "day": "2026-01-05",
+            "ts": 3,
+            "user_id": "u3",
+            "device_id": "tablet-7"
+          }
+        ],
+        "identity_map": {
+          "$call": "ingestion/identity_map.py::IdentityMap.from_events",
+          "args": {
+            "events": [
+              {
+                "source": "mobile",
+                "type": "login",
+                "day": "2026-01-05",
+                "ts": 1,
+                "user_id": "u1",
+                "device_id": "tablet-7"
+              },
+              {
+                "source": "mobile",
+                "type": "login",
+                "day": "2026-01-05",
+                "ts": 2,
+                "user_id": "u2",
+                "device_id": "tablet-7"
+              },
+              {
+                "source": "mobile",
+                "type": "login",
+                "day": "2026-01-05",
+                "ts": 3,
+                "user_id": "u3",
+                "device_id": "tablet-7"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "six patrons on one library tablet",
+      "args": {
+        "events": [
+          {
+            "source": "mobile",
+            "type": "login",
+            "day": "2026-01-05",
+            "ts": 1,
+            "user_id": "u1",
+            "device_id": "tablet-7"
+          },
+          {
+            "source": "mobile",
+            "type": "login",
+            "day": "2026-01-05",
+            "ts": 2,
+            "user_id": "u2",
+            "device_id": "tablet-7"
+          },
+          {
+            "source": "mobile",
+            "type": "login",
+            "day": "2026-01-05",
+            "ts": 3,
+            "user_id": "u3",
+            "device_id": "tablet-7"
+          },
+          {
+            "source": "mobile",
+            "type": "login",
+            "day": "2026-01-05",
+            "ts": 4,
+            "user_id": "u4",
+            "device_id": "tablet-7"
+          },
+          {
+            "source": "mobile",
+            "type": "login",
+            "day": "2026-01-05",
+            "ts": 5,
+            "user_id": "u5",
+            "device_id": "tablet-7"
+          },
+          {
+            "source": "mobile",
+            "type": "login",
+            "day": "2026-01-05",
+            "ts": 6,
+            "user_id": "u6",
+            "device_id": "tablet-7"
+          }
+        ],
+        "identity_map": {
+          "$call": "ingestion/identity_map.py::IdentityMap.from_events",
+          "args": {
+            "events": [
+              {
+                "source": "mobile",
+                "type": "login",
+                "day": "2026-01-05",
+                "ts": 1,
+                "user_id": "u1",
+                "device_id": "tablet-7"
+              },
+              {
+                "source": "mobile",
+                "type": "login",
+                "day": "2026-01-05",
+                "ts": 2,
+                "user_id": "u2",
+                "device_id": "tablet-7"
+              },
+              {
+                "source": "mobile",
+                "type": "login",
+                "day": "2026-01-05",
+                "ts": 3,
+                "user_id": "u3",
+                "device_id": "tablet-7"
+              },
+              {
+                "source": "mobile",
+                "type": "login",
+                "day": "2026-01-05",
+                "ts": 4,
+                "user_id": "u4",
+                "device_id": "tablet-7"
+              },
+              {
+                "source": "mobile",
+                "type": "login",
+                "day": "2026-01-05",
+                "ts": 5,
+                "user_id": "u5",
+                "device_id": "tablet-7"
+              },
+              {
+                "source": "mobile",
+                "type": "login",
+                "day": "2026-01-05",
+                "ts": 6,
+                "user_id": "u6",
+                "device_id": "tablet-7"
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

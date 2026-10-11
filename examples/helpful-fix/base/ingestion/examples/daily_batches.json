@@ -1,0 +1,37 @@
+{
+  "contract": "ingestion/batches.py::daily_batches",
+  "cases": [
+    {
+      "name": "an afternoon event recorded in UTC",
+      "args": {
+        "events": [
+          {
+            "user_id": "u1",
+            "at": {
+              "$call": "shared/dates.py::parse_instant",
+              "args": {
+                "text": "2026-02-09T15:00:00+00:00"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "an evening event recorded at UTC-08:00",
+      "args": {
+        "events": [
+          {
+            "user_id": "u1",
+            "at": {
+              "$call": "shared/dates.py::parse_instant",
+              "args": {
+                "text": "2026-02-09T20:30:00-08:00"
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

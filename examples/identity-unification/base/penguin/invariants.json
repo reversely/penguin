@@ -1,0 +1,38 @@
+{
+  "$comment": "Invariants each scope's owner declares for this repository, read by the review harness. Format: a JSON object whose 'invariants' array holds one entry per invariant with 'id' (lowercase, unique in the file), 'scope' (an id from penguin/scopes.json), 'statement' (one line of plain text that must hold after every change) and 'protected' (true when a side-by-side difference goes to the scope's owner in person; false when absent). Each entry of 'examples' names a 'scope', a JSON 'file' inside that scope's paths and the 'invariants' of that scope the file bears on. An examples file names one of the scope's contracts and its recorded cases: {\"contract\": \"path::symbol\", \"cases\": [{\"name\": ..., \"args\": {...}}]}.",
+  "invariants": [
+    {
+      "id": "tablet-patrons-separate",
+      "scope": "analytics",
+      "statement": "Patrons who log in on one library tablet stay separate people",
+      "protected": true
+    },
+    {
+      "id": "published-day-counts-stable",
+      "scope": "analytics",
+      "statement": "A published day's daily active users stay the same when later days' events arrive"
+    },
+    {
+      "id": "unsubscribe-holds",
+      "scope": "messaging",
+      "statement": "An unsubscribe on any linked identity holds after a later signup subscribes the address by default"
+    }
+  ],
+  "examples": [
+    {
+      "scope": "analytics",
+      "file": "analytics/examples/tablet_patrons.json",
+      "invariants": ["tablet-patrons-separate"]
+    },
+    {
+      "scope": "analytics",
+      "file": "analytics/examples/published_days.json",
+      "invariants": ["published-day-counts-stable"]
+    },
+    {
+      "scope": "messaging",
+      "file": "messaging/examples/subscription_status.json",
+      "invariants": ["unsubscribe-holds"]
+    }
+  ]
+}

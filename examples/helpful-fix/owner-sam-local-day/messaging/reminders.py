@@ -1,5 +1,6 @@
 """Reminder scheduling at each contact's local hour."""
 
+from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 
 from messaging.contacts import Contact
@@ -15,3 +16,16 @@ def next_reminder(contact: Contact, now: datetime, local_hour: int) -> datetime:
     if reminder <= now:
         reminder += timedelta(days=1)
     return reminder.astimezone(UTC)
+
+
+def reminder_times(
+    contacts: Iterable[Contact], now: datetime, local_hour: int
+) -> dict[str, str]:
+    """Return each contact's next reminder as an ISO 8601 UTC instant, keyed by ``user_id``.
+
+    The send queue stores these strings, one per contact, in ``user_id`` order.
+    """
+    return {
+        contact.user_id: next_reminder(contact, now, local_hour).isoformat()
+        for contact in sorted(contacts, key=lambda contact: contact.user_id)
+    }

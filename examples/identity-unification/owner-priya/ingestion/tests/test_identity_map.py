@@ -1,4 +1,5 @@
 import pytest
+
 from ingestion.identity_map import Event, IdentityMap, profile_key
 
 

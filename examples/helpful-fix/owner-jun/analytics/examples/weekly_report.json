@@ -1,0 +1,65 @@
+{
+  "contract": "analytics/weekly.py::weekly_report",
+  "cases": [
+    {
+      "name": "daytime activity in UTC",
+      "args": {
+        "events": [
+          {
+            "user_id": "u1",
+            "at": {
+              "$call": "shared/dates.py::parse_instant",
+              "args": {
+                "text": "2026-02-09T10:00:00+00:00"
+              }
+            }
+          }
+        ],
+        "utc_offsets": {
+          "u1": {
+            "$call": "shared/dates.py::parse_utc_offset",
+            "args": {
+              "text": "+00:00"
+            }
+          }
+        },
+        "week_start": {
+          "$call": "shared/dates.py::parse_day",
+          "args": {
+            "text": "2026-02-09"
+          }
+        }
+      }
+    },
+    {
+      "name": "evening activity at UTC-08:00",
+      "args": {
+        "events": [
+          {
+            "user_id": "u1",
+            "at": {
+              "$call": "shared/dates.py::parse_instant",
+              "args": {
+                "text": "2026-02-10T04:30:00+00:00"
+              }
+            }
+          }
+        ],
+        "utc_offsets": {
+          "u1": {
+            "$call": "shared/dates.py::parse_utc_offset",
+            "args": {
+              "text": "-08:00"
+            }
+          }
+        },
+        "week_start": {
+          "$call": "shared/dates.py::parse_day",
+          "args": {
+            "text": "2026-02-09"
+          }
+        }
+      }
+    }
+  ]
+}

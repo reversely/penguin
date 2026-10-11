@@ -1,0 +1,59 @@
+{
+  "$comment": "The commits build.py makes, as a base and the features forked from it. Format: a JSON object with 'base' and 'features'. 'base' is the root commit: 'branch' (the base branch, main), 'source' (the directory next to build.py whose files form the commit's tree), 'author' ('name' and 'email', also the committer), 'date' (ISO 8601 with offset) and 'message'. Each entry of 'features' is one feature: 'id', 'title', 'owner' (an id from penguin/owners.json), 'role' ('originating' for the feature whose change the others must absorb, 'running' for a feature already under way), 'fork' (the branch that holds the feature, forked from the base branch), 'area' (the 'scopes', 'paths' and 'contracts' the feature declares it touches), 'author' and 'commits'. Each commit lays the files of its 'source' directory over the fork's tree; 'tag' names a lightweight tag on the commit. The first commit of a feature starts from the base branch, each later one from the fork's previous commit.",
+  "base": {
+    "branch": "main",
+    "source": "base",
+    "author": { "name": "Penguin Fixture", "email": "fixture@penguin.invalid" },
+    "date": "2026-03-02T09:00:00+00:00",
+    "message": "Base: shared HTTP client, carrier integrations and orders\n\nTwo scopes owned by hugo and ana, declared in penguin/scopes.json with their\ncontracts. Every scope imports the HTTP client from shared/http.py, which imports\nwire 1.4.0 from vendor/. penguin/invariants.json declares the payments invariant.\n"
+  },
+  "features": [
+    {
+      "id": "http-client-upgrade",
+      "title": "Upgrade the HTTP client",
+      "owner": "hugo",
+      "role": "originating",
+      "fork": "owner-hugo",
+      "area": {
+        "scopes": ["platform"],
+        "paths": ["shared/http.py", "vendor/wire_v2/__init__.py", "integrations/tests/test_shipping.py"],
+        "contracts": ["shared/http.py::Client"]
+      },
+      "author": { "name": "Hugo", "email": "hugo@penguin.invalid" },
+      "commits": [
+        {
+          "source": "owner-hugo",
+          "tag": "owner-hugo-checkpoint",
+          "date": "2026-03-09T10:00:00+00:00",
+          "message": "Upgrade the shared HTTP client to wire 2.0.0\n\nwire 2.0.0 retries a timed-out request, so a rate quote survives the carrier\ndropping the first request after a quiet period.\n"
+        }
+      ]
+    },
+    {
+      "id": "order-placed-webhook",
+      "title": "Add the order-placed payment webhook",
+      "owner": "ana",
+      "role": "running",
+      "fork": "owner-ana",
+      "area": {
+        "scopes": ["payments"],
+        "paths": ["payments/webhooks.py"],
+        "contracts": ["payments/webhooks.py::handle_order_placed"]
+      },
+      "author": { "name": "Ana", "email": "ana@penguin.invalid" },
+      "commits": [
+        {
+          "source": "owner-ana",
+          "tag": "owner-ana-checkpoint",
+          "date": "2026-03-09T11:00:00+00:00",
+          "message": "Add the order-placed payment webhook\n\nCharges each placed order through the payment processor and records the order as\npaid, declined or unconfirmed. Declares the webhook as a payments contract, with\nrecorded orders replayed against the fake processor.\n"
+        },
+        {
+          "source": "owner-ana-idempotency-key",
+          "date": "2026-03-16T11:00:00+00:00",
+          "message": "Send an idempotency key with each charge\n\nwire 2.0.0 retries a timed-out request. When the processor charged the card and\nonly the response was lost, the retry charged the order a second time. The key\nmakes the processor return the first charge instead.\n"
+        }
+      ]
+    }
+  ]
+}

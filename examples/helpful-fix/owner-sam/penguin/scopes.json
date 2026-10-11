@@ -1,0 +1,45 @@
+{
+  "$comment": "Scope map for this repository. Format: a JSON object whose 'scopes' array holds one entry per scope with 'id', 'name', 'owner' (an id from penguin/owners.json), 'paths' (path prefixes, relative to the repository root, that the scope owns), 'contracts' (the scope's public symbols as 'path::symbol', which the impact graph, the review harness and other scopes' calls name; a class covers its methods), 'test_command' (a shell command run from the repository root; exit status 0 means the scope's tests pass) and 'depends_on' (one entry per provider scope: 'scope' is the provider's id and 'kind' is 'imports' when the consumer imports the provider's code).",
+  "scopes": [
+    {
+      "id": "ingestion",
+      "name": "Ingestion and shared date helpers",
+      "owner": "priya",
+      "paths": ["ingestion/", "shared/"],
+      "contracts": [
+        "ingestion/batches.py::daily_batches",
+        "ingestion/events.py::Event",
+        "shared/dates.py::parse_day",
+        "shared/dates.py::parse_instant",
+        "shared/dates.py::parse_utc_offset",
+        "shared/dates.py::require_offset",
+        "shared/dates.py::start_of_day"
+      ],
+      "test_command": "python -m pytest ingestion shared",
+      "depends_on": []
+    },
+    {
+      "id": "analytics",
+      "name": "Analytics reports",
+      "owner": "jun",
+      "paths": ["analytics/"],
+      "contracts": ["analytics/totals.py::events_per_user"],
+      "test_command": "python -m pytest analytics",
+      "depends_on": [{ "scope": "ingestion", "kind": "imports" }]
+    },
+    {
+      "id": "messaging",
+      "name": "Messaging and reminders",
+      "owner": "sam",
+      "paths": ["messaging/"],
+      "contracts": [
+        "messaging/contacts.py::Contact",
+        "messaging/contacts.py::local_timezone",
+        "messaging/reminders.py::next_reminder",
+        "messaging/reminders.py::reminder_times"
+      ],
+      "test_command": "python -m pytest messaging",
+      "depends_on": [{ "scope": "ingestion", "kind": "imports" }]
+    }
+  ]
+}

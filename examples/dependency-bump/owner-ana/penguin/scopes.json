@@ -1,0 +1,34 @@
+{
+  "$comment": "Scope map for this repository. Format: a JSON object whose 'scopes' array holds one entry per scope with 'id', 'name', 'owner' (an id from penguin/owners.json), 'paths' (path prefixes, relative to the repository root, that the scope owns), 'contracts' (the scope's public symbols as 'path::symbol', which the impact graph, the review harness and other scopes' calls name; a class covers its methods), 'test_command' (a shell command run from the repository root; exit status 0 means the scope's tests pass) and 'depends_on' (one entry per provider scope: 'scope' is the provider's id and 'kind' is 'imports' when the consumer imports the provider's code).",
+  "scopes": [
+    {
+      "id": "platform",
+      "name": "Shared HTTP client and carrier integrations",
+      "owner": "hugo",
+      "paths": ["shared/", "vendor/", "integrations/"],
+      "contracts": [
+        "integrations/shipping.py::quote",
+        "shared/http.py::Client",
+        "shared/http.py::Request",
+        "shared/http.py::Response",
+        "shared/http.py::Timeout"
+      ],
+      "test_command": "python -m pytest shared integrations",
+      "depends_on": []
+    },
+    {
+      "id": "payments",
+      "name": "Orders and payment webhooks",
+      "owner": "ana",
+      "paths": ["payments/"],
+      "contracts": [
+        "payments/orders.py::Order",
+        "payments/orders.py::charge_body",
+        "payments/tests/charge_replay.py::charges_for_placed_order",
+        "payments/webhooks.py::handle_order_placed"
+      ],
+      "test_command": "python -m pytest payments",
+      "depends_on": [{ "scope": "platform", "kind": "imports" }]
+    }
+  ]
+}

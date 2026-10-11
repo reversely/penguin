@@ -4,25 +4,28 @@ The helpful-fix fixture is a small Git repository for case 2 in [the README](../
 Priya owns the shared date helper `start_of_day()` . Priya changes it to
 return a UTC midnight to fix a bug in Priya's own ingestion batches. That change breaks Jun's weekly
 report and Sam's reminder scheduling. `examples/helpful-fix/build.py` builds the repository from the
-source directories next to the builder. Every build produces the same commit SHAs.
+source directories next to the builder. `examples/helpful-fix/features.json` lists the base commit
+and each feature: its id, owner, role, fork branch, declared area and commits. Every build produces
+the same commit SHAs.
 `examples/helpful-fix/pins.json` records them.
 
 ## Branches and tags
 
 | Ref | Owner | Commit contents |
 |---|---|---|
-| `main` | none | The base commit: three scopes declared in `penguin/scopes.json` with their owners and agent identities. `shared/dates.py` holds `start_of_day()`, which returns midnight in the UTC offset of the datetime it receives. |
+| `main` | none | The base commit: three scopes declared in `penguin/scopes.json` with their owners, agent identities and contracts. `penguin/invariants.json` declares the analytics and messaging invariants. `shared/dates.py` holds `start_of_day()`, which returns midnight in the UTC offset of the datetime it receives. |
 | `owner-priya-checkpoint` (tag) | Priya | `start_of_day()` returns midnight UTC of the UTC day. Two events recorded at one instant with different offsets fall into one daily ingestion batch. `ingestion/tests/test_batches.py` adds `test_events_at_one_instant_share_a_batch`. |
-| `owner-jun-checkpoint` (tag) | Jun | The weekly activity report in `analytics/weekly.py` with `test_weekly.py`. The report converts each event to its user's UTC offset and calls `start_of_day()`. |
-| `owner-sam-checkpoint` (tag) | Sam | Reminder scheduling in `messaging/reminders.py` with `test_reminders.py`. The scheduler converts the current time to the contact's UTC offset and adds the reminder hour to `start_of_day()`. |
-| `owner-priya` | Priya | On `owner-priya-checkpoint`: `start_of_local_day(moment, utc_offset)` in `shared/dates.py` |
+| `owner-jun-checkpoint` (tag) | Jun | The weekly activity report in `analytics/weekly.py` with `test_weekly.py`. The report converts each event to its user's UTC offset and calls `start_of_day()`. The penguin files add the contract `weekly_report` and its examples file. |
+| `owner-sam-checkpoint` (tag) | Sam | Reminder scheduling in `messaging/reminders.py` with `test_reminders.py`. The scheduler converts the current time to the contact's UTC offset and adds the reminder hour to `start_of_day()`. `reminder_times()` lists each contact's next reminder as text. The penguin files add both contracts and the examples file. |
+| `owner-priya` | Priya | On `owner-priya-checkpoint`: `start_of_local_day(moment, utc_offset)` in `shared/dates.py`, declared as a contract |
 | `owner-jun` | Jun | On `owner-jun-checkpoint`: the weekly report buckets events with `start_of_local_day()` |
 | `owner-sam` | Sam | On `owner-sam-checkpoint`: reminder scheduling starts from `start_of_local_day()` |
 
 Priya's scope `ingestion` owns the paths `ingestion/` and `shared/`. Jun's scope `analytics` and
 Sam's scope `messaging` each declare a dependency on `ingestion` because they import
-`shared.dates`. Each checkpoint starts from `main`. Each fix commit starts from its owner's
-checkpoint and changes only paths in its owner's scope. Every scope's tests pass on each checkpoint
+`shared.dates`. Each feature is a fork of `main`: its checkpoint starts from `main` and its fix
+commit from the checkpoint. Each fix commit changes only paths in its owner's scope. Priya's second
+commit also adds `start_of_local_day` to the contracts of Priya's scope. Every scope's tests pass on each checkpoint
 alone. They also pass on `owner-priya` alone. `owner-jun` and `owner-sam` import
 `start_of_local_day()`, which only `owner-priya` adds. Their tests run on a tree merged with
 `owner-priya`. `pins.json` records the SHA of every branch head and tag. It also maps each failing
@@ -72,12 +75,60 @@ In the approved design ([design.md](design.md#procedure)) this case runs as foll
 5. **Block promotion.** One promotion. Neither Jun's report nor Sam's reminders ever runs on the UTC
    helper. Jun and Sam are each asked once, for approval.
 
-Before it can run this way, the fixture needs three additions:
+## Invariants, contracts and features
 
-- `penguin/invariants.json` in the base commit, with the local-day and local-hour invariants the two
-  tests check
-- contracts per scope in `penguin/scopes.json`, starting with `start_of_day()`
-- Jun's and Sam's work as running features: forks of `main` in place of the `owner-*-checkpoint` tags
+The base commit's `penguin/invariants.json` holds two invariants in the format in
+[design.md](design.md#invariants-and-examples). Each statement follows the test that checks it.
+
+| Id | Scope | Statement | Protected | Recorded examples |
+|---|---|---|---|---|
+| `evening-activity-local-day` | analytics | Evening activity west of UTC stays on its local day | no | Jun's fork adds `analytics/examples/weekly_report.json`: daytime activity in UTC, evening activity at UTC-08:00 |
+| `reminder-local-hour` | messaging | A reminder fires at the contact's local hour | no | Sam's fork adds `messaging/examples/reminder_times.json`: a contact in London and a contact at UTC-08:00, each asking for 09:00 |
+
+`main` also names `ingestion/examples/daily_batches.json` for Priya's scope. Its two cases run
+`daily_batches` on an afternoon event recorded in UTC and on an evening event recorded at UTC-08:00.
+The file bears on no invariant. It shows the behaviour change of `start_of_day()` to Priya's own
+review.
+
+A side-by-side run passes inputs as JSON. The shared date helpers therefore include
+`parse_instant`, `parse_day` and `parse_utc_offset`, which build a `datetime`, a `date` and a
+`timedelta` from ISO 8601 text. Each examples file builds its arguments by calling them. Sam's
+reminders add `reminder_times`, which returns each contact's next reminder as ISO 8601 text, because
+the side-by-side run encodes a returned `datetime` without its value.
+
+`penguin/scopes.json` declares each scope's contracts. Ingestion declares `daily_batches`, `Event`,
+`start_of_day`, `require_offset` and the three parse helpers. Analytics declares `events_per_user`.
+Messaging declares `Contact` and `local_timezone`. Priya's second commit adds `start_of_local_day`.
+
+`features.json` lists Priya's feature "Start each day at UTC midnight in start_of_day" as the
+originating feature on the fork `owner-priya`. Jun's weekly report (`owner-jun`) and Sam's reminder
+scheduling (`owner-sam`) are the running features. Jun's checkpoint adds the contract `weekly_report`
+with its examples file. Sam's checkpoint adds `next_reminder` and `reminder_times` with theirs. Jun's
+examples entry goes first in `penguin/invariants.json` and Sam's goes last, so the two forks merge
+without a conflict.
+
+## Impact and review on this fixture
+
+The results below come from `penguin-bridge impact`, `penguin-bridge review` and
+`penguin-bridge check` on a fresh build. A review of a running feature compares the fork's
+checkpoint with a block tree: a fork head with Priya's head merged onto it.
+
+`penguin-bridge impact --base main --head owner-priya-checkpoint`, with Jun's and Sam's checkpoints
+as forks, reports one modified function, `start_of_day`, under the contract
+`shared/dates.py::start_of_day`. The signature stays the same. Both forks call the function, so both
+forks run tests.
+
+| Review | Base | Fork | Side-by-side differences | Verdict and exceptions |
+|---|---|---|---|---|
+| Ingestion | `main` | `owner-priya-checkpoint` | The evening event at UTC-08:00 moves from the 2026-02-09 batch to the 2026-02-10 batch | Accepted. No exception |
+| Analytics | `owner-jun-checkpoint` | `owner-priya-checkpoint` merged onto it | Evening activity at UTC-08:00 counts on Monday 9 February on the base and on Tuesday 10 February on the fork | Accepted. The reported break goes to Jun as a `broken_invariant` |
+| Analytics | `owner-jun-checkpoint` | `owner-priya` merged onto `owner-jun` | None | Accepted with `test_evening_activity_west_of_utc_stays_on_its_local_day` as evidence. No exception |
+| Messaging | `owner-sam-checkpoint` | `owner-priya-checkpoint` merged onto it | The contact at UTC-08:00 gets a reminder at 17:00 UTC on 9 February on the base and at 09:00 UTC on 10 February on the fork | Accepted. The reported break goes to Sam as a `broken_invariant` |
+| Messaging | `owner-sam-checkpoint` | `owner-priya` merged onto `owner-sam` | None | Accepted with `test_fires_at_the_local_hour_west_of_utc` as evidence. No exception |
+
+`penguin-bridge check` on the three checkpoints passes overlap, merge, dependencies, lint, format and
+the type check on every merged tree. It fails one test on Jun's merged tree and one on Sam's. On the
+three fixed heads every check passes.
 
 ## Manual reproduction
 
@@ -135,7 +186,7 @@ from the root of the tree under test.
 
    `git merge-tree` prints a single tree SHA because each merge has no conflicts. The ingestion run
    exits 0. The analytics run reports `1 failed, 3 passed`. The messaging run reports
-   `1 failed, 3 passed`. Their short test summaries list these tests as `FAILED`:
+   `1 failed, 4 passed`. Their short test summaries list these tests as `FAILED`:
 
    ```text
    analytics/tests/test_weekly.py::test_evening_activity_west_of_utc_stays_on_its_local_day
@@ -172,7 +223,8 @@ A change to a source directory under `examples/helpful-fix/` changes the SHA of 
 from it. It also changes the SHA of every commit that starts from that commit. Run
 `uv run pre-commit run --all-files` before rebuilding, because ruff can rewrite a fixture source
 file. Then rebuild into an empty directory and copy the printed SHAs into the `branches`, `tags` and
-`fixes` objects of `pins.json`. `tests/test_helpful_fix_builder.py` fails until `pins.json` matches
+`fixes` objects of `pins.json`. A new commit goes into `features.json`. `examples/ruff.toml` makes
+ruff in this repository sort the fixture's imports as ruff does in the built repository. `tests/test_helpful_fix_builder.py` fails until `pins.json` matches
 a fresh build. The detect-secrets hook reads each SHA in `pins.json` as a possible secret. Run
 `uv run detect-secrets scan --baseline .secrets.baseline` after changing `pins.json` to record the
 new SHAs as known values.

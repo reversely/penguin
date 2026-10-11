@@ -1,7 +1,6 @@
-from shared.http import Client
-
 from integrations.shipping import quote
 from integrations.tests.fake_carrier import FakeCarrier
+from shared.http import Client
 
 
 def test_quote_returns_the_carrier_rate():

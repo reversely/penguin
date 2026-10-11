@@ -17,8 +17,8 @@ import {
 } from "../src/repos.ts";
 import { parseFeatureTokenTtl } from "../src/tokens.ts";
 
-// The fixture's base commit SHA from examples/identity-unification/build.py.
-const BASE_COMMIT = { hash: "6a3601267ba92c70f137ce401ee53dedf1cbec05" }; // pragma: allowlist secret
+// The fixture's base commit SHA from examples/identity-unification/pins.json.
+const BASE_COMMIT = { hash: "43dd33a8e8f46dde412fd86ba9642d2163a17b87" }; // pragma: allowlist secret
 
 class ArtifactsError extends Error {
   readonly code: string;

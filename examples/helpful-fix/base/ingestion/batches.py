@@ -3,9 +3,8 @@
 from collections import defaultdict
 from collections.abc import Iterable
 
-from shared.dates import start_of_day
-
 from ingestion.events import Event
+from shared.dates import start_of_day
 
 
 def daily_batches(events: Iterable[Event]) -> dict[str, list[Event]]:

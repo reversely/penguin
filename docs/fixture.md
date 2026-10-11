@@ -2,24 +2,26 @@
 
 The identity-unification fixture is a small Git repository that Penguin's integration runner tests
 against. `examples/identity-unification/build.py` builds it from the source directories next to the
-builder. Every build produces the same commit SHAs. `examples/identity-unification/pins.json` records
-them.
+builder. `examples/identity-unification/features.json` lists the base commit and each feature: its
+id, owner, role, fork branch, declared area and commits. Every build produces the same commit SHAs.
+`examples/identity-unification/pins.json` records them.
 
 ## Branches and tags
 
 | Ref | Owner | Commit contents |
 |---|---|---|
-| `main` | none | The base commit: three scopes declared in `penguin/scopes.json` with their owners and agent identities |
+| `main` | none | The base commit: three scopes declared in `penguin/scopes.json` with their owners, agent identities and contracts. `penguin/invariants.json` declares the analytics and messaging invariants with their recorded examples |
 | `owner-priya-checkpoint` (tag) | Priya | `person_id` with merge rules in `ingestion/identity_map.py`: a `login` event links its device to its user. A shared verified email links identities. A merged profile keeps the latest value of each attribute. |
-| `owner-jun-checkpoint` (tag) | Jun | The retention dashboard in `analytics/retention.py` with `test_retention.py` and `test_identity.py` |
-| `owner-sam-checkpoint` (tag) | Sam | The re-engagement email audience in `messaging/audience.py` with `test_audience.py` and `test_consent.py` |
+| `owner-jun-checkpoint` (tag) | Jun | The retention dashboard in `analytics/retention.py` with `test_retention.py` and `test_identity.py`. `penguin/scopes.json` adds the contract `analytics/retention.py::retention_dashboard` |
+| `owner-sam-checkpoint` (tag) | Sam | The re-engagement email audience in `messaging/audience.py` with `test_audience.py` and `test_consent.py`. `penguin/scopes.json` adds the contract `messaging/audience.py::reengagement_audience`. `penguin/invariants.json` adds its examples file `messaging/examples/reengagement_audience.json` |
 | `owner-priya-limit-five` (tag) | Priya | On `owner-priya-checkpoint`: a login links a device to at most five user identities (`MAX_IDENTITIES_PER_DEVICE`) |
 | `owner-priya` | Priya | On `owner-priya-limit-five`: the limit lowered to one, so each device links only its first user |
 | `owner-jun` | Jun | On `owner-jun-checkpoint`: a cutover marker for past metrics in `analytics/retention.py` |
 | `owner-sam` | Sam | On `owner-sam-checkpoint`: the audience leaves out a person when any identity linked to the person has unsubscribed |
 
-Each checkpoint starts from `main`. Each fix commit starts from its owner's previous commit and changes
-only paths in its owner's scope. Every scope's tests pass on each commit alone. `pins.json` records the
+Each feature is a fork of `main`: its first commit starts from `main` and each later commit from the
+fork's previous commit. Each fix commit changes only paths in its owner's scope. A running feature's
+checkpoint also declares its new contract in its own scope's entry of the penguin files. Every scope's tests pass on each commit alone. `pins.json` records the
 SHA of every branch head and tag. It also maps each failing test to the commit that fixes it.
 
 ## Expected failures
@@ -73,35 +75,57 @@ In the approved design ([design.md](design.md#procedure)) this case runs as foll
 5. **Block promotion.** The block passes every check against main and both forks. Penguin promotes it
    in one push. Jun is asked twice and Sam once.
 
-Before it can run this way, the fixture needs three additions:
+## Invariants, contracts and features
 
-- `penguin/invariants.json` in the base commit, with the analytics invariant above and the
-  messaging invariant on unsubscribes, in the format in [design.md](design.md#invariants-and-examples)
-- contracts per scope in `penguin/scopes.json`, starting with the identity map's `person_id`
-- Jun's and Sam's work as running features: forks of `main` in place of the `owner-*-checkpoint` tags
+The base commit's `penguin/invariants.json` holds three invariants in the format in
+[design.md](design.md#invariants-and-examples). Their wording follows the tests that check them.
 
-## Review harness on this fixture
+| Id | Scope | Statement | Protected | Recorded examples |
+|---|---|---|---|---|
+| `tablet-patrons-separate` | analytics | Patrons who log in on one library tablet stay separate people | yes | `analytics/examples/tablet_patrons.json`: two patrons on their own devices, three patrons on one library tablet, six patrons on one library tablet |
+| `published-day-counts-stable` | analytics | A published day's daily active users stay the same when later days' events arrive | no | `analytics/examples/published_days.json`: a new visitor on a later day, a later login that links two identities active on a published day |
+| `unsubscribe-holds` | messaging | An unsubscribe on any linked identity holds after a later signup subscribes the address by default | no | `messaging/examples/subscription_status.json` on `main`. Sam's fork adds `messaging/examples/reengagement_audience.json` |
 
-`services/local-bridge/test/review-harness.test.ts` runs the review harness on a fresh build. The
-test commits its own `penguin/invariants.json` to `main`: analytics declares "patrons who log in on
-one library tablet stay separate people" as protected. It also declares the contracts
-`analytics/models.py::daily_active_users` and `ingestion/identity_map.py::IdentityMap`. Its examples
-file runs `daily_active_users` on two patrons on their own devices and on three patrons on one
-tablet. Each argument builds its identity map with `IdentityMap.from_events`. Each fork is one of
-Priya's commits merged onto that `main`.
+Each examples file runs `daily_active_users`, `subscription_status` or `reengagement_audience`. Each
+case builds its identity map with `IdentityMap.from_events` from the case's own events.
+`penguin/scopes.json` declares each scope's contracts. The identity map declares `Event`,
+`IdentityMap`, `Profile` and `profile_key`. Analytics declares `daily_active_users`. Messaging
+declares `crm_rows`, `is_subscribed` and `subscription_status`.
 
-| Fork | Input | Main | Fork |
-|---|---|---|---|
-| `owner-priya-checkpoint` | Three patrons on one library tablet | 3 people | 1 person |
-| `owner-priya-checkpoint` | Two patrons on their own devices | 2 people | 2 people |
-| `owner-priya-limit-five` | Six patrons on one tablet, a risky input | 6 people | 2 people |
-| `owner-priya` | Six patrons on one tablet, a risky input | 6 people | 6 people |
+`features.json` lists Priya's feature "Add person_id with merge rules" as the originating feature on
+the fork `owner-priya`. Jun's retention dashboard (`owner-jun`) and Sam's re-engagement audience
+(`owner-sam`) are the running features. Each running feature declares its new contract in its own
+scope's entry of `penguin/scopes.json`. The two forks change separate entries, so they merge without
+a conflict.
 
-On Priya's checkpoint a form claiming "holds" without evidence is refused with `no_evidence`. The
-tablet difference still goes to Jun as a `protected_difference`. Citing Jun's
-`analytics/tests/test_identity.py::test_shared_device_split` is refused with `evidence_not_found`,
-because that test is only in Jun's fork. The contract diff shows `Profile` changing
-shape, so the form needs a cutover marker.
+## Impact and review on this fixture
+
+The results below come from `penguin-bridge impact`, `penguin-bridge review` and
+`penguin-bridge check` on a fresh build. A review's fork is one of Priya's commits or a block tree: a
+running fork's head with Priya's head merged onto it.
+
+`penguin-bridge impact --base main --head owner-priya-checkpoint`, with Jun's and Sam's checkpoints
+as forks, reports changes to the contracts `IdentityMap` and `Profile`. It reports a breaking
+signature change of `Profile.set` and a stored shape change of the `Profile` dataclass. Both forks
+use the changed symbols, so both forks run tests.
+
+| Review | Base | Fork | Side-by-side differences | Verdict and exceptions |
+|---|---|---|---|---|
+| Analytics | `main` | `owner-priya-checkpoint` | Three patrons on one tablet: 3 people on main, 1 on the fork. Six patrons: 6 and 1. A later login on a published day: that day's count drops from 2 to 1 | Refused with `stored_data_without_marker`. The tablet difference goes to Jun as a `protected_difference` |
+| Analytics | `main` | `owner-priya-limit-five` | Three patrons: 3 and 1. Six patrons: 6 and 2. The risky input of ten patrons: 10 and 6. The published-day example differs as above | Refused with `stored_data_without_marker`. A `protected_difference` goes to Jun |
+| Analytics | `main` | `owner-priya` merged onto `owner-jun` | Only the published-day example differs on `daily_active_users`. The tablet examples and the risky input match main | Accepted with the cutover marker `analytics/retention.py::person_id_cutover`. No exception |
+| Messaging, without the contract diff | `owner-sam-checkpoint` | `owner-priya-checkpoint` merged onto it | After an unsubscribe on mobile and a web signup, `subscription_status` gives `device:d1` false and `user:u1` true on the base. The fork gives one subscribed person. `reengagement_audience` returns no address on the base and `a@example.com` on the fork | Accepted. The reported break goes to Sam as a `broken_invariant` |
+| Messaging, without the contract diff | `owner-sam` | `owner-priya` merged onto it | `reengagement_audience` matches on both examples. `subscription_status` still differs, because Sam's fix lives in the audience | Accepted. No exception |
+
+The messaging reviews run with `--no-diff`. The cutover marker in Jun's review answers the `Profile`
+shape change for the block. `penguin-bridge check` on the three checkpoints passes overlap, merge,
+lint and format on every merged tree. It fails `test_shared_device_split` and `test_dau_stable` on
+Jun's merged tree. It fails `test_unsubscribe_survives` on Sam's. On the three fixed heads every
+check passes.
+
+`services/local-bridge/test/review-harness.test.ts` replaces the fixture's invariants file on `main`
+with its own. It checks the same tablet differences, the refusals for missing evidence and the
+stored data rule.
 
 ## Manual reproduction
 
@@ -206,7 +230,9 @@ scope paths.
 A change to a source directory under `examples/identity-unification/` changes the SHA of the commit
 built from it. It also changes the SHA of every commit that starts from that commit. Run `uv run pre-commit run --all-files` before
 rebuilding, because ruff can rewrite a fixture source file. Then rebuild into an empty directory and
-copy the printed SHAs into the `branches`, `tags` and `fixes` objects of `pins.json`. `tests/test_fixture_builder.py` fails until `pins.json`
+copy the printed SHAs into the `branches`, `tags` and `fixes` objects of `pins.json`. A new commit
+goes into `features.json`. `examples/ruff.toml` makes ruff in this repository sort the fixture's
+imports as ruff does in the built repository. `tests/test_fixture_builder.py` fails until `pins.json`
 matches a fresh build. The detect-secrets hook reads each SHA in `pins.json` as a possible secret.
 Run `uv run detect-secrets scan --baseline .secrets.baseline` after changing `pins.json` to record
 the new SHAs as known values.

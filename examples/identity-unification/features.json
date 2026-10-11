@@ -1,0 +1,96 @@
+{
+  "$comment": "The commits build.py makes, as a base and the features forked from it. Format: a JSON object with 'base' and 'features'. 'base' is the root commit: 'branch' (the base branch, main), 'source' (the directory next to build.py whose files form the commit's tree), 'author' ('name' and 'email', also the committer), 'date' (ISO 8601 with offset) and 'message'. Each entry of 'features' is one feature: 'id', 'title', 'owner' (an id from penguin/owners.json), 'role' ('originating' for the feature whose change the others must absorb, 'running' for a feature already under way), 'fork' (the branch that holds the feature, forked from the base branch), 'area' (the 'scopes', 'paths' and 'contracts' the feature declares it touches), 'author' and 'commits'. Each commit lays the files of its 'source' directory over the fork's tree; 'tag' names a lightweight tag on the commit. The first commit of a feature starts from the base branch, each later one from the fork's previous commit.",
+  "base": {
+    "branch": "main",
+    "source": "base",
+    "author": { "name": "Penguin Fixture", "email": "fixture@penguin.invalid" },
+    "date": "2026-01-05T09:00:00+00:00",
+    "message": "Base: identity map, analytics models and messaging\n\nThree scopes owned by priya, jun and sam, declared in penguin/scopes.json with their\ncontracts. penguin/invariants.json declares the analytics and messaging invariants and\ntheir recorded examples.\n"
+  },
+  "features": [
+    {
+      "id": "person-id-merge-rules",
+      "title": "Add person_id with merge rules",
+      "owner": "priya",
+      "role": "originating",
+      "fork": "owner-priya",
+      "area": {
+        "scopes": ["identity-map"],
+        "paths": ["ingestion/identity_map.py"],
+        "contracts": ["ingestion/identity_map.py::IdentityMap", "ingestion/identity_map.py::Profile"]
+      },
+      "author": { "name": "Priya", "email": "priya@penguin.invalid" },
+      "commits": [
+        {
+          "source": "owner-priya",
+          "tag": "owner-priya-checkpoint",
+          "date": "2026-01-12T10:00:00+00:00",
+          "message": "Add person_id with merge rules\n\nLink identities on login events and on a shared verified email. A merged profile\nkeeps the latest value of each attribute.\n"
+        },
+        {
+          "source": "owner-priya-limit-five",
+          "tag": "owner-priya-limit-five",
+          "date": "2026-01-19T10:00:00+00:00",
+          "message": "Limit the identities a login links to one device\n\nA login links its device to its user while the device has linked fewer than five\nusers.\n"
+        },
+        {
+          "source": "owner-priya-device-limit",
+          "date": "2026-01-20T10:00:00+00:00",
+          "message": "Lower the identities per device to one\n\nA limit of five still joins the tablet's users. Each device now links only its\nfirst user.\n"
+        }
+      ]
+    },
+    {
+      "id": "retention-dashboard",
+      "title": "Add the retention dashboard",
+      "owner": "jun",
+      "role": "running",
+      "fork": "owner-jun",
+      "area": {
+        "scopes": ["analytics"],
+        "paths": ["analytics/retention.py"],
+        "contracts": ["analytics/retention.py::retention_dashboard"]
+      },
+      "author": { "name": "Jun", "email": "jun@penguin.invalid" },
+      "commits": [
+        {
+          "source": "owner-jun",
+          "tag": "owner-jun-checkpoint",
+          "date": "2026-01-12T11:00:00+00:00",
+          "message": "Add the retention dashboard\n\nDaily active users and day-N retention by first-active-day cohort. Declares\nretention_dashboard as an analytics contract.\n"
+        },
+        {
+          "source": "owner-jun-cutover",
+          "date": "2026-01-19T11:00:00+00:00",
+          "message": "Add a cutover marker for past metrics\n\nDays before the first day that person_id links an event to another identity count\nidentities, so a later login never changes them.\n"
+        }
+      ]
+    },
+    {
+      "id": "reengagement-audience",
+      "title": "Add the re-engagement email audience",
+      "owner": "sam",
+      "role": "running",
+      "fork": "owner-sam",
+      "area": {
+        "scopes": ["messaging"],
+        "paths": ["messaging/audience.py"],
+        "contracts": ["messaging/audience.py::reengagement_audience"]
+      },
+      "author": { "name": "Sam", "email": "sam@penguin.invalid" },
+      "commits": [
+        {
+          "source": "owner-sam",
+          "tag": "owner-sam-checkpoint",
+          "date": "2026-01-12T12:00:00+00:00",
+          "message": "Add the re-engagement email audience\n\nSubscribed people inactive since a cutoff day, with unsubscribed addresses\nsuppressed. Declares reengagement_audience as a messaging contract with recorded\nexamples.\n"
+        },
+        {
+          "source": "owner-sam-consent",
+          "date": "2026-01-19T12:00:00+00:00",
+          "message": "Honour an unsubscribe from any identity linked to the person\n\nThe audience leaves out a person when any linked identity's latest consent is an\nunsubscribe.\n"
+        }
+      ]
+    }
+  ]
+}
