@@ -1,0 +1,35 @@
+# Session log: local handoff between sessions, never staged.
+docs/log.md
+
+# secrets baseline is committed; the actual secrets it would catch are not
+.env
+.env.*
+!.env.example
+
+# Python / uv
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# OS noise
+.DS_Store
+
+# agent-local files: instructions, skills, settings, worklogs, plans, PRDs
+CLAUDE.md
+AGENTS.md
+.claude/
+docs/log.md
+docs/progress/
+docs/plans/
+docs/prd*.md
+
+# Node / Cloudflare Workers
+node_modules/
+.wrangler/
+.dev.vars
+dist/
+
+# third-party docs and patents read during research; local only
+docs/research/
