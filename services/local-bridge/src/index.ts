@@ -19,7 +19,23 @@ export type {
   PublishResult,
 } from "./checkpoint.ts";
 export { runCli } from "./cli.ts";
-export type { CliIo } from "./cli.ts";
+export type { CliDependencies, CliIo } from "./cli.ts";
+export { IssueWriter } from "./issue-writer.ts";
+export type {
+  BridgeOperationType,
+  IssueChange,
+  IssueWriterOptions,
+  WriteOptions,
+  WriteResult,
+} from "./issue-writer.ts";
+export {
+  KEYCHAIN_SERVICE,
+  KeychainStore,
+  loadSigningKey,
+  MemoryKeyStore,
+  signingKeyAccount,
+} from "./key-store.ts";
+export type { BridgeSigningKey, KeyStore } from "./key-store.ts";
 export { hashPath, worktreeId, WorktreeRegistry } from "./registry.ts";
 export { CombinedRunner, parseFailingTests } from "./combined-run.ts";
 export type {

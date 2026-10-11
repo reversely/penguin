@@ -6,6 +6,8 @@ import { parseArgs } from "node:util";
 import { runGit } from "@penguin/git-analysis";
 
 import { CheckpointPublisher, type ConsentScope } from "./checkpoint.ts";
+import { ISSUE_USAGE, runIssueCommand, runKeyCommand } from "./issue-cli.ts";
+import { KeychainStore, type KeyStore } from "./key-store.ts";
 import { WorktreeRegistry, worktreeId } from "./registry.ts";
 
 export interface CliIo {
@@ -19,13 +21,21 @@ const USAGE = `Usage: penguin-bridge checkpoint --owner <id> --project <id> --fo
                       [--remote <url>]
 `;
 
+export interface CliDependencies {
+  /** Where the bridge signing key lives. Defaults to the OS keychain. */
+  keyStore?: KeyStore;
+}
+
 const CONSENT_SCOPES: readonly ConsentScope[] = ["each-publish", "worktree", "project"];
 
 /** Runs one bridge command. Resolves with the process exit code. */
-export async function runCli(argv: readonly string[], io: CliIo): Promise<number> {
+export async function runCli(argv: readonly string[], io: CliIo, deps: CliDependencies = {}): Promise<number> {
   const [command, ...rest] = argv;
+  const keyStore = deps.keyStore ?? new KeychainStore();
+  if (command === "issue") return runIssueCommand(rest, io, keyStore);
+  if (command === "key") return runKeyCommand(rest, io, keyStore);
   if (command !== "checkpoint") {
-    io.write(USAGE);
+    io.write(USAGE + ISSUE_USAGE);
     return 2;
   }
   const { values } = parseArgs({
