@@ -36,6 +36,11 @@ export function hashPath(bridgeId: string, path: string): string {
   return createHash("sha256").update(bridgeId).update("\0").update(path).digest("hex");
 }
 
+/** The registry ID of the worktree at `path` (absolute, as `git worktree list` reports it). */
+export function worktreeId(bridgeId: string, path: string): string {
+  return `wt_${hashPath(bridgeId, path).slice(0, 16)}`;
+}
+
 /**
  * The bridge's worktree registry, built from `git worktree list --porcelain`. Each worktree's
  * baseline is pinned to its HEAD when the registry first sees it and stays pinned across
@@ -60,7 +65,7 @@ export class WorktreeRegistry {
     for (const entry of parseWorktreeList(output)) {
       if (entry.bare || entry.prunable || entry.headSha === null) continue;
       const pathHash = hashPath(bridgeId, entry.path);
-      const id = `wt_${pathHash.slice(0, 16)}`;
+      const id = worktreeId(bridgeId, entry.path);
       seen.add(id);
       this.#paths.set(id, entry.path);
       this.#records.set(id, {
@@ -112,6 +117,12 @@ export class WorktreeRegistry {
   /** Tracked paths changed in the worktree since its pinned baseline. */
   async changedPaths(id: string): Promise<string[]> {
     return changedPaths(this.#require(id).baseline_sha, this.#pathOf(id));
+  }
+
+  /** The worktree's absolute path, for in-process Git calls only; never serialize it. */
+  pathOf(id: string): string {
+    this.#require(id);
+    return this.#pathOf(id);
   }
 
   /** The registry as JSON: worktree records with path hashes and no absolute paths. */
