@@ -8,8 +8,9 @@ under its ``source`` directory next to this script. Each later commit resets its
 ``start`` commit and lays the files under its ``source`` directory over that tree, so a source
 directory holds only the files the commit adds or changes. Every value Git hashes is fixed here
 (author, committer, dates, message, file bytes and modes), so every machine gets the same commit
-SHAs. ``pins.json`` records the SHAs a build produces. When the build finishes, the first commit's
-branch is checked out.
+SHAs. A commit with a ``tag`` also gets a lightweight tag of that name, so a commit stays reachable
+by name after a later commit moves its branch. ``pins.json`` records the SHAs a build produces. When
+the build finishes, the first commit's branch is checked out.
 
 The builder runs only local Git commands, makes no network request and writes only inside TARGET.
 """
@@ -39,6 +40,8 @@ class Commit:
     date: str
     # The branch or commit this commit's branch starts from; None for the root commit.
     start: str | None = None
+    # A lightweight tag to create on this commit; None for no tag.
+    tag: str | None = None
 
 
 COMMITS = (
@@ -63,6 +66,7 @@ COMMITS = (
         author=("Priya", "priya@penguin.invalid"),
         date="2026-01-12T10:00:00+00:00",
         start="main",
+        tag="owner-priya-checkpoint",
     ),
     Commit(
         branch="owner-jun",
@@ -74,6 +78,7 @@ COMMITS = (
         author=("Jun", "jun@penguin.invalid"),
         date="2026-01-12T11:00:00+00:00",
         start="main",
+        tag="owner-jun-checkpoint",
     ),
     Commit(
         branch="owner-sam",
@@ -86,6 +91,56 @@ COMMITS = (
         author=("Sam", "sam@penguin.invalid"),
         date="2026-01-12T12:00:00+00:00",
         start="main",
+        tag="owner-sam-checkpoint",
+    ),
+    Commit(
+        branch="owner-priya",
+        source="owner-priya-limit-five",
+        message=(
+            "Limit the identities a login links to one device\n\n"
+            "A login links its device to its user while the device has linked fewer than five\n"
+            "users.\n"
+        ),
+        author=("Priya", "priya@penguin.invalid"),
+        date="2026-01-19T10:00:00+00:00",
+        start="owner-priya",
+        tag="owner-priya-limit-five",
+    ),
+    Commit(
+        branch="owner-priya",
+        source="owner-priya-device-limit",
+        message=(
+            "Lower the identities per device to one\n\n"
+            "A limit of five still joins the tablet's users. Each device now links only its\n"
+            "first user.\n"
+        ),
+        author=("Priya", "priya@penguin.invalid"),
+        date="2026-01-20T10:00:00+00:00",
+        start="owner-priya",
+    ),
+    Commit(
+        branch="owner-jun",
+        source="owner-jun-cutover",
+        message=(
+            "Add a cutover marker for past metrics\n\n"
+            "Days before the first day that person_id links an event to another identity count\n"
+            "identities, so a later login never changes them.\n"
+        ),
+        author=("Jun", "jun@penguin.invalid"),
+        date="2026-01-19T11:00:00+00:00",
+        start="owner-jun",
+    ),
+    Commit(
+        branch="owner-sam",
+        source="owner-sam-consent",
+        message=(
+            "Honour an unsubscribe from any identity linked to the person\n\n"
+            "The audience leaves out a person when any linked identity's latest consent is an\n"
+            "unsubscribe.\n"
+        ),
+        author=("Sam", "sam@penguin.invalid"),
+        date="2026-01-19T12:00:00+00:00",
+        start="owner-sam",
     ),
 )
 
@@ -162,7 +217,7 @@ def prepare_target(target: Path) -> Path:
 
 
 def build(target: Path) -> dict[str, str]:
-    """Build the fixture repository in ``target`` and return each branch's head SHA."""
+    """Build the fixture repository in ``target`` and return the SHA of each branch head and tag."""
     target = prepare_target(target)
     git(
         target,
@@ -171,7 +226,7 @@ def build(target: Path) -> dict[str, str]:
         "--template=",
         f"--initial-branch={COMMITS[0].branch}",
     )
-    heads = {}
+    refs = {}
     for commit in COMMITS:
         if commit.start is not None:
             git(target, "checkout", "--quiet", "-B", commit.branch, commit.start)
@@ -186,9 +241,12 @@ def build(target: Path) -> dict[str, str]:
             commit.message,
             commit=commit,
         )
-        heads[commit.branch] = git(target, "rev-parse", "HEAD")
+        refs[commit.branch] = git(target, "rev-parse", "HEAD")
+        if commit.tag is not None:
+            git(target, "tag", commit.tag)
+            refs[commit.tag] = refs[commit.branch]
     git(target, "checkout", "--quiet", COMMITS[0].branch)
-    return heads
+    return refs
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -197,8 +255,8 @@ def main(argv: list[str] | None = None) -> int:
         "target", type=Path, help="empty or missing directory to build into"
     )
     args = parser.parse_args(argv)
-    for branch, sha in build(args.target).items():
-        print(f"{branch} {sha}")
+    for ref, sha in sorted(build(args.target).items()):
+        print(f"{ref} {sha}")
     return 0
 
 

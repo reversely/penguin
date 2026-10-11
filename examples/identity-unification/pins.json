@@ -1,9 +1,20 @@
 {
-  "$comment": "Commit SHAs a build of this fixture produces. Format: a JSON object whose 'branches' object maps each branch build.py creates to its head commit SHA. 'main' holds the base commit; 'owner-priya', 'owner-jun' and 'owner-sam' each hold one owner's checkpoint on top of the base. tests/test_fixture_builder.py checks that a fresh build reproduces every SHA.",
+  "$comment": "Commit SHAs a build of this fixture produces. Format: a JSON object with three objects. 'branches' maps each branch build.py creates to its head commit SHA: 'main' holds the base commit, and 'owner-priya', 'owner-jun' and 'owner-sam' each hold one owner's fixed checkpoint. 'tags' maps each tag build.py creates to its commit SHA: '<branch>-checkpoint' is the owner's checkpoint before the fix, and 'owner-priya-limit-five' is Priya's intermediate fix with a limit of five, under which the shared-device test still fails. 'fixes' maps the pytest node ID of each test that fails on the merged checkpoints to the SHA of the commit that makes it pass. tests/test_fixture_builder.py checks that a fresh build reproduces every branch and tag SHA; tests/test_fixture_reproduction.py checks the 'fixes' entries.",
   "branches": {
     "main": "6a3601267ba92c70f137ce401ee53dedf1cbec05",
-    "owner-priya": "ee70f092b82b3ab28ddb5ee0348f0bcb7a85c2fb",
-    "owner-jun": "b925bf08c6df94eebf6f955288c6bcbe2afc4cef",
-    "owner-sam": "34de9fe7ebd842ca1c28886636e4599346332968"
+    "owner-priya": "d469746f199e0d3a7f136f53dfdbbbb5cdef94f8",
+    "owner-jun": "4acb1bf94cf8753569e0af7bb26955812e3aa4c6",
+    "owner-sam": "fb40d03febfc2a03625b2d2672eb7347698a3e08"
+  },
+  "tags": {
+    "owner-priya-checkpoint": "ee70f092b82b3ab28ddb5ee0348f0bcb7a85c2fb",
+    "owner-jun-checkpoint": "b925bf08c6df94eebf6f955288c6bcbe2afc4cef",
+    "owner-sam-checkpoint": "34de9fe7ebd842ca1c28886636e4599346332968",
+    "owner-priya-limit-five": "f34476153b195dfae01d90ec8756580202d5d720"
+  },
+  "fixes": {
+    "analytics/tests/test_retention.py::test_dau_stable": "4acb1bf94cf8753569e0af7bb26955812e3aa4c6",
+    "analytics/tests/test_identity.py::test_shared_device_split": "d469746f199e0d3a7f136f53dfdbbbb5cdef94f8",
+    "messaging/tests/test_consent.py::test_unsubscribe_survives": "fb40d03febfc2a03625b2d2672eb7347698a3e08"
   }
 }

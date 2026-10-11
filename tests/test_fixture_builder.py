@@ -55,7 +55,7 @@ def test_two_builds_pin_main_to_the_same_sha(tmp_path: Path):
 
 
 def test_build_reproduces_the_pinned_shas(built_repo: Path):
-    pins = json.loads((BUILDER.parent / "pins.json").read_text())["branches"]
+    pins = json.loads((BUILDER.parent / "pins.json").read_text())
     refs = subprocess.run(
         [
             "git",
@@ -68,7 +68,10 @@ def test_build_reproduces_the_pinned_shas(built_repo: Path):
         text=True,
         check=True,
     ).stdout
-    assert dict(line.split() for line in refs.splitlines()) == pins
+    assert dict(line.split() for line in refs.splitlines()) == {
+        **pins["branches"],
+        **pins["tags"],
+    }
 
 
 def test_scopes_are_owned_by_priya_jun_and_sam(scopes: list[dict]):

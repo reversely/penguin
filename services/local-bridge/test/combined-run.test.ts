@@ -85,11 +85,16 @@ describe("on the identity-unification fixture", () => {
     scratch = join(root, "bridge");
     await mkdir(scratch);
     await promisify(execFile)(PYTHON, [join(FIXTURE, "build.py"), repo]);
-    pins = JSON.parse(await readFile(join(FIXTURE, "pins.json"), "utf8")).branches;
+    // The unfixed checkpoints are pinned as tags; the owner-* branches point at the fixes from #4.
+    const pinned = JSON.parse(await readFile(join(FIXTURE, "pins.json"), "utf8"));
+    pins = { main: pinned.branches.main };
+    for (const owner of ["owner-priya", "owner-jun", "owner-sam"]) {
+      pins[owner] = pinned.tags[`${owner}-checkpoint`];
+    }
     // Each owner's checkpoint checked out in its own worktree, as on the owners' machines.
     for (const owner of ["owner-priya", "owner-jun", "owner-sam"]) {
       const worktree = join(root, owner);
-      await runGit(repo, ["worktree", "add", "--quiet", worktree, owner]);
+      await runGit(repo, ["worktree", "add", "--quiet", "-b", `${owner}-checkpoint-wt`, worktree, `${owner}-checkpoint`]);
       ownerWorktrees.push(worktree);
     }
   });
