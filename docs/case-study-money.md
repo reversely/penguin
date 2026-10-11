@@ -77,7 +77,7 @@ approves the part that touches their code:
 
 - **Seven approve as proposed.**
 - **Rahul's agent asks for a change.** Penguin hands it tax's declared invariant, "tax is rounded per
-  line item", and runs the tax functions side by side on main and on Ines's fork. Invoice tax differs
+  line item". Penguin then runs the tax functions side by side on main and on Ines's fork. Invoice tax differs
   on 312 of 5,000 sample orders, every one with three or more lines. The review form marks the
   invariant broken, which routes to Rahul. Rahul confirms the request. Ines's agent revises the tax
   fix, the rerun shows no differences. Rahul approves the revision.
