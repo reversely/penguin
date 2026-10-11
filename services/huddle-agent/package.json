@@ -4,5 +4,8 @@
   "private": true,
   "description": "Agents SDK class: verification runs, fix sub-issue progress, reviews, threads",
   "type": "module",
-  "exports": "./src/index.ts"
+  "exports": "./src/index.ts",
+  "dependencies": {
+    "agents": "0.28.0"
+  }
 }

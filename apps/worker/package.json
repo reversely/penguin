@@ -4,5 +4,21 @@
   "private": true,
   "description": "Gateway: MCP endpoint, dashboard API, Queue consumer, Artifacts binding",
   "type": "module",
-  "exports": "./src/index.ts"
+  "exports": "./src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "types": "wrangler types",
+    "typecheck": "wrangler types && tsc --noEmit -p ."
+  },
+  "dependencies": {
+    "@modelcontextprotocol/client": "2.0.0",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "@penguin/huddle-agent": "0.0.0",
+    "@penguin/project-agent": "0.0.0",
+    "agents": "0.28.0",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "wrangler": "4.149.0"
+  }
 }

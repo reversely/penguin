@@ -10,5 +10,6 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["apps/*/src", "apps/*/test", "services/*/src", "services/*/test", "packages/*/src", "packages/*/test", "tests"]
+  "include": ["apps/*/src", "apps/*/test", "services/*/src", "services/*/test", "packages/*/src", "packages/*/test", "tests"],
+  "exclude": ["apps/worker", "services/project-agent", "services/huddle-agent"]
 }

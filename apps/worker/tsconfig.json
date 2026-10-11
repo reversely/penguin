@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "noEmit": true,
+    "target": "esnext",
+    "module": "nodenext",
+    "lib": ["esnext"],
+    "types": [],
+    "strict": true,
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true
+  },
+  "include": [
+    "src",
+    "../../services/project-agent/src",
+    "../../services/huddle-agent/src",
+    "worker-configuration.d.ts"
+  ]
+}

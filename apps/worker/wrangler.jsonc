@@ -1,0 +1,20 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "penguin",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  // The Agents SDK needs Node.js compatibility for crypto, streams and async context.
+  "compatibility_flags": ["nodejs_compat"],
+
+  // routeAgentRequest() resolves /agents/<kebab-case binding>/<instance> to these bindings,
+  // so each binding name matches its class name.
+  "durable_objects": {
+    "bindings": [
+      { "name": "ProjectAgent", "class_name": "ProjectAgent" },
+      { "name": "HuddleAgent", "class_name": "HuddleAgent" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["ProjectAgent", "HuddleAgent"] }
+  ]
+}

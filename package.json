@@ -13,7 +13,7 @@
   ],
   "scripts": {
     "test": "node --test \"{apps,services,packages}/*/{src,test}/**/*.test.ts\" \"tests/**/*.test.ts\"",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && npm run typecheck -w @penguin/worker"
   },
   "devDependencies": {
     "@types/node": "22.20.5",
