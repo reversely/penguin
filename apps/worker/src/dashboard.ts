@@ -8,7 +8,7 @@
  *   session cookie. POST /auth/signout: clears it.
  * - /api/*: every route checks the session first and answers 401 without one.
  *   - GET /api/session: the signed-in person.
- *   - GET /api/issues/<id>: one issue and its timeline.
+ *   - GET /api/issues/<id>: the issue page: one issue, its sub-issues and its timeline.
  *   - GET /api/inbox: the signed-in person's inbox.
  *   - POST /api/operations: one issue operation, applied with the signed-in person as author. An
  *     operation that carries `author` is refused: only the session names the author.
@@ -46,7 +46,8 @@ export type DashboardWriteOutcome =
 
 /** The ProjectAgent's dashboard surface, reached over Durable Object RPC in the Worker. */
 export interface DashboardBackend {
-  readIssue(issueId: string): Promise<{ readonly issue: unknown; readonly timeline: unknown }>;
+  /** The issue page as plain JSON (IssuePage in @penguin/protocol), or undefined for no such issue. */
+  readIssue(issueId: string): Promise<unknown>;
   inbox(owner: string): Promise<unknown>;
   submit(owner: string, operation: unknown): Promise<DashboardWriteOutcome>;
   /** Forwards the WebSocket upgrade to the ProjectAgent with `owner` as the connection's person. */
@@ -243,8 +244,8 @@ async function handleApi(
   const issueId = /^\/api\/issues\/([A-Za-z0-9_-]+)$/.exec(url.pathname)?.[1];
   if (issueId !== undefined) {
     if (request.method !== "GET") return methodNotAllowed("GET");
-    const read = await (await handlers.dashboard()).readIssue(issueId);
-    return read.issue === undefined ? json({ error: "not found" }, 404) : json(read);
+    const page = await (await handlers.dashboard()).readIssue(issueId);
+    return page === undefined ? json({ error: "not found" }, 404) : json(page);
   }
   return json({ error: "not found" }, 404);
 }

@@ -6,25 +6,27 @@ import { useAgent } from "agents/react";
 import { parseIndexChanged } from "@penguin/protocol";
 import { useState } from "react";
 
-export type LiveStatus = "connecting" | "live" | "offline";
+import { recordChange, type LiveChanges, type LiveStatus } from "./live-changes.ts";
 
-export interface Live {
+export type { LiveStatus } from "./live-changes.ts";
+
+export interface Live extends LiveChanges {
   readonly status: LiveStatus;
-  /** Counts index changes since the page loaded; a page reads its data again when it changes. */
-  readonly revision: number;
 }
 
 export function useLive(): Live {
   const [status, setStatus] = useState<LiveStatus>("connecting");
-  const [revision, setRevision] = useState(0);
+  const [changes, setChanges] = useState<LiveChanges>({ revision: 0, changed: new Map() });
   useAgent({
     agent: "project-agent",
     basePath: "api/live",
     onOpen: () => setStatus("live"),
     onClose: () => setStatus("offline"),
     onMessage: (event: MessageEvent) => {
-      if (parseIndexChanged(event.data) !== undefined) setRevision((value: number) => value + 1);
+      const message = parseIndexChanged(event.data);
+      // An updater per message, so two messages within one render both keep their issue ids.
+      if (message !== undefined) setChanges((previous: LiveChanges) => recordChange(previous, message.issues));
     },
   });
-  return { status, revision };
+  return { status, ...changes };
 }

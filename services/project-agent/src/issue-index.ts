@@ -124,6 +124,12 @@ export interface IssueChange {
  */
 export interface IndexListener extends Partial<AssignmentListener> {
   issueChanged?(change: IssueChange): void;
+  /**
+   * Hears of a timeline change that leaves the issue's state as it was: a rejected operation recorded
+   * against the issue, or a pending operation the runner pushed to the Git log. It runs after the
+   * write, outside any transaction.
+   */
+  timelineChanged?(issueId: string): void;
 }
 
 /** Where a submitted operation came from. Penguin's own operations wait for the runner as well. */
@@ -553,6 +559,7 @@ export class IssueIndex {
     gitCommit: string | null,
   ): ApplyOutcome {
     this.#record(opId, operation, issueId, "rejected", reason, message, gitCommit);
+    if (issueId !== null) this.#listener?.timelineChanged?.(issueId);
     return { status: "rejected", opId, issueId, reason, message };
   }
 
@@ -571,6 +578,9 @@ export class IssueIndex {
       this.#db.exec(`UPDATE AppliedOp SET git_commit = ? WHERE op_id = ?`, gitCommit, parsed.op_id);
       this.#db.exec(`DELETE FROM PendingOp WHERE op_id = ?`, parsed.op_id);
     });
+    const [applied] = this.#db.exec(`SELECT issue_id FROM AppliedOp WHERE op_id = ?`, parsed.op_id);
+    const issueId = applied?.["issue_id"];
+    if (typeof issueId === "string") this.#listener?.timelineChanged?.(issueId);
     return true;
   }
 

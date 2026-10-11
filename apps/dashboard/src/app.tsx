@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { fetchInbox, fetchSession, SignedOut, type Session } from "./api.ts";
+import { IssuePageView } from "./issue-page.tsx";
+import { linkHandler } from "./links.ts";
 import { NAVIGATION, parseRoute, signInProblem, type Route, type SignInProblem } from "./routes.ts";
 import { useLive, type LiveStatus } from "./use-live.ts";
 
@@ -103,7 +105,11 @@ function Shell({ session, onSignedOut }: { session: Session; onSignedOut: () => 
         </div>
       </header>
       <main className="page" data-audit-center>
-        <h1>{pageTitle(route)}</h1>
+        {route?.page === "issue" ? (
+          <IssuePageView key={route.issueId} issueId={route.issueId} live={live} navigate={navigate} onSignedOut={onSignedOut} />
+        ) : (
+          <h1>{pageTitle(route)}</h1>
+        )}
       </main>
     </div>
   );
@@ -119,17 +125,7 @@ function LiveTag({ status }: { status: LiveStatus }) {
 
 function pageTitle(route: Route | undefined): string {
   if (route === undefined) return "Page not found";
-  if (route.page === "issue") return `Issue ${route.issueId}`;
   return NAVIGATION.find((entry) => entry.page === route.page)?.label ?? "";
-}
-
-/** Follows a same-origin link without a reload; a modified click opens it the browser's way. */
-function linkHandler(navigate: (path: string) => void, path: string) {
-  return (event: MouseEvent) => {
-    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-    event.preventDefault();
-    navigate(path);
-  };
 }
 
 /** The signed-in person's unread inbox items, read again on each index change. */

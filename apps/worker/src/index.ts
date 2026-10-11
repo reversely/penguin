@@ -59,7 +59,7 @@ export default {
         dashboard: async () => {
           const agent = await getAgentByName(env.ProjectAgent, projectAgentName(names));
           return {
-            readIssue: async (issueId) => agent.readIssue(issueId),
+            readIssue: async (issueId) => agent.issuePage(issueId),
             inbox: async (owner) => agent.inbox(owner),
             submit: (owner, operation) => agent.submitFromDashboard(owner, operation, repos),
             connectLive: (liveRequest, owner) => {

@@ -14,6 +14,7 @@ import {
   type SubmitOutcome,
   type TimelineEntry,
 } from "./issue-index.ts";
+import { buildIssuePage } from "./issue-page.ts";
 import { LiveFeed, liveOwner } from "./live-feed.ts";
 import { InboxStore, type InboxItem, type InboxOutcome, type InboxReason } from "./inbox-store.ts";
 import { McpTokenStore, type IssuedMcpToken, type McpCaller } from "./mcp-tokens.ts";
@@ -50,7 +51,7 @@ import {
   type SessionWork,
 } from "./session-store.ts";
 import type { IssueRecord } from "@penguin/issues";
-import type { Author } from "@penguin/protocol";
+import type { Author, IssuePage } from "@penguin/protocol";
 import type { ScopeMap } from "@penguin/scope-map";
 
 import {
@@ -91,6 +92,7 @@ export {
   type IdentityRejectReason,
   type TeamIdentityInput,
 } from "./identity-store.ts";
+export { buildIssuePage, type IssuePageSources } from "./issue-page.ts";
 export { LIVE_OWNER_HEADER, LiveFeed, liveOwner } from "./live-feed.ts";
 export { McpTokenStore, type IssuedMcpToken, type McpCaller } from "./mcp-tokens.ts";
 export {
@@ -278,6 +280,24 @@ export class ProjectAgent extends Agent {
    */
   readIssue(id: string): { readonly issue: IssueRecord | undefined; readonly timeline: TimelineEntry[] } {
     return this.#index().read(id);
+  }
+
+  /**
+   * The dashboard's page for one issue: the issue, its sub-issues with their sessions, reviews and
+   * checks, and its timeline. Undefined when no issue has this number or temporary ID.
+   */
+  issuePage(id: string): IssuePage | undefined {
+    const index = this.#index();
+    const sessions = this.#sessionStore();
+    return buildIssuePage(
+      {
+        read: (issueId) => index.read(issueId),
+        issue: (issueId) => index.issue(issueId),
+        routes: (issueId) => sessions.routes(issueId),
+        session: (sessionId) => sessions.get(sessionId),
+      },
+      id,
+    );
   }
 
   /**
@@ -568,6 +588,7 @@ export class ProjectAgent extends Agent {
           this.#inboxStore().issueChanged(change);
           this.#liveFeed().issueChanged(change.issueId);
         },
+        timelineChanged: (issueId) => this.#liveFeed().issueChanged(issueId),
       };
       this.#issues = new IssueIndex(this.#database(), listener);
     }

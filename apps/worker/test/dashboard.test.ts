@@ -35,10 +35,10 @@ function options(overrides: Partial<DashboardOptions> = {}): DashboardOptions {
 class Backend implements DashboardBackend {
   readonly writes: { owner: string; operation: unknown }[] = [];
   readonly live: { owner: string; upgrade: string | null }[] = [];
-  readonly issues = new Map<string, { issue: unknown; timeline: unknown }>();
+  readonly issues = new Map<string, unknown>();
 
   async readIssue(issueId: string) {
-    return this.issues.get(issueId) ?? { issue: undefined, timeline: [] };
+    return this.issues.get(issueId);
   }
   async inbox(owner: string) {
     return [{ personId: owner, issueId: "40", reason: "mentioned", read: false, raisedAt: "2026-10-10T12:00:00.000Z" }];
@@ -292,9 +292,12 @@ describe("a signed-in person", () => {
 
   test("reads an issue and their own inbox", async () => {
     const browser = new Browser();
-    browser.backend.issues.set("40", { issue: { id: "40", title: "Board filter" }, timeline: [] });
+    const page = { issue: { id: "40", title: "Board filter" }, subIssues: [], timeline: [] };
+    browser.backend.issues.set("40", page);
     await browser.signIn("jun-gh");
-    assert.equal((await browser.request("/api/issues/40")).status, 200);
+    const read = await browser.request("/api/issues/40");
+    assert.equal(read.status, 200);
+    assert.deepEqual(await read.json(), page);
     assert.equal((await browser.request("/api/issues/41")).status, 404);
     const inbox = (await (await browser.request("/api/inbox")).json()) as { items: { personId: string }[] };
     assert.deepEqual(
