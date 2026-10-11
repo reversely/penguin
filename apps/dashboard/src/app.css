@@ -1626,68 +1626,309 @@ a.row-title {
   gap: 1.25rem;
 }
 
-.inbox-items {
+/* With nothing open, the centre pane points to the sidebar's rows. */
+.inbox-empty {
+  margin: var(--space-9) 0 0;
+  color: var(--ink-muted);
+  text-align: center;
+}
+
+.inbox-list {
+  display: grid;
+  align-content: start;
+  gap: var(--space-4);
+}
+
+.inbox-group {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.inbox-group-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: 1.5rem;
+  margin: 0;
+  padding: 0 var(--space-1);
+  font: var(--text-meta);
+  font-weight: 500;
+}
+
+.inbox-group-heading .muted,
+.inbox-row time {
+  font-variant-numeric: tabular-nums;
+}
+
+.inbox-group .show-all {
+  margin-left: var(--space-1);
+}
+
+/* Rows (identity plan section 5): 48px on a 52px pitch. --row-fill is the row's own fill, which the
+   online dot's ring takes so the dot reads as cut out of the avatar. */
+.inbox-rows {
+  display: grid;
+  gap: var(--space-1);
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
-/* The title and its facts stack on the left; the button keeps its own column, so it never wraps under. */
-.inbox-item {
+.inbox-row {
+  --row-base: var(--surface);
+  --row-fill: var(--row-base);
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) 24px;
+  border-radius: var(--radius-row);
+  transition:
+    background-color var(--dur-hover) var(--ease-out),
+    scale var(--dur-press) var(--ease-out);
+}
+
+.centre .inbox-row {
+  --row-base: var(--field);
+}
+
+.inbox-row:has(> [aria-current="page"]) {
+  --row-fill: var(--selected);
+  background: var(--row-fill);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .inbox-row:not(:has(> [aria-current="page"])):hover {
+    --row-fill: color-mix(in oklab, var(--selected) 60%, var(--row-base));
+    background: var(--row-fill);
+  }
+}
+
+.inbox-row:has(> .inbox-row-link:active) {
+  scale: 0.96;
+}
+
+.inbox-row-link {
+  display: grid;
+  grid-template-columns: 2rem minmax(0, 1fr);
   align-items: center;
-  gap: 0.25rem 0.75rem;
-  padding: 0.625rem 0;
-  border-top: 1px solid var(--line);
+  column-gap: var(--space-2);
+  height: 3rem;
+  padding: 0 0 0 var(--space-1);
+  border-radius: inherit;
+  color: var(--ink);
+  text-decoration: none;
 }
 
-.inbox-item:first-child {
-  padding-top: 0;
-  border-top: 0;
-}
-
-.inbox-item:last-child {
-  padding-bottom: 0;
-}
-
-.inbox-title,
-.inbox-facts {
-  grid-column: 1;
-}
-
-.inbox-title {
-  display: inline-flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 0 0.375rem;
+.inbox-row-text {
+  display: grid;
   min-width: 0;
-  min-height: 1.5rem;
-  overflow-wrap: anywhere;
 }
 
-.unread .inbox-title {
+.inbox-row-top {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+/* Every title keeps one weight, read or unread, so its width never changes; the dot says unread. */
+.inbox-row-title,
+.inbox-row-preview {
+  overflow: hidden;
+  font: var(--text-ui);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inbox-row-title {
+  flex: 1;
+  min-width: 0;
   font-weight: 500;
 }
 
-.inbox-facts {
+.inbox-row time {
+  flex: none;
+  color: var(--ink-muted);
+  font: var(--text-meta);
+}
+
+.inbox-row-preview {
+  color: var(--ink-muted);
+}
+
+.inbox-row[data-waiting] .inbox-row-preview {
+  color: var(--attention);
+}
+
+.dot {
+  display: block;
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+}
+
+.dot-unread {
+  background: var(--unread);
+}
+
+.dot-attention {
+  background: var(--attention-dot);
+}
+
+.dot-online {
+  background: var(--online);
+}
+
+.avatar-slot {
+  position: relative;
+  display: grid;
+}
+
+.avatar-slot .dot-online {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  box-shadow: 0 0 0 2px var(--row-fill);
+}
+
+.inbox-row-glyph {
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  color: var(--ink-muted);
+}
+
+/* The dot has the row's last 24px column to itself, centred on the preview's line, so the title and
+   preview keep one width whether or not a dot shows. */
+.inbox-row-dot {
+  justify-self: center;
+  margin-top: 31px;
+}
+
+/* An unread dot is the Mark read control: a pointer's hover or a keyboard's focus shows its check. */
+.inbox-row-mark {
+  position: relative;
+  align-self: start;
+  margin-top: 23px;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: none;
+  color: var(--ink);
+  cursor: pointer;
+  transition:
+    background-color var(--dur-hover) var(--ease-out),
+    scale var(--dur-press) var(--ease-out);
+}
+
+.inbox-row-mark .icon {
+  display: none;
+}
+
+.inbox-row-mark:focus-visible {
+  background: var(--surface-raised);
+}
+
+.inbox-row-mark:focus-visible .dot {
+  display: none;
+}
+
+.inbox-row-mark:focus-visible .icon {
+  display: block;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .inbox-row-mark:hover {
+    background: var(--surface-raised);
+    box-shadow: var(--elevation-raised);
+  }
+
+  .inbox-row-mark:hover .dot {
+    display: none;
+  }
+
+  .inbox-row-mark:hover .icon {
+    display: block;
+  }
+}
+
+.inbox-row-mark:active {
+  scale: 0.96;
+}
+
+.inbox-row-mark:disabled {
+  cursor: default;
+}
+
+/* A phone or a touch screen takes a 44px target around the 24px control. */
+@media (max-width: 759.98px), (pointer: coarse) {
+  .inbox-row-mark::before {
+    content: "";
+    position: absolute;
+    inset: -10px;
+  }
+}
+
+/* On a phone the rows fill the page; their avatars line up with the page's edge. */
+.centre .inbox-list {
+  margin: 0 calc(-1 * var(--space-1));
+}
+
+/* The person's own identities, as 56px characters that scroll sideways past the screen's edge. */
+.identity-strip {
+  --row-fill: var(--field);
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.375rem;
-  min-width: 0;
-  font: var(--text-ui);
+  gap: var(--space-2);
+  margin: 0 -16px;
+  padding: 0 16px;
+  overflow-x: auto;
+  list-style: none;
+  scroll-padding-inline: 16px;
 }
 
-.inbox-mark {
-  grid-column: 2;
-  grid-row: 1 / span 2;
+.identity-strip-link {
+  display: grid;
+  justify-items: center;
+  gap: var(--space-1);
+  width: 4.5rem;
+  padding: var(--space-1) 0;
+  border-radius: var(--radius-sm);
+  color: var(--ink);
+  text-decoration: none;
 }
 
-.tag-unread {
-  border-color: var(--accent);
-  background: var(--accent);
-  color: var(--accent-ink);
+.identity-strip .dot-online {
+  right: 3px;
+  bottom: 3px;
+}
+
+/* The owner on the first line and the name on the second, so the part that differs stays in view. */
+.identity-strip-handle {
+  display: -webkit-box;
+  max-width: 100%;
+  min-height: calc(2 * 1.4em);
+  overflow: hidden;
+  color: var(--ink-muted);
+  font: var(--text-meta);
+  text-align: center;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .inbox-row,
+  .inbox-row-mark {
+    transition: none;
+  }
+
+  .inbox-row:has(> .inbox-row-link:active),
+  .inbox-row-mark:active {
+    scale: none;
+  }
 }
 
 /* Identities */

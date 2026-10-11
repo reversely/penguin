@@ -41,7 +41,7 @@ export interface Details {
 const DetailsContext = createContext<Details | null>(null);
 export const DetailsProvider = DetailsContext.Provider;
 
-function useMediaQuery(query: string): boolean {
+export function useMediaQuery(query: string): boolean {
   const subscribe = useCallback(
     (onChange: () => void) => {
       const list = window.matchMedia(query);

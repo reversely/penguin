@@ -45,23 +45,33 @@ async function load<T>(entry: string): Promise<T> {
   }
 }
 
-test("markup in an issue title renders as escaped text on the inbox page", async () => {
-  // The inbox page takes its data as props, so it renders on the server without a fetch.
-  const { render } = await load<{ render: (items: unknown[]) => string }>(`
+test("markup in an issue title and an assignee's or identity's handle renders as escaped text in the inbox rows", async () => {
+  // The rows and the identity strip take their data as props, so they render on the server without a fetch.
+  const { render } = await load<{ render: (items: unknown[], identities: unknown[]) => string }>(`
     import { renderToStaticMarkup } from "react-dom/server";
-    import { createElement } from "react";
-    import { InboxPage } from "./src/inbox-page.tsx";
-    export function render(items) {
+    import { createElement, Fragment } from "react";
+    import { IdentityStrip, InboxList } from "./src/inbox-page.tsx";
+    export function render(items, identities) {
       const inbox = { load: { kind: "ready", items }, marking: new Set(), markFailed: false, markRead() {} };
-      return renderToStaticMarkup(createElement(InboxPage, { inbox, navigate() {} }));
+      const facts = { issues: new Map(), identities: new Map(identities.map((identity) => [identity.handle, { ...identity, sessions: [{}] }])) };
+      return renderToStaticMarkup(createElement(Fragment, null,
+        createElement(IdentityStrip, { identities, facts, navigate() {} }),
+        createElement(InboxList, { inbox, facts, viewer: "jun", now: new Date(), showAll: false, openIssue: "40", navigate() {} })));
     }`);
-  const html = render([
-    { issueId: "40", reason: "assigned", read: false, raisedAt: "2026-10-11T09:00:00.000Z", title: `${MARKUP} @jun/<b>reports</b>`, state: "open" },
-    { issueId: "41", reason: "mentioned", read: false, raisedAt: "2026-10-11T09:01:00.000Z", title: "<script>globalThis.pwned = 2</script>", state: "open" },
-  ]);
+  const handle = `@jun/${MARKUP}`;
+  const html = render(
+    [
+      { issueId: "40", reason: "assigned", read: false, raisedAt: "2026-10-11T09:00:00.000Z", title: `${MARKUP} @jun/<b>reports</b>`, state: "open", assigneeHandles: [handle] },
+      { issueId: "41", reason: "start_session", read: true, raisedAt: "2026-10-11T09:01:00.000Z", title: "<script>globalThis.pwned = 2</script>", state: "open", assigneeHandles: [] },
+    ],
+    [{ id: "identity-1", handle, name: MARKUP, avatar: null, owners: ["jun"] }],
+  );
   assert.match(html, /&lt;img src=x onerror=&quot;globalThis\.pwned = 1&quot;&gt; @jun\/&lt;b&gt;reports&lt;\/b&gt;/);
   assert.match(html, /&lt;script&gt;globalThis\.pwned = 2&lt;\/script&gt;/);
-  assert.doesNotMatch(html, /<img|<script|<b>/);
+  assert.match(html, />@jun\/&lt;img src=x onerror=&quot;globalThis\.pwned = 1&quot;&gt; online</, "the row names its online assignee");
+  assert.match(html, /class="identity-strip-handle">@jun\/<wbr\/>&lt;img src=x onerror=&quot;globalThis\.pwned = 1&quot;&gt;</);
+  assert.match(html, /Waiting for you to start a session/);
+  assert.doesNotMatch(html, /<img|<script|<b>|onerror="/);
 });
 
 test("markup in a handle stays an escaped attribute on a character and an initial avatar", async () => {

@@ -5,7 +5,7 @@ import { fetchSession, type Session } from "./api.ts";
 import { BoardPage } from "./board-page.tsx";
 import { DetailsPane, DetailsProvider, useDetails } from "./details-pane.tsx";
 import { IdentitiesPageView } from "./identities-page.tsx";
-import { InboxPage, useInbox, type InboxState } from "./inbox-page.tsx";
+import { InboxPage, InboxSidebar, useInbox, type InboxState } from "./inbox-page.tsx";
 import { unreadCount } from "./inbox-view.ts";
 import { IssuePageView } from "./issue-page.tsx";
 import { linkHandler } from "./links.ts";
@@ -112,9 +112,11 @@ function Shell({ session, onSignedOut }: { session: Session; onSignedOut: () => 
               </a>
             ))}
           </nav>
-          {/* The route's list sits here once its page fills it; until then the space keeps the
-              owner at the foot of the sidebar. */}
-          <div className="sidebar-list" />
+          {/* The route's list; on a route without one the space keeps the owner at the foot of the
+              sidebar. */}
+          <div className="sidebar-list">
+            <InboxSidebar route={route} inbox={inbox} viewer={session.owner} live={live} navigate={navigate} onSignedOut={onSignedOut} />
+          </div>
           <AccountMenu session={session} status={live.status} />
         </header>
         <main className="centre" inert={covered}>
@@ -144,7 +146,9 @@ function Page({ route, session, live, inbox, navigate, onSignedOut }: PageProps)
   if (route?.page === "board") {
     return <BoardPage viewer={session.owner} showAll={route.showAll} live={live} navigate={navigate} onSignedOut={onSignedOut} />;
   }
-  if (route?.page === "inbox") return <InboxPage inbox={inbox} showAll={route.showAll} navigate={navigate} />;
+  if (route?.page === "inbox") {
+    return <InboxPage inbox={inbox} viewer={session.owner} live={live} showAll={route.showAll} navigate={navigate} onSignedOut={onSignedOut} />;
+  }
   if (route?.page === "new-issue") return <NewIssuePage live={live} navigate={navigate} onSignedOut={onSignedOut} />;
   if (route?.page === "identities") {
     return <IdentitiesPageView viewer={session.owner} live={live} navigate={navigate} onSignedOut={onSignedOut} />;
