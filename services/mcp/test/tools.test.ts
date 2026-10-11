@@ -13,11 +13,16 @@ import { parseScopeMap } from "@penguin/scope-map";
 // The store modules directly: the package entry point loads the Agents SDK's Agent class, which needs workerd.
 import { IdentityStore, type IdentityInput } from "../../project-agent/src/identity-store.ts";
 import { IssueIndex } from "../../project-agent/src/issue-index.ts";
+import { OwnerForkStore, reportCheckpoint } from "../../project-agent/src/owner-forks.ts";
 import { importServiceKey, type ServiceKey } from "../../project-agent/src/service-key.ts";
+import { postSessionUpdate } from "../../project-agent/src/session-updates.ts";
 import { SessionStore } from "../../project-agent/src/session-store.ts";
 import { sqlite } from "../../project-agent/test/issues-repo.ts";
 import { serveMcp } from "../src/handler.ts";
 import type { McpProject } from "../src/tools.ts";
+
+/** Repo names as a Worker with the repo prefix "t-" gives them. */
+const PREFIX = "t-";
 
 const fixture = join(import.meta.dirname, "../../../examples/identity-unification/base/penguin");
 const scopeMap = parseScopeMap(JSON.parse(readFileSync(join(fixture, "scopes.json"), "utf8")));
@@ -38,7 +43,12 @@ class Project {
   readonly identities: IdentityStore;
   readonly index: IssueIndex;
   readonly sessions: SessionStore;
+  readonly forks: OwnerForkStore;
   readonly mcp: McpProject;
+  /** The commits each fork holds, by Artifacts repo name, standing in for the binding's readCommit. */
+  readonly forkCommits = new Map<string, Set<string>>();
+  /** Every [repo, sha] the checkpoint check read. */
+  readonly commitReads: [string, string][] = [];
 
   constructor() {
     const sql = this.sqlite.sql;
@@ -53,6 +63,7 @@ class Project {
       assigningOwner: (issueId, handle) => this.index.assigningOwner(issueId, handle),
     });
     this.sessions = sessions;
+    this.forks = new OwnerForkStore(sql, () => this.now);
     this.mcp = {
       registerSession: (caller, input) => this.sessions.register(caller, input),
       sessionHeartbeat: (caller, id) => this.sessions.heartbeat(caller, id),
@@ -60,7 +71,46 @@ class Project {
       readIdentity: (id) => this.identities.get(id),
       issueRoutes: (id) => this.sessions.routes(id),
       readIssue: (id) => this.index.read(id),
+      // As ProjectAgent.sessionUpdate wires it, with the scope map read from the fixture.
+      sessionUpdate: (caller, id, update) =>
+        postSessionUpdate(
+          {
+            sessions: this.sessions,
+            issueVersion: (issueId) => this.index.issue(issueId)?.version,
+            submit: (operation, author) =>
+              this.index.submit({
+                operation,
+                author,
+                source: "mcp",
+                signingKey: service.privateKey,
+                keys: { bridges: [], serviceKey: service.publicKey, scopeMap, identities: this.identities },
+                now: this.now,
+              }),
+          },
+          caller,
+          id,
+          update,
+        ),
+      reportCheckpoint: (caller, id, sha, fork) =>
+        reportCheckpoint(
+          {
+            sessions: this.sessions,
+            forks: this.forks,
+            commitExists: async (repo, commit) => {
+              this.commitReads.push([repo, commit]);
+              return this.forkCommits.get(repo)?.has(commit) ?? false;
+            },
+          },
+          caller,
+          id,
+          sha,
+          fork,
+        ),
     };
+  }
+
+  count(table: string): number {
+    return Number(this.sqlite.db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()?.["n"]);
   }
 
   identity(owner: string, handle: string, extra: Partial<IdentityInput> = {}): void {
@@ -99,7 +149,8 @@ async function rpc(project: Project, owner: string, method: string, params: unkn
     headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
     body: JSON.stringify({ jsonrpc: "2.0", id: ++nextId, method, params }),
   });
-  const response = await serveMcp(request, owner, () => project.mcp);
+  const repos = { issues: `${PREFIX}issues`, base: `${PREFIX}base`, ownerFork: `${PREFIX}owner-${owner}` };
+  const response = await serveMcp(request, owner, () => project.mcp, repos);
   assert.equal(response.status, 200);
   const text = await response.text();
   if (response.headers.get("content-type")?.includes("text/event-stream")) {
@@ -131,10 +182,30 @@ async function register(project: Project, owner: string, identity: string): Prom
 }
 
 describe("MCP: tool list", () => {
-  test("tools/list returns register_session, get_work and get_issue with their input schemas", async () => {
+  test("tools/list returns the five session tools with their input schemas", async () => {
     const { result } = await rpc(new Project(), "jun", "tools/list");
     const tools = new Map<string, any>(result.tools.map((tool: any) => [tool.name, tool]));
-    assert.deepEqual([...tools.keys()].sort(), ["get_issue", "get_work", "register_session"]);
+    assert.deepEqual([...tools.keys()].sort(), [
+      "get_issue",
+      "get_work",
+      "post_update",
+      "register_session",
+      "report_checkpoint",
+    ]);
+
+    const post = tools.get("post_update").inputSchema;
+    assert.equal(post.additionalProperties, false);
+    assert.deepEqual([...post.required].sort(), ["issue", "sessionId", "update"]);
+    assert.equal("author" in post.properties, false);
+    const variants = post.properties.update.oneOf ?? post.properties.update.anyOf;
+    assert.deepEqual(
+      variants.map((variant: any) => variant.properties.type.const).sort(),
+      ["add_label", "change_state", "comment", "link_commit", "remove_label", "reply_thread"],
+    );
+    for (const variant of variants) assert.equal(variant.additionalProperties, false);
+    const checkpoint = tools.get("report_checkpoint").inputSchema;
+    assert.equal(checkpoint.additionalProperties, false);
+    assert.deepEqual([...checkpoint.required].sort(), ["sessionId", "sha"]);
 
     const register = tools.get("register_session").inputSchema;
     assert.equal(register.type, "object");
@@ -341,5 +412,248 @@ describe("MCP: get_work and get_issue", () => {
     const { value, isError } = await call(project, "jun", "get_work", { sessionId });
     assert.equal(isError, true);
     assert.equal(value.error, "offline");
+  });
+});
+
+describe("MCP: post_update", () => {
+  /** Priya opens issue 31, assigns @jun/reports and opens a thread that needs Jun; Jun's session runs. */
+  async function working(): Promise<{ project: Project; sessionId: string; thread: string }> {
+    const project = new Project();
+    project.identity("jun", "@jun/reports");
+    project.identity("priya", "@priya/merge-rules");
+    const sessionId = await register(project, "jun", "@jun/reports");
+    await project.op("priya", 31, "create", { title: "Retention drops after merge" });
+    await project.op("priya", 31, "assign", { assignee: { identity: "@jun/reports" } });
+    await project.op("priya", 31, "open_thread", { body: "Which merge rule wins?", needs: ["jun"] });
+    await project.op("priya", 32, "create", { title: "Not Jun's" });
+    return { project, sessionId, thread: "priya-0003" };
+  }
+
+  function pendingAuthor(project: Project, opId: string): unknown {
+    const row = project.sqlite.db.prepare(`SELECT file FROM PendingOp WHERE op_id = ?`).get(opId);
+    assert.ok(row, `no PendingOp row for ${opId}`);
+    return JSON.parse(String(row["file"])).author;
+  }
+
+  function identityRows(project: Project): number {
+    return Number(project.sqlite.db.prepare(`SELECT COUNT(*) AS n FROM AppliedOp WHERE author != 'priya'`).get()?.["n"]);
+  }
+
+  test("a comment from Jun's session is in the index at once, authored by @jun/reports, and pending", async () => {
+    const { project, sessionId } = await working();
+    const pendingBefore = project.count("PendingOp");
+    const { value, isError } = await call(project, "jun", "post_update", {
+      sessionId,
+      issue: 31,
+      update: { type: "comment", body: "The cohort query double-counts devices." },
+    });
+    assert.equal(isError, false, JSON.stringify(value));
+    assert.deepEqual(value, { opId: "jun.reports-0001", issueId: "31", version: 4, waitingForGitLog: true });
+
+    const comment = project.index.issue("31")?.comments.get("jun.reports-0001");
+    assert.equal(comment?.author, "jun.reports");
+    assert.equal(comment?.body, "The cohort query double-counts devices.");
+    assert.equal(project.count("PendingOp"), pendingBefore + 1);
+    assert.deepEqual(pendingAuthor(project, "jun.reports-0001"), { identity: "@jun/reports" });
+    const source = project.sqlite.db.prepare(`SELECT source FROM PendingOp WHERE op_id = ?`).get("jun.reports-0001");
+    assert.equal(source?.["source"], "mcp");
+
+    const issue = await call(project, "jun", "get_issue", { sessionId, issue: 31 });
+    const last = issue.value.operations.at(-1);
+    assert.deepEqual(
+      [last.opId, last.author, last.type, last.waitingForGitLog],
+      ["jun.reports-0001", "jun.reports", "comment", true],
+    );
+  });
+
+  test("link_commit, reply_thread and change_state each apply the matching operation", async () => {
+    const { project, sessionId, thread } = await working();
+    const updates = [
+      { type: "link_commit", commit: `owner-jun@${SHA}`, kind: "fix" },
+      { type: "reply_thread", thread, body: "The newest rule wins." },
+      { type: "change_state", state: "fixing", reason: "Working on the cohort query." },
+    ];
+    for (const update of updates) {
+      const { value, isError } = await call(project, "jun", "post_update", { sessionId, issue: 31, update });
+      assert.equal(isError, false, JSON.stringify(value));
+    }
+    const { issue, timeline } = project.index.read("31");
+    assert.deepEqual(
+      timeline.slice(-3).map((entry) => [entry.opId, entry.type, entry.status]),
+      [
+        ["jun.reports-0001", "link_commit", "applied"],
+        ["jun.reports-0002", "reply_thread", "applied"],
+        ["jun.reports-0003", "change_state", "applied"],
+      ],
+    );
+    assert.deepEqual(
+      [...(issue?.linkedCommits.values() ?? [])].map(({ repo, sha, kind }) => [repo, sha, kind]),
+      [["owner-jun", SHA, "fix"]],
+    );
+    assert.deepEqual(issue?.threads.get(thread)?.participants, ["priya", "jun.reports"]);
+    assert.equal(issue?.state, "fixing");
+    assert.equal(issue?.stateReason, "Working on the cohort query.");
+    for (const opId of ["jun.reports-0001", "jun.reports-0002", "jun.reports-0003"]) {
+      assert.deepEqual(pendingAuthor(project, opId), { identity: "@jun/reports" });
+    }
+  });
+
+  test("an update naming a scope outside the identity's charter is refused with the reason", async () => {
+    const { project, sessionId } = await working();
+    const before = [project.count("AppliedOp"), project.count("PendingOp")];
+    const { value, isError } = await call(project, "jun", "post_update", {
+      sessionId,
+      issue: 31,
+      update: { type: "add_label", label: "scope:identity-map" },
+    });
+    assert.equal(isError, true);
+    assert.equal(value.error, "outside_charter");
+    assert.match(value.message, /@jun\/reports acts outside its charter \(scopes: analytics; .*scope identity-map/u);
+    // A refused submission records nothing and claims no op_id.
+    assert.deepEqual([project.count("AppliedOp"), project.count("PendingOp")], before);
+
+    const inside = await call(project, "jun", "post_update", {
+      sessionId,
+      issue: 31,
+      update: { type: "add_label", label: "scope:analytics" },
+    });
+    assert.equal(inside.isError, false, JSON.stringify(inside.value));
+    assert.equal(inside.value.opId, "jun.reports-0001");
+  });
+
+  test("the author is the session's identity: the input cannot name one", async () => {
+    const { project, sessionId } = await working();
+    const attempts = [
+      { sessionId, issue: 31, author: { person: "priya" }, update: { type: "comment", body: "x" } },
+      { sessionId, issue: 31, update: { type: "comment", body: "x", author: { identity: "@priya/merge-rules" } } },
+      { sessionId, issue: 31, update: { type: "comment", body: "x", payload: { body: "y" } } },
+      { sessionId, issue: 31, update: { type: "create", title: "x" } },
+      { sessionId, issue: 31, update: { type: "review", verdict: "approve", commit: `owner-jun@${SHA}` } },
+      { sessionId, issue: 31, update: { type: "comment", body: "" } },
+      { sessionId, issue: 31, update: { type: "change_state", state: "fixing" } },
+      { sessionId, issue: 31, update: { type: "link_commit", commit: "not a commit" } },
+    ];
+    for (const args of attempts) {
+      const { isError, text } = await call(project, "jun", "post_update", args);
+      assert.equal(isError, true, JSON.stringify(args));
+      assert.match(text, /Input validation error/u, text);
+    }
+    assert.equal(identityRows(project), 0);
+  });
+
+  test("a session writes only to its identity's issues, only for its owner, and only while running", async () => {
+    const { project, sessionId } = await working();
+    const comment = { type: "comment", body: "Hello" };
+    for (const issue of [32, 99]) {
+      const { value, isError } = await call(project, "jun", "post_update", { sessionId, issue, update: comment });
+      assert.equal(isError, true);
+      assert.equal(value.error, "not_found");
+      assert.match(value.message, /is not assigned to @jun\/reports/u);
+    }
+    const priya = await call(project, "priya", "post_update", { sessionId, issue: 31, update: comment });
+    assert.equal(priya.isError, true);
+    assert.equal(priya.value.error, "forbidden");
+
+    project.now += 91_000;
+    const offline = await call(project, "jun", "post_update", { sessionId, issue: 31, update: comment });
+    assert.equal(offline.value.error, "offline");
+    assert.equal(identityRows(project), 0);
+  });
+
+  test("a stale baseVersion is refused; post_update counts as a heartbeat", async () => {
+    const { project, sessionId } = await working();
+    const stale = await call(project, "jun", "post_update", {
+      sessionId,
+      issue: 31,
+      baseVersion: 2,
+      update: { type: "comment", body: "Late" },
+    });
+    assert.equal(stale.isError, true);
+    assert.equal(stale.value.error, "superseded_version");
+
+    project.now += 60_000;
+    const current = { sessionId, issue: 31, baseVersion: 3, update: { type: "comment", body: "On time" } };
+    assert.equal((await call(project, "jun", "post_update", current)).isError, false);
+    project.now += 60_000;
+    assert.equal((await call(project, "jun", "get_work", { sessionId })).isError, false);
+  });
+});
+
+describe("MCP: report_checkpoint", () => {
+  const CHECKPOINT = "4c1d9e0a7b3f2e8d6c5b4a3928170f6e5d4c3b2a"; // pragma: allowlist secret
+  const ELSEWHERE = "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c"; // pragma: allowlist secret
+
+  async function reporting(): Promise<{ project: Project; sessionId: string }> {
+    const project = new Project();
+    project.identity("jun", "@jun/reports");
+    project.identity("priya", "@priya/merge-rules");
+    project.forkCommits.set(`${PREFIX}owner-jun`, new Set([CHECKPOINT]));
+    project.forkCommits.set(`${PREFIX}owner-priya`, new Set([ELSEWHERE]));
+    return { project, sessionId: await register(project, "jun", "@jun/reports") };
+  }
+
+  test("a SHA present in owner-jun becomes Jun's fork's latest checkpoint", async () => {
+    const { project, sessionId } = await reporting();
+    const { value, isError } = await call(project, "jun", "report_checkpoint", {
+      sessionId,
+      sha: CHECKPOINT,
+      fork: "penguin:owner-jun",
+    });
+    assert.equal(isError, false, JSON.stringify(value));
+    assert.deepEqual(value, {
+      fork: "owner-jun",
+      ownerId: "jun",
+      latestCheckpointSha: CHECKPOINT,
+      reportedAt: new Date(START).toISOString(),
+    });
+    assert.deepEqual(project.commitReads, [[`${PREFIX}owner-jun`, CHECKPOINT]]);
+    assert.deepEqual(project.forks.get("jun"), {
+      ownerId: "jun",
+      artifactsRepo: `${PREFIX}owner-jun`,
+      latestCheckpointSha: CHECKPOINT,
+      reportedBySession: sessionId,
+      reportedAt: new Date(START).toISOString(),
+    });
+  });
+
+  test("a SHA absent from the fork is refused and the record keeps the last checkpoint", async () => {
+    const { project, sessionId } = await reporting();
+    assert.equal((await call(project, "jun", "report_checkpoint", { sessionId, sha: CHECKPOINT })).isError, false);
+    // ELSEWHERE is in Priya's fork, not Jun's.
+    const { value, isError } = await call(project, "jun", "report_checkpoint", { sessionId, sha: ELSEWHERE });
+    assert.equal(isError, true);
+    assert.equal(value.error, "not_found");
+    assert.match(value.message, /is not in jun's fork/u);
+    assert.equal(project.forks.get("jun")?.latestCheckpointSha, CHECKPOINT);
+  });
+
+  test("a report for another owner's fork is refused before any read", async () => {
+    const { project, sessionId } = await reporting();
+    for (const fork of ["owner-priya", "penguin:owner-priya"]) {
+      const { value, isError } = await call(project, "jun", "report_checkpoint", { sessionId, sha: ELSEWHERE, fork });
+      assert.equal(isError, true);
+      assert.equal(value.error, "forbidden");
+    }
+    // Priya's token with Jun's session: the session is not hers.
+    const priya = await call(project, "priya", "report_checkpoint", { sessionId, sha: ELSEWHERE });
+    assert.equal(priya.value.error, "forbidden");
+    assert.deepEqual(project.commitReads, []);
+    assert.equal(project.forks.get("priya"), undefined);
+    assert.equal(project.forks.get("jun"), undefined);
+  });
+
+  test("the SHA must be a full lowercase SHA-1, and the input names no owner", async () => {
+    const { project, sessionId } = await reporting();
+    for (const args of [
+      { sessionId, sha: CHECKPOINT.slice(0, 12) },
+      { sessionId, sha: CHECKPOINT.toUpperCase() },
+      { sessionId, sha: CHECKPOINT, owner: "priya" },
+      { sessionId, sha: CHECKPOINT, fork: "base" },
+    ]) {
+      const { isError, text } = await call(project, "jun", "report_checkpoint", args);
+      assert.equal(isError, true, JSON.stringify(args));
+      assert.match(text, /Input validation error/u, text);
+    }
+    assert.deepEqual(project.commitReads, []);
   });
 });

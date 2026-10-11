@@ -4,11 +4,15 @@ export { MCP_ROUTE, serveMcp } from "./handler.ts";
 export {
   createPenguinMcpServer,
   type CharterView,
+  type CheckpointResult,
   type McpProject,
+  type McpRepos,
   type OperationView,
   type Rejection,
   type SessionRegistration,
   type SessionResult,
+  type SessionUpdate,
   type SessionView,
+  type UpdateResult,
   type WorkResult,
 } from "./tools.ts";

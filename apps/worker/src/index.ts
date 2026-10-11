@@ -48,8 +48,13 @@ export default {
         // One ProjectAgent per repo prefix, so a test run's bridges stay apart from production's.
         bridges: () => getAgentByName(env.ProjectAgent, projectAgentName(names)),
         mcpTokens: () => getAgentByName(env.ProjectAgent, projectAgentName(names)),
+        // The owner's fork is named from the authenticated owner, never from the request.
         serveMcp: (mcpRequest, owner) =>
-          serveMcp(mcpRequest, owner, () => getAgentByName(env.ProjectAgent, projectAgentName(names))),
+          serveMcp(mcpRequest, owner, () => getAgentByName(env.ProjectAgent, projectAgentName(names)), {
+            issues: names.issues,
+            base: names.base,
+            ownerFork: names.owner(owner),
+          }),
         mintToken: (repo, scope, ttl) => {
           const parsed = parseProjectRepo(repo);
           if (parsed === undefined) throw new Error(`not a project repo: ${repo}`);

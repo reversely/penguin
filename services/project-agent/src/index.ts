@@ -16,6 +16,8 @@ import {
 } from "./issue-index.ts";
 import { InboxStore, type InboxItem, type InboxOutcome, type InboxReason } from "./inbox-store.ts";
 import { McpTokenStore, type IssuedMcpToken, type McpCaller } from "./mcp-tokens.ts";
+import { OwnerForkStore, reportCheckpoint, type CheckpointOutcome, type OwnerFork } from "./owner-forks.ts";
+import { postSessionUpdate, type SessionUpdate, type SessionUpdateOutcome } from "./session-updates.ts";
 import { IngestLedger, ingestPush, type IngestReport } from "./push-ingest.ts";
 import { rebuildIndex, type RebuildReport } from "./rebuild.ts";
 import { parseScopeFile, SCOPE_MAP_PATH } from "./scope-file.ts";
@@ -82,6 +84,22 @@ export {
   type TeamIdentityInput,
 } from "./identity-store.ts";
 export { McpTokenStore, type IssuedMcpToken, type McpCaller } from "./mcp-tokens.ts";
+export {
+  CHECKPOINT_SHA_PATTERN,
+  OwnerForkStore,
+  reportCheckpoint,
+  type CheckpointDeps,
+  type CheckpointOutcome,
+  type OwnerFork,
+} from "./owner-forks.ts";
+export {
+  postSessionUpdate,
+  SESSION_UPDATE_TYPES,
+  type SessionUpdate,
+  type SessionUpdateDeps,
+  type SessionUpdateOutcome,
+  type SessionUpdateType,
+} from "./session-updates.ts";
 export { importServiceKey, type ServiceKey } from "./service-key.ts";
 export {
   INBOX_REASONS,
@@ -166,6 +184,7 @@ export class ProjectAgent extends Agent {
   #serviceKey: Promise<ServiceKey> | undefined;
   #bridges: BridgeRegistry | undefined;
   #mcpTokens: McpTokenStore | undefined;
+  #forks: OwnerForkStore | undefined;
   #ledger: IngestLedger | undefined;
   /** Ingests run one at a time, so two pushes never interleave their walks and applies. */
   #ingests: Promise<unknown> = Promise.resolve();
@@ -325,6 +344,55 @@ export class ProjectAgent extends Agent {
     return this.#inboxStore().markRead(caller, issueId, reason);
   }
 
+  /**
+   * Posts an update from an agent session (MCP `post_update`): applies the operation at once and
+   * queues it for the Git log. `caller` is the owner the gateway authenticated by MCP token and must
+   * own the session; the author is the session's identity. The call counts as a heartbeat.
+   */
+  sessionUpdate(
+    caller: string,
+    sessionId: string,
+    update: SessionUpdate,
+    repos: ProjectRepos,
+  ): Promise<SessionUpdateOutcome> {
+    const index = this.#index();
+    return postSessionUpdate(
+      {
+        sessions: this.#sessionStore(),
+        issueVersion: (issueId) => index.issue(issueId)?.version,
+        submit: async (operation, author) => this.submit(operation, author, "mcp", await this.#scopeMap(repos)),
+      },
+      caller,
+      sessionId,
+      update,
+    );
+  }
+
+  /**
+   * Records a checkpoint the caller's bridge published (MCP `report_checkpoint`) as the latest
+   * checkpoint of the caller's fork, once `readCommit` finds the commit in that fork. `fork` is the
+   * Artifacts repo name of the caller's fork, which the Worker derives from the authenticated owner.
+   */
+  reportCheckpoint(caller: string, sessionId: string, sha: string, fork: string): Promise<CheckpointOutcome> {
+    return reportCheckpoint(
+      {
+        sessions: this.#sessionStore(),
+        forks: this.#ownerForks(),
+        commitExists: (repoName, commit) =>
+          withRepo(this.env.ARTIFACTS, repoName, async (repo) => (await repo.readCommit(commit)) !== null),
+      },
+      caller,
+      sessionId,
+      sha,
+      fork,
+    );
+  }
+
+  /** An owner's fork record with its latest reported checkpoint, or undefined before the first report. */
+  readOwnerFork(ownerId: string): OwnerFork | undefined {
+    return this.#ownerForks().get(ownerId);
+  }
+
   /** Where each identity assignment of an issue stands: its session, or what it waits for. */
   issueRoutes(issueId: string): AssignmentRoute[] {
     return this.#sessionStore().routes(issueId);
@@ -404,20 +472,26 @@ export class ProjectAgent extends Agent {
    * The identity store supplies the charters of identity-authored operations.
    */
   async #operationKeys(repos: ProjectRepos): Promise<OperationKeys> {
-    const [serviceKey, bridges, scopeFile] = await Promise.all([
+    const [serviceKey, bridges, scopeMap] = await Promise.all([
       this.#loadServiceKey(),
       this.#registry().bridgeKeys(),
-      withRepo(this.env.ARTIFACTS, repos.base, async (repo) => {
-        const blob = await repo.readFile({ ref: "HEAD", path: SCOPE_MAP_PATH });
-        return blob === null ? null : new Uint8Array(await blob.arrayBuffer());
-      }),
+      this.#scopeMap(repos),
     ]);
-    return {
-      serviceKey: serviceKey.publicKey,
-      bridges,
-      scopeMap: parseScopeFile(scopeFile),
-      identities: this.#identityStore(),
-    };
+    return { serviceKey: serviceKey.publicKey, bridges, scopeMap, identities: this.#identityStore() };
+  }
+
+  /** The scope map in the base repo's `penguin/scopes.json` at HEAD, read fresh for each call. */
+  async #scopeMap(repos: ProjectRepos): Promise<ScopeMap> {
+    const scopeFile = await withRepo(this.env.ARTIFACTS, repos.base, async (repo) => {
+      const blob = await repo.readFile({ ref: "HEAD", path: SCOPE_MAP_PATH });
+      return blob === null ? null : new Uint8Array(await blob.arrayBuffer());
+    });
+    return parseScopeFile(scopeFile);
+  }
+
+  #ownerForks(): OwnerForkStore {
+    this.#forks ??= new OwnerForkStore(this.#database());
+    return this.#forks;
   }
 
   #database(): SqlDatabase {

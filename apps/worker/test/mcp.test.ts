@@ -120,13 +120,21 @@ test("/mcp serves the tools as the owner the token names", async () => {
   assert.deepEqual(served, ["priya", "jun"]);
 });
 
-test("tools/list over the gateway with an owner's token returns the three session tools", async () => {
-  const { send } = gateway((request, owner) => serveMcp(request, owner, () => UNUSED_PROJECT));
+test("tools/list over the gateway with an owner's token returns the five session tools", async () => {
+  const { send } = gateway((request, owner) =>
+    serveMcp(request, owner, () => UNUSED_PROJECT, { issues: "issues", base: "base", ownerFork: `owner-${owner}` }),
+  );
   const { token } = await issue(send, "jun");
   const response = await send(mcpRequest(token));
   assert.equal(response.status, 200);
   const text = await response.text();
   const data = text.split("\n").find((line) => line.startsWith("data: ")) ?? text;
   const { result } = JSON.parse(data.replace(/^data: /u, "")) as { result: { tools: { name: string }[] } };
-  assert.deepEqual(result.tools.map((tool) => tool.name).sort(), ["get_issue", "get_work", "register_session"]);
+  assert.deepEqual(result.tools.map((tool) => tool.name).sort(), [
+    "get_issue",
+    "get_work",
+    "post_update",
+    "register_session",
+    "report_checkpoint",
+  ]);
 });
