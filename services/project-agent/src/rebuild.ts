@@ -55,10 +55,11 @@ export interface ComparedTable {
 /**
  * The index tables the comparison reads, each with the columns that identify a row. AppliedOp.seq is
  * the live apply sequence, which counts submissions that were never pushed, so it is not compared.
+ * Assignment.session_id is live routing state (session-store.ts): the shadow index never routes.
  */
 export const COMPARED_TABLES: Readonly<Record<string, ComparedTable>> = {
   Issue: { key: ["id"] },
-  Assignment: { key: ["issue_id", "assignee_kind", "assignee_id"] },
+  Assignment: { key: ["issue_id", "assignee_kind", "assignee_id"], ignore: ["session_id"] },
   Comment: { key: ["id"] },
   CommentRevision: { key: ["comment_id", "rev"] },
   Mention: { key: ["op_id"] },
@@ -70,8 +71,11 @@ export const COMPARED_TABLES: Readonly<Record<string, ComparedTable>> = {
   AppliedOp: { key: ["op_id"], ignore: ["seq"] },
 };
 
-/** Index tables with no counterpart in the repo: PendingOp holds operations not yet pushed. */
-export const LIVE_ONLY_TABLES: readonly string[] = ["PendingOp"];
+/**
+ * Tables in the agent's database with no counterpart in the repo: PendingOp holds operations not yet
+ * pushed, and the session router's tables (session-store.ts) hold sessions, acceptances and requests.
+ */
+export const LIVE_ONLY_TABLES: readonly string[] = ["PendingOp", "Session", "AssignmentAcceptance", "OwnerRequest"];
 
 /** The comparison lists at most this many differing rows; `differing` counts them all. */
 const MAX_LISTED_DIFFERENCES = 100;

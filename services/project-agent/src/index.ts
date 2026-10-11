@@ -4,6 +4,7 @@ import {
   IssueIndex,
   type ApplyInput,
   type ApplyOutcome,
+  type AssignmentListener,
   type BridgeCaller,
   type OperationKeys,
   type PendingListing,
@@ -25,6 +26,17 @@ import {
   type TeamIdentityInput,
 } from "./identity-store.ts";
 import { importServiceKey, type ServiceKey } from "./service-key.ts";
+import {
+  SESSION_OFFLINE_AFTER_MS,
+  SessionStore,
+  type AcceptOutcome,
+  type AssignmentRoute,
+  type OwnerRequest,
+  type Session,
+  type SessionInput,
+  type SessionOutcome,
+  type SessionWork,
+} from "./session-store.ts";
 import type { IssueRecord } from "@penguin/issues";
 import type { Author } from "@penguin/protocol";
 import type { ScopeMap } from "@penguin/scope-map";
@@ -41,6 +53,7 @@ export {
   IssueIndex,
   type ApplyInput,
   type ApplyOutcome,
+  type AssignmentListener,
   type BridgeCaller,
   type IdentitySource,
   type OperationKeys,
@@ -67,10 +80,31 @@ export {
 export { importServiceKey, type ServiceKey } from "./service-key.ts";
 export type { IngestReport } from "./push-ingest.ts";
 export type { IndexComparison, RebuildReport, RowDifference, TableComparison } from "./rebuild.ts";
+export {
+  SESSION_LIMITS,
+  SESSION_OFFLINE_AFTER_MS,
+  SessionStore,
+  type AcceptOutcome,
+  type AssignmentRoute,
+  type OwnerRequest,
+  type OwnerRequestKind,
+  type Session,
+  type SessionInput,
+  type SessionOutcome,
+  type SessionRejectReason,
+  type SessionStatus,
+  type SessionStoreOptions,
+  type SessionWork,
+} from "./session-store.ts";
 
-/** The Worker secret this class reads. `wrangler types` does not list secrets, so it is declared here. */
-interface ServiceKeyEnv {
+/**
+ * The Worker settings this class reads that `wrangler types` does not list: the signing key is a
+ * secret, and the offline window is an optional variable.
+ */
+interface ProjectAgentEnv {
   readonly PENGUIN_OP_SIGNING_KEY?: string;
+  /** Seconds without a heartbeat before a session goes offline. Defaults to SESSION_OFFLINE_AFTER_MS. */
+  readonly PENGUIN_SESSION_OFFLINE_SECONDS?: string;
 }
 export {
   BRIDGE_ROLES,
@@ -113,6 +147,7 @@ export class ProjectAgent extends Agent {
   #sql: SqlDatabase | undefined;
   #issues: IssueIndex | undefined;
   #identities: IdentityStore | undefined;
+  #sessions: SessionStore | undefined;
   #serviceKey: Promise<ServiceKey> | undefined;
   #bridges: BridgeRegistry | undefined;
   #ledger: IngestLedger | undefined;
@@ -231,9 +266,47 @@ export class ProjectAgent extends Agent {
     return this.#identityStore().get(id);
   }
 
+  /**
+   * Registers a session of an identity and returns it with its ID. `caller` is the owner the gateway
+   * authenticated by token; a session registers only as an identity of that owner. The identity's
+   * waiting assignments route to it.
+   */
+  registerSession(caller: string, input: SessionInput): SessionOutcome {
+    return this.#sessionStore().register(caller, input);
+  }
+
+  /** Records a session's heartbeat. A session with no heartbeat within the offline window goes offline. */
+  sessionHeartbeat(caller: string, sessionId: string): SessionOutcome {
+    return this.#sessionStore().heartbeat(caller, sessionId);
+  }
+
+  readSession(sessionId: string): Session | undefined {
+    return this.#sessionStore().get(sessionId);
+  }
+
+  /** The issues routed to a running session: assigned to its identity and accepted by the owner. */
+  sessionWork(caller: string, sessionId: string): SessionWork {
+    return this.#sessionStore().work(caller, sessionId);
+  }
+
+  /** The owner accepts an identity's assignment to an issue, which then routes to a running session. */
+  acceptAssignment(caller: string, issueId: string, handle: string): AcceptOutcome {
+    return this.#sessionStore().accept(caller, issueId, handle);
+  }
+
+  /** The caller's requests: assignments to accept and sessions to start. */
+  ownerRequests(caller: string): OwnerRequest[] {
+    return this.#sessionStore().requests(caller);
+  }
+
+  /** Where each identity assignment of an issue stands: its session, or what it waits for. */
+  issueRoutes(issueId: string): AssignmentRoute[] {
+    return this.#sessionStore().routes(issueId);
+  }
+
   #loadServiceKey(): Promise<ServiceKey> {
     if (this.#serviceKey === undefined) {
-      const loading = importServiceKey((this.env as unknown as ServiceKeyEnv).PENGUIN_OP_SIGNING_KEY);
+      const loading = importServiceKey((this.env as unknown as ProjectAgentEnv).PENGUIN_OP_SIGNING_KEY);
       // A failed import is retried on the next call, once the secret is set.
       loading.catch(() => (this.#serviceKey = undefined));
       this.#serviceKey = loading;
@@ -317,8 +390,28 @@ export class ProjectAgent extends Agent {
   }
 
   #index(): IssueIndex {
-    this.#issues ??= new IssueIndex(this.#database());
+    if (this.#issues === undefined) {
+      // The router hears of every assignment an applied operation changes, inside its transaction.
+      const router: AssignmentListener = {
+        assignmentsChanged: (issueId, added, removed) =>
+          this.#sessionStore().assignmentsChanged(issueId, added, removed),
+      };
+      this.#issues = new IssueIndex(this.#database(), router);
+    }
     return this.#issues;
+  }
+
+  #sessionStore(): SessionStore {
+    if (this.#sessions === undefined) {
+      // The index first: it creates the Assignment table the router reads and writes.
+      const index = this.#index();
+      const seconds = Number((this.env as unknown as ProjectAgentEnv).PENGUIN_SESSION_OFFLINE_SECONDS);
+      this.#sessions = new SessionStore(this.#database(), this.#identityStore(), {
+        offlineAfterMs: Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : SESSION_OFFLINE_AFTER_MS,
+        assigningOwner: (issueId, handle) => index.assigningOwner(issueId, handle),
+      });
+    }
+    return this.#sessions;
   }
 
   #identityStore(): IdentityStore {

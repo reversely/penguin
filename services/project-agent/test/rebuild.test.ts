@@ -10,6 +10,7 @@ import { parseScopeMap } from "@penguin/scope-map";
 import { ISSUE_INDEX_SCHEMA, IssueIndex, type OperationKeys, type SqlDatabase } from "../src/issue-index.ts";
 import { IngestLedger, ingestPush } from "../src/push-ingest.ts";
 import { COMPARED_TABLES, LIVE_ONLY_TABLES, rebuildIndex, SHADOW_PREFIX } from "../src/rebuild.ts";
+import { SESSION_SCHEMA } from "../src/session-store.ts";
 import { GitRepo, sqlite } from "./issues-repo.ts";
 
 const scopeMap = parseScopeMap(
@@ -321,9 +322,11 @@ describe("rebuildIndex", () => {
     assert.deepEqual(report.bindingCalls, { log: 1 });
   });
 
-  test("every table of the index is either compared or known to exist only live", () => {
+  test("every table of the index and the session router is either compared or known to exist only live", () => {
     const tableName = /^CREATE TABLE IF NOT EXISTS (\w+)/u;
-    const tables = ISSUE_INDEX_SCHEMA.flatMap((statement) => tableName.exec(statement)?.[1] ?? []);
+    const tables = [...ISSUE_INDEX_SCHEMA, ...SESSION_SCHEMA].flatMap(
+      (statement) => tableName.exec(statement)?.[1] ?? [],
+    );
     assert.deepEqual(new Set(tables), new Set([...Object.keys(COMPARED_TABLES), ...LIVE_ONLY_TABLES]));
   });
 });

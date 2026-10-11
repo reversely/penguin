@@ -10,9 +10,13 @@
 // An operation an identity authors is checked against the identity's charter, which `keys.identities`
 // supplies. A team identity's rights depend on the owner who assigned it to the issue, which the index
 // reads from its AppliedOp log: the first applied assign of the identity since its last applied unassign.
+//
+// An `AssignmentListener` hears of each assignment an applied operation adds or removes, inside the
+// operation's transaction, so the session router (session-store.ts) routes it in the same write.
 
 import {
   canonicalBytes,
+  type Assignment,
   canonicalJson,
   issueKey,
   reduce,
@@ -83,6 +87,15 @@ export type ApplyOutcome =
 /** Finds an identity by handle for the charter check. The identity store is one. */
 export interface IdentitySource {
   byHandle(handle: string): CharterIdentity | undefined;
+}
+
+/**
+ * Hears of the assignments an applied operation added or removed. It runs inside the operation's
+ * transaction, after the issue is written: it must not open a transaction of its own, and a throw
+ * rolls the operation back.
+ */
+export interface AssignmentListener {
+  assignmentsChanged(issueId: string, added: readonly Assignment[], removed: readonly Assignment[]): void;
 }
 
 /** Where a submitted operation came from. Penguin's own operations wait for the runner as well. */
@@ -210,6 +223,9 @@ export const ISSUE_INDEX_SCHEMA: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS AppliedOp_author ON AppliedOp (author)`,
   `CREATE INDEX IF NOT EXISTS Comment_issue ON Comment (issue_id)`,
   `CREATE INDEX IF NOT EXISTS SubIssue_parent ON SubIssue (parent_id)`,
+  // The session router finds an identity's assignments and a session's routed issues.
+  `CREATE INDEX IF NOT EXISTS Assignment_assignee ON Assignment (assignee_kind, assignee_id)`,
+  `CREATE INDEX IF NOT EXISTS Assignment_session ON Assignment (session_id)`,
 ];
 
 /** Child tables keyed by issue_id, read back into an IssueRecord's collections. */
@@ -217,13 +233,15 @@ const ISSUE_CHILD_TABLES = ["Assignment", "Comment", "Mention", "LinkedCommit", 
 
 export class IssueIndex {
   readonly #db: SqlDatabase;
+  readonly #listener: AssignmentListener | undefined;
   /** Issue states read from or written to SQL. The index is the only writer, so the cache stays exact. */
   readonly #cache = new Map<string, IssueRecord | undefined>();
   /** Applies run one at a time: each awaits signature checks, and two must not interleave their reads and writes. */
   #queue: Promise<unknown> = Promise.resolve();
 
-  constructor(db: SqlDatabase) {
+  constructor(db: SqlDatabase, listener?: AssignmentListener) {
     this.#db = db;
+    this.#listener = listener;
     for (const statement of ISSUE_INDEX_SCHEMA) db.exec(statement);
   }
 
@@ -312,7 +330,7 @@ export class IssueIndex {
    * of the first applied assign since the last applied unassign. A person's assign names that person;
    * an identity's names the identity's owner half; Penguin's names no owner.
    */
-  #assigningOwner(issueId: string, handle: string): string | undefined {
+  assigningOwner(issueId: string, handle: string): string | undefined {
     if (!this.issue(issueId)?.assignments.has(`identity:${handle}`)) return undefined;
     const [row] = this.#db.exec(
       `SELECT author FROM AppliedOp
@@ -368,7 +386,7 @@ export class IssueIndex {
       appliedOpIds: new Set(claimed),
       identities: {
         identity: (handle) => keys.identities.byHandle(handle),
-        assigningOwner: (issue, handle) => this.#assigningOwner(issue, handle),
+        assigningOwner: (issue, handle) => this.assigningOwner(issue, handle),
       },
       ...(path === undefined ? {} : { path }),
     });
@@ -399,6 +417,9 @@ export class IssueIndex {
         if (operation.type === "open_sub_issue")
           this.#setParent(issueKey(operation.payload["sub_issue"] as string | number), id);
         this.#record(operation.op_id, operation, id, "applied", null, null, gitCommit);
+        // Set before the listener runs, so it reads the new state; the catch below clears it on rollback.
+        this.#cache.set(id, result.issue);
+        this.#notifyAssignments(id, current, result.issue);
         if (pending !== undefined) {
           this.#db.exec(
             `INSERT INTO PendingOp (op_id, source, created_at, file) VALUES (?, ?, ?, ?)`,
@@ -414,8 +435,14 @@ export class IssueIndex {
       this.#cache.clear();
       throw error;
     }
-    this.#cache.set(id, result.issue);
     return { status: "applied", opId: operation.op_id, issueId: id, version: result.issue.version };
+  }
+
+  #notifyAssignments(id: string, prev: IssueRecord | undefined, next: IssueRecord): void {
+    if (this.#listener === undefined || prev?.assignments === next.assignments) return;
+    const added = [...next.assignments].filter(([key]) => !prev?.assignments.has(key)).map(([, a]) => a);
+    const removed = [...(prev?.assignments ?? [])].filter(([key]) => !next.assignments.has(key)).map(([, a]) => a);
+    if (added.length > 0 || removed.length > 0) this.#listener.assignmentsChanged(id, added, removed);
   }
 
   #reject(
