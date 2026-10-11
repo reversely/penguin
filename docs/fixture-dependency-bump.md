@@ -83,6 +83,9 @@ charged at most once". `main` has no webhook, so `main` names no examples file. 
 `payments/examples/placed_orders.json` with three recorded orders: one the processor answers at
 once, a declined card and an order whose charge response times out.
 
+The test the upgrade breaks, `test_timed_out_charge_is_charged_once`, has the one-line docstring
+"A payment is charged at most once." A merge plan states the break in the invariant's words.
+
 Each recorded order runs `charges_for_placed_order` in `payments/tests/charge_replay.py`. The
 function places the order through `handle_order_placed` against the fake processor. The processor
 loses as many responses as the case names. The function returns the processor's charges for the

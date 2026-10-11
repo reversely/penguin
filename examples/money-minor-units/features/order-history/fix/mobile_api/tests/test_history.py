@@ -6,4 +6,5 @@ ORDERS = [Order("o-2", "CA", "USD", [Line("eggs", 1, Money(410, "USD"))])]
 
 
 def test_history_shows_each_total():
+    """The order history shows each past order with its total."""
     assert history_payload(ORDERS) == [{"id": "o-2", "total": "$4.10"}]

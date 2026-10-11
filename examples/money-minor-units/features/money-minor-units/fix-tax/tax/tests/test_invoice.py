@@ -16,13 +16,16 @@ THREE_LINES = Order(
 
 
 def test_tax_rounded_per_line():
+    """Tax is rounded per line item."""
     assert invoice_tax(THREE_LINES) == Money(35, "USD")
 
 
 def test_tax_uses_the_region_rate():
+    """Each order is taxed at its region's rate."""
     order = Order("o-4", "NJ", "USD", [Line("coffee", 1, Money(1000, "USD"))])
     assert invoice_tax(order) == Money(66, "USD")
 
 
 def test_invoice_tax_minor_is_in_cents():
+    """An invoice's tax in cents is rounded per line item."""
     assert invoice_tax_minor(THREE_LINES) == 35

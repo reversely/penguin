@@ -25,6 +25,7 @@ def test_declined_card_marks_the_order_declined():
 
 
 def test_timed_out_charge_is_charged_once():
+    """A payment is charged at most once."""
     # The processor charges the card, then its response is lost and the call times out.
     processor = FakeProcessor(lost_responses=1)
     handle_order_placed(

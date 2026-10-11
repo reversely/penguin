@@ -11,5 +11,6 @@ ORDER = Order(
 
 
 def test_estimate_uses_todays_prices():
+    """A reorder estimate prices each line at today's price."""
     today = {"milk": Money(159, "USD"), "bread": Money(325, "USD")}
     assert reorder_estimate(ORDER, today) == Money(643, "USD")

@@ -3,6 +3,7 @@ from shared.money import Money
 
 
 def test_stores_rank_by_revenue():
+    """Stores rank by revenue from highest to lowest."""
     revenue = {
         "Corner Grocer": Money(12050, "USD"),
         "Fresh Fields": Money(98000, "USD"),

@@ -14,4 +14,5 @@ ORDERS = [
 
 
 def test_digest_counts_orders_and_spend():
+    """The weekly digest counts the week's orders and the total spent on them."""
     assert digest(ORDERS) == "2 orders this week, $10.33 in all."

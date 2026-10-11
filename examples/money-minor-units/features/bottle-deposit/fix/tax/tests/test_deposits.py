@@ -11,4 +11,5 @@ ORDER = Order(
 
 
 def test_deposit_is_charged_per_bottle():
+    """A bottle deposit is charged for each bottle in the order."""
     assert bottle_deposit(ORDER, {"water"}) == Money(30, "USD")

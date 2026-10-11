@@ -129,6 +129,13 @@ test("the helpful fix's plan states the change, each break and each part's chang
       part.invariants.map((each) => each.statement),
       invariants.invariants.filter((each) => part.scopes.includes(each.scope)).map((each) => each.statement),
     );
+    // Each break states what its test protects in the words of an invariant of the part's scopes,
+    // read from the failing test's docstring.
+    const statements = new Set(part.invariants.map((each) => `${each.statement}.`));
+    for (const each of part.breaks) {
+      assert.equal(each.statementFrom, "docstring", `${part.partId}: ${each.nodeId}`);
+      assert.ok(statements.has(each.statement), `${part.partId}: ${each.statement}`);
+    }
     assert.ok(part.diff.files.length > 0 && part.diff.files.every((file) => part.scopes.includes(file.scopeId as string)));
   }
   t.diagnostic(`plan assembled in ${plan.assembledMs} ms; facts run took ${report.durationMs} ms on the runner`);

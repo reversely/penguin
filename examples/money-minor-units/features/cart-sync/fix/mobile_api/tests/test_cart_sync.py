@@ -9,6 +9,7 @@ LINES = [
 
 
 def test_payload_carries_items_and_total():
+    """A cart payload carries its items and its total for display and in the minor unit."""
     assert cart_payload(LINES) == {
         "items": ["milk", "bread"],
         "total": "$6.23",

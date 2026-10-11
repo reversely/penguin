@@ -11,4 +11,5 @@ CUSTOMERS = {
 
 
 def test_lifetime_value_sums_every_order():
+    """A customer's lifetime value is the sum of their order totals."""
     assert lifetime_value(CUSTOMERS) == {"c-1": 12.23, "c-2": 4.1}

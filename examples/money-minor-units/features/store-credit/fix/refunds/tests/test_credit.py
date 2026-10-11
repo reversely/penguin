@@ -11,4 +11,5 @@ ORDER = Order(
 
 
 def test_credit_adds_the_bonus():
+    """Store credit for returned lines is their refund plus the bonus for taking credit."""
     assert store_credit(ORDER, ["milk"]) == Money(328, "USD")

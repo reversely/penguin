@@ -31,6 +31,7 @@ def test_leaves_out_activity_outside_the_week():
 
 
 def test_evening_activity_west_of_utc_stays_on_its_local_day():
+    """Evening activity west of UTC stays on its local day."""
     # The user lives at UTC-08:00. 04:30 UTC on Tuesday is 20:30 on Monday for that user.
     events = [Event("u1", datetime(2026, 2, 10, 4, 30, tzinfo=UTC))]
     offsets = {"u1": timedelta(hours=-8)}

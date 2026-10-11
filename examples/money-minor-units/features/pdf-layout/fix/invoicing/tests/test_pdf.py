@@ -11,4 +11,5 @@ ORDER = Order(
 
 
 def test_amounts_are_right_aligned():
+    """An invoice's amounts are right-aligned in their column."""
     assert amount_column(ORDER, width=7) == ["  $2.98", "  $3.25"]

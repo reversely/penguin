@@ -9,4 +9,5 @@ LINES = [
 
 
 def test_tip_is_a_share_of_the_cart():
+    """A tip is the chosen percentage of the cart total rounded to the cent."""
     assert tip(LINES, 10) == Money(62, "USD")

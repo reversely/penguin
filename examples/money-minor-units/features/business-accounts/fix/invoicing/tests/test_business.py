@@ -14,4 +14,5 @@ ORDERS = [
 
 
 def test_statement_sums_every_invoice():
+    """A business statement's total is the sum of its invoices."""
     assert statement_total(ORDERS) == Money(1744, "USD")

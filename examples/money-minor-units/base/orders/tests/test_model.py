@@ -16,8 +16,10 @@ def test_from_record_reads_the_stored_prices():
 
 
 def test_line_total_is_price_times_quantity():
+    """A line's total is its price times its quantity."""
     assert line_total(Line("milk", 2, 1.49)) == 2.98
 
 
 def test_order_total_sums_the_lines():
+    """An order's total is the sum of its line totals."""
     assert order_total(Order.from_record(RECORD)) == 6.23

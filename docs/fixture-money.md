@@ -152,6 +152,12 @@ imports `Money`, which main lacks, so its tests run on a tree merged with Ines's
 Analytics declares two protected invariants: "Daily revenue equals the sum of that day's order
 totals" and "Revenue in different currencies is never added together".
 
+Each test that `pins.json` lists under `fixes` has a one-line docstring stating what the test
+protects. A merge plan states each break with that docstring. A test that checks a declared
+invariant repeats the invariant's statement: `test_tax_rounded_per_line` reads "Tax is rounded per
+line item." Every other test states its own rule in the same form, such as "A line's total is its
+price times its quantity."
+
 `tax/examples/invoice_tax.json` records 5,000 US orders for `tax/invoice.py::invoice_tax_minor`.
 Each case passes the stored order record through `orders/model.py::Order.from_record`, so the same
 input builds a float order on main and a `Money` order on the fork. The builder draws every order

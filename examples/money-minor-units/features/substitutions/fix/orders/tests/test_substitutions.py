@@ -4,6 +4,7 @@ from shared.money import Money
 
 
 def test_dearer_substitute_costs_the_difference():
+    """A dearer substitute costs the difference between the two line totals."""
     original = Line("milk", 2, Money(149, "USD"))
     substitute = Line("oat", 2, Money(199, "USD"))
     assert substitution_difference(original, substitute) == Money(100, "USD")

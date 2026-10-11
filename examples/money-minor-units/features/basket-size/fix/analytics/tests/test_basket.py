@@ -15,4 +15,5 @@ ORDERS = [
 
 
 def test_average_basket_is_the_mean_order_total():
+    """The average basket is the mean of the order totals."""
     assert average_basket(ORDERS) == usd(544)

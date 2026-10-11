@@ -11,4 +11,5 @@ ORDER = Order(
 
 
 def test_instant_payout_takes_the_flat_fee():
+    """An instant payout is the usual payout less the flat instant fee."""
     assert instant_payout(ORDER) == Money(480, "USD")

@@ -3,13 +3,13 @@
   "branches": {
     "main": "0e252bbfc1b08513827ee4e8189b759b2740946e",
     "owner-hugo": "4a56f11d9f6cf4a8755f52d094c1dcddfcc4df4c",
-    "owner-ana": "d6c568bb0ad96dc38afb2eaea76f4a635c80897b"
+    "owner-ana": "44c848ca579b506d0e0878ad52462c78c29965a1"
   },
   "tags": {
     "owner-hugo-checkpoint": "4a56f11d9f6cf4a8755f52d094c1dcddfcc4df4c",
-    "owner-ana-checkpoint": "3549d5114a25252c3ec74445a6c3368df918a116"
+    "owner-ana-checkpoint": "e6994519dd706e3557e086b23ccc4e84d3fbeb72"
   },
   "fixes": {
-    "payments/tests/test_webhooks.py::test_timed_out_charge_is_charged_once": "d6c568bb0ad96dc38afb2eaea76f4a635c80897b"
+    "payments/tests/test_webhooks.py::test_timed_out_charge_is_charged_once": "44c848ca579b506d0e0878ad52462c78c29965a1"
   }
 }

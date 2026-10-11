@@ -3,16 +3,16 @@
   "branches": {
     "main": "12126a36c404d3f2bf6b0951f64541470c7e44bc",
     "owner-priya": "bfedc49f0bd873fe47299c0a12edf5b55e353899",
-    "owner-jun": "1144ebb6802335fb4fa41f3fb9d5ae10daac92a6",
-    "owner-sam": "7f0ee9e6a8a1a35ba81da3c77a9cbe3612344686"
+    "owner-jun": "26ed8bfadee6d57447aa01913ebdc54d6cf37337",
+    "owner-sam": "94b58b792fe34bf24e539d2dca38a9bd535c6147"
   },
   "tags": {
     "owner-priya-checkpoint": "55a4fc22e7ad7914f55937a52723e6573c465e3f",
-    "owner-jun-checkpoint": "c0ebd5b0525948f0de24a2f626ee0ea52f55005f",
-    "owner-sam-checkpoint": "4bfe1f57b51e777faa69a26949c18d60aa7f53bd"
+    "owner-jun-checkpoint": "eaa4ca52af8f297a675d8cf73c9aa5e82be4b46d",
+    "owner-sam-checkpoint": "006c6c59893483ec02b67a9a3af8cd63730e6728"
   },
   "fixes": {
-    "analytics/tests/test_weekly.py::test_evening_activity_west_of_utc_stays_on_its_local_day": "1144ebb6802335fb4fa41f3fb9d5ae10daac92a6",
-    "messaging/tests/test_reminders.py::test_fires_at_the_local_hour_west_of_utc": "7f0ee9e6a8a1a35ba81da3c77a9cbe3612344686"
+    "analytics/tests/test_weekly.py::test_evening_activity_west_of_utc_stays_on_its_local_day": "26ed8bfadee6d57447aa01913ebdc54d6cf37337",
+    "messaging/tests/test_reminders.py::test_fires_at_the_local_hour_west_of_utc": "94b58b792fe34bf24e539d2dca38a9bd535c6147"
   }
 }

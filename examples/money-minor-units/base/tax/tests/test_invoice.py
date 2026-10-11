@@ -11,12 +11,15 @@ THREE_LINES = Order(
 
 
 def test_tax_rounded_per_line():
+    """Tax is rounded per line item."""
     assert invoice_tax(THREE_LINES) == 0.35
 
 
 def test_tax_uses_the_region_rate():
+    """Each order is taxed at its region's rate."""
     assert invoice_tax(Order("o-4", "NJ", "USD", [Line("coffee", 1, 10.0)])) == 0.66
 
 
 def test_invoice_tax_minor_is_in_cents():
+    """An invoice's tax in cents is rounded per line item."""
     assert invoice_tax_minor(THREE_LINES) == 35

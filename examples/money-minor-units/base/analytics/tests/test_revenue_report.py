@@ -11,8 +11,10 @@ DAYS = {
 
 
 def test_revenue_sums_each_days_orders():
+    """Daily revenue equals the sum of that day's order totals."""
     assert revenue_by_day(DAYS) == {"2026-03-01": 6.0, "2026-03-02": 10.33}
 
 
 def test_report_has_one_line_per_day_in_order():
+    """The revenue report shows one line per day in date order."""
     assert report_lines(DAYS) == ["2026-03-01: $6.00", "2026-03-02: $10.33"]

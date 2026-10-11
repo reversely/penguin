@@ -11,4 +11,5 @@ ORDER = Order(
 
 
 def test_shipment_total_counts_only_its_lines():
+    """A shipment's total counts only the lines in that shipment."""
     assert shipment_total(ORDER, ["bread"]) == Money(325, "USD")

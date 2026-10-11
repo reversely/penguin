@@ -22,6 +22,7 @@ def test_schedules_tomorrow_once_the_hour_has_passed():
 
 
 def test_fires_at_the_local_hour_west_of_utc():
+    """A reminder fires at the contact's local hour."""
     # 16:00 UTC is 08:00 for a contact at UTC-08:00, so 09:00 local is 17:00 UTC the same day.
     now = datetime(2026, 2, 9, 16, 0, tzinfo=UTC)
     assert next_reminder(LOS_ANGELES_WINTER, now, 9) == datetime(

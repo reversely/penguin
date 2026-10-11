@@ -80,6 +80,8 @@ In the approved design ([design.md](design.md#procedure)) this case runs as foll
 
 The base commit's `penguin/invariants.json` holds two invariants in the format in
 [design.md](design.md#invariants-and-examples). Each statement follows the test that checks it.
+That test's one-line docstring repeats the statement, so a merge plan states each break in the
+invariant's words.
 
 | Id | Scope | Statement | Protected | Recorded examples |
 |---|---|---|---|---|

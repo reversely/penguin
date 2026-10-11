@@ -11,5 +11,6 @@ ORDER = Order(
 
 
 def test_partial_refund_is_capped_at_the_quantity_bought():
+    """A partial refund never exceeds what was paid for the quantity bought."""
     assert partial_refund(ORDER, "milk", 1) == Money(149, "USD")
     assert partial_refund(ORDER, "milk", 5) == Money(298, "USD")

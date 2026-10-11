@@ -435,7 +435,7 @@ The command asks before each test run unless `--yes`. It exits 1 when any check 
 the dependency bump it prints, for Ana's checkpoint:
 
 ```text
-4a56f11d9f6c onto ana@3549d5114a25 (merged 98af161610a7)
+4a56f11d9f6c onto ana@e6994519dd70 (merged dad2a2dfc816)
   overlap passed: no file changed in both [git diff, git:diff-hunks, 35 ms]
   merge passed: merges cleanly [git merge-tree, git:merge-tree, 26 ms]
   dependencies failed: shared.http changed version; ana imports it in 4 places [python-dependencies, analysis:python-dependencies, 262 ms]
