@@ -3,7 +3,9 @@
  * connection to the ProjectAgent.
  *
  * - GET /, /board, /inbox, /identities and /issues/<id>: the app's page; GET /app.js and /app.css:
- *   its bundle. These carry no data, so they need no session: an unauthenticated visit shows sign-in.
+ *   its bundle; GET /fonts/<name>.woff2: the self-hosted Inter and Piazzolla files;
+ *   GET /fonts/<name>.txt: their OFL texts. These carry no data, so they need no session: an
+ *   unauthenticated visit shows sign-in.
  * - GET /auth/github: starts GitHub sign-in. GET /auth/github/callback: finishes it and sets the
  *   session cookie. POST /auth/signout: clears it.
  * - /api/*: every route checks the session first and answers 401 without one.
@@ -23,8 +25,8 @@
  *     operation that carries `author` is refused: only the session names the author.
  *   - GET /api/live: the WebSocket to the ProjectAgent, which sends a message on each index change.
  *
- * Every response here sends a Content Security Policy that allows scripts and styles from the
- * Worker's own origin only, so no inline script runs. POST routes also require a same-origin
+ * Every response here sends a Content Security Policy that allows scripts, styles and fonts from the
+ * Worker's own origin only, so no inline script runs and no third-party origin receives a request. POST routes also require a same-origin
  * `Origin` header, on top of the SameSite=Lax session cookie.
  */
 
@@ -115,6 +117,7 @@ export const CONTENT_SECURITY_POLICY = [
   "script-src 'self'",
   "style-src 'self'",
   "img-src 'self' data:",
+  "font-src 'self'",
   "connect-src 'self'",
   "base-uri 'none'",
   "form-action 'self'",
@@ -125,7 +128,13 @@ const OAUTH_COOKIE = "__Host-penguin_oauth";
 const OAUTH_TTL_SECONDS = 600;
 const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]"]);
 const PAGE_PATH = /^\/(?:|board|inbox|identities|issues\/[A-Za-z0-9_-]+)$/;
-const ASSET_PATH = /^\/app\.(?:js|css)$/;
+const ASSET_PATH = /^\/(?:app\.(?:js|css)|fonts\/[a-z0-9-]+\.(?:woff2|txt))$/;
+const FONT_PATH = /^\/fonts\/[a-z0-9-]+\.woff2$/;
+/**
+ * Each font file's name carries its upstream version (inter-v20-latin.woff2), so a changed font gets
+ * a new URL and a browser keeps each file for a year without asking again.
+ */
+const FONT_CACHE_CONTROL = "public, max-age=31536000, immutable";
 const GITHUB_LOGIN = /^[A-Za-z0-9-]{1,39}$/;
 const ISSUE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
@@ -389,6 +398,12 @@ async function servePage(request: Request, url: URL, handlers: DashboardHandlers
   // Every page is the same index.html; the app routes on the path.
   const asset = PAGE_PATH.test(url.pathname) ? new Request(new URL("/", url), { method: request.method }) : request;
   const response = await handlers.serveAsset(asset);
+  if (FONT_PATH.test(url.pathname) && response.ok) {
+    const font = new Response(response.body, response);
+    font.headers.set("Content-Type", "font/woff2");
+    font.headers.set("Cache-Control", FONT_CACHE_CONTROL);
+    return font;
+  }
   if (!PAGE_PATH.test(url.pathname)) return response;
   const page = new Response(response.body, response);
   page.headers.set("Cache-Control", "no-cache");

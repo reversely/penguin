@@ -16,6 +16,8 @@ import { DOUBLE_CLIENT, startGitHubDouble, type GitHubDouble } from "./github-do
 
 const ORIGIN = "http://127.0.0.1:8787";
 const INDEX_HTML = "<!doctype html><title>Penguin</title><div id=root></div>";
+const FONT_FILES = ["/fonts/inter-v20-latin.woff2", "/fonts/piazzolla-v42-latin.woff2", "/fonts/piazzolla-v42-latin-italic.woff2"];
+const WOFF2_BYTES = new Uint8Array([0x77, 0x4f, 0x46, 0x32]);
 
 let double: GitHubDouble;
 before(async () => {
@@ -96,6 +98,9 @@ function handlers(backend: Backend): GatewayHandlers {
       const path = new URL(request.url).pathname;
       if (path === "/") return new Response(INDEX_HTML, { headers: { "Content-Type": "text/html" } });
       if (path === "/app.js") return new Response("export {};", { headers: { "Content-Type": "text/javascript" } });
+      // The assets binding's own type for a font is not relied on: the Worker sets it.
+      if (FONT_FILES.includes(path)) return new Response(WOFF2_BYTES, { headers: { "Content-Type": "application/octet-stream" } });
+      if (path === "/fonts/inter-ofl.txt") return new Response("Copyright", { headers: { "Content-Type": "text/plain" } });
       return new Response("not found", { status: 404 });
     },
     dashboard: () => backend,
@@ -166,6 +171,36 @@ describe("an unauthenticated visit", () => {
     const script = await browser.request("/app.js");
     assert.equal(script.status, 200);
     assert.ok(script.headers.get("Content-Security-Policy"));
+  });
+
+  test("loads fonts from the Worker's own origin only", async () => {
+    const fontSources = CONTENT_SECURITY_POLICY.split("; ").filter((directive) => directive.startsWith("font-src"));
+    assert.deepEqual(fontSources, ["font-src 'self'"]);
+    // No directive names another origin: no scheme, host or wildcard source.
+    assert.doesNotMatch(CONTENT_SECURITY_POLICY, /https?:|wss?:|\*|\.[a-z]{2,}\b/);
+  });
+
+  test("gets each font file as font/woff2 with a year-long immutable cache beside its OFL text", async () => {
+    const browser = new Browser();
+    for (const path of FONT_FILES) {
+      const response = await browser.request(path);
+      assert.equal(response.status, 200, path);
+      assert.equal(response.headers.get("Content-Type"), "font/woff2", path);
+      assert.equal(response.headers.get("Cache-Control"), "public, max-age=31536000, immutable", path);
+      assert.equal(response.headers.get("Content-Security-Policy"), CONTENT_SECURITY_POLICY, path);
+      assert.deepEqual(new Uint8Array(await response.arrayBuffer()), WOFF2_BYTES, path);
+    }
+    const licence = await browser.request("/fonts/inter-ofl.txt");
+    assert.equal(licence.status, 200);
+    assert.equal(await licence.text(), "Copyright");
+    // A missing font keeps the binding's 404 and gains no cache header.
+    const missing = await browser.request("/fonts/missing.woff2");
+    assert.equal(missing.status, 404);
+    assert.equal(missing.headers.get("Cache-Control"), null);
+    // Only plain names under /fonts are assets; anything else falls through to the gateway.
+    for (const path of ["/fonts/Inter.woff2", "/fonts/a/b.woff2", "/fonts/x.ttf"]) {
+      assert.equal((await browser.request(path)).status, 401, path);
+    }
   });
 
   test("gets 401 from every dashboard API route", async () => {

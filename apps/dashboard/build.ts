@@ -1,8 +1,9 @@
-// Bundles the dashboard into dist/ for the Worker to serve as static assets: index.html, app.js and
-// app.css. The page loads the script and the stylesheet by URL and has no inline script or style,
-// so the Worker's Content Security Policy can allow scripts from its own origin only.
+// Bundles the dashboard into dist/ for the Worker to serve as static assets: index.html, app.js,
+// app.css and fonts/ (the self-hosted Inter and Piazzolla files with their OFL texts). The page
+// loads the script, the stylesheet and the fonts by URL and has no inline script or style, so the
+// Worker's Content Security Policy can allow scripts, styles and fonts from its own origin only.
 
-import { copyFile, mkdir, rm, stat } from "node:fs/promises";
+import { copyFile, cp, mkdir, readdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 
 import { build } from "esbuild";
@@ -27,7 +28,9 @@ await build({
 });
 await copyFile(join(root, "src/index.html"), join(dist, "index.html"));
 await copyFile(join(root, "src/app.css"), join(dist, "app.css"));
+await cp(join(root, "src/fonts"), join(dist, "fonts"), { recursive: true });
 
-for (const file of ["app.js", "app.css", "index.html"]) {
+const fonts = (await readdir(join(dist, "fonts"))).map((file) => `fonts/${file}`);
+for (const file of ["app.js", "app.css", "index.html", ...fonts]) {
   console.log(`${file}\t${(await stat(join(dist, file))).size} bytes`);
 }
