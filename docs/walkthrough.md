@@ -54,3 +54,42 @@ Playwright writes to `test-results/walkthrough/<fixture>/`:
 | `cleanup.json` | The Artifacts repos the run deleted |
 
 `test-results/walkthrough/report.json` holds each step's result and duration.
+
+## Dashboard build per use case
+
+Each use case's Worker serves a private copy of the dashboard build. `LocalStack.start` builds the
+dashboard, copies `apps/dashboard/dist` into the use case's temporary folder and starts
+`wrangler dev` with `--assets` pointing at the copy.
+
+Wrangler 4.149.0 watches the assets directory of a running `wrangler dev`. When another process in
+the same checkout rebuilds the dashboard, `apps/dashboard/build.ts` deletes `dist` and writes it
+again. Every ASSETS fetch of the running `wrangler dev` then answers 500 with an empty body. The
+processes that rebuild `dist` include `wrangler deploy`, another `wrangler dev` starting and
+`npm run build -w @penguin/dashboard`. The asset worker in Miniflare turns the failure into the 500
+without logging it.
+
+A probe measured this against one `wrangler dev` with GET / every 10 ms for 30 seconds:
+
+| Rebuild 5 seconds in | GET / answers |
+|---|---|
+| None | 1841 times 200 |
+| A source file rewritten, so `wrangler dev` runs its own build | 1712 times 200 |
+| `npm run build -w @penguin/dashboard` from another process | 301 times 200, then 1508 times 500 |
+| The same rebuild, with `--assets` on a copy of the build | 1755 times 200 |
+
+After the external rebuild, `/`, `/board`, `/app.js`, `/app.css` and the font files all answered 500.
+The probe and the walkthrough runs had 1.0 to 3.5 GB of free disk. No run had more free disk to compare.
+
+## Remote-binding errors in worker.log
+
+`worker.log` holds lines of the form `✘ [ERROR] Error: internal error; reference = <id>` with no
+stack. Penguin's Worker does not produce them. Wrangler runs the remote Artifacts binding through a
+preview Worker on Cloudflare and prints that Worker's tail events into the same output
+(`realishPrintLogs` in `wrangler-dist/cli.js`). Each line is one exception of one tail event.
+
+A run with a hook on wrangler's `JSON.parse` and `console.error` traced all 294 such lines of one
+run to 98 tail events. Every event was the binding's WebSocket session
+(`GET /?MF-Binding=ARTIFACTS`, Upgrade: websocket) ending with outcome `loadShed` after 40 to 70
+seconds of wall time, with three exceptions each. All 21 steps passed in that run. The count varies
+between runs of the same code from 21 to 423 lines per run. The reference ids appear in no log of the local
+`workerd` processes, including with `--verbose`.

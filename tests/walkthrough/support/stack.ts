@@ -11,7 +11,7 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { createWriteStream, type WriteStream } from "node:fs";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -66,6 +66,19 @@ async function retried<T>(step: () => Promise<T>): Promise<T> {
   }
 }
 
+/**
+ * Builds the dashboard and copies the build to `target`, which the Worker then serves instead of
+ * apps/dashboard/dist. Any other build of the dashboard in this checkout while `wrangler dev` runs
+ * (another `wrangler dev` starting, `wrangler deploy`, `npm run build -w @penguin/dashboard`)
+ * deletes and rewrites dist. Every ASSETS fetch of that `wrangler dev` then answers 500 with an
+ * empty body (issue #74, docs/walkthrough.md). Nothing else writes the copy.
+ */
+async function snapshotDashboard(repoRoot: string, target: string): Promise<string> {
+  await run("npm", ["run", "build", "-w", "@penguin/dashboard"], { cwd: repoRoot });
+  await cp(join(repoRoot, "apps", "dashboard", "dist"), target, { recursive: true });
+  return target;
+}
+
 /** An Ed25519 private JWK, the form PENGUIN_OP_SIGNING_KEY takes. */
 async function signingKey(): Promise<string> {
   const pair = (await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"])) as CryptoKeyPair;
@@ -115,6 +128,7 @@ export class LocalStack {
   /** Starts the double and `wrangler dev`, and resolves once the Worker answers /health. */
   static async start(options: StackOptions): Promise<LocalStack> {
     const tempDir = await mkdtemp(join(tmpdir(), "penguin-walkthrough-"));
+    const assets = await snapshotDashboard(options.repoRoot, join(tempDir, "assets"));
     const double = await startGitHubDouble(options.login(options.owners[0] as string));
     const port = await freePort();
     const deployerToken = randomBytes(32).toString("base64url");
@@ -140,6 +154,7 @@ export class LocalStack {
       [
         "wrangler", "dev", "-c", "apps/worker/wrangler.jsonc", "--ip", "127.0.0.1", "--port", String(port),
         "--env-file", envFile, "--persist-to", join(tempDir, "state"), "--show-interactive-dev-session=false",
+        "--assets", assets,
       ],
       { cwd: options.repoRoot, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, CI: "1" }, detached: true },
     );
