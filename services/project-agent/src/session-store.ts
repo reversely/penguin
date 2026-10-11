@@ -14,6 +14,13 @@
 // running session's window ends; the ProjectAgent schedules it then, so a session that stops sending
 // heartbeats goes offline on connected dashboards without anyone reading. A SessionListener hears when
 // a session goes online or offline and when an issue's route changes, for the live feed.
+//
+// A fix task (a Huddle's fix sub-issue, PRD section 4, Layer 2) routes the same way but reaches the
+// session only at its next safe checkpoint, so it never lands in the middle of the session's other
+// work: until then it waits in PendingDelivery and `work` leaves it out. A checkpoint is the bridge's
+// hook before the agent's next tool action where the agent product has hooks, or an explicit bridge
+// checkpoint otherwise: see `checkpoint` and `checkpointWorktree`. Registering counts as a safe
+// checkpoint too, since a new session has nothing in progress.
 
 import type { Assignment } from "@penguin/issues";
 import { IDENTITY_HANDLE_MAX_LENGTH, SEGMENT_PATTERN } from "@penguin/protocol";
@@ -42,7 +49,7 @@ export interface Session {
   readonly worktreeId: string;
   readonly branch: string;
   readonly status: SessionStatus;
-  /** The issue the session is working on. Set once fix delivery (#39) tracks it; null until then. */
+  /** The fix task most recently delivered to the session at a checkpoint, or null. */
   readonly currentIssueId: string | null;
   /** When the session last registered or sent a heartbeat, as an ISO 8601 time. */
   readonly lastSeen: string;
@@ -70,6 +77,15 @@ export type SessionOutcome = { readonly status: "ok"; readonly session: Session 
 
 /** The issues routed to a session. Only accepted assignments are routed. */
 export type SessionWork = { readonly status: "ok"; readonly issueIds: string[] } | SessionRejection;
+
+/** One session's safe checkpoint: the fix tasks it delivered, in the order they routed. */
+export interface Delivery {
+  readonly sessionId: string;
+  readonly handle: string;
+  readonly delivered: string[];
+}
+
+export type CheckpointDelivery = ({ readonly status: "ok" } & Delivery) | SessionRejection;
 
 export type AcceptOutcome =
   | {
@@ -132,6 +148,11 @@ export interface SessionStoreOptions {
   /** The inbox (inbox-store.ts), which turns each request to start a session into an inbox item. */
   readonly startRequests?: StartRequestListener;
   readonly listener?: SessionListener;
+  /**
+   * True for an issue that reaches its session only at the session's next safe checkpoint: a
+   * Huddle's fix sub-issue. Every other issue reaches the session as soon as it routes.
+   */
+  readonly deliverAtCheckpoint?: (issueId: string) => boolean;
 }
 
 /** The routing tables. They hold live state only: a rebuild from the issues repo never routes. */
@@ -150,6 +171,10 @@ export const SESSION_SCHEMA: readonly string[] = [
     kind TEXT NOT NULL, owner_id TEXT NOT NULL, identity_id TEXT NOT NULL, issue_id TEXT NOT NULL,
     created_at INTEGER NOT NULL, PRIMARY KEY (kind, issue_id, identity_id, owner_id))`,
   `CREATE INDEX IF NOT EXISTS OwnerRequest_owner ON OwnerRequest (owner_id, created_at)`,
+  // A fix task routed to a session and waiting for the session's next safe checkpoint.
+  `CREATE TABLE IF NOT EXISTS PendingDelivery (
+    session_id TEXT NOT NULL, issue_id TEXT NOT NULL, routed_at INTEGER NOT NULL,
+    PRIMARY KEY (session_id, issue_id))`,
 ];
 
 const VENDOR = new RegExp(`^${SEGMENT_PATTERN}$`, "u");
@@ -169,6 +194,7 @@ export class SessionStore implements AssignmentListener {
   readonly #assigningOwner: (issueId: string, handle: string) => string | undefined;
   readonly #startRequests: StartRequestListener | undefined;
   readonly #listener: SessionListener | undefined;
+  readonly #deliverAtCheckpoint: (issueId: string) => boolean;
 
   /** Create after the IssueIndex on the same handle: routing reads and writes its Assignment table. */
   constructor(db: SqlDatabase, identities: IdentityStore, options: SessionStoreOptions = {}) {
@@ -180,6 +206,7 @@ export class SessionStore implements AssignmentListener {
     this.#assigningOwner = options.assigningOwner ?? (() => undefined);
     this.#startRequests = options.startRequests;
     this.#listener = options.listener;
+    this.#deliverAtCheckpoint = options.deliverAtCheckpoint ?? (() => false);
     for (const statement of SESSION_SCHEMA) db.exec(statement);
   }
 
@@ -214,7 +241,8 @@ export class SessionStore implements AssignmentListener {
         this.#now(),
       );
       this.#listener?.sessionChanged(identity.handle);
-      this.#routeIdentity(identity);
+      // A new session has nothing in progress, so its fix tasks need no later checkpoint.
+      this.#routeIdentity(identity, id);
       return { status: "ok", session: this.#session(id) as Session };
     });
   }
@@ -284,15 +312,59 @@ export class SessionStore implements AssignmentListener {
     });
   }
 
-  /** The issues routed to a running session, for the owner of its identity. */
+  /**
+   * The issues routed to a running session, for the owner of its identity. A fix task waiting for
+   * the session's next safe checkpoint is left out.
+   */
   work(caller: string, sessionId: string): SessionWork {
     return this.#db.transaction(() => {
       this.#expire();
       const found = this.#ownSession(caller, sessionId, "read the work of");
       if (found.status === "rejected") return found;
       if (found.session.status === "offline") return offline(sessionId);
-      const rows = this.#db.exec(`SELECT issue_id FROM Assignment WHERE session_id = ? ORDER BY rowid`, sessionId);
+      const rows = this.#db.exec(
+        `SELECT a.issue_id FROM Assignment a WHERE a.session_id = ? AND NOT EXISTS (
+           SELECT 1 FROM PendingDelivery p WHERE p.session_id = a.session_id AND p.issue_id = a.issue_id)
+         ORDER BY a.rowid`,
+        sessionId,
+      );
       return { status: "ok", issueIds: rows.map((row) => row["issue_id"] as string) };
+    });
+  }
+
+  /**
+   * A safe checkpoint of a running session, reported by `caller`, the owner of its identity: the fix
+   * tasks waiting for it are delivered, so `work` lists them from now on. Counts as a heartbeat.
+   */
+  checkpoint(caller: string, sessionId: string): CheckpointDelivery {
+    return this.#db.transaction((): CheckpointDelivery => {
+      this.#expire();
+      const found = this.#ownSession(caller, sessionId, "report a checkpoint of");
+      if (found.status === "rejected") return found;
+      if (found.session.status === "offline") return offline(sessionId);
+      return { status: "ok", ...this.#deliver(found.session) };
+    });
+  }
+
+  /**
+   * A safe checkpoint of every running session in the worktree `worktreeId` whose identity `caller`
+   * owns: the bridge's hook before an agent's next tool action, or an explicit bridge checkpoint. The
+   * bridge knows the worktree but not which session runs in it. Each session's checkpoint counts as
+   * its heartbeat. Sessions of other owners in a worktree with the same id are left alone.
+   */
+  checkpointWorktree(caller: string, worktreeId: string): Delivery[] {
+    return this.#db.transaction(() => {
+      this.#expire();
+      if (typeof worktreeId !== "string") return [];
+      return this.#db
+        .exec(
+          `SELECT id FROM Session WHERE worktree_id = ? AND status = 'running' ORDER BY last_seen DESC, rowid DESC`,
+          worktreeId,
+        )
+        .flatMap((row) => {
+          const found = this.#ownSession(caller, row["id"] as string, "report a checkpoint of");
+          return found.status === "ok" ? [this.#deliver(found.session)] : [];
+        });
     });
   }
 
@@ -381,6 +453,16 @@ export class SessionStore implements AssignmentListener {
       if (identity === undefined) continue;
       this.#db.exec(`DELETE FROM AssignmentAcceptance WHERE issue_id = ? AND identity_id = ?`, issueId, identity.id);
       this.#dropRequests(issueId, identity.id);
+      this.#db.exec(
+        `DELETE FROM PendingDelivery WHERE issue_id = ? AND session_id IN (SELECT id FROM Session WHERE identity_id = ?)`,
+        issueId,
+        identity.id,
+      );
+      this.#db.exec(
+        `UPDATE Session SET current_issue_id = NULL WHERE current_issue_id = ? AND identity_id = ?`,
+        issueId,
+        identity.id,
+      );
     }
     for (const assignment of added) {
       const identity = this.#identityOf(assignment);
@@ -388,11 +470,31 @@ export class SessionStore implements AssignmentListener {
     }
   }
 
+  /** Delivers a running session's waiting fix tasks and records its heartbeat. */
+  #deliver(session: Session): Delivery {
+    const now = this.#now();
+    const delivered = this.#db
+      .exec(`DELETE FROM PendingDelivery WHERE session_id = ? RETURNING issue_id, routed_at`, session.id)
+      // RETURNING follows no order; routing order, then issue number, is the order the tasks arrived in.
+      .sort((a, b) => Number(a["routed_at"]) - Number(b["routed_at"]) || Number(a["issue_id"]) - Number(b["issue_id"]))
+      .map((row) => row["issue_id"] as string);
+    const latest = delivered.at(-1);
+    this.#db.exec(
+      `UPDATE Session SET last_seen = ?, current_issue_id = COALESCE(?, current_issue_id) WHERE id = ?`,
+      now,
+      latest ?? null,
+      session.id,
+    );
+    for (const issueId of delivered) this.#listener?.routeChanged(issueId);
+    return { sessionId: session.id, handle: session.handle, delivered };
+  }
+
   /**
    * Routes one assignment and returns the session it went to. It waits for the owner's acceptance
-   * when the identity does not accept automatically, and for a session when none is running.
+   * when the identity does not accept automatically, and for a session when none is running. A fix
+   * task routed to any session but `deliveredTo` waits for that session's next safe checkpoint.
    */
-  #route(issueId: string, identity: Identity): string | null {
+  #route(issueId: string, identity: Identity, deliveredTo?: string): string | null {
     if (!identity.autoAccept && !this.#accepted(issueId, identity.id)) {
       this.#request("accept", issueId, identity);
       return null;
@@ -412,18 +514,26 @@ export class SessionStore implements AssignmentListener {
     );
     if (sessionId === null) this.#request("start", issueId, identity);
     else this.#dropRequests(issueId, identity.id, "start");
+    if (sessionId !== null && sessionId !== deliveredTo && this.#deliverAtCheckpoint(issueId)) {
+      this.#db.exec(
+        `INSERT OR IGNORE INTO PendingDelivery (session_id, issue_id, routed_at) VALUES (?, ?, ?)`,
+        sessionId,
+        issueId,
+        this.#now(),
+      );
+    }
     this.#listener?.routeChanged(issueId);
     return sessionId;
   }
 
   /** Routes every assignment of the identity that no session holds. */
-  #routeIdentity(identity: Identity): void {
+  #routeIdentity(identity: Identity, deliveredTo?: string): void {
     const rows = this.#db.exec(
       `SELECT issue_id FROM Assignment
        WHERE assignee_kind = 'identity' AND assignee_id = ? AND session_id IS NULL ORDER BY rowid`,
       identity.handle,
     );
-    for (const row of rows) this.#route(row["issue_id"] as string, identity);
+    for (const row of rows) this.#route(row["issue_id"] as string, identity, deliveredTo);
   }
 
   /**
@@ -438,6 +548,8 @@ export class SessionStore implements AssignmentListener {
     if (expired.length === 0) return;
     const identities = new Set<string>();
     for (const row of expired) {
+      // A fix task the session never received waits for the next session's checkpoint instead.
+      this.#db.exec(`DELETE FROM PendingDelivery WHERE session_id = ?`, row["id"] as string);
       const unrouted = this.#db.exec(
         `UPDATE Assignment SET session_id = NULL WHERE session_id = ? RETURNING issue_id`,
         row["id"] as string,

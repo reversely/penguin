@@ -69,6 +69,8 @@ class Project {
       sessionHeartbeat: (caller, id) => this.sessions.heartbeat(caller, id),
       sessionWork: (caller, id) => this.sessions.work(caller, id),
       readIdentity: (id) => this.identities.get(id),
+      // No Huddle is open here; tests/integration/fix-delivery.test.ts covers fix tasks.
+      readFixTask: () => undefined,
       // As the ProjectAgent wires them: a temporary ID resolves to the issue's number.
       issueRoutes: (id) => this.sessions.routes(this.index.resolve(id)),
       readIssue: (id) => this.index.read(id),
@@ -319,6 +321,7 @@ describe("MCP: get_work and get_issue", () => {
         state: "open",
         labels: ["scope:analytics"],
         version: 9,
+        huddleIssueId: null,
         pinnedBase: null,
         allowedScopes: ["analytics"],
         allowedPaths: ["analytics/retention.py"],
@@ -645,6 +648,7 @@ describe("MCP: report_checkpoint", () => {
       ownerId: "jun",
       latestCheckpointSha: CHECKPOINT,
       reportedAt: new Date(START).toISOString(),
+      newWork: [],
     });
     assert.deepEqual(project.commitReads, [[`${PREFIX}owner-jun`, CHECKPOINT]]);
     assert.deepEqual(project.forks.get("jun"), {

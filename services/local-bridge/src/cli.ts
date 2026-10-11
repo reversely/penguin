@@ -3,16 +3,22 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
-import { runGit } from "@penguin/git-analysis";
-
 import { CheckpointPublisher, type ConsentScope } from "./checkpoint.ts";
 import { bridgeReporter } from "./checkpoint-report.ts";
 import { isPenguinRemote, penguinRemote } from "./git-remote.ts";
 import { ISSUE_USAGE, runIssueCommand, runKeyCommand } from "./issue-cli.ts";
 import { KeychainStore, type KeyStore } from "./key-store.ts";
 import { bridgeRemotes, registerBridge, type Fetch } from "./penguin-client.ts";
-import { WorktreeRegistry, worktreeId } from "./registry.ts";
+import { WorktreeRegistry } from "./registry.ts";
 import { RUNNER_USAGE, runRunnerCommand } from "./runner-cli.ts";
+import {
+  afterPublish,
+  LOCAL_BRIDGE_ID,
+  runSessionCheckpointCommand,
+  runWorktreeIdCommand,
+  SESSION_CHECKPOINT_USAGE,
+  worktreeAt,
+} from "./session-checkpoint.ts";
 import { bridgeSpool, defaultStateDir, runSpoolCommand, SPOOL_USAGE } from "./spool-cli.ts";
 
 export interface CliIo {
@@ -54,8 +60,10 @@ export async function runCli(argv: readonly string[], io: CliIo, deps: CliDepend
   if (command === "key") return runKeyCommand(rest, io, keyStore);
   if (command === "spool") return runSpoolCommand(rest, io, stateDir, remotesFor, reporterFor);
   if (command === "runner") return runRunnerCommand(rest, io, keyStore, stateDir, deps.fetch);
+  if (command === "session-checkpoint") return runSessionCheckpointCommand(rest, io, keyStore, stateDir, deps.fetch);
+  if (command === "worktree-id") return runWorktreeIdCommand(rest, io);
   if (command !== "checkpoint") {
-    io.write(USAGE + ISSUE_USAGE + SPOOL_USAGE + RUNNER_USAGE);
+    io.write(USAGE + ISSUE_USAGE + SPOOL_USAGE + RUNNER_USAGE + SESSION_CHECKPOINT_USAGE);
     return 2;
   }
   const { values } = parseArgs({
@@ -84,8 +92,8 @@ export async function runCli(argv: readonly string[], io: CliIo, deps: CliDepend
   const checkpointStateDir = values["state-dir"] ?? stateDir;
 
   // The bridge ID only salts path hashes; a one-shot command needs no persistent one.
-  const bridgeId = "local";
-  const worktree = (await runGit(resolve(values.worktree), ["rev-parse", "--show-toplevel"])).trim();
+  const bridgeId = LOCAL_BRIDGE_ID;
+  const { root: worktree, id } = await worktreeAt(values.worktree);
   const registry = new WorktreeRegistry({ repoPath: worktree, bridgeId, ownerId: values.owner });
   await registry.refresh();
 
@@ -106,12 +114,16 @@ export async function runCli(argv: readonly string[], io: CliIo, deps: CliDepend
     confirm: async () => /^y(es)?$/i.test((await io.ask("Publish this checkpoint? [y/N] ")).trim()),
   });
   const started = performance.now();
-  const result = await publisher.publish(worktreeId(bridgeId, worktree), {
+  const result = await publisher.publish(id, {
     remote: values.remote,
     identity: values.identity,
   });
   if (result.status === "up-to-date") io.write(`The fork already has checkpoint ${result.checkpoint_sha}.\n`);
   if (result.status === "published") io.write(`Publish took ${Math.round(performance.now() - started)} ms.\n`);
+  // A published checkpoint is an explicit safe checkpoint for the sessions in this worktree.
+  if (result.status === "published" && isPenguinRemote(fork)) {
+    io.write(await afterPublish(checkpointStateDir, keyStore, id, deps.fetch));
+  }
   // A queued checkpoint has the owner's consent and waits only for the fork to be reachable.
   return result.status === "refused" ? 1 : 0;
 }

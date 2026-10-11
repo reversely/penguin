@@ -34,6 +34,11 @@ export interface OwnerFork {
 
 export type CheckpointOutcome = { readonly status: "ok"; readonly fork: OwnerFork } | SessionRejection;
 
+/** A checkpoint a session reported, with the fix tasks it delivered to that session. */
+export type SessionCheckpointOutcome =
+  | { readonly status: "ok"; readonly fork: OwnerFork; readonly delivered: readonly string[] }
+  | SessionRejection;
+
 export class OwnerForkStore {
   readonly #db: SqlDatabase;
   readonly #now: () => number;
@@ -74,13 +79,14 @@ export interface CheckpointRecordDeps {
 }
 
 export interface CheckpointDeps extends CheckpointRecordDeps {
-  readonly sessions: Pick<SessionStore, "heartbeat">;
+  readonly sessions: Pick<SessionStore, "heartbeat" | "checkpoint">;
 }
 
 /**
  * Records a checkpoint `caller` reports from session `sessionId`. `artifactsRepo` is the caller's own
  * fork, named by the Worker from the authenticated owner, never from the report. The call counts as
- * the session's heartbeat.
+ * the session's heartbeat. A recorded checkpoint is an explicit safe checkpoint of the session, so
+ * the fix tasks waiting for it are delivered.
  */
 export async function reportCheckpoint(
   deps: CheckpointDeps,
@@ -88,10 +94,14 @@ export async function reportCheckpoint(
   sessionId: string,
   sha: string,
   artifactsRepo: string,
-): Promise<CheckpointOutcome> {
+): Promise<SessionCheckpointOutcome> {
   const live = deps.sessions.heartbeat(caller, sessionId);
   if (live.status === "rejected") return live;
-  return recordReportedCheckpoint(deps, caller, sha, artifactsRepo, sessionId);
+  const recorded = await recordReportedCheckpoint(deps, caller, sha, artifactsRepo, sessionId);
+  if (recorded.status === "rejected") return recorded;
+  // The session can have gone offline while the commit was looked up; it then receives nothing.
+  const delivery = deps.sessions.checkpoint(caller, sessionId);
+  return { ...recorded, delivered: delivery.status === "ok" ? delivery.delivered : [] };
 }
 
 /**

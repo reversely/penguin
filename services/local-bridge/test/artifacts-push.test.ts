@@ -21,6 +21,7 @@ import {
   runCli,
   tokenEnvironment,
   TokenClient,
+  worktreeAt,
   type Fetch,
 } from "@penguin/local-bridge";
 
@@ -175,12 +176,18 @@ describe("pushing to Artifacts", () => {
         await repo.git(repo.main, "config", key!, value!);
       }
       await repo.write(repo.worktreeA, "a.txt", "checkpointed edit\n");
+      const { id } = await worktreeAt(repo.worktreeA);
+      penguin.deliveries = (worktreeId) =>
+        worktreeId === id ? [{ sessionId: "ses_1", identity: "@jun/reports", delivered: ["2"] }] : [];
       const code = await cli(
         ["checkpoint", "--owner", OWNER, "--project", "p", "--worktree", repo.worktreeA],
         "y",
       );
       assert.equal(code, 0, output.join(""));
       assert.match(output.join(""), /^Published [0-9a-f]{40} to refs\/heads\/feature-a\.$/m);
+      // The publish is an explicit safe checkpoint for the sessions in the worktree.
+      assert.deepEqual(penguin.sessionCheckpoints, [id]);
+      assert.match(output.join(""), /^Penguin delivered fix task #2 to @jun\/reports \(session ses_1\)\.$/m);
       const fork = penguin.repoPath(`owner-${OWNER}`);
       assert.equal(await runGit(fork, ["show", "refs/heads/feature-a:a.txt"]), "checkpointed edit\n");
       // Penguin records the pushed checkpoint as the fork's latest, with no agent session.
@@ -336,5 +343,70 @@ describe("the token client", () => {
     assert.equal(env.GIT_ASKPASS, "");
     assert.ok(isAuthFailure(new Error("fatal: could not read Username for 'https://x': terminal prompts disabled")));
     assert.ok(!isAuthFailure(new Error("fatal: unable to access 'https://x/': Could not resolve host: x")));
+  });
+});
+
+describe("safe checkpoints for agent sessions", () => {
+  let repo: Awaited<ReturnType<typeof createFixtureRepo>>;
+
+  beforeEach(async () => {
+    repo = await createFixtureRepo();
+  });
+
+  afterEach(() => repo.cleanup());
+
+  /** Registers the bridge and forgets what registering printed. */
+  async function registered(): Promise<void> {
+    assert.equal(await register(), 0);
+    output.length = 0;
+  }
+
+  test("worktree-id prints the id a session in the worktree registers with", async () => {
+    assert.equal(await cli(["worktree-id", "--worktree", repo.worktreeB]), 0);
+    const { id } = await worktreeAt(repo.worktreeB);
+    assert.match(id, /^wt_[0-9a-f]{16}$/u);
+    assert.deepEqual(output, [`${id}\n`]);
+  });
+
+  test("as a PreToolUse hook it tells the agent about delivered fix tasks, and nothing otherwise", async () => {
+    await registered();
+    const { id } = await worktreeAt(repo.worktreeA);
+    let delivered: string[] = [];
+    penguin.deliveries = () => [{ sessionId: "ses_1", identity: "@jun/reports", delivered }];
+    const hook = ["session-checkpoint", "--hook", "--worktree", repo.worktreeA];
+
+    assert.equal(await cli(hook), 0);
+    assert.deepEqual(output, []);
+
+    delivered = ["2", "3"];
+    assert.equal(await cli(hook), 0);
+    assert.deepEqual(penguin.sessionCheckpoints, [id, id]);
+    const answer = JSON.parse(output.join(""));
+    assert.equal(answer.hookSpecificOutput.hookEventName, "PreToolUse");
+    assert.match(
+      answer.hookSpecificOutput.additionalContext,
+      /^Penguin delivered fix tasks #2, #3 to @jun\/reports \(session ses_1\)\. .*get_work/u,
+    );
+    await assertNoSecretLeaked();
+  });
+
+  test("an unreachable Penguin never stops the agent's tool call, and the command says why", async () => {
+    await registered();
+    offline = "all";
+    assert.equal(await cli(["session-checkpoint", "--hook", "--worktree", repo.worktreeA]), 0);
+    assert.deepEqual(output, []);
+    assert.equal(await cli(["session-checkpoint", "--worktree", repo.worktreeA]), 1);
+    assert.match(output.join(""), /^Penguin did not take the safe checkpoint: Penguin at .* is unreachable/u);
+  });
+
+  test("by hand it names the delivered tasks, or says no session runs in the worktree", async () => {
+    await registered();
+    const { id } = await worktreeAt(repo.worktreeA);
+    assert.equal(await cli(["session-checkpoint", "--worktree", repo.worktreeA]), 0);
+    assert.deepEqual(output, [`No running session of yours is registered with worktree id ${id}.\n`]);
+    output.length = 0;
+    penguin.deliveries = () => [{ sessionId: "ses_1", identity: "@jun/reports", delivered: ["4"] }];
+    assert.equal(await cli(["session-checkpoint", "--worktree", repo.worktreeA]), 0);
+    assert.deepEqual(output, ["Penguin delivered fix task #4 to @jun/reports (session ses_1).\n"]);
   });
 });

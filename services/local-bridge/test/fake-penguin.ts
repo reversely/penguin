@@ -39,6 +39,10 @@ export class FakePenguin {
   pendingOperations: ((caller: { bridgeId: string; role: string }) => unknown) | undefined;
   /** Every checkpoint report recorded through POST /checkpoints, in order. */
   readonly checkpoints: { fork: string; sha: string }[] = [];
+  /** Every worktree id sent to POST /sessions/checkpoint, in order. */
+  readonly sessionCheckpoints: string[] = [];
+  /** What POST /sessions/checkpoint answers for a worktree id: each session and the fix tasks it received. */
+  deliveries: (worktreeId: string) => { sessionId: string; identity: string; delivered: string[] }[] = () => [];
   #codeUsed = false;
   readonly #valid = new Map<string, { repo: string; expires: number }>();
   #server: Server | undefined;
@@ -80,6 +84,7 @@ export class FakePenguin {
     if (request.method === "POST" && url.pathname === "/tokens") return this.#token(request, response);
     if (request.method === "GET" && url.pathname === "/operations/pending") return this.#pending(request, response);
     if (request.method === "POST" && url.pathname === "/checkpoints") return this.#checkpoint(request, response);
+    if (request.method === "POST" && url.pathname === "/sessions/checkpoint") return this.#sessionCheckpoint(request, response);
     const git = /^\/git\/penguin\/([A-Za-z0-9._-]+)\.git(\/.*)$/.exec(url.pathname);
     if (git) return this.#git(request, response, git[1]!, git[2]!, url);
     response.writeHead(404).end();
@@ -133,6 +138,14 @@ export class FakePenguin {
     if (!found) return json(response, 422, { error: "not_found", message: `commit ${sha} is not in ${fork}` });
     this.checkpoints.push({ fork, sha });
     json(response, 200, { fork, ownerId: this.owner, latestCheckpointSha: sha, reportedAt: new Date().toISOString() });
+  }
+
+  /** Mirrors the Worker's route: the owner comes from the bridge token; the body names only the worktree. */
+  async #sessionCheckpoint(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    if (request.headers.authorization !== `Bearer ${this.bridgeToken}`) return json(response, 401, { error: "unauthorized" });
+    const { worktreeId } = JSON.parse(await readBody(request)) as { worktreeId: string };
+    this.sessionCheckpoints.push(worktreeId);
+    json(response, 200, { worktreeId, sessions: this.deliveries(worktreeId) });
   }
 
   async #git(request: IncomingMessage, response: ServerResponse, repo: string, rest: string, url: URL): Promise<void> {

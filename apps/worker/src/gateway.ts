@@ -13,7 +13,7 @@
  * tables and returns their comparison with the live tables.
  *
  * The bridge routes (/bridges, /bridges/codes, /bridges/<id>, /tokens, /operations/pending,
- * /checkpoints and /combined-runs) carry their own credentials; see bridges.ts. So do the MCP routes
+ * /checkpoints, /combined-runs and /sessions/checkpoint) carry their own credentials; see bridges.ts. So do the MCP routes
  * (/mcp, /mcp/tokens and /mcp/tokens/<id>); see mcp.ts. /mcp requires an MCP token in local development too.
  *
  * The dashboard's pages, its GitHub sign-in (/auth/*) and its API (/api/*, session cookie) are in

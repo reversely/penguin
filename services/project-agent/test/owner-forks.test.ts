@@ -9,7 +9,7 @@ const START = Date.parse("2026-10-10T12:00:00Z");
 const FIRST = "4c1d9e0a7b3f2e8d6c5b4a3928170f6e5d4c3b2a"; // pragma: allowlist secret
 const SECOND = "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c"; // pragma: allowlist secret
 
-/** A session store that knows one running session of Jun's. */
+/** A session store that knows one running session of Jun's, which has fix task #32 waiting. */
 const sessions: CheckpointDeps["sessions"] = {
   heartbeat: (caller, sessionId): SessionOutcome =>
     caller === "jun" && sessionId === "ses_1"
@@ -27,6 +27,10 @@ const sessions: CheckpointDeps["sessions"] = {
             lastSeen: new Date(START).toISOString(),
           },
         }
+      : { status: "rejected", reason: "forbidden", message: `${caller} does not own ${sessionId}` },
+  checkpoint: (caller, sessionId) =>
+    caller === "jun" && sessionId === "ses_1"
+      ? { status: "ok", sessionId, handle: "@jun/reports", delivered: ["32"] }
       : { status: "rejected", reason: "forbidden", message: `${caller} does not own ${sessionId}` },
 };
 
@@ -61,6 +65,8 @@ describe("OwnerFork checkpoints", () => {
         reportedBySession: "ses_1",
         reportedAt: new Date(START + 5_000).toISOString(),
       },
+      // A recorded checkpoint is the session's safe checkpoint, so its waiting fix task is delivered.
+      delivered: ["32"],
     });
   });
 

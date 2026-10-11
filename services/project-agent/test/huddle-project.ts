@@ -64,6 +64,8 @@ export class HuddleProject {
   readonly huddles: HuddleStore;
   /** Commits in each owner's fork, by owner id, as the Artifacts binding's readCommit would find them. */
   readonly published = new Map<string, Set<string>>();
+  /** The sessions' clock in epoch milliseconds; the real clock while undefined. */
+  clock: number | undefined;
 
   constructor(options: { readonly seedIdentities?: boolean } = {}) {
     let nextIdentity = 0;
@@ -81,8 +83,10 @@ export class HuddleProject {
     });
     sessions = new SessionStore(this.sql, this.identities, {
       newId: () => `session-${++nextSession}`,
+      now: () => this.clock ?? Date.now(),
       assigningOwner: (issueId, handle) => index.assigningOwner(issueId, handle),
       startRequests: inbox,
+      deliverAtCheckpoint: (issueId) => this.huddles.isFix(issueId),
     });
     [this.index, this.sessions, this.inbox] = [index, sessions, inbox];
     this.forks = new OwnerForkStore(this.sql);

@@ -5,6 +5,7 @@ export {
   createPenguinMcpServer,
   type CharterView,
   type CheckpointResult,
+  type FixTaskView,
   type McpProject,
   type McpRepos,
   type OperationView,

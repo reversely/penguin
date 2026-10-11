@@ -88,6 +88,15 @@ export type {
   PublishResult,
 } from "./checkpoint.ts";
 export { runCli } from "./cli.ts";
+export {
+  formatDeliveries,
+  hookAnswer,
+  LOCAL_BRIDGE_ID,
+  sendSessionCheckpoint,
+  SESSION_CHECKPOINT_ROUTE,
+  worktreeAt,
+} from "./session-checkpoint.ts";
+export type { SessionDelivery } from "./session-checkpoint.ts";
 export { bridgeTagFor } from "./issue-cli.ts";
 export type { CliDependencies, CliIo } from "./cli.ts";
 export { IssueWriter } from "./issue-writer.ts";

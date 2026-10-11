@@ -28,10 +28,12 @@ import {
   type CheckpointOutcome,
   type CheckpointRecordDeps,
   type OwnerFork,
+  type SessionCheckpointOutcome,
 } from "./owner-forks.ts";
 import { postSessionUpdate, type SessionUpdate, type SessionUpdateOutcome } from "./session-updates.ts";
 import { openHuddle, type HuddleOpenOutcome } from "./huddle-open.ts";
 import { HuddleStore, type Huddle } from "./huddle-store.ts";
+import { fixTask, type FixTask } from "./fix-task.ts";
 import { IngestLedger, ingestPush, type IngestReport } from "./push-ingest.ts";
 import { rebuildIndex, type RebuildReport } from "./rebuild.ts";
 import { parseScopeFile, SCOPE_MAP_PATH } from "./scope-file.ts";
@@ -50,6 +52,7 @@ import {
   SessionStore,
   type AcceptOutcome,
   type AssignmentRoute,
+  type Delivery,
   type OwnerRequest,
   type Session,
   type SessionInput,
@@ -128,6 +131,7 @@ export {
   type CheckpointOutcome,
   type CheckpointRecordDeps,
   type OwnerFork,
+  type SessionCheckpointOutcome,
 } from "./owner-forks.ts";
 export {
   postSessionUpdate,
@@ -150,6 +154,7 @@ export {
   type HuddleOpenOutcome,
 } from "./huddle-open.ts";
 export { HuddleStore, ownerCommit, type Huddle, type HuddleStatus } from "./huddle-store.ts";
+export { fixTask, type FailingTest, type FixTask } from "./fix-task.ts";
 export {
   INBOX_REASONS,
   InboxStore,
@@ -166,6 +171,8 @@ export {
   SessionStore,
   type AcceptOutcome,
   type AssignmentRoute,
+  type CheckpointDelivery,
+  type Delivery,
   type OwnerRequest,
   type OwnerRequestKind,
   type Session,
@@ -544,9 +551,28 @@ export class ProjectAgent extends Agent {
     return this.#sessionStore().get(sessionId);
   }
 
-  /** The issues routed to a running session: assigned to its identity and accepted by the owner. */
+  /**
+   * The issues routed to a running session: assigned to its identity and accepted by the owner. A fix
+   * task appears from the session's next safe checkpoint on.
+   */
   sessionWork(caller: string, sessionId: string): SessionWork {
     return this.#sessionStore().work(caller, sessionId);
+  }
+
+  /** The task view of a fix sub-issue for `get_work`: pinned base, failing test, acceptance criteria. */
+  readFixTask(issueId: string): FixTask | undefined {
+    return fixTask(this.#huddleStore(), this.#index().resolve(issueId));
+  }
+
+  /**
+   * A safe checkpoint in the worktree `worktreeId`, reported by `owner`'s bridge (the bridge's
+   * session checkpoint route): the bridge's hook before an agent's next tool action, or an explicit
+   * bridge checkpoint. Delivers the waiting fix tasks of each of the owner's running sessions there.
+   */
+  sessionCheckpoint(owner: string, worktreeId: string): Delivery[] {
+    const deliveries = this.#sessionStore().checkpointWorktree(owner, worktreeId);
+    if (deliveries.length > 0) this.#armSweep({ status: "ok" });
+    return deliveries;
   }
 
   /** The owner accepts an identity's assignment to an issue, which then routes to a running session. */
@@ -616,8 +642,9 @@ export class ProjectAgent extends Agent {
    * Records a checkpoint the caller's bridge published (MCP `report_checkpoint`) as the latest
    * checkpoint of the caller's fork, once `readCommit` finds the commit in that fork. `fork` is the
    * Artifacts repo name of the caller's fork, which the Worker derives from the authenticated owner.
+   * A recorded checkpoint is the session's safe checkpoint: its waiting fix tasks are delivered.
    */
-  reportCheckpoint(caller: string, sessionId: string, sha: string, fork: string): Promise<CheckpointOutcome> {
+  reportCheckpoint(caller: string, sessionId: string, sha: string, fork: string): Promise<SessionCheckpointOutcome> {
     return reportCheckpoint({ sessions: this.#sessionStore(), ...this.#checkpointDeps() }, caller, sessionId, sha, fork);
   }
 
@@ -818,6 +845,8 @@ export class ProjectAgent extends Agent {
         offlineAfterMs: Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : SESSION_OFFLINE_AFTER_MS,
         assigningOwner: (issueId, handle) => index.assigningOwner(issueId, handle),
         startRequests: this.#inboxStore(),
+        // A Huddle's fix sub-issue reaches its session at the session's next safe checkpoint.
+        deliverAtCheckpoint: (issueId) => this.#huddleStore().isFix(issueId),
         listener: {
           sessionChanged: (handle) => this.#liveFeed().sessionChanged(handle),
           routeChanged: (issueId) => this.#liveFeed().issueChanged(issueId),

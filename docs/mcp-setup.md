@@ -118,6 +118,53 @@ the board in its owner's lane under the identity, with its vendor and branch.
 Penguin refuses `register_session` for an identity the token's owner does not own. The refusal reads
 `forbidden` and names the identity's owner.
 
+## Fix tasks and safe checkpoints
+
+When combined tests fail, Penguin opens a Huddle issue with one fix sub-issue per failing test. Each
+fix sub-issue routes to a running session of its assigned identity. The session reads it through
+`get_work` only from its next safe checkpoint on, so the task never arrives in the middle of a step.
+Until then `get_work` leaves the task out. Its result for a fix task carries the pinned base (the
+trigger checkpoint, its baseline and the owner checkpoint it was merged with), the failing test with
+its fingerprint and the acceptance criteria.
+
+A session reaches a safe checkpoint in any of these ways:
+
+| Checkpoint | Who sends it |
+|---|---|
+| Registering | The agent, through `register_session`. A new session has no step in progress |
+| Before the next tool action | The bridge's PreToolUse hook, `penguin-bridge session-checkpoint --hook` |
+| A published checkpoint | The agent, through `report_checkpoint`. Its answer lists the delivered tasks under `newWork` |
+| A checkpoint the bridge publishes | `penguin-bridge checkpoint`, after a successful publish |
+| By hand | The owner, with `penguin-bridge session-checkpoint` in the worktree |
+
+The bridge names a session by its worktree. Register the session with the id that
+`penguin-bridge worktree-id` prints in the session's worktree. The bridge must be registered for the
+same owner as the session's identity.
+
+Claude Code and Codex both run command hooks before each tool call. The hook runs in the session's
+working directory. It prints nothing unless a fix task arrived. When one did, it prints a
+`hookSpecificOutput.additionalContext` answer that tells the agent to call `get_work`. It exits 0
+even when Penguin is unreachable, so the tool call always goes ahead. For Claude Code, add the hook
+to the project's `.claude/settings.json`
+([Claude Code hooks](https://code.claude.com/docs/en/hooks)):
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      { "hooks": [{ "type": "command", "command": "penguin-bridge session-checkpoint --hook", "timeout": 10 }] }
+    ]
+  }
+}
+```
+
+For Codex, the same `PreToolUse` entry goes in `.codex/hooks.json` or `~/.codex/hooks.json`
+([Codex hooks](https://developers.openai.com/codex/hooks)).
+
+When no session of the assigned identity is running, the owner's inbox lists the task with a request
+to start one. The Huddle issue stays in Fixing. When a session goes offline before or during a fix,
+the sub-issue stays open and assigned. The next session of the identity receives it when it registers.
+
 ## Manual exit check with live sessions
 
 These steps run the Phase 3 exit check with a live Claude Code session and a live Codex session. They

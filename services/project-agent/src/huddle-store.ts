@@ -24,6 +24,7 @@ export const HUDDLE_SCHEMA: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS HuddleFix (
     trigger_commit TEXT NOT NULL, fix_key TEXT NOT NULL, issue_id TEXT NOT NULL,
     PRIMARY KEY (trigger_commit, fix_key))`,
+  `CREATE INDEX IF NOT EXISTS HuddleFix_issue ON HuddleFix (issue_id)`,
 ];
 
 /** `opening` until every operation of the opening is applied, then `open`. */
@@ -115,6 +116,21 @@ export class HuddleStore {
       fixKey,
     );
     return (row?.["issue_id"] as string | undefined) ?? undefined;
+  }
+
+  /** The Huddle and fix key a fix sub-issue was opened for, or undefined for any other issue. */
+  fixOf(issueId: string): { readonly huddle: Huddle; readonly fixKey: string } | undefined {
+    const [row] = this.#db.exec(
+      `SELECT h.*, f.fix_key FROM HuddleFix f JOIN Huddle h ON h.trigger_commit = f.trigger_commit
+       WHERE f.issue_id = ? LIMIT 1`,
+      issueId,
+    );
+    return row === undefined ? undefined : { huddle: huddle(row), fixKey: row["fix_key"] as string };
+  }
+
+  /** True when the issue is a fix sub-issue of a Huddle. */
+  isFix(issueId: string): boolean {
+    return this.#db.exec(`SELECT 1 FROM HuddleFix WHERE issue_id = ? LIMIT 1`, issueId).length > 0;
   }
 
   setFix(triggerCommit: string, fixKey: string, issueId: string): void {

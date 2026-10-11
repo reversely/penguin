@@ -5,12 +5,15 @@ import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 
 import { generateSigningKeyPair } from "@penguin/issues";
+import { parseScopeMap } from "@penguin/scope-map";
 // The registry module directly: the package entry point loads the Agents SDK, which needs workerd.
 import { BridgeRegistry } from "../../../services/project-agent/src/bridge-registry.ts";
 import type { Huddle } from "../../../services/project-agent/src/huddle-store.ts";
 import { IssueIndex } from "../../../services/project-agent/src/issue-index.ts";
 import type { SqlDatabase } from "../../../services/project-agent/src/issue-index.ts";
+import { IdentityStore } from "../../../services/project-agent/src/identity-store.ts";
 import { OwnerForkStore, recordReportedCheckpoint } from "../../../services/project-agent/src/owner-forks.ts";
+import { SessionStore } from "../../../services/project-agent/src/session-store.ts";
 
 import type { HuddleDirectory } from "../src/bridges.ts";
 import { type GatewayHandlers, handleRequest } from "../src/gateway.ts";
@@ -86,6 +89,9 @@ function gateway(artifacts = fakeArtifacts(PROJECT_REPOS)) {
   const registry = new BridgeRegistry(db);
   const issues = new IssueIndex(db);
   const forks = new OwnerForkStore(db);
+  const clock = { now: Date.parse("2026-10-11T12:00:00Z") };
+  const identities = new IdentityStore(db);
+  const sessions = new SessionStore(db, identities, { now: () => clock.now });
   /** The commits each fork holds, by prefixed repo name, as `readCommit` would find them. */
   const commits = new Map<string, Set<string>>();
   const commitExists = async (repo: string, sha: string) => commits.get(repo)?.has(sha) ?? false;
@@ -103,6 +109,7 @@ function gateway(artifacts = fakeArtifacts(PROJECT_REPOS)) {
       revokeBridge: (bridgeId) => registry.revoke(bridgeId),
       pendingOperations: (caller) => issues.pendingFiles(caller),
       reportBridgeCheckpoint: (owner, sha, fork) => recordReportedCheckpoint({ forks, commitExists }, owner, sha, fork, null),
+      sessionCheckpoint: (owner, worktreeId) => sessions.checkpointWorktree(owner, worktreeId),
     }),
     ownerForkRepo: (owner) => names.owner(owner),
     huddles: () => huddles,
@@ -122,7 +129,7 @@ function gateway(artifacts = fakeArtifacts(PROJECT_REPOS)) {
       options,
       handlers,
     );
-  return { artifacts, call, registry, db, forks, commits, huddles };
+  return { artifacts, call, registry, db, forks, commits, huddles, identities, sessions, clock };
 }
 
 /**
@@ -366,6 +373,48 @@ test("a bridge report records its owner's latest checkpoint with no agent sessio
   assert.equal((await report(DEPLOYER_TOKEN, { sha, fork: "owner-jun" })).status, 401);
   assert.equal((await call("/checkpoints", { method: "GET", token: jun.bridgeToken })).status, 405);
   assert.equal(forks.get("jun")?.latestCheckpointSha, sha);
+});
+
+test("a bridge's session checkpoint reaches only its owner's running sessions in that worktree", async () => {
+  const { call, identities, sessions, clock } = gateway();
+  const scopes = join(import.meta.dirname, "../../../examples/identity-unification/base/penguin/scopes.json");
+  const scopeMap = parseScopeMap(JSON.parse(readFileSync(scopes, "utf8")));
+  for (const [owner, handle, scope] of [
+    ["jun", "@jun/reports", "analytics"],
+    ["priya", "@priya/merge-rules", "identity-map"],
+  ] as const) {
+    const input = { handle, name: handle.slice(handle.indexOf("/") + 1), job: "Fix", charterScopes: [scope], autoAccept: true };
+    assert.equal(identities.create(owner, input, scopeMap).status, "ok");
+  }
+  const register = (owner: string, identity: string, worktreeId: string) => {
+    const outcome = sessions.register(owner, { identity, vendor: "claude-code", worktreeId, branch: "main" });
+    assert.ok(outcome.status === "ok");
+    return outcome.session.id;
+  };
+  const junHere = register("jun", "@jun/reports", "wt_0123456789abcdef");
+  register("jun", "@jun/reports", "wt_fedcba9876543210");
+  // Another owner's session that happens to use the same worktree id.
+  register("priya", "@priya/merge-rules", "wt_0123456789abcdef");
+  const jun = await registerBridge(call, "jun");
+  const checkpoint = (token: string | undefined, body: unknown, method = "POST") =>
+    call("/sessions/checkpoint", { method, ...(token ? { token } : {}), body });
+
+  clock.now += 30_000;
+  const response = await checkpoint(jun.bridgeToken, { worktreeId: "wt_0123456789abcdef", owner: "priya" });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    worktreeId: "wt_0123456789abcdef",
+    sessions: [{ sessionId: junHere, identity: "@jun/reports", delivered: [] }],
+  });
+  // The checkpoint counts as that session's heartbeat; the other sessions were not touched.
+  const seen = sessions.running().map((session) => [session.id === junHere, Date.parse(session.lastSeen) === clock.now]);
+  assert.deepEqual(seen.sort(), [[false, false], [false, false], [true, true]]);
+
+  assert.equal((await checkpoint(jun.bridgeToken, { worktreeId: "wt/0123" })).status, 400);
+  assert.equal((await checkpoint(jun.bridgeToken, {})).status, 400);
+  assert.equal((await checkpoint(undefined, { worktreeId: "wt_0123456789abcdef" })).status, 401);
+  assert.equal((await checkpoint(DEPLOYER_TOKEN, { worktreeId: "wt_0123456789abcdef" })).status, 401);
+  assert.equal((await call("/sessions/checkpoint", { method: "GET", token: jun.bridgeToken })).status, 405);
 });
 
 test("a runner's combined-run report opens a Huddle and forks its repo once", async () => {

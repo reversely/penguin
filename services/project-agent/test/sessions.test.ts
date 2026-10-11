@@ -46,6 +46,8 @@ class Project {
   identities: IdentityStore;
   index: IssueIndex;
   sessions: SessionStore;
+  /** Issues that reach their session only at a safe checkpoint, as a Huddle's fix sub-issues do. */
+  readonly fixTasks = new Set<string>();
   #nextSession = 0;
 
   constructor() {
@@ -68,6 +70,7 @@ class Project {
       now: () => this.now,
       newId: () => `session-${++this.#nextSession}`,
       assigningOwner: (issueId, handle) => index.assigningOwner(issueId, handle),
+      deliverAtCheckpoint: (issueId) => this.fixTasks.has(issueId),
     });
     return [index, sessions];
   }
@@ -122,6 +125,10 @@ class Project {
       )
       .all(String(issue), handle);
     return row === undefined ? undefined : ((row["session_id"] as string | null) ?? null);
+  }
+
+  count(table: string): number {
+    return Number(this.db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()?.["n"]);
   }
 
   work(caller: string, sessionId: string): string[] {
@@ -604,5 +611,115 @@ describe("sessions: the offline sweep", () => {
     await scheduler.fire(port);
     assert.deepEqual(changed, ["@jun/reports", "@jun/alerts", "@jun/alerts"]);
     assert.equal(scheduler.rows.size, 0, "with no session running, no sweep stays scheduled");
+  });
+});
+
+describe("sessions: fix tasks at safe checkpoints", () => {
+  /** Jun's running session, with plain issue 40 and fix task 41 both assigned to @jun/reports. */
+  async function working(): Promise<{ project: Project; id: string }> {
+    const project = new Project();
+    project.identity("jun", "@jun/reports", true);
+    const { id } = project.register("jun", "@jun/reports");
+    project.fixTasks.add("41");
+    for (const issue of [40, 41]) {
+      await project.createIssue(issue, priya);
+      await project.assign(issue, "@jun/reports", priya);
+    }
+    return { project, id };
+  }
+
+  test("a fix task routes at once but reaches the session's work only at its next checkpoint", async () => {
+    const { project, id } = await working();
+    assert.equal(project.assignedSession(41, "@jun/reports"), id);
+    assert.deepEqual(project.work("jun", id), ["40"]);
+    // Heartbeats are not checkpoints.
+    session(project.sessions.heartbeat("jun", id));
+    assert.deepEqual(project.work("jun", id), ["40"]);
+    assert.equal(project.sessions.get(id)?.currentIssueId, null);
+
+    project.now += 1_000;
+    const delivery = project.sessions.checkpoint("jun", id);
+    assert.deepEqual(delivery, { status: "ok", sessionId: id, handle: "@jun/reports", delivered: ["41"] });
+    assert.deepEqual(project.work("jun", id), ["40", "41"]);
+    assert.equal(project.sessions.get(id)?.currentIssueId, "41");
+    assert.equal(project.sessions.get(id)?.lastSeen, new Date(project.now).toISOString());
+    // A second checkpoint has nothing left to deliver.
+    assert.deepEqual(project.sessions.checkpoint("jun", id), { ...delivery, delivered: [] });
+  });
+
+  test("only the session's owner reports its checkpoint, and an offline session is refused", async () => {
+    const { project, id } = await working();
+    rejected(project.sessions.checkpoint("priya", id), "forbidden");
+    rejected(project.sessions.checkpoint("jun", "session-404"), "not_found");
+    assert.deepEqual(project.sessions.checkpointWorktree("priya", "wt_0123456789abcdef"), []);
+    assert.deepEqual(project.work("jun", id), ["40"]);
+    project.now += SESSION_OFFLINE_AFTER_MS + 1;
+    rejected(project.sessions.checkpoint("jun", id), "offline");
+  });
+
+  test("a worktree checkpoint delivers to the owner's running sessions registered in that worktree", async () => {
+    const { project, id } = await working();
+    const elsewhere = project.register("jun", "@jun/reports", { worktreeId: "wt_elsewhere" });
+    assert.deepEqual(project.sessions.checkpointWorktree("jun", "wt_elsewhere"), [
+      { sessionId: elsewhere.id, handle: "@jun/reports", delivered: [] },
+    ]);
+    assert.deepEqual(project.work("jun", id), ["40"]);
+    assert.deepEqual(project.sessions.checkpointWorktree("jun", "wt_0123456789abcdef"), [
+      { sessionId: id, handle: "@jun/reports", delivered: ["41"] },
+    ]);
+    assert.deepEqual(project.work("jun", id), ["40", "41"]);
+  });
+
+  test("with no session running the owner is asked to start one; registering is a safe checkpoint", async () => {
+    const project = new Project();
+    project.identity("jun", "@jun/reports", true);
+    project.fixTasks.add("41");
+    await project.createIssue(41, priya);
+    await project.assign(41, "@jun/reports", priya);
+    assert.deepEqual(project.requests("jun"), ["start @jun/reports #41"]);
+
+    const { id } = project.register("jun", "@jun/reports");
+    assert.deepEqual(project.work("jun", id), ["41"]);
+    assert.equal(project.count("PendingDelivery"), 0);
+  });
+
+  test("a disconnect before the checkpoint keeps the fix task open; a later session receives it", async () => {
+    const { project, id } = await working();
+    project.now += SESSION_OFFLINE_AFTER_MS + 1;
+    assert.equal(project.sessions.get(id)?.status, "offline");
+    assert.equal(project.count("PendingDelivery"), 0);
+    assert.equal(project.index.issue("41")?.state, "open");
+    assert.deepEqual([...(project.index.issue("41")?.assignments.keys() ?? [])], ["identity:@jun/reports"]);
+    assert.deepEqual(project.requests("jun"), ["start @jun/reports #40", "start @jun/reports #41"]);
+
+    const next = project.register("jun", "@jun/reports");
+    assert.deepEqual(project.work("jun", next.id), ["40", "41"]);
+  });
+
+  test("a fix task moved to another running session waits for that session's checkpoint", async () => {
+    const { project, id } = await working();
+    project.now += 10_000;
+    const second = project.register("jun", "@jun/reports", { worktreeId: "wt_second" });
+    project.now += SESSION_OFFLINE_AFTER_MS - 5_000;
+    session(project.sessions.heartbeat("jun", second.id));
+    project.now += 5_001;
+    assert.equal(project.sessions.get(id)?.status, "offline");
+    assert.deepEqual(project.work("jun", second.id), ["40"]);
+    assert.deepEqual(project.sessions.checkpointWorktree("jun", "wt_second"), [
+      { sessionId: second.id, handle: "@jun/reports", delivered: ["41"] },
+    ]);
+  });
+
+  test("unassigning a waiting fix task drops its delivery", async () => {
+    const { project, id } = await working();
+    await project.submit(priya, 41, "unassign", { assignee: { identity: "@jun/reports" } });
+    assert.equal(project.count("PendingDelivery"), 0);
+    assert.deepEqual(project.sessions.checkpoint("jun", id), {
+      status: "ok",
+      sessionId: id,
+      handle: "@jun/reports",
+      delivered: [],
+    });
+    assert.deepEqual(project.work("jun", id), ["40"]);
   });
 });

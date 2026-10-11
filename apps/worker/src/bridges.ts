@@ -16,6 +16,10 @@
  * - POST /combined-runs, bridge token of a runner bridge: reports a combined run. When its tests
  *   failed on a published checkpoint, the ProjectAgent opens a Huddle issue and the Worker forks the
  *   Huddle repo. A second report of the same trigger opens nothing.
+ * - POST /sessions/checkpoint, bridge token: a safe checkpoint in one of the owner's worktrees, sent
+ *   by the bridge's hook before an agent's next tool action or as an explicit bridge checkpoint. The
+ *   owner's running sessions in that worktree receive their waiting fix tasks. The body carries only
+ *   the worktree id.
  *
  * Responses that carry a code or token are marked `Cache-Control: no-store`.
  */
@@ -25,6 +29,7 @@ import type {
   BridgeIdentity,
   BridgeRole,
   CheckpointOutcome,
+  Delivery,
   Huddle,
   HuddleOpenOutcome,
   PendingListing,
@@ -56,6 +61,8 @@ export interface BridgeDirectory {
   pendingOperations(caller: BridgeCaller): Promise<PendingListing> | PendingListing;
   /** Records `sha` as `owner`'s latest checkpoint once the commit is found in `fork`, an Artifacts repo name. */
   reportBridgeCheckpoint(owner: string, sha: string, fork: string): Promise<CheckpointOutcome>;
+  /** A safe checkpoint of `owner`'s running sessions in the worktree `worktreeId`. */
+  sessionCheckpoint(owner: string, worktreeId: string): Promise<Delivery[]> | Delivery[];
 }
 
 /** Opening Huddle issues: the ProjectAgent's side over Durable Object RPC, and the Huddle repo fork. */
@@ -237,6 +244,33 @@ async function reportCheckpoint(request: Request, handlers: BridgeHandlers): Pro
   return json({ fork: own, ownerId, latestCheckpointSha, reportedAt }, 200);
 }
 
+/** A worktree id as sessions register it (SESSION_LIMITS.worktreeIdLength in the ProjectAgent). */
+const WORKTREE_ID = /^[A-Za-z0-9_.-]{1,128}$/u;
+
+async function sessionCheckpoint(request: Request, handlers: BridgeHandlers): Promise<Response> {
+  const token = bearerToken(request);
+  const directory = await handlers.bridges();
+  const bridge = token === undefined ? undefined : await directory.authenticateBridge(token);
+  if (bridge === undefined) return unauthorized();
+  if (request.method !== "POST") return methodNotAllowed("POST");
+
+  const body = await readObject(request);
+  if (body === undefined) return invalid("", "must be a JSON object");
+  const { worktreeId } = body;
+  if (typeof worktreeId !== "string" || !WORKTREE_ID.test(worktreeId)) {
+    return invalid("worktreeId", "must be a worktree id of letters, digits, '.', '_' and '-', at most 128 characters");
+  }
+  // The owner comes from the registry record the token authenticated, never from the request.
+  const deliveries = await directory.sessionCheckpoint(bridge.ownerId, worktreeId);
+  return json(
+    {
+      worktreeId,
+      sessions: deliveries.map(({ sessionId, handle, delivered }) => ({ sessionId, identity: handle, delivered })),
+    },
+    200,
+  );
+}
+
 /**
  * Opens a Huddle issue from a combined run the runner reports, then forks the Huddle repo when the
  * Huddle has none yet. The fork runs again on a later report of the same trigger until it succeeds;
@@ -307,6 +341,7 @@ export async function handleBridgeRoute(
   if (url.pathname === "/operations/pending") return listPending(request, handlers);
   if (url.pathname === "/checkpoints") return reportCheckpoint(request, handlers);
   if (url.pathname === "/combined-runs") return reportCombinedRun(request, handlers);
+  if (url.pathname === "/sessions/checkpoint") return sessionCheckpoint(request, handlers);
   if (url.pathname === "/bridges/codes") return issueCode(request, options, handlers);
   if (url.pathname === "/bridges") return register(request, handlers);
   const bridgeId = /^\/bridges\/([A-Za-z0-9_-]+)$/.exec(url.pathname)?.[1];
