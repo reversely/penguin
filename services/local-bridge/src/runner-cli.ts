@@ -1,8 +1,9 @@
 // The `penguin-bridge runner` command: runner mode, one pass or a pass on every interval. With
 // --combined or --repo it also runs the test jobs Penguin schedules in one repository: the combined
-// runs it claims (combined-run-pass.ts), the Huddle verification runs it lists (verification-run.ts),
-// the approved branches it records in Huddle repos (approval-run.ts) and the submitted reviews it
-// claims and runs the review harness on (review-run.ts).
+// runs it claims (combined-run-pass.ts), the merge-plan facts runs it lists (plan-facts-run.ts), the
+// Huddle verification runs it lists (verification-run.ts), the approved branches it records in Huddle
+// repos (approval-run.ts) and the submitted reviews it claims and runs the review harness on
+// (review-run.ts).
 
 import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
@@ -19,6 +20,7 @@ import type { CliIo } from "./cli.ts";
 import { combinedRunPass, forkFetcher, formatCombinedPass, type CombinedPassResult } from "./combined-run-pass.ts";
 import { penguinRemote } from "./git-remote.ts";
 import { pythonImpactAnalyzer } from "./impact-analysis.ts";
+import { factsFetcher, formatPlanFactsPass, planFactsPass, PlanFactsRunner, type PlanFactsPassResult } from "./plan-facts-run.ts";
 import { defaultClonePath } from "./issue-cli.ts";
 import { IssuesClone } from "./issues-clone.ts";
 import type { KeyStore } from "./key-store.ts";
@@ -28,10 +30,12 @@ import {
   claimReviews,
   fetchApprovals,
   fetchPendingOperations,
+  fetchPlanFactsRuns,
   fetchVerificationRuns,
   openBridge,
   reportApproval,
   reportCombinedRun,
+  reportPlanFacts,
   reportReview,
   reportVerification,
   type BridgeRegistration,
@@ -62,12 +66,16 @@ export const RUNNER_USAGE = `       penguin-bridge runner [--once] [--interval <
          <python> (default python3), lint and format with <ruff> (default ruff on PATH) and the
          type check with the pyright package installed beside the bridge. Each review submitted with
          submit_review is claimed too: the feature's fork is fetched and the review harness runs
-         the scope's public functions on the checkpoint's baseline and on the checkpoint.
+         the scope's public functions on the checkpoint's baseline and on the checkpoint. A merge
+         plan's facts run fetches the feature forks it names, runs the impact graph and each
+         listed scope's tests on the feature checkpoint merged onto main and onto each running
+         feature.
 `;
 
 /** One pass of the test jobs: each job's result, or why it did not run. */
 interface TestJobsResult {
   readonly combined: CombinedPassResult | Error;
+  readonly planFacts: PlanFactsPassResult | Error;
   readonly verification: VerificationPassResult | Error;
   readonly approval: ApprovalPassResult | Error;
   readonly review: ReviewPassResult | Error;
@@ -215,6 +223,7 @@ async function testJobsPass(
   const writeRemotes = bridgeRemotes(stateDir, keyStore, fetchImpl, "write");
   const verifier = new VerificationRunner({ repoPath: repo, runner, readRemotes, writeRemotes });
   const approver = new ApprovedBranchWriter({ repoPath: repo, writeRemotes });
+  const facts = new PlanFactsRunner({ repoPath: repo, runner, impact });
   const settle = <T>(job: () => Promise<T>): Promise<T | Error> => job().catch((error: unknown) => error as Error);
   return async () => ({
     combined: await settle(() =>
@@ -226,6 +235,14 @@ async function testJobsPass(
         runner,
         impact,
         checks,
+      }),
+    ),
+    planFacts: await settle(() =>
+      planFactsPass({
+        list: () => fetchPlanFactsRuns(server, bridgeToken, fetchImpl),
+        fetch: factsFetcher(readRemotes, repo),
+        run: (request) => facts.run(request),
+        report: (runId, report) => reportPlanFacts(server, bridgeToken, runId, report, fetchImpl),
       }),
     ),
     verification: await settle(() =>
@@ -255,18 +272,22 @@ async function testJobsPass(
 }
 
 /** True when every job ran and nothing in them was refused or stopped. */
-function testJobsClean({ combined, verification, approval, review }: TestJobsResult): boolean {
-  if (combined instanceof Error || verification instanceof Error || approval instanceof Error || review instanceof Error) return false;
+function testJobsClean({ combined, planFacts, verification, approval, review }: TestJobsResult): boolean {
+  if (combined instanceof Error || planFacts instanceof Error || verification instanceof Error || approval instanceof Error || review instanceof Error) {
+    return false;
+  }
   const combinedClean = combined.batches.every((batch) => batch.error === null && batch.refused.length === 0);
   const reviewClean = review.reviews.every((entry) => entry.error === null);
-  return combinedClean && reviewClean && verification.failed.length === 0 && approval.failed.length === 0;
+  return combinedClean && reviewClean && planFacts.failed.length === 0 && verification.failed.length === 0 && approval.failed.length === 0;
 }
 
 /** The pass's lines; `always` writes a job's summary even when it found no work. */
-function formatTestJobs({ combined, verification, approval, review }: TestJobsResult, always: boolean): string {
+function formatTestJobs({ combined, planFacts, verification, approval, review }: TestJobsResult, always: boolean): string {
   let text = "";
   if (combined instanceof Error) text += `No combined runs were claimed: ${combined.message}\n`;
   else if (always || combined.claimed > 0) text += formatCombinedPass(combined);
+  if (planFacts instanceof Error) text += `The plan facts pass did not run; the runs stay listed: ${planFacts.message}\n`;
+  else if (always || planFacts.listed > 0) text += formatPlanFactsPass(planFacts);
   if (verification instanceof Error) text += `The verification pass did not run; the runs stay pending: ${verification.message}\n`;
   else if (always || verification.listed > 0) text += formatVerificationPass(verification);
   if (approval instanceof Error) text += `The approval pass did not run; the approved branches stay listed: ${approval.message}\n`;

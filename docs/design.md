@@ -150,7 +150,63 @@ The procedure moves conflict handling to the start of the work. Each step below 
 4. Penguin classifies each fix as mechanical or behavioural ([Routing](#routing-and-the-resolution-ladder)).
    Penguin's tools generate the mechanical fixes. The originating agent writes the behavioural ones.
 5. **Break limit.** If a plan touches more running features than the project's limit (default 10),
-   Penguin returns it to its author to split or restructure.
+   Penguin returns it to its author to split or restructure. The build counts the plan's behavioural
+   parts ([Steps 1 to 5 in the build](#steps-1-to-5-in-the-build)).
+
+#### Steps 1 to 5 in the build
+
+- **Proposing.** An agent session of the originating feature calls `propose_plan` with one part per
+  affected place, each with an optional note. A part for code on main, `{ scope }`, names a commit in
+  the originating feature's fork that holds the fix. A part for a running feature, `{ feature }`,
+  carries its fix as a patch: a unified diff against that feature's fork head, the commit the facts
+  run tested. The plan keeps the patch whole, so the fix can be written into the affected fork once
+  its person approves. Penguin refuses a session of another person and a session that works on
+  another feature (`services/project-agent/src/propose-plan.ts`).
+- **The facts and their tools.** Each plan records which tool or read produced each fact:
+
+  | Fact | Source |
+  |---|---|
+  | The change in plain words | The checkpoint commit's subject, read with the Artifacts binding's `readCommit`. The identity whose report recorded the checkpoint made it |
+  | Contract diff | `analysis:python-impact` on the check runner, from the checkpoint's baseline on main to the checkpoint |
+  | Callers | The same impact report: uses already on main plus uses in each running feature's fork |
+  | Affected running features | Running features whose fork uses a changed symbol or whose tests break on the merged tree |
+  | Invariants | Each affected scope's entries in `penguin/invariants.json` on main |
+  | Breaks | Each `test:<scope>` command the runner ran on the checkpoint merged onto main and onto each running feature. A break states the test's docstring, or the test's name in words when it has none, with the assertion line and the error line from the run |
+  | Changed lines | For code on main, the part's commit against its base, read with `readCommit`, `readTree` and `readBlob`. For a running feature, the part's patch, checked against that feature's files at its fork head read the same way. Only files inside the part's affected scopes are read |
+
+- **Facts runs.** The impact report and the breaks need the code parsed and run, so the check runner
+  makes them ([bridge-and-runner.md](bridge-and-runner.md#plan-facts-runs)). The first proposal for a
+  checkpoint schedules a run and answers `missing` with `waiting_for_runner`. A newer checkpoint
+  supersedes a pending run.
+- **Places.** A scope outside the changed scopes is a place when it has a caller on main or a break on
+  the `main` target. A running feature is a place when its fork uses a changed symbol, holds a file the
+  analysis could not read in its scopes, or breaks on its merged tree. The scope's owner or the
+  feature's person approves the part.
+- **What is missing.** Penguin answers `missing` with every gap: an affected place with no part, a
+  part for an unaffected place, two parts for one place, a diff commit missing from the fork, a diff
+  that changes no file in the place's scopes, or a failed analysis. A patch is also refused when it
+  names another base than the feature's fork head, cannot be parsed, writes outside the place's
+  scopes or does not match the fork's lines at the head. `parsePatch` (`packages/protocol`) takes only
+  text edits of regular files: no rename, copy, mode change or binary file.
+- **Mechanical or behavioural.** A fix is mechanical when every changed line pairs with a new line
+  that differs only by names a codemod edit of the contract diff swaps in that place. The edits come
+  from `codemodPlan` (`packages/protocol`), the same edits the resolution ladder's step 3 applies: a
+  rename, a move or a renamed keyword parameter. A plan part and the ladder therefore agree on what
+  Penguin's codemod can write. Any other fix is behavioural. The part names the first line that
+  shows why. On the helpful fix both proposed fixes are behavioural: each one also adds the user's
+  offset as an argument of the call it switches to `start_of_local_day`.
+- **Break limit.** The limit counts a plan's behavioural parts, the fixes an agent writes. Mechanical
+  parts are left out, because Penguin's codemod writes them. `PENGUIN_PLAN_BREAK_LIMIT`, a Worker
+  setting, sets the limit, 10 when unset. Any value other than a positive whole number refuses every
+  plan as misconfigured. A plan over the limit gets a signed `plan_returned` record naming its
+  behavioural places. The originating person gets a `plan_returned` inbox item.
+- **Storing.** A complete plan is a signed `propose_plan` record listing each part. Its `Plan` and
+  `PlanPart` rows live in the per-feature Durable Object, an instance of the HuddleAgent class named
+  for the feature, until the FeatureAgent replaces it. `plan-store.ts` is the one module that holds
+  them. `GET /api/features/<id>/plan` answers the newest plan as JSON for the dashboard.
+- **Limits.** A commit subject is cut at 300 characters, a docstring at 500 and an assertion or error
+  line at 300. A note may hold 2,000 characters and a plan 128 parts. Penguin keeps every such string
+  as data. The MCP answer puts each one inside `personWritten`.
 
 ### Advance notice
 

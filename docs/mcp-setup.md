@@ -225,6 +225,28 @@ files inside the session identity's charter. A lockfile fix names no files. A co
 Penguin refuses a call with an unknown kind, a file outside the charter, a path that leaves the
 repository or an edit whose names are not Python names. A refused call records nothing.
 
+## Merge plans
+
+A session whose feature changes something other scopes or running features depend on calls
+`propose_plan` with its feature and one part per affected place. A `note` of up to 2,000 characters is
+optional on each part.
+
+| Place | Fix |
+|---|---|
+| `{ "scope": "<scope id>" }`, code already on main | `diff: { commit, base? }`, a commit in your feature's fork. `base` defaults to the commit's first parent |
+| `{ "feature": "<feature id>" }`, a running feature | `patch: { base, diff }`, a unified diff as `git diff` prints it, against that feature's fork head. `base` is the head the answer lists under `affectedFeatures[].head` |
+
+The first call for a checkpoint answers `missing` with `waiting_for_runner`: Penguin has asked the
+check runner for the impact graph and the test runs. The agent calls again once the runner has
+reported. Each later `missing` answer lists every gap: an affected place without a part, a part for a
+place the facts show unaffected, two parts for one place, a diff commit missing from the fork, or a
+patch that names another base, writes outside the place's scopes or does not apply at the head. A
+plan with more behavioural parts than the project's break limit answers `returned`. A complete
+plan answers `stored` with its id, facts and parts. Every `missing` or `returned` answer is marked as
+a tool error. Text from the repository and the run, such as the commit subject, docstrings, assertion
+lines, diff lines and the agent's own note, arrives only inside `personWritten`
+([design.md](design.md#steps-1-to-5-in-the-build)).
+
 ## Sending a fix upstream
 
 A session can find that its fix task belongs in the scope the trigger changed, outside its identity's

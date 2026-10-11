@@ -211,6 +211,8 @@ penguin-bridge runner --combined
      the dependency diff, default `python3`. `--ruff <path>` names ruff. Without it the runner uses `PENGUIN_RUFF`, then this repository's
      pinned ruff in `.venv/bin/ruff`, then `ruff` on `PATH`, because an older ruff elsewhere on `PATH`
      (such as an Anaconda install) formats differently;
+   - lists and runs the facts runs of merge plans ([Plan facts runs](#plan-facts-runs)), reporting
+     each one to `POST /plan-facts/<run id>` (`plan-facts-run.ts`);
    - lists and runs verification runs, pushing each merge to the Huddle repo's `integration` branch
      (`verification-run.ts`);
    - lists approved branches and pushes the Huddle repo's `approved` branch (`approval-run.ts`);
@@ -225,6 +227,32 @@ single pass of each and exits 1 when anything was refused or failed.
 The runner fetches owner forks and feature forks with read tokens. It pushes Huddle repos with write
 tokens. The Worker grants a runner bridge `write` on `huddle-<id>` repos and an owner bridge only
 `read`. No bridge gets `write` on a `feature-<id>` repo.
+
+### Plan facts runs
+
+A merge plan needs facts that only running the code can give ([design.md](design.md#steps-1-to-5-in-the-build)).
+`propose_plan` schedules one facts run per feature checkpoint. `GET /plan-facts` lists each pending
+run. The listing names the originating fork, the checkpoint, its baseline on main and the targets.
+`main` is one target, at the baseline. Each running feature that may read the change is another, at
+its latest checkpoint. Every target lists `test:<scope>` command IDs only. For each run the runner:
+
+1. refuses a listing that names a repo other than a `feature-<id>` fork or a commit that is not a
+   full SHA, then fetches each fork it names;
+2. runs `analysis:python-impact` on the baseline and the checkpoint, with one fork per running
+   feature;
+3. merges the checkpoint onto each target with `git merge-tree --write-tree`;
+4. runs each listed test command on the merged commit in a throwaway worktree. A running feature
+   that the impact graph shows makes no use of the change gets `not-affected` without a run;
+5. states each failing test as a break: its docstring at the merged commit (`test-evidence.ts`)
+   with the assertion line and first error line pytest printed for it.
+
+The report carries the impact report and each command's result with its fingerprint and breaks. It
+carries no log. `PLAN_FACTS_REPORT_SCHEMA` (`packages/protocol`) caps each docstring at 500
+characters and each assertion or error line at 300. A newer checkpoint of the feature supersedes a
+pending run. A report of a superseded run answers 409.
+
+On the helpful-fix fixture the facts run of Priya's checkpoint against Jun's and Sam's checkpoints
+takes between 1 and 3 seconds of wall time on an Apple silicon laptop, analysis and three merged trees included.
 
 ## Allowlisted commands
 

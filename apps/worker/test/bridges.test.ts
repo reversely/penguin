@@ -16,6 +16,7 @@ import { IssueIndex } from "../../../services/project-agent/src/issue-index.ts";
 import type { SqlDatabase } from "../../../services/project-agent/src/issue-index.ts";
 import { IdentityStore } from "../../../services/project-agent/src/identity-store.ts";
 import { OwnerForkStore, recordReportedCheckpoint } from "../../../services/project-agent/src/owner-forks.ts";
+import { PlanFactsStore } from "../../../services/project-agent/src/plan-facts.ts";
 import { SessionStore } from "../../../services/project-agent/src/session-store.ts";
 
 import type { HuddleDirectory } from "../src/bridges.ts";
@@ -100,6 +101,7 @@ function gateway(artifacts = fakeArtifacts(PROJECT_REPOS)) {
   const commitExists = async (repo: string, sha: string) => commits.get(repo)?.has(sha) ?? false;
   const huddles = fakeHuddles();
   const runs = new CombinedRunStore(db);
+  const planFacts = new PlanFactsStore(db);
   /** The project repos each checkpoint report handed the ProjectAgent. */
   const checkpointRepos: ProjectRepos[] = [];
   const featureReports: { owner: string; sessionId: string | null; featureId: string; sha: string }[] = [];
@@ -120,6 +122,9 @@ function gateway(artifacts = fakeArtifacts(PROJECT_REPOS)) {
         return recordReportedCheckpoint({ forks, commitExists }, owner, sha, fork, null);
       },
       claimCombinedRuns: (caller) => runs.claim(caller),
+      planFactsRuns: (caller) =>
+        caller.role === "runner" ? { status: "ok", runs: planFacts.pending() } : { status: "forbidden", message: "not a runner" },
+      reportPlanFacts: (caller, runId, report) => planFacts.record(runId, caller.bridgeId, report),
       sessionCheckpoint: (owner, worktreeId) => sessions.checkpointWorktree(owner, worktreeId),
       // Feature checkpoints are covered end to end in features.test.ts; here
       // the route's handling of the owner and the answer.
@@ -152,7 +157,7 @@ function gateway(artifacts = fakeArtifacts(PROJECT_REPOS)) {
       options,
       handlers,
     );
-  return { artifacts, call, registry, db, forks, commits, huddles, identities, sessions, clock, runs, checkpointRepos, featureReports };
+  return { artifacts, call, registry, db, forks, commits, huddles, identities, sessions, clock, runs, planFacts, checkpointRepos, featureReports };
 }
 
 /**
@@ -604,6 +609,33 @@ test("only a runner lists and reports verification runs; a superseded run answer
   assert.equal((await report("8")).status, 404);
   assert.equal((await report("7", jun.bridgeToken)).status, 403);
   assert.equal(huddles.reports.length, 3);
+});
+
+test("only a runner lists and reports plan facts runs; a report is checked and taken once", async () => {
+  const { call, planFacts } = gateway();
+  const runner = await registerBridge(call, "sam", "runner");
+  const jun = await registerBridge(call, "jun");
+  const sha = "a".repeat(40);
+  const target = { id: "main", repo: "feature-money", sha, scopes: [], commandIds: ["test:tax"] };
+  const run = planFacts.schedule({ feature: "money", fork: "feature-money", checkpoint: sha, baseline: sha, targets: [target] });
+
+  const listed = await call("/plan-facts", { method: "GET", token: runner.bridgeToken });
+  assert.equal(listed.status, 200);
+  assert.equal(listed.headers.get("Cache-Control"), "no-store");
+  assert.deepEqual(await listed.json(), { runs: [run.request] });
+  assert.equal((await call("/plan-facts", { method: "GET", token: jun.bridgeToken })).status, 403);
+  assert.equal((await call("/plan-facts", { method: "GET" })).status, 401);
+
+  const report = (runId: string, body: unknown, token = runner.bridgeToken) => call(`/plan-facts/${runId}`, { token, body });
+  const facts = { impact: null, impactError: "python3 not found", results: [], durationMs: 3 };
+  assert.equal((await report(run.runId, { ...facts, log: "raw output" })).status, 400);
+  assert.equal((await report(run.runId, facts, jun.bridgeToken)).status, 403);
+  const recorded = await report(run.runId, facts);
+  assert.equal(recorded.status, 200);
+  assert.deepEqual(await recorded.json(), { status: "recorded", runId: run.runId });
+  assert.equal(planFacts.get(run.runId)?.runnerId, runner.bridgeId);
+  assert.equal((await report(run.runId, facts)).status, 409);
+  assert.equal((await report("99", facts)).status, 404);
 });
 
 test("only a runner lists and reports approved branches; a commit no longer requested answers 409", async () => {

@@ -30,6 +30,11 @@
  *   runner: the checkpoints to merge onto a Huddle repo's `integration` branch and the commands to run.
  * - POST /verifications/<run id>, bridge token of a runner bridge: reports a verification run. Penguin
  *   attaches its checks to the Huddle issue; a run a newer checkpoint superseded answers 409.
+ * - GET /plan-facts, bridge token of a runner bridge: lists the merge-plan facts runs waiting for the
+ *   runner: a feature checkpoint, its baseline and the targets to merge it onto, with test command IDs.
+ * - POST /plan-facts/<run id>, bridge token of a runner bridge: reports a facts run's impact report and
+ *   test results. Penguin keeps them for the feature's merge plan; a run a newer checkpoint superseded
+ *   answers 409.
  * - GET /approvals, bridge token of a runner bridge: lists the approved branches to record: for each
  *   Huddle whose fixes are approved, whose combined tests pass and whose threads are resolved, the
  *   verified `integration` commit to point the Huddle repo's `approved` branch at.
@@ -58,6 +63,7 @@ import type {
   Huddle,
   HuddleOpenOutcome,
   PendingListing,
+  PlanFactsReportOutcome,
   ProjectRepos,
   RegisterOutcome,
   RegistrationCode,
@@ -67,6 +73,7 @@ import type {
 } from "@penguin/project-agent";
 
 import { REVIEW_LIMITS } from "@penguin/protocol";
+import type { PlanFactsRequest } from "@penguin/protocol";
 
 import { bearerToken, isDeployer } from "./auth.ts";
 import { checkpointFields, FEATURE_FORK, settledFields } from "./features.ts";
@@ -79,6 +86,8 @@ import {
   type MintedToken,
   type TokenScope,
 } from "./tokens.ts";
+
+type MaybePromise<T> = T | Promise<T>;
 
 /** How long a registration code stays usable. */
 export const REGISTRATION_CODE_TTL_SECONDS = 900;
@@ -112,6 +121,12 @@ export interface BridgeDirectory {
   claimReviews(caller: BridgeCaller): Promise<ReviewClaim> | ReviewClaim;
   /** Attaches the runner's record to review `reviewId`; refused unless `caller` holds the runner role. */
   reportReview(caller: BridgeCaller, reviewId: number, record: unknown): Promise<ReviewReportOutcome>;
+  /** The merge-plan facts runs waiting for the runner; refused unless `caller` holds the runner role. */
+  planFactsRuns(
+    caller: BridgeCaller,
+  ): MaybePromise<{ readonly status: "ok"; readonly runs: readonly PlanFactsRequest[] } | { readonly status: "forbidden"; readonly message: string }>;
+  /** Records the runner's report of facts run `runId`; refused unless `caller` holds the runner role. */
+  reportPlanFacts(caller: BridgeCaller, runId: string, report: unknown): MaybePromise<PlanFactsReportOutcome>;
 }
 
 /** Opening Huddle issues: the ProjectAgent's side over Durable Object RPC, and the Huddle repo fork. */
@@ -560,6 +575,30 @@ async function reportReview(request: Request, reviewId: number, handlers: Bridge
   );
 }
 
+/** Hands a runner bridge the merge-plan facts runs waiting for it. */
+async function listPlanFacts(request: Request, handlers: BridgeHandlers): Promise<Response> {
+  const bridge = await runnerBridge(request, handlers);
+  if (bridge instanceof Response) return bridge;
+  if (request.method !== "GET") return methodNotAllowed("GET");
+  // The role comes from the registry record the token authenticated, never from the request.
+  const listing = await (await handlers.bridges()).planFactsRuns({ bridgeId: bridge.bridgeId, role: bridge.role });
+  if (listing.status === "forbidden") return json({ error: "forbidden", message: listing.message }, 403);
+  return json({ runs: listing.runs }, 200, NO_STORE);
+}
+
+/** Records a runner's facts for a merge plan; a run a newer checkpoint superseded answers 409. */
+async function reportPlanFacts(request: Request, runId: string, handlers: BridgeHandlers): Promise<Response> {
+  const bridge = await runnerBridge(request, handlers);
+  if (bridge instanceof Response) return bridge;
+  if (request.method !== "POST") return methodNotAllowed("POST");
+  const body = await readObject(request);
+  if (body === undefined) return invalid("", "must be a JSON object");
+  const outcome = await (await handlers.bridges()).reportPlanFacts({ bridgeId: bridge.bridgeId, role: bridge.role }, runId, body);
+  if (outcome.status === "recorded") return json({ status: outcome.status, runId: outcome.runId }, 200);
+  const status = { invalid: 400, not_found: 404, forbidden: 403, superseded: 409 }[outcome.reason];
+  return json({ error: outcome.reason, message: outcome.message }, status);
+}
+
 function huddleBody(status: "opened" | "existing", huddle: Huddle): Record<string, unknown> {
   const { issueId, triggerCommit, baselineSha, huddleRepo, openedAt } = huddle;
   return { status, issueId, triggerCommit, baselineSha, huddleRepo, openedAt };
@@ -581,6 +620,9 @@ export async function handleBridgeRoute(
   if (url.pathname === "/verifications") return listVerifications(request, handlers);
   const runId = /^\/verifications\/([0-9]{1,15})$/.exec(url.pathname)?.[1];
   if (runId !== undefined) return reportVerification(request, runId, handlers);
+  if (url.pathname === "/plan-facts") return listPlanFacts(request, handlers);
+  const factsRunId = /^\/plan-facts\/([0-9]{1,15})$/.exec(url.pathname)?.[1];
+  if (factsRunId !== undefined) return reportPlanFacts(request, factsRunId, handlers);
   if (url.pathname === "/approvals") return listApprovals(request, handlers);
   const approvalIssue = /^\/approvals\/([1-9][0-9]{0,8})$/.exec(url.pathname)?.[1];
   if (approvalIssue !== undefined) return reportApproval(request, approvalIssue, handlers);

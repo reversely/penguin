@@ -27,6 +27,8 @@ import type {
   FeatureOutcome,
   OverlapStatus,
   ProjectRepos,
+  ProposePlanInput,
+  ProposePlanOutcome,
   ReviewInput,
   ReviewOutcome,
   TokenGrant,
@@ -35,7 +37,7 @@ import type {
 } from "@penguin/project-agent";
 
 import type { FeatureCallResult, McpFeatures } from "@penguin/mcp";
-import { REVIEW_SCHEMA_VERSION, SEGMENT_PATTERN } from "@penguin/protocol";
+import { REVIEW_SCHEMA_VERSION, SEGMENT_PATTERN, type Plan, type PlanFacts, type PlanPart } from "@penguin/protocol";
 
 import { artifactsErrorCode, type FeatureForkOptions } from "./repos.ts";
 import type { MintedToken } from "./tokens.ts";
@@ -74,6 +76,7 @@ export interface FeatureDirectory {
     input: Readonly<Record<string, unknown>>,
     repos: ProjectRepos,
   ): Promise<ToolRequestOutcome>;
+  proposePlan(owner: string, sessionId: string, input: ProposePlanInput, repos: ProjectRepos): Promise<ProposePlanOutcome>;
 }
 
 export interface FeatureConfig {
@@ -290,6 +293,11 @@ export function mcpFeatures(ports: FeaturePorts, owner: string): McpFeatures {
         const outcome = await (await ports.directory()).submitReview(owner, sessionId, { feature, scope, form }, ports.repos);
         return outcome.status === "ok" ? { status: "ok", value: reviewFields(outcome) } : outcome;
       }),
+    plan: (sessionId, feature, parts) =>
+      guarded(async () => {
+        const outcome = await (await ports.directory()).proposePlan(owner, sessionId, { feature, parts }, ports.repos);
+        return outcome.status === "rejected" ? outcome : { status: "ok", value: planAnswer(outcome) };
+      }),
     checkpoint: (sessionId, feature, sha) =>
       guarded(async () => {
         const reported = await (await ports.directory()).reportFeatureCheckpoint(owner, sessionId, feature, sha, ports.repos);
@@ -375,6 +383,97 @@ export async function issueFeatureToken(
   const grant = await (await ports.directory()).featureTokenGrant(owner, sessionId, featureId, ports.repos);
   if (grant.status === "rejected") return grant;
   return { status: "ok", fork: `feature-${grant.featureId}`, token: await ports.mintWrite(grant.repo, ttl) };
+}
+
+/**
+ * A plan as the MCP tool answers it. Penguin's own fields (ids, places, kinds, people, commits and
+ * counts) stand apart from text that came from the repos and the run (commit subjects, docstrings,
+ * assertion lines, file paths, diff lines, invariant statements, the agent's notes), which is echoed
+ * only inside `personWritten`.
+ */
+export function planAnswer(outcome: Exclude<ProposePlanOutcome, { status: "rejected" }>): Record<string, unknown> {
+  switch (outcome.status) {
+    case "stored":
+      return { status: "stored", ...planFields(outcome.plan) };
+    case "missing":
+      return {
+        status: "missing",
+        feature: outcome.featureId,
+        checkpoint: outcome.checkpoint,
+        missing: outcome.missing.map(({ code, message, place, part, detail }) => ({
+          code,
+          message,
+          ...(place === undefined ? {} : { place }),
+          ...(part === undefined ? {} : { part }),
+          ...(detail === undefined ? {} : { personWritten: { detail } }),
+        })),
+        facts: factsFields(outcome.facts),
+      };
+    case "returned":
+      return {
+        status: "returned",
+        feature: outcome.featureId,
+        breakLimit: outcome.breakLimit,
+        behavioural: outcome.behavioural.map((place) => ({ ...place })),
+        recordId: outcome.recordId,
+        message: outcome.message,
+        facts: factsFields(outcome.facts),
+      };
+  }
+}
+
+function planFields(plan: Plan): Record<string, unknown> {
+  const { planId, featureId, version, state, person, proposedBy, proposedAt, recordId, breakLimit, assembledMs } = plan;
+  return {
+    planId,
+    feature: featureId,
+    version,
+    state,
+    person,
+    proposedBy,
+    proposedAt,
+    recordId,
+    breakLimit,
+    assembledMs,
+    facts: factsFields(plan.facts),
+    parts: plan.parts.map(partFields),
+  };
+}
+
+function factsFields(facts: PlanFacts): Record<string, unknown> {
+  const { change, contractDiff, mainCallers, invariants, breaks } = facts;
+  return {
+    checkpoint: change.checkpoint,
+    baseline: change.baseline,
+    madeBy: change.madeBy,
+    contractDiffKnown: contractDiff !== null,
+    affectedFeatures: facts.affectedFeatures.map((each) => ({ ...each, scopes: [...each.scopes], dependsOn: [...each.dependsOn] })),
+    sources: facts.sources.map((source) => ({ ...source })),
+    run: facts.run,
+    personWritten: { change: change.subject, contractDiff, mainCallers, invariants, breaks },
+  };
+}
+
+function partFields(part: PlanPart): Record<string, unknown> {
+  const { partId, place, owner, scopes, kind, diff, approvalState, approvedBy } = part;
+  return {
+    partId,
+    place,
+    owner,
+    scopes: [...scopes],
+    kind,
+    diff: { source: diff.source, repo: diff.repo, ref: diff.ref, commit: diff.commit, base: diff.base, truncated: diff.truncated, files: diff.files.length },
+    approvalState,
+    approvedBy,
+    personWritten: {
+      note: part.note,
+      kindReason: part.kindReason,
+      callers: part.callers,
+      breaks: part.breaks,
+      invariants: part.invariants,
+      files: part.diff.files,
+    },
+  };
 }
 
 /**

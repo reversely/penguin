@@ -28,6 +28,9 @@
  *     nothing. No token is returned: write tokens go to the feature's agent sessions only.
  *   - POST /api/features/<id>/area: replaces the declared area, `{ area }`, of one of the signed-in
  *     person's features.
+ *   - GET /api/features/<id>/plan: the feature's newest merge plan with its facts and parts, as
+ *     JSON; 404 when it has none. Commit subjects, docstrings, assertion lines and diff lines are
+ *     plain strings in it, never markup.
  *   - GET /api/overlaps: the overlapping starts that wait for the signed-in person's approval,
  *     checked against OVERLAP_REQUESTS_SCHEMA; an answer that breaks it answers 500.
  *   - POST /api/overlaps/approve: approves one of them, `{ feature, blockedFeature }`, as the
@@ -108,6 +111,8 @@ export interface DashboardBackend {
   openFeature(owner: string, input: { readonly feature: unknown; readonly area?: unknown }): Promise<FeatureOpenResult>;
   /** Replaces the declared area of one of `owner`'s features. */
   declareFeatureArea(owner: string, featureId: string, area: unknown): Promise<FeatureAreaResult>;
+  /** The feature's newest merge plan as plain JSON (Plan in @penguin/protocol), or undefined. */
+  featurePlan(featureId: string): Promise<unknown>;
   /** The overlapping starts waiting for `owner` as plain JSON (OverlapRequests in @penguin/protocol). */
   overlapRequests(owner: string): Promise<unknown>;
   /** Approves the start of `blockedFeatureId` beside `featureId` as `owner`; the ProjectAgent checks ownership. */
@@ -401,6 +406,12 @@ async function featureRoute(
   session: DashboardSession,
   handlers: DashboardHandlers,
 ): Promise<Response | undefined> {
+  const plan = /^\/api\/features\/([a-z0-9.-]{1,63})\/plan$/.exec(url.pathname)?.[1];
+  if (plan !== undefined) {
+    if (request.method !== "GET") return methodNotAllowed("GET");
+    const found = await (await handlers.dashboard()).featurePlan(plan);
+    return found === undefined ? json({ error: "not found", message: `feature ${plan} has no merge plan` }, 404) : json(found);
+  }
   const match = /^\/api\/features(?:\/([a-z0-9.-]{1,63})\/area)?$/.exec(url.pathname);
   if (match === null) return undefined;
   const [, featureId] = match;

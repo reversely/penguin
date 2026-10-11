@@ -20,6 +20,17 @@ export type { ImpactAnalyzer, ImpactForkRequest, ImpactRequest, PythonImpactOpti
 export { loadReviewConfig, readCommittedFile, runSideBySide, SideBySideError } from "./side-by-side.ts";
 export type { SideBySideOptions, SideBySideRequest } from "./side-by-side.ts";
 export { formatReviewResult, runReview } from "./review-harness.ts";
+export { failureLines, testDocstring, testFunctionName, type FailureLines } from "./test-evidence.ts";
+export {
+  checkFactsRequest,
+  factsFetcher,
+  formatPlanFactsPass,
+  planFactsPass,
+  PlanFactsRunner,
+  type PlanFactsPassOptions,
+  type PlanFactsPassResult,
+  type PlanFactsRunnerOptions,
+} from "./plan-facts-run.ts";
 export type { ReviewOptions, ReviewRequest, ReviewResult } from "./review-harness.ts";
 export { formatReviewPass, reviewPass } from "./review-run.ts";
 export type { ReviewPassOptions, ReviewPassResult, ReviewRunResult } from "./review-run.ts";
@@ -64,6 +75,7 @@ export {
   COMBINED_RUN_ROUTE,
   fetchApprovals,
   fetchPendingOperations,
+  fetchPlanFactsRuns,
   fetchVerificationRuns,
   openBridge,
   PENDING_ROUTE,
@@ -71,8 +83,10 @@ export {
   registerBridge,
   registrationFile,
   reportApproval,
+  PLAN_FACTS_ROUTE,
   reportCombinedRun,
   reportReview,
+  reportPlanFacts,
   reportVerification,
   REVIEW_ROUTE,
   TokenClient,
@@ -85,6 +99,7 @@ export type {
   ClaimedReview,
   CombinedRunReply,
   ReviewReply,
+  PlanFactsReply,
   VerificationReply,
   Fetch,
   PendingOperation,

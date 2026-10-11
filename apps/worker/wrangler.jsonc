@@ -19,11 +19,16 @@
   // PENGUIN_FEATURE_FORK_DEFAULT_BRANCH_ONLY, and gives each of the feature's agent sessions a write
   // token on that fork for PENGUIN_FEATURE_TOKEN_TTL_MINUTES (src/features.ts). Opening refuses
   // without either.
+  //
+  // A merge plan that touches more running features than PENGUIN_PLAN_BREAK_LIMIT is returned to its
+  // author (PRD 0.4 section 4.2 step 5). Unset means the PRD's default of 10; any value other than a
+  // positive whole number refuses every plan as misconfigured.
   "vars": {
     "GITHUB_OAUTH_CLIENT_ID": "Ov23liQdtDavAZ3IhIVQ",
     "PENGUIN_DASHBOARD_OWNERS": "reversely:priya",
     "PENGUIN_FEATURE_FORK_DEFAULT_BRANCH_ONLY": "true",
-    "PENGUIN_FEATURE_TOKEN_TTL_MINUTES": "30"
+    "PENGUIN_FEATURE_TOKEN_TTL_MINUTES": "30",
+    "PENGUIN_PLAN_BREAK_LIMIT": "10"
   },
   "build": {
     "command": "npm run build -w @penguin/dashboard",

@@ -98,6 +98,10 @@ import {
   type ToolRequestOutcome,
   type WhatsNearOutcome,
 } from "./agent-tools.ts";
+import { PlanFactsStore, type PlanFactsReportOutcome } from "./plan-facts.ts";
+import type { PlanKeeper } from "./plan-store.ts";
+import type { GitObjectReader } from "./repo-diff.ts";
+import { parseBreakLimit, proposePlan, type ProposePlanInput, type ProposePlanOutcome } from "./propose-plan.ts";
 import { CloseOutStore, FixApprovalStore } from "./approval-store.ts";
 import type { HuddleReviewer, ReviewCollection } from "./huddle-reviews.ts";
 import type { HuddleThread, HuddleThreadKeeper } from "./huddle-threads.ts";
@@ -144,6 +148,8 @@ import {
   type Inbox,
   type IssuePage,
   type OverlapRequests,
+  type Plan,
+  type PlanFactsRequest,
   type VerificationRunSpec,
 } from "@penguin/protocol";
 import { INVARIANTS_PATH, type ScopeMap } from "@penguin/scope-map";
@@ -269,6 +275,41 @@ export {
   type StoredFeatureRecord,
   type UnsignedFeatureRecord,
 } from "./feature-store.ts";
+export { PLAN_STORE_SCHEMA, PlanStore, type Plan, type PlanKeeper } from "./plan-store.ts";
+export {
+  dependentScopes,
+  factsRequest,
+  PLAN_FACTS_SCHEMA,
+  PlanFactsStore,
+  touchedScopes,
+  type PlanFactsReportOutcome,
+  type PlanFactsRun,
+  type PlanFactsState,
+} from "./plan-facts.ts";
+export {
+  classifyFix,
+  parseBreakLimit,
+  parseParts,
+  proposePlan,
+  type MissingItem,
+  type PlanRejection,
+  type ProposePlanDeps,
+  type ProposePlanInput,
+  type ProposePlanOutcome,
+  type RepoReading,
+} from "./propose-plan.ts";
+export {
+  changedFiles,
+  commitSubject,
+  DIFF_LIMITS,
+  fileDiffs,
+  lineHunks,
+  splitLines,
+  type ChangedFile,
+  type CommitObject,
+  type GitObjectReader,
+  type TreeObjectEntry,
+} from "./repo-diff.ts";
 export {
   AGENT_TOOL_LIMITS,
   AgentToolStore,
@@ -456,6 +497,8 @@ interface ProjectAgentEnv {
   readonly PENGUIN_OP_SIGNING_KEY?: string;
   /** Seconds without a heartbeat before a session goes offline. Defaults to SESSION_OFFLINE_AFTER_MS. */
   readonly PENGUIN_SESSION_OFFLINE_SECONDS?: string;
+  /** The most running features one merge plan may touch. Defaults to PLAN_BREAK_LIMIT_DEFAULT (PRD 4.2). */
+  readonly PENGUIN_PLAN_BREAK_LIMIT?: string;
 }
 export {
   BRIDGE_ROLES,
@@ -515,6 +558,9 @@ export class ProjectAgent extends Agent {
   #reviewRows: ReviewStore | undefined;
   #toolRows: AgentToolStore | undefined;
   #overlapRows: OverlapStore | undefined;
+  #planFacts: PlanFactsStore | undefined;
+  /** Plan proposals run one at a time, so no two take the same plan version or record sequence number. */
+  #planSteps: Promise<unknown> = Promise.resolve();
   /** Overlap checks and approvals run one at a time, so no two race for a record's sequence number. */
   #lockSteps: Promise<unknown> = Promise.resolve();
   #ledger: IngestLedger | undefined;
@@ -1542,6 +1588,77 @@ export class ProjectAgent extends Agent {
       heartbeat: (caller, session) => this.sessionHeartbeat(caller, session),
       session: (session) => this.readSession(session),
       identity: (identityId) => this.readIdentity(identityId),
+    };
+  }
+
+  /**
+   * Takes a merge plan from `owner`'s session for the feature the session works on (propose-plan.ts):
+   * fills in the facts, answers what is missing, returns a plan over the break limit, or signs the
+   * plan and has the feature's own Durable Object keep it. Proposals run one at a time.
+   */
+  proposePlan(owner: string, sessionId: string, input: ProposePlanInput, repos: ProjectRepos): Promise<ProposePlanOutcome> {
+    const run = this.#planSteps.then(() =>
+      proposePlan(
+        {
+          features: this.#featureStore(),
+          facts: this.#planFactsStore(),
+          keeper: (featureId) => this.#planKeeper(featureId),
+          scopeMap: () => this.#scopeMap(repos),
+          invariantsFile: () => this.#baseFile(repos, INVARIANTS_PATH),
+          dependents: (featureId) => this.#overlapStore().dependents(featureId),
+          readRepo: (repo, use) => withRepo(this.env.ARTIFACTS, repo, (opened) => use(opened as unknown as GitObjectReader)),
+          heartbeat: (caller, session) => this.sessionHeartbeat(caller, session),
+          sign: async (record) => signFeatureRecord(record, (await this.#loadServiceKey()).privateKey),
+          breakLimit: parseBreakLimit((this.env as unknown as ProjectAgentEnv).PENGUIN_PLAN_BREAK_LIMIT),
+          exception: (personId, featureId) => {
+            this.#inboxStore().planReturned(personId, featureId);
+            sendToOwner(this.getConnections<{ owner?: string }>(), personId, inboxChangedMessage());
+          },
+        },
+        owner,
+        sessionId,
+        input,
+      ),
+    );
+    this.#planSteps = run.catch(() => undefined);
+    return run;
+  }
+
+  /** The facts runs waiting for the check runner; refused unless `caller` holds the runner role. */
+  planFactsRuns(caller: BridgeCaller): { readonly status: "ok"; readonly runs: PlanFactsRequest[] } | { readonly status: "forbidden"; readonly message: string } {
+    if (caller.role !== "runner") return { status: "forbidden", message: `bridge ${caller.bridgeId} does not hold the runner role` };
+    return { status: "ok", runs: this.#planFactsStore().pending() };
+  }
+
+  /** Records the runner's report of facts run `runId`; refused unless `caller` holds the runner role. */
+  reportPlanFacts(caller: BridgeCaller, runId: string, report: unknown): PlanFactsReportOutcome {
+    if (caller.role !== "runner") {
+      return { status: "rejected", reason: "forbidden", message: `bridge ${caller.bridgeId} does not hold the runner role` };
+    }
+    return this.#planFactsStore().record(runId, caller.bridgeId, report);
+  }
+
+  /** The feature's newest merge plan, from its own Durable Object, or undefined. */
+  async featurePlan(featureId: string): Promise<Plan | undefined> {
+    if (this.#featureStore().get(featureId) === undefined) return undefined;
+    return this.#planKeeper(featureId).latestPlan(featureId);
+  }
+
+  #planFactsStore(): PlanFactsStore {
+    this.#planFacts ??= new PlanFactsStore(this.#database());
+    return this.#planFacts;
+  }
+
+  /**
+   * The plan store of one feature: the per-feature Durable Object, the HuddleAgent class until the
+   * FeatureAgent replaces it (#96), named apart from every Huddle's instance.
+   */
+  #planKeeper(featureId: string): PlanKeeper {
+    const named = getAgentByName(this.env.HuddleAgent, `${this.name}-feature-${featureId}`) as unknown as Promise<PlanKeeper>;
+    return {
+      planVersion: async (id) => (await named).planVersion(id),
+      keepPlan: async (plan) => (await named).keepPlan(plan),
+      latestPlan: async (id) => (await named).latestPlan(id),
     };
   }
 

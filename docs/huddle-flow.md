@@ -5,6 +5,13 @@
 > others depend on carries a merge plan, which each affected author approves in advance through the
 > review form. The originating agent writes each approved fix into the affected feature's fork.
 > Penguin promotes the whole set to main in one push.
+>
+> The merge plan's first step is built. An agent of the feature calls `propose_plan`. The check
+> runner's facts run gives the contract diff, the callers and each break with its test's docstring
+> and failing line. The Worker reads each part's changed lines through the Artifacts binding.
+> Penguin keeps the signed plan in the feature's own Durable Object
+> ([design.md](design.md#steps-1-to-5-in-the-build)). Until plan parts reach their authors, a
+> combined run on owner forks still opens a Huddle as described below.
 
 A Huddle is the issue Penguin opens when one owner's checkpoint breaks another owner's tests before
 either change reaches the main branch. It brings in only the owners whose work is involved, hands

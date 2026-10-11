@@ -1,7 +1,7 @@
 // The MCP tools for agent sessions (PRD section 8): register_session, get_work, get_issue,
 // post_update and report_checkpoint, plus the feature tools open_feature, feature_token and
-// declare_area (PRD 0.4 section 4.1), submit_review (section 6) and the agent tools whats_near, impact,
-// check and apply_fix (section 5.2). get_work also reports whether the session's feature waits on
+// declare_area (PRD 0.4 section 4.1), propose_plan (section 4.2), submit_review (section 6) and the
+// agent tools whats_near, impact, check and apply_fix (section 5.2). get_work also reports whether the session's feature waits on
 // an overlap lock, and which overlapping starts wait for the developer's approval. Each tool calls the ProjectAgent as the owner whose MCP token
 // (K3) the gateway authenticated, so a session registers only as one of that owner's identities,
 // reads and writes only the issues assigned to it, and reports checkpoints only for that owner's fork
@@ -162,6 +162,8 @@ export interface McpFeatures {
   whatsNear(sessionId: string, input: { readonly paths?: readonly string[]; readonly scopes?: readonly string[] }): Promise<FeatureCallResult>;
   /** Records `impact`, `check` or `apply_fix` on the session's feature for the check runner. */
   tool(sessionId: string, tool: "impact" | "check" | "apply_fix", input: Readonly<Record<string, unknown>>): Promise<FeatureCallResult>;
+  /** Takes a merge plan for feature `feature`, which the session works on; Penguin fills in the facts. */
+  plan(sessionId: string, feature: string, parts: unknown): Promise<FeatureCallResult>;
 }
 
 /** The project's repos as the Worker names them for one request's owner. */
@@ -424,6 +426,41 @@ const submitReviewInput = z.strictObject({
   feature: featureId.describe("The feature whose change you review."),
   scope: z.string().min(1).max(128).describe("Your scope, from penguin/scopes.json."),
   form: reviewForm,
+});
+// A merge plan (PRD 0.4 section 4.2). These caps match PLAN_LIMITS in @penguin/protocol, which the
+// ProjectAgent checks again.
+const commitSha = z.string().regex(/^[0-9a-f]{40}$/u);
+const partNote = z.string().max(2_000).optional().describe("Your note on the part for its author.");
+const planPart = z.union([
+  z.strictObject({
+    place: z
+      .strictObject({ scope: z.string().min(1).max(128).describe("A scope id from penguin/scopes.json.") })
+      .describe("Code already on main in another scope; the fix goes into your feature's fork."),
+    diff: z
+      .strictObject({
+        commit: commitSha.describe("A commit in your feature's fork whose change holds the proposed fix."),
+        base: commitSha.optional().describe("The commit the fix is read against; defaults to the commit's first parent."),
+      })
+      .describe("The proposed fix. Penguin reads only its files inside the place's affected scopes."),
+    note: partNote,
+  }),
+  z.strictObject({
+    place: z
+      .strictObject({ feature: featureId.describe("A running feature's id.") })
+      .describe("Unfinished work in a running feature; the fix goes into its fork once its person approves."),
+    patch: z
+      .strictObject({
+        base: commitSha.describe("The feature's fork head, as `affectedFeatures[].head` names it."),
+        diff: z.string().min(1).max(262_144).describe("A unified diff, as `git diff` prints it, of files inside the place's scopes."),
+      })
+      .describe("The proposed fix as a patch against the running feature's fork head."),
+    note: partNote,
+  }),
+]);
+const proposePlanInput = z.strictObject({
+  sessionId,
+  feature: featureId.describe("The feature this session works on."),
+  parts: z.array(planPart).max(128).describe("One part per affected place."),
 });
 const featureTokenInput = z.strictObject({ sessionId, feature: featureId });
 const declareAreaInput = z.strictObject({ sessionId, feature: featureId, area });
@@ -835,6 +872,33 @@ function registerFeatureTools(server: McpServer, features: McpFeatures): void {
           ...(edits === undefined ? {} : { edits }),
         }),
       ),
+  );
+
+  server.registerTool(
+    "propose_plan",
+    {
+      title: "Propose plan",
+      description:
+        "Submits the merge plan for the feature this session works on, when its latest checkpoint changes a " +
+        "contract, a stored data shape or an invariant that other scopes or running features depend on. Name " +
+        "one part per affected place: a commit in your fork for code on main, a patch against the fork head for a " +
+        "running feature. Penguin fills in the facts: the change from the " +
+        "checkpoint's commit subject, the contract diff and callers from the impact graph, the affected running " +
+        "features, each affected scope's invariants, each break with its test's docstring and failing line, and " +
+        "each part's changed lines, and classifies each fix as mechanical or behavioural. The first call for a " +
+        "checkpoint asks the check runner for the impact graph and test runs and answers `missing` until it " +
+        "reports; call again later. `missing` lists every place without a part and every part Penguin cannot " +
+        "read or apply. A plan with more behavioural parts than the project's break limit is `returned`: split it. " +
+        "A complete plan is `stored` as a signed record.",
+      inputSchema: proposePlanInput,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    },
+    async ({ sessionId: id, feature, parts }) => {
+      const outcome = await features.plan(id, feature, parts);
+      // A plan with gaps or over the limit is an answer with the reasons, marked as an error so the agent acts on it.
+      if (outcome.status === "ok" && outcome.value.status !== "stored") return { ...result({ ...outcome.value }), isError: true };
+      return answer(outcome);
+    },
   );
 }
 

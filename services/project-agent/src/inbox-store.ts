@@ -23,6 +23,9 @@
 //   exception (review-record.ts, PRD 4.3 step 4): the form reports a broken invariant, or the
 //   side-by-side run differs on a protected invariant. Its `issue_id` holds `<feature>/<scope>`. A
 //   later review of the same scope with an exception marks it unread again.
+// - "plan_returned": a merge plan of the person's feature touched more running features than the
+//   project's break limit, so Penguin returned it to its author (propose-plan.ts, PRD section 7). Its
+//   `issue_id` holds `plan:<feature>`. A later return marks it unread again.
 //
 // The person who did the thing gets no "assigned", "mentioned" or "closed" item for it. An identity's
 // operation counts as its owner half's doing, as in IssueIndex.assigningOwner.
@@ -50,6 +53,7 @@ export const INBOX_REASONS = [
   "thread",
   "overlap",
   "review_exception",
+  "plan_returned",
 ] as const;
 export type InboxReason = (typeof INBOX_REASONS)[number];
 
@@ -185,6 +189,11 @@ export class InboxStore implements StartRequestListener {
     this.#raise(personId, `${featureId}/${scopeId}`, "review_exception");
   }
 
+  /** Tells `personId` that a plan of their feature `featureId` went over the break limit and was returned. */
+  planReturned(personId: string, featureId: string): void {
+    this.#raise(personId, planRef(featureId), "plan_returned");
+  }
+
   /** The lock was approved or withdrawn, so the request goes. */
   overlapSettled(personId: string, featureId: string, blockedFeatureId: string): void {
     this.#db.exec(
@@ -231,6 +240,11 @@ export class InboxStore implements StartRequestListener {
 }
 
 /** An overlap item's reference: the covering feature and the blocked one. Feature ids hold no "/". */
+/** The reference of a feature's returned-plan item; no issue id can take this form. */
+export function planRef(featureId: string): string {
+  return `plan:${featureId}`;
+}
+
 export function overlapRef(featureId: string, blockedFeatureId: string): string {
   return `${featureId}/${blockedFeatureId}`;
 }

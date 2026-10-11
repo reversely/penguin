@@ -96,6 +96,7 @@ export default {
               const declared = await agent.declareFeatureArea(owner, featureId, area, null, repos);
               return declared.status === "ok" ? { status: "ok", feature: featureView(declared.feature) } : declared;
             },
+            featurePlan: async (featureId) => agent.featurePlan(featureId),
             overlapRequests: async (owner) => agent.overlapRequests(owner),
             // The approver is the session's person, named by the dashboard route, never by the body.
             approveOverlap: async (owner, featureId, blockedFeatureId) => {

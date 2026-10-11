@@ -6,6 +6,8 @@ export * from "./combined-run.ts";
 export * from "./verification.ts";
 export * from "./impact.ts";
 export * from "./block-check.ts";
+export * from "./plan.ts";
+export * from "./patch.ts";
 export { RUNNER_INTERVAL_MS } from "./runner.ts";
 export { checkSchema, type JsonSchema, type SchemaError } from "./schema-check.ts";
 export {

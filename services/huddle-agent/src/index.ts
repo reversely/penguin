@@ -8,6 +8,7 @@ import {
   HuddleThreadStore,
   pendingApprovals,
   pendingVerifications,
+  PlanStore,
   recordApprovedBranch,
   recordVerification,
   runIdBaseOf,
@@ -26,11 +27,14 @@ import {
   type HuddleThreadKeeper,
   type HuddleVerifier,
   type HuddleVerifyDeps,
+  type Plan,
+  type PlanKeeper,
   type PendingVerification,
   type ReviewCollection,
   type VerificationOutcome,
   type VerificationScheduleOutcome,
 } from "@penguin/project-agent";
+
 
 /**
  * Runs the verification and review loop of one Huddle issue (PRD section 5): it schedules, coalesces
@@ -46,12 +50,17 @@ import {
  * its operations, review requests, approvals and close-out there, where the service key signs the
  * operations and the index validates them. A CryptoKey cannot cross Durable Object RPC, so the
  * signing stays on the ProjectAgent's side.
+ *
+ * An instance named for a feature instead keeps that feature's merge plans and their parts
+ * (plan-store.ts, PRD 0.4 section 9), until the FeatureAgent takes them over (#96). The ProjectAgent
+ * checks and signs each plan before this instance keeps it.
  */
-export class HuddleAgent extends Agent implements HuddleVerifier, HuddleReviewer, HuddleThreadKeeper, HuddleCloser {
+export class HuddleAgent extends Agent implements HuddleVerifier, HuddleReviewer, HuddleThreadKeeper, HuddleCloser, PlanKeeper {
   #runs: VerificationStore | undefined;
   #reviews: FixReviewStore | undefined;
   #threads: HuddleThreadStore | undefined;
   #approvals: ApprovedBranchStore | undefined;
+  #plans: PlanStore | undefined;
   /** Steps run one at a time, so no two interleave their writes. */
   #steps: Promise<unknown> = Promise.resolve();
 
@@ -158,6 +167,26 @@ export class HuddleAgent extends Agent implements HuddleVerifier, HuddleReviewer
       }
       return recordApprovedBranch(this.#closeDeps(huddle.issueId, project), huddle, runnerId, report);
     });
+  }
+
+  /** The feature's newest plan version, or 0; see plan-store.ts. */
+  planVersion(featureId: string): number {
+    return this.#planStore().planVersion(featureId);
+  }
+
+  /** Keeps a plan the ProjectAgent signed, with every part; false when that version exists. */
+  keepPlan(plan: Plan): boolean {
+    return this.#planStore().keepPlan(plan);
+  }
+
+  /** The feature's newest plan with its parts, or undefined. */
+  latestPlan(featureId: string): Plan | undefined {
+    return this.#planStore().latestPlan(featureId);
+  }
+
+  #planStore(): PlanStore {
+    this.#plans ??= new PlanStore(durableObjectSql(this.ctx.storage));
+    return this.#plans;
   }
 
   /** Evaluates the close after another step; a failure is logged, and the next step evaluates again. */

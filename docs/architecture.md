@@ -56,7 +56,7 @@ flowchart TB
   Bridge -- "git push checkpoints" --> Forks
   Bridge -- "git push signed operations" --> Issues
   Browser -- "/api/*, /api/live" --> Worker
-  Runner -- "HTTPS: pending operations,<br/>combined runs, verifications, approvals" --> Worker
+  Runner -- "HTTPS: pending operations,<br/>combined runs, plan facts, verifications, approvals" --> Worker
   Runner -- "git fetch" --> Forks
   Runner -- "git push operations" --> Issues
   Runner -- "git push integration, approved" --> Huddle

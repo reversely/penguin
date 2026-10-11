@@ -63,9 +63,17 @@ export interface Feature {
 
 /**
  * The record types of a feature: the opening, a declaration and a checkpoint's update, written here,
- * and an overlap check and an approval of a start, written by overlap-lock.ts.
+ * an overlap check and an approval of a start, written by overlap-lock.ts, and a merge plan and a plan
+ * returned over the break limit, written by propose-plan.ts.
  */
-export type FeatureRecordType = "open_feature" | "declare_area" | "checkpoint_area" | "overlap_check" | "approve_overlap";
+export type FeatureRecordType =
+  | "open_feature"
+  | "declare_area"
+  | "checkpoint_area"
+  | "overlap_check"
+  | "approve_overlap"
+  | "propose_plan"
+  | "plan_returned";
 
 export interface FeatureRecord {
   readonly schema_version: 1;

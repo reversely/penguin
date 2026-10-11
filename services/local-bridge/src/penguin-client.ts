@@ -11,6 +11,8 @@ import type {
   CombinedRunEvent,
   ReviewException,
   ReviewRecord,
+  PlanFactsReport,
+  PlanFactsRequest,
   VerificationReport,
   VerificationRunSpec,
 } from "@penguin/protocol";
@@ -469,6 +471,40 @@ export async function reportVerification(
     throw new RemoteRefusedError(`Penguin refused verification run ${runId} (HTTP ${status})${message}`);
   }
   throw new RemoteUnavailableError(`Penguin could not take verification run ${runId} (HTTP ${status})${message}`);
+}
+
+/** The route a runner lists merge-plan facts runs from, and reports each one to under `/<run id>`. */
+export const PLAN_FACTS_ROUTE = "/plan-facts";
+
+/** Penguin's answer to a facts report: recorded, or superseded by a newer checkpoint of the feature. */
+export type PlanFactsReply =
+  | { readonly status: "recorded"; readonly runId: string }
+  | { readonly status: "superseded"; readonly message: string };
+
+/** Lists the merge-plan facts runs waiting for the runner. Penguin answers only a runner bridge. */
+export async function fetchPlanFactsRuns(server: string, bridgeToken: string, fetchImpl: Fetch = fetch): Promise<PlanFactsRequest[]> {
+  const { status, body } = await runnerRequest(server, bridgeToken, PLAN_FACTS_ROUTE, undefined, fetchImpl);
+  if (status !== 200 || !Array.isArray(body["runs"])) {
+    throw new RemoteUnavailableError(`Penguin could not list plan facts runs (HTTP ${status})`);
+  }
+  return body["runs"] as PlanFactsRequest[];
+}
+
+/** Reports one facts run; Penguin keeps it for the feature's merge plan. */
+export async function reportPlanFacts(
+  server: string,
+  bridgeToken: string,
+  runId: string,
+  report: PlanFactsReport,
+  fetchImpl: Fetch = fetch,
+): Promise<PlanFactsReply> {
+  const route = `${PLAN_FACTS_ROUTE}/${encodeURIComponent(runId)}`;
+  const { status, body } = await runnerRequest(server, bridgeToken, route, report, fetchImpl);
+  if (status === 200) return body as unknown as PlanFactsReply;
+  const message = typeof body["message"] === "string" ? `: ${body["message"]}` : "";
+  if (status === 409 && body["error"] === "superseded") return { status: "superseded", message: String(body["message"]) };
+  if ([400, 404, 409].includes(status)) throw new RemoteRefusedError(`Penguin refused plan facts run ${runId} (HTTP ${status})${message}`);
+  throw new RemoteUnavailableError(`Penguin could not take plan facts run ${runId} (HTTP ${status})${message}`);
 }
 
 /** The route a runner lists approved branches from, and reports each one to under `/<issue id>`. */
