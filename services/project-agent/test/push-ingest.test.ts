@@ -1,24 +1,15 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { after, before, describe, test } from "node:test";
-import { DatabaseSync } from "node:sqlite";
+import { before, describe, test } from "node:test";
+import type { DatabaseSync } from "node:sqlite";
 
 import { generateSigningKeyPair, signOperation } from "@penguin/issues";
 import { formatOpId, operationPath, type Author, type IssueId, type Operation } from "@penguin/protocol";
 import { parseScopeMap } from "@penguin/scope-map";
 
 import { BridgeRegistry } from "../src/bridge-registry.ts";
-import { IssueIndex, type ApplyOutcome, type OperationKeys, type SqlDatabase } from "../src/issue-index.ts";
-import {
-  IngestLedger,
-  ingestPush,
-  type AddedOperationFile,
-  type IssuesRepoReader,
-  type RepoTreeEntry,
-} from "../src/push-ingest.ts";
+import { IssueIndex, type ApplyOutcome, type OperationKeys } from "../src/issue-index.ts";
+import { IngestLedger, ingestPush, type AddedOperationFile } from "../src/push-ingest.ts";
+import { GitRepo, sqlite } from "./issues-repo.ts";
 
 const penguin: Author = { penguin: true };
 const jun: Author = { person: "jun" };
@@ -27,7 +18,6 @@ let service: CryptoKeyPair;
 let junBridge: CryptoKeyPair;
 let stranger: CryptoKeyPair;
 let keys: OperationKeys;
-const tempDirs: string[] = [];
 
 before(async () => {
   [service, junBridge, stranger] = await Promise.all([
@@ -42,99 +32,6 @@ before(async () => {
     identities: { byHandle: () => undefined },
   };
 });
-
-after(() => {
-  for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
-});
-
-function sqlite(): { db: DatabaseSync; sql: SqlDatabase } {
-  const db = new DatabaseSync(":memory:");
-  const sql: SqlDatabase = {
-    exec: (query, ...bindings) => db.prepare(query).all(...bindings) as Record<string, string | number | null>[],
-    transaction: (body) => {
-      db.exec("BEGIN");
-      try {
-        const result = body();
-        db.exec("COMMIT");
-        return result;
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
-    },
-  };
-  return { db, sql };
-}
-
-/** A real Git repo on disk standing in for the issues repo, read through the binding's methods. */
-class GitRepo {
-  readonly dir = mkdtempSync(join(tmpdir(), "penguin-issues-"));
-
-  constructor() {
-    tempDirs.push(this.dir);
-    this.git("init", "--quiet", "--initial-branch=main");
-  }
-
-  git(...args: string[]): string {
-    return execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", "-C", this.dir, ...args], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-    }).trim();
-  }
-
-  /** Writes the files and commits them on the current branch; returns the commit SHA. */
-  commit(files: Record<string, string | Uint8Array>, message = "ops"): string {
-    for (const [path, content] of Object.entries(files)) {
-      mkdirSync(dirname(join(this.dir, path)), { recursive: true });
-      writeFileSync(join(this.dir, path), content);
-    }
-    this.git("add", "--all");
-    this.git("commit", "--quiet", "--allow-empty", "-m", message);
-    return this.git("rev-parse", "HEAD");
-  }
-
-  /** Counts each method call, like the ProjectAgent's binding report. */
-  readonly calls: Record<string, number> = {};
-
-  reader(): IssuesRepoReader {
-    const count = (method: string): void => {
-      this.calls[method] = (this.calls[method] ?? 0) + 1;
-    };
-    return {
-      log: async ({ ref, limit, offset }) => {
-        count("log");
-        let out: string;
-        try {
-          out = this.git("log", "--first-parent", "--format=%H %T", `--skip=${offset}`, `-n${limit}`, ref, "--");
-        } catch {
-          return [];
-        }
-        return out === ""
-          ? []
-          : out.split("\n").map((line) => {
-              const [hash, treeHash] = line.split(" ") as [string, string];
-              return { hash, treeHash };
-            });
-      },
-      readTree: async (hash) => {
-        count("readTree");
-        const out = this.git("ls-tree", hash);
-        return out === "" ? [] : out.split("\n").map(treeEntry);
-      },
-      readBlob: async (hash) => {
-        count("readBlob");
-        return new Blob([execFileSync("git", ["-C", this.dir, "cat-file", "blob", hash])]);
-      },
-    };
-  }
-}
-
-function treeEntry(line: string): RepoTreeEntry {
-  const [meta, name] = line.split("\t") as [string, string];
-  const [mode, , hash] = meta.split(" ") as [string, string, string];
-  const type = mode === "040000" ? "tree" : mode === "100755" ? "exec" : mode === "120000" ? "symlink" : "blob";
-  return { name, hash, type };
-}
 
 /** Builds signed operation files; tracks each author's sequence numbers. */
 class Ops {

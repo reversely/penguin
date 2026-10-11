@@ -40,6 +40,10 @@ export default {
       {
         routeAgents: (agentRequest) => routeAgentRequest(agentRequest, env),
         setUpProject: (setupRequest) => setUpProject(env.ARTIFACTS, setupRequest, names),
+        rebuildIndex: async () => {
+          const agent = await getAgentByName(env.ProjectAgent, projectAgentName(names));
+          return agent.rebuildIndex({ issues: names.issues, base: names.base });
+        },
         // One ProjectAgent per repo prefix, so a test run's bridges stay apart from production's.
         bridges: () => getAgentByName(env.ProjectAgent, projectAgentName(names)),
         mintToken: (repo, scope, ttl) => {

@@ -9,9 +9,14 @@
  * POST /setup is the deployer's project setup. It always requires the deployer credential, the
  * PENGUIN_DEPLOYER_TOKEN secret sent as a Bearer token, local development included.
  *
+ * POST /index/rebuild, deployer only, rebuilds the issue index from the issues repo into shadow
+ * tables and returns their comparison with the live tables.
+ *
  * The bridge routes (/bridges, /bridges/codes, /bridges/<id> and /tokens) carry their own
  * credentials; see bridges.ts.
  */
+
+import type { RebuildReport } from "@penguin/project-agent";
 
 import { isDeployer } from "./auth.ts";
 import { handleBridgeRoute, type BridgeHandlers } from "./bridges.ts";
@@ -24,10 +29,12 @@ import {
 
 export type AgentRouter = (request: Request) => Promise<Response | null>;
 export type ProjectSetup = (request: ProjectSetupRequest) => Promise<ProjectSetupReport>;
+export type IndexRebuild = () => Promise<RebuildReport>;
 
 export interface GatewayHandlers extends BridgeHandlers {
   readonly routeAgents: AgentRouter;
   readonly setUpProject: ProjectSetup;
+  readonly rebuildIndex: IndexRebuild;
 }
 
 export interface GatewayOptions {
@@ -83,6 +90,26 @@ async function handleSetup(
   }
 }
 
+async function handleRebuild(request: Request, options: GatewayOptions, rebuildIndex: IndexRebuild): Promise<Response> {
+  if (!(await isDeployer(request, options.deployerToken))) {
+    return Response.json({ error: "unauthorized" }, { status: 401 });
+  }
+  if (request.method !== "POST") {
+    return new Response(null, { status: 405, headers: { Allow: "POST" } });
+  }
+  try {
+    return Response.json(await rebuildIndex());
+  } catch (error) {
+    // A missing Git object or key fails the whole rebuild; the deployer runs it again. The live
+    // index only ever catches up, which a repeat does safely.
+    const message = error instanceof Error ? error.message : String(error);
+    return Response.json(
+      { error: "rebuild failed", code: artifactsErrorCode(error) ?? null, message },
+      { status: 502 },
+    );
+  }
+}
+
 export async function handleRequest(
   request: Request,
   options: GatewayOptions,
@@ -99,6 +126,10 @@ export async function handleRequest(
 
   if (url.pathname === "/setup") {
     return handleSetup(request, options, handlers.setUpProject);
+  }
+
+  if (url.pathname === "/index/rebuild") {
+    return handleRebuild(request, options, handlers.rebuildIndex);
   }
 
   const bridgeResponse = await handleBridgeRoute(

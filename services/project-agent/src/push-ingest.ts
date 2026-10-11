@@ -59,7 +59,7 @@ export interface IngestReport {
 /** `log()` returns at most 1000 commits per call. */
 const LOG_PAGE = 1000;
 
-const LEDGER_SCHEMA = `CREATE TABLE IF NOT EXISTS IngestedCommit (sha TEXT PRIMARY KEY, ingested_at INTEGER NOT NULL)`;
+export const INGEST_LEDGER_SCHEMA = `CREATE TABLE IF NOT EXISTS IngestedCommit (sha TEXT PRIMARY KEY, ingested_at INTEGER NOT NULL)`;
 
 /** The issues-repo commits whose added operation files have all been applied. */
 export class IngestLedger {
@@ -67,7 +67,7 @@ export class IngestLedger {
 
   constructor(db: SqlDatabase) {
     this.#db = db;
-    db.exec(LEDGER_SCHEMA);
+    db.exec(INGEST_LEDGER_SCHEMA);
   }
 
   has(sha: string): boolean {
@@ -205,7 +205,8 @@ async function addedOperationFiles(
   return added;
 }
 
-function countCalls(repo: IssuesRepoReader): { repo: IssuesRepoReader; calls: Record<string, number> } {
+/** Wraps `repo` so each binding call is counted by method name. */
+export function countCalls(repo: IssuesRepoReader): { repo: IssuesRepoReader; calls: Record<string, number> } {
   const calls: Record<string, number> = {};
   const count = (method: string): void => {
     calls[method] = (calls[method] ?? 0) + 1;

@@ -169,7 +169,8 @@ const AUTHENTICATED_REJECTIONS: ReadonlySet<RejectReason> = new Set([
 
 const ISSUE_IN_PATH = /^issues\/([a-z0-9.-]{1,128})\/ops\//u;
 
-const SCHEMA = [
+/** The index's tables and SQL indexes. The rebuild reads the names here to build its shadow copies. */
+export const ISSUE_INDEX_SCHEMA: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS Issue (
     id TEXT PRIMARY KEY, kind TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL,
     state TEXT NOT NULL, state_reason TEXT, labels TEXT NOT NULL, parent_id TEXT, huddle_id TEXT,
@@ -223,7 +224,7 @@ export class IssueIndex {
 
   constructor(db: SqlDatabase) {
     this.#db = db;
-    for (const statement of SCHEMA) db.exec(statement);
+    for (const statement of ISSUE_INDEX_SCHEMA) db.exec(statement);
   }
 
   /** Validates, reduces and records one operation. Calls are applied in the order they are made. */

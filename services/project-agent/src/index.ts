@@ -14,6 +14,7 @@ import {
   type TimelineEntry,
 } from "./issue-index.ts";
 import { IngestLedger, ingestPush, type IngestReport } from "./push-ingest.ts";
+import { rebuildIndex, type RebuildReport } from "./rebuild.ts";
 import { parseScopeFile, SCOPE_MAP_PATH } from "./scope-file.ts";
 import {
   IdentityStore,
@@ -65,6 +66,7 @@ export {
 } from "./identity-store.ts";
 export { importServiceKey, type ServiceKey } from "./service-key.ts";
 export type { IngestReport } from "./push-ingest.ts";
+export type { IndexComparison, RebuildReport, RowDifference, TableComparison } from "./rebuild.ts";
 
 /** The Worker secret this class reads. `wrangler types` does not list secrets, so it is declared here. */
 interface ServiceKeyEnv {
@@ -150,6 +152,17 @@ export class ProjectAgent extends Agent {
    */
   ingestPush(push: IssuesPush, repos: ProjectRepos): Promise<IngestResult> {
     const run = this.#ingests.then(() => this.#ingest(push, repos));
+    this.#ingests = run.catch(() => undefined);
+    return run;
+  }
+
+  /**
+   * Rebuilds the issue index from the issues repo into shadow tables and compares them row by row
+   * with the live tables; see rebuild.ts. The live index is first caught up to the repo's head. Runs
+   * in the ingest queue, so no push is applied part way through the rebuild.
+   */
+  rebuildIndex(repos: ProjectRepos): Promise<RebuildReport> {
+    const run = this.#ingests.then(() => this.#rebuild(repos));
     this.#ingests = run.catch(() => undefined);
     return run;
   }
@@ -260,6 +273,15 @@ export class ProjectAgent extends Agent {
       ),
     );
     return { ...report, durationMs: Date.now() - started };
+  }
+
+  async #rebuild(repos: ProjectRepos): Promise<RebuildReport> {
+    const keys = await this.#operationKeys(repos);
+    this.#ledger ??= new IngestLedger(this.#database());
+    const live = { index: this.#index(), ledger: this.#ledger };
+    return withRepo(this.env.ARTIFACTS, repos.issues, (repo) =>
+      rebuildIndex({ repo, db: this.#database(), live, keys }),
+    );
   }
 
   /**
