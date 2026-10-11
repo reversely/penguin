@@ -1,11 +1,18 @@
 // The ProjectAgent's issue index: validates each operation, reduces it into its issue's state and
 // writes the result to SQL with one AppliedOp row per operation. It talks to SQL through `SqlDatabase`,
 // so the Durable Object's storage runs it in the Worker and node:sqlite runs it in tests.
+//
+// Operations from MCP, the dashboard and Penguin arrive through `submit`: the index signs them with
+// the service key, applies them at once and holds them in PendingOp until the runner pushes them to
+// the issues repo. The push event then reaches `apply`, which drops the PendingOp row and records
+// the commit on the existing AppliedOp row (PRD sections 5, 7 and 12).
 
 import {
   canonicalBytes,
+  canonicalJson,
   issueKey,
   reduce,
+  signOperation,
   validate,
   type BridgeKey,
   type Comment,
@@ -15,7 +22,16 @@ import {
   type ReduceRejectReason,
   type Thread,
 } from "@penguin/issues";
-import { authorSegment, validateOperation, parseOperationFile, type Operation } from "@penguin/protocol";
+import {
+  authorSegment,
+  formatOpId,
+  operationPath,
+  parseOperationFile,
+  validateOperation,
+  type Author,
+  type Operation,
+  type UnsignedOperation,
+} from "@penguin/protocol";
 import type { ScopeMap } from "@penguin/scope-map";
 
 export type SqlValue = string | number | null;
@@ -57,6 +73,57 @@ export type ApplyOutcome =
     }
   | { readonly status: "duplicate"; readonly opId: string };
 
+/** Where a submitted operation came from. Penguin's own operations wait for the runner as well. */
+export type PendingSource = "mcp" | "dashboard" | "penguin";
+
+export interface SubmitInput {
+  /** The caller's operation: `issue`, `type`, `base_version` and `payload`. Penguin sets the rest. */
+  readonly operation: unknown;
+  /** The author the gateway authenticated. The operation may repeat it but never name anyone else. */
+  readonly author: Author;
+  readonly source: PendingSource;
+  /** The private half of the service key (K5). It signs the operation and is never stored or returned. */
+  readonly signingKey: CryptoKey;
+  readonly keys: OperationKeys;
+  /** Milliseconds since the epoch, for PendingOp.created_at. */
+  readonly now?: number;
+}
+
+/** A rejected submission goes back to the caller and is recorded nowhere, so the caller can retry. */
+export type SubmitOutcome =
+  | {
+      readonly status: "applied";
+      readonly opId: string;
+      readonly issueId: string;
+      readonly version: number;
+      readonly path: string;
+    }
+  | {
+      readonly status: "rejected";
+      readonly reason: RejectReason | ReduceRejectReason;
+      readonly message: string;
+    };
+
+/** A caller the gateway authenticated by its bridge token (K4), with the role the token grants. */
+export interface BridgeCaller {
+  readonly bridgeId: string;
+  readonly role: "owner" | "runner";
+}
+
+/** One operation waiting for the runner, as the file the runner writes at `path` in the issues repo. */
+export interface PendingFile {
+  readonly opId: string;
+  readonly path: string;
+  /** The signed operation file's text. */
+  readonly file: string;
+  readonly source: PendingSource;
+  readonly createdAt: number;
+}
+
+export type PendingListing =
+  | { readonly status: "ok"; readonly files: PendingFile[] }
+  | { readonly status: "forbidden"; readonly message: string };
+
 export interface TimelineEntry {
   readonly seq: number;
   readonly opId: string;
@@ -68,7 +135,12 @@ export interface TimelineEntry {
   readonly rejectReason: string | null;
   readonly message: string | null;
   readonly gitCommit: string | null;
+  /** True while the operation is applied in the index but not yet pushed to the issues repo. */
+  readonly waitingForGitLog: boolean;
 }
+
+/** Fields a submission may carry. Penguin fills `schema_version`, `op_id` and `signature`. */
+const DRAFT_FIELDS: ReadonlySet<string> = new Set(["issue", "type", "base_version", "payload", "author"]);
 
 /**
  * Rejections the validator gives only after the signature verified under a key bound to the author.
@@ -117,7 +189,11 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS AppliedOp (
     seq INTEGER PRIMARY KEY, op_id TEXT NOT NULL UNIQUE, stated_op_id TEXT, issue_id TEXT, author TEXT,
     type TEXT, payload TEXT, status TEXT NOT NULL, reject_reason TEXT, message TEXT, git_commit TEXT)`,
+  // `file` holds the signed operation file the runner pushes; the PRD names the other three columns.
+  `CREATE TABLE IF NOT EXISTS PendingOp (
+    op_id TEXT PRIMARY KEY, source TEXT NOT NULL, created_at INTEGER NOT NULL, file TEXT NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS AppliedOp_issue ON AppliedOp (issue_id, seq)`,
+  `CREATE INDEX IF NOT EXISTS AppliedOp_author ON AppliedOp (author)`,
   `CREATE INDEX IF NOT EXISTS Comment_issue ON Comment (issue_id)`,
   `CREATE INDEX IF NOT EXISTS SubIssue_parent ON SubIssue (parent_id)`,
 ];
@@ -139,9 +215,34 @@ export class IssueIndex {
 
   /** Validates, reduces and records one operation. Calls are applied in the order they are made. */
   apply(input: ApplyInput): Promise<ApplyOutcome> {
-    const run = this.#queue.then(() => this.#apply(input));
-    this.#queue = run.catch(() => undefined);
-    return run;
+    return this.#serially(() => this.#apply(input));
+  }
+
+  /**
+   * Fills in the authenticated author and the author's next op_id, signs with the service key,
+   * validates and applies the operation, and holds it in PendingOp for the runner. Calls share
+   * `apply`'s queue, so two submissions never take the same op_id.
+   */
+  submit(input: SubmitInput): Promise<SubmitOutcome> {
+    return this.#serially(() => this.#submit(input));
+  }
+
+  /** The operations waiting for the runner, in the order they were applied. Only the runner may list them. */
+  pendingFiles(caller: BridgeCaller): PendingListing {
+    if (caller.role !== "runner") {
+      return { status: "forbidden", message: `bridge ${caller.bridgeId} does not hold the runner role` };
+    }
+    const files = this.#db.exec(`SELECT * FROM PendingOp ORDER BY rowid`).map((row): PendingFile => {
+      const file = row["file"] as string;
+      return {
+        opId: row["op_id"] as string,
+        path: operationPath(JSON.parse(file) as Operation),
+        file,
+        source: row["source"] as PendingSource,
+        createdAt: Number(row["created_at"]),
+      };
+    });
+    return { status: "ok", files };
   }
 
   /** One issue's state, or undefined when it does not exist. */
@@ -152,12 +253,71 @@ export class IssueIndex {
 
   /** One issue with every operation recorded against it, applied or rejected, in apply order. */
   read(id: string): { readonly issue: IssueRecord | undefined; readonly timeline: TimelineEntry[] } {
-    const rows = this.#db.exec(`SELECT * FROM AppliedOp WHERE issue_id = ? ORDER BY seq`, id);
+    const rows = this.#db.exec(
+      `SELECT a.*, p.op_id IS NOT NULL AS waiting FROM AppliedOp a LEFT JOIN PendingOp p ON p.op_id = a.op_id
+       WHERE a.issue_id = ? ORDER BY a.seq`,
+      id,
+    );
     return { issue: this.issue(id), timeline: rows.map(timelineEntry) };
   }
 
-  async #apply({ file, gitCommit, path, keys }: ApplyInput): Promise<ApplyOutcome> {
+  #serially<T>(body: () => Promise<T>): Promise<T> {
+    const run = this.#queue.then(body);
+    this.#queue = run.catch(() => undefined);
+    return run;
+  }
+
+  async #submit({ operation, author, source, signingKey, keys, now = Date.now() }: SubmitInput): Promise<SubmitOutcome> {
+    const draft = draftFields(operation, author, source);
+    if ("reason" in draft) return { status: "rejected", reason: draft.reason, message: draft.message };
+    const unsigned = withoutUndefined({
+      schema_version: 1,
+      op_id: formatOpId(author, this.#lastSeq(author) + 1),
+      issue: draft.issue,
+      type: draft.type,
+      author,
+      base_version: draft.base_version,
+      payload: draft.payload,
+    }) as UnsignedOperation;
+    let signed: Operation;
+    try {
+      signed = await signOperation(unsigned, signingKey);
+    } catch (error) {
+      // canonicalJson throws on values JSON cannot hold, such as NaN.
+      const detail = error instanceof Error ? error.message : String(error);
+      return { status: "rejected", reason: "malformed", message: detail };
+    }
+    const outcome = await this.#apply({ file: operationFile(signed), gitCommit: null, keys }, { source, now });
+    if (outcome.status === "rejected") return { status: "rejected", reason: outcome.reason, message: outcome.message };
+    if (outcome.status === "duplicate") throw new Error(`op_id ${outcome.opId} was taken during submission`);
+    return { ...outcome, path: operationPath(signed) };
+  }
+
+  /** The highest sequence number among the author's op_ids that the index holds as claimed. */
+  #lastSeq(author: Author): number {
+    const segment = authorSegment(author);
+    // Only applied and authenticated-rejected rows claim their op_id (op_id = stated_op_id). An
+    // unauthenticated file can state any sequence number, so it must not move the counter.
+    const [row] = this.#db.exec(
+      `SELECT MAX(CAST(substr(op_id, ?) AS INTEGER)) AS seq FROM AppliedOp WHERE author = ? AND op_id = stated_op_id`,
+      segment.length + 2,
+      segment,
+    );
+    return Number(row?.["seq"] ?? 0);
+  }
+
+  /**
+   * With `pending` set, the operation comes from `submit`: a rejection goes back without a record,
+   * and an accepted operation gets its PendingOp row in the same transaction as its AppliedOp row.
+   */
+  async #apply(
+    { file, gitCommit, path, keys }: ApplyInput,
+    pending?: { readonly source: PendingSource; readonly now: number },
+  ): Promise<ApplyOutcome> {
     const parsed = parseInput(file);
+    if (parsed !== undefined && gitCommit !== null && this.#confirmPushed(parsed, path, gitCommit)) {
+      return { status: "duplicate", opId: parsed.op_id };
+    }
     const issueId = parsed?.issue !== undefined ? issueKey(parsed.issue) : issueFromPath(path);
     const current = parsed === undefined ? undefined : this.issue(issueKey(parsed.issue));
     const claimed = parsed !== undefined && this.#recorded(parsed.op_id) ? [parsed.op_id] : [];
@@ -171,6 +331,7 @@ export class IssueIndex {
     if (verdict.status === "duplicate") return verdict;
 
     if (verdict.status === "rejected") {
+      if (pending !== undefined) return unrecorded(issueId, verdict.reason, verdict.message);
       const operation = verdict.operation;
       const opId =
         operation !== undefined && AUTHENTICATED_REJECTIONS.has(verdict.reason)
@@ -183,7 +344,10 @@ export class IssueIndex {
     const operation = verdict.operation;
     const id = issueKey(operation.issue);
     const result = reduce(current, operation, { parentOf: (other) => this.issue(other)?.parentId });
-    if (!result.ok) return this.#reject(operation.op_id, operation, id, result.reason, result.message, gitCommit);
+    if (!result.ok) {
+      if (pending !== undefined) return unrecorded(id, result.reason, result.message);
+      return this.#reject(operation.op_id, operation, id, result.reason, result.message, gitCommit);
+    }
 
     try {
       this.#db.transaction(() => {
@@ -191,6 +355,15 @@ export class IssueIndex {
         if (operation.type === "open_sub_issue")
           this.#setParent(issueKey(operation.payload["sub_issue"] as string | number), id);
         this.#record(operation.op_id, operation, id, "applied", null, null, gitCommit);
+        if (pending !== undefined) {
+          this.#db.exec(
+            `INSERT INTO PendingOp (op_id, source, created_at, file) VALUES (?, ?, ?, ?)`,
+            operation.op_id,
+            pending.source,
+            pending.now,
+            operationFile(operation),
+          );
+        }
       });
     } catch (error) {
       // The cache may hold states the rollback undid.
@@ -211,6 +384,24 @@ export class IssueIndex {
   ): ApplyOutcome {
     this.#record(opId, operation, issueId, "rejected", reason, message, gitCommit);
     return { status: "rejected", opId, issueId, reason, message };
+  }
+
+  /**
+   * When `parsed` is a pending operation arriving from the issues repo, records the commit on its
+   * AppliedOp row and drops its PendingOp row. Only the exact signed operation at its own path
+   * counts: anyone can push a file that names a pending op_id, and that file must not mark the real
+   * operation as pushed.
+   */
+  #confirmPushed(parsed: Operation, path: string | undefined, gitCommit: string): boolean {
+    const [row] = this.#db.exec(`SELECT file FROM PendingOp WHERE op_id = ?`, parsed.op_id);
+    if (row === undefined) return false;
+    if (path !== undefined && path !== operationPath(parsed)) return false;
+    if (canonicalJson(JSON.parse(row["file"] as string)) !== canonicalJson(parsed)) return false;
+    this.#db.transaction(() => {
+      this.#db.exec(`UPDATE AppliedOp SET git_commit = ? WHERE op_id = ?`, gitCommit, parsed.op_id);
+      this.#db.exec(`DELETE FROM PendingOp WHERE op_id = ?`, parsed.op_id);
+    });
+    return true;
   }
 
   #recorded(opId: string): boolean {
@@ -534,7 +725,73 @@ function timelineEntry(row: Row): TimelineEntry {
     rejectReason: (row["reject_reason"] as string | null) ?? null,
     message: (row["message"] as string | null) ?? null,
     gitCommit: (row["git_commit"] as string | null) ?? null,
+    waitingForGitLog: Number(row["waiting"]) === 1,
   };
+}
+
+/** A submission's rejection, which keeps no AppliedOp row and so claims no op_id. */
+function unrecorded(issueId: string | null, reason: RejectReason | ReduceRejectReason, message: string): ApplyOutcome {
+  return { status: "rejected", opId: "", issueId, reason, message };
+}
+
+/** An operation file's text, laid out like the files in the issues repo: two-space JSON and a final newline. */
+function operationFile(operation: Operation): string {
+  return `${JSON.stringify(operation, null, 2)}\n`;
+}
+
+type Draft = Pick<UnsignedOperation, "issue" | "type" | "base_version" | "payload">;
+
+/** Which kinds of author each source writes as: a person on the dashboard, a person or identity over MCP. */
+const SOURCE_AUTHORS: Readonly<Record<PendingSource, readonly string[]>> = {
+  dashboard: ["person"],
+  mcp: ["person", "identity"],
+  penguin: ["penguin"],
+};
+
+/**
+ * The caller's fields of a submission. The author comes from the gateway's authentication; an
+ * `author` in the operation must name that same author.
+ */
+function draftFields(
+  operation: unknown,
+  author: Author,
+  source: PendingSource,
+): Draft | { readonly reason: RejectReason; readonly message: string } {
+  const kind = "penguin" in author ? "penguin" : "person" in author ? "person" : "identity";
+  if (!SOURCE_AUTHORS[source].includes(kind)) {
+    return { reason: "author_not_bound", message: `a ${source} submission cannot write as ${kind}` };
+  }
+  if (typeof operation !== "object" || operation === null || Array.isArray(operation)) {
+    return { reason: "malformed", message: "the operation must be a JSON object" };
+  }
+  const record = operation as Record<string, unknown>;
+  const extra = Object.keys(record).filter((key) => !DRAFT_FIELDS.has(key));
+  if (extra.length > 0) {
+    return { reason: "malformed", message: `Penguin sets ${extra.join(", ")}; the operation may not carry them` };
+  }
+  if ("author" in record && !sameJson(record["author"], author)) {
+    return { reason: "author_not_bound", message: "the operation names an author other than the caller" };
+  }
+  // Unchecked here: validate() applies the schema to the signed operation.
+  return {
+    issue: record["issue"],
+    type: record["type"],
+    base_version: record["base_version"],
+    payload: record["payload"],
+  } as Draft;
+}
+
+/** Drops the fields a submission left out, so the schema reports them as missing. */
+function withoutUndefined(record: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(record).filter(([, value]) => value !== undefined));
+}
+
+function sameJson(a: unknown, b: unknown): boolean {
+  try {
+    return canonicalJson(a) === canonicalJson(b);
+  } catch {
+    return false;
+  }
 }
 
 /** The operation the input holds when it passes the schema, read only to find its issue and op_id. */
