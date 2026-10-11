@@ -9,13 +9,13 @@ import type { Board, BoardIdentity } from "@penguin/protocol";
 import { useEffect, useState } from "react";
 
 import { fetchBoard, SignedOut } from "./api.ts";
+import { IdentityAvatar, PersonAvatar } from "./avatar.tsx";
 import {
   boardLanes,
   boardPenguinState,
   COLUMNS,
   columnCounts,
   doneCards,
-  initial,
   SESSION_STATUS_LABEL,
   type Card,
   type Lane,
@@ -154,7 +154,7 @@ function LaneView({ lane, showAll, navigate }: { lane: Lane; showAll: boolean; n
 function IdentityRow({ identity }: { identity: BoardIdentity }) {
   return (
     <li className="row lane-identity">
-      <Avatar id={identity.handle} image={identity.avatar} />
+      <IdentityAvatar handle={identity.handle} image={identity.avatar} size="row" />
       <span className="row-title">{identity.handle}</span>
       {identity.team ? <span className="tag">Team</span> : null}
       {identity.sessions.length === 0 ? (
@@ -171,24 +171,17 @@ function IdentityRow({ identity }: { identity: BoardIdentity }) {
   );
 }
 
-function Avatar({ id, image }: { id: string; image: string | null }) {
-  // The name beside the avatar says who it is, so the image itself carries no text.
-  return image === null ? (
-    <span className="avatar avatar-initial" aria-hidden="true">
-      {initial(id)}
-    </span>
-  ) : (
-    <img className="avatar" src={image} alt="" />
-  );
-}
-
 function CardView({ card, navigate }: { card: Card; navigate: (path: string) => void }) {
   const { issue, assignee, status, checks, reviewers, waitsOn } = card;
   const path = `/issues/${issue.issue.id}`;
   return (
     <li className="card">
       <div className="card-assignee">
-        {assignee === null ? null : <Avatar id={assignee.id} image={card.identity?.avatar ?? null} />}
+        {assignee === null ? null : assignee.kind === "identity" ? (
+          <IdentityAvatar handle={assignee.id} image={card.identity?.avatar ?? null} size="card" />
+        ) : (
+          <PersonAvatar id={assignee.id} size="card" />
+        )}
         <span className={assignee === null ? "muted" : "row-title"}>{assignee?.id ?? "Unassigned"}</span>
       </div>
       <a className="card-title" href={path} onClick={linkHandler(navigate, path)}>

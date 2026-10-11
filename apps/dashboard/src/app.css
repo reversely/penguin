@@ -94,6 +94,23 @@
   --alert-tint: color-mix(in oklab, var(--alert) 14%, var(--surface));
   --review-tint: color-mix(in oklab, var(--review) 14%, var(--surface));
 
+  /* Character hues (identity plan section 3), the same in both themes: OKLCH L 0.62 with chroma at
+     85 percent of the sRGB ceiling, on Grok Bot's sampled hues. Light field 3.33 to 4.00:1, light
+     surface 3.08 to 3.70, navy field 4.41 to 5.29, navy surface 3.96 to 4.76. The eye reaches 4.73
+     to 5.68:1 on every body. */
+  --char-red: #eb3843;
+  --char-orange: #d0612c;
+  --char-amber: #b3782c;
+  --char-green: #339d62;
+  --char-teal: #339989;
+  --char-blue: #2e87e8;
+  --char-violet: #8e68ee;
+  --char-pink: #df3697;
+  --char-eye: #0b0d12;
+
+  /* An uploaded image's edge: black at 10 percent in light, white at 10 percent in dark. */
+  --image-outline: rgb(0 0 0 / 0.1);
+
   /* Radii: an inner radius is the outer one minus its padding (8px buttons in a 12px-padded card). */
   --radius-xs: 4px;
   --radius-sm: 8px;
@@ -175,6 +192,8 @@
     --warning: #f0b429;
     --alert: #b692f6;
     --review: #5ec8d8;
+
+    --image-outline: rgb(255 255 255 / 0.1);
 
     --elevation-raised: 0 0 0 1px rgb(255 255 255 / 0.09);
     --elevation-raised-hover: 0 0 0 1px rgb(255 255 255 / 0.14);
@@ -635,12 +654,12 @@ a.row-title {
   fill: var(--ink);
 }
 
-.penguin-belly {
-  fill: var(--surface);
+.penguin-face {
+  fill: var(--field);
 }
 
 .penguin-eye {
-  fill: var(--surface);
+  fill: var(--ink);
 }
 
 .penguin-beak {
@@ -993,6 +1012,21 @@ a.row-title {
   object-fit: cover;
 }
 
+.avatar-row {
+  width: 2rem;
+  height: 2rem;
+}
+
+.avatar-header {
+  width: 3.5rem;
+  height: 3.5rem;
+}
+
+.avatar-image {
+  outline: 1px solid var(--image-outline);
+  outline-offset: -1px;
+}
+
 .avatar-initial {
   display: inline-grid;
   place-items: center;
@@ -1000,6 +1034,47 @@ a.row-title {
   color: var(--accent-ink);
   font: var(--text-meta);
   font-weight: 500;
+}
+
+/* A character draws its own body, so it takes no round clip. */
+.character {
+  border-radius: 0;
+}
+
+.character-eye {
+  fill: var(--char-eye);
+}
+
+.char-red {
+  fill: var(--char-red);
+}
+
+.char-orange {
+  fill: var(--char-orange);
+}
+
+.char-amber {
+  fill: var(--char-amber);
+}
+
+.char-green {
+  fill: var(--char-green);
+}
+
+.char-teal {
+  fill: var(--char-teal);
+}
+
+.char-blue {
+  fill: var(--char-blue);
+}
+
+.char-violet {
+  fill: var(--char-violet);
+}
+
+.char-pink {
+  fill: var(--char-pink);
 }
 
 /* Session status: working is live, waiting is the accent, blocked is a failure, done is quiet. */
@@ -1252,12 +1327,6 @@ a.row-title {
 
 .form-actions {
   justify-content: flex-end;
-}
-
-.avatar-large {
-  width: 3rem;
-  height: 3rem;
-  font-size: 1.25rem;
 }
 
 .identity-facts {

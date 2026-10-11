@@ -23,16 +23,8 @@ test("no dashboard source writes raw HTML, so every user value renders as React 
   }
 });
 
-test("markup in an issue title renders as escaped text on the inbox page", async () => {
-  // The inbox page takes its data as props, so it renders on the server without a fetch.
-  const entry = `
-    import { renderToStaticMarkup } from "react-dom/server";
-    import { createElement } from "react";
-    import { InboxPage } from "./src/inbox-page.tsx";
-    export function render(items) {
-      const inbox = { load: { kind: "ready", items }, marking: new Set(), markFailed: false, markRead() {} };
-      return renderToStaticMarkup(createElement(InboxPage, { inbox, navigate() {} }));
-    }`;
+/** Bundles `entry` for Node and returns its exports, so a page renders on the server without a browser. */
+async function load<T>(entry: string): Promise<T> {
   const bundle = await build({
     stdin: { contents: entry, resolveDir: root, loader: "tsx" },
     bundle: true,
@@ -45,17 +37,47 @@ test("markup in an issue title renders as escaped text on the inbox page", async
   });
   const dir = await mkdtemp(join(tmpdir(), "penguin-render-"));
   try {
-    const file = join(dir, "inbox.cjs");
+    const file = join(dir, "entry.cjs");
     await writeFile(file, bundle.outputFiles[0]!.text);
-    const { render } = createRequire(import.meta.url)(file) as { render: (items: unknown[]) => string };
-    const html = render([
-      { issueId: "40", reason: "assigned", read: false, raisedAt: "2026-10-11T09:00:00.000Z", title: `${MARKUP} @jun/<b>reports</b>`, state: "open" },
-      { issueId: "41", reason: "mentioned", read: false, raisedAt: "2026-10-11T09:01:00.000Z", title: "<script>globalThis.pwned = 2</script>", state: "open" },
-    ]);
-    assert.match(html, /&lt;img src=x onerror=&quot;globalThis\.pwned = 1&quot;&gt; @jun\/&lt;b&gt;reports&lt;\/b&gt;/);
-    assert.match(html, /&lt;script&gt;globalThis\.pwned = 2&lt;\/script&gt;/);
-    assert.doesNotMatch(html, /<img|<script|<b>/);
+    return createRequire(import.meta.url)(file) as T;
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+}
+
+test("markup in an issue title renders as escaped text on the inbox page", async () => {
+  // The inbox page takes its data as props, so it renders on the server without a fetch.
+  const { render } = await load<{ render: (items: unknown[]) => string }>(`
+    import { renderToStaticMarkup } from "react-dom/server";
+    import { createElement } from "react";
+    import { InboxPage } from "./src/inbox-page.tsx";
+    export function render(items) {
+      const inbox = { load: { kind: "ready", items }, marking: new Set(), markFailed: false, markRead() {} };
+      return renderToStaticMarkup(createElement(InboxPage, { inbox, navigate() {} }));
+    }`);
+  const html = render([
+    { issueId: "40", reason: "assigned", read: false, raisedAt: "2026-10-11T09:00:00.000Z", title: `${MARKUP} @jun/<b>reports</b>`, state: "open" },
+    { issueId: "41", reason: "mentioned", read: false, raisedAt: "2026-10-11T09:01:00.000Z", title: "<script>globalThis.pwned = 2</script>", state: "open" },
+  ]);
+  assert.match(html, /&lt;img src=x onerror=&quot;globalThis\.pwned = 1&quot;&gt; @jun\/&lt;b&gt;reports&lt;\/b&gt;/);
+  assert.match(html, /&lt;script&gt;globalThis\.pwned = 2&lt;\/script&gt;/);
+  assert.doesNotMatch(html, /<img|<script|<b>/);
+});
+
+test("markup in a handle stays an escaped attribute on a character and an initial avatar", async () => {
+  const { render } = await load<{ render: (handle: string) => string }>(`
+    import { renderToStaticMarkup } from "react-dom/server";
+    import { createElement, Fragment } from "react";
+    import { Character, IdentityAvatar, PersonAvatar } from "./src/avatar.tsx";
+    export function render(handle) {
+      return renderToStaticMarkup(createElement(Fragment, null,
+        createElement(Character, { handle, size: "header", label: handle }),
+        createElement(IdentityAvatar, { handle, image: null, size: "row" }),
+        createElement(PersonAvatar, { id: handle, size: "card" })));
+    }`);
+  const html = render(`@jun/${MARKUP}`);
+  assert.match(html, /aria-label="@jun\/&lt;img src=x onerror=&quot;globalThis\.pwned = 1&quot;&gt;"/);
+  assert.match(html, /role="img"/);
+  assert.match(html, /<svg[^>]*aria-hidden="true"/);
+  assert.doesNotMatch(html, /<img|onerror="/);
 });

@@ -8,7 +8,7 @@ import type { IdentitiesPage, IdentityEntry, IdentityScope } from "@penguin/prot
 import { useCallback, useEffect, useMemo, useState, type ChangeEvent, type FormEvent } from "react";
 
 import { fetchIdentities, SignedOut, writeIdentity } from "./api.ts";
-import { initial } from "./board-view.ts";
+import { IdentityAvatar } from "./avatar.tsx";
 import {
   AVATAR_TYPES,
   avatarProblem,
@@ -123,7 +123,7 @@ export function IdentitiesPageView({ viewer, live, navigate, onSignedOut }: Prop
                     aria-current={form === null && identity.id === shown?.id ? "true" : undefined}
                     onClick={() => choose(identity.id)}
                   >
-                    <Avatar handle={identity.handle} image={identity.avatar} />
+                    <IdentityAvatar handle={identity.handle} image={identity.avatar} size="row" />
                     <span className="identity-row-text">
                       <span className="row-title">{identity.handle}</span>
                       <span className="muted identity-row-name">{identity.name}</span>
@@ -164,18 +164,6 @@ function takenHandles(page: IdentitiesPage): ReadonlySet<string> {
   return new Set(page.identities.map((identity) => identity.handle));
 }
 
-function Avatar({ handle, image, large = false }: { handle: string; image: string | null; large?: boolean }) {
-  const className = large ? "avatar avatar-large" : "avatar";
-  // The handle beside the avatar says who it is, so the image itself carries no text.
-  return image === null ? (
-    <span className={`${className} avatar-initial`} aria-hidden="true">
-      {initial(handle)}
-    </span>
-  ) : (
-    <img className={className} src={image} alt="" />
-  );
-}
-
 interface DetailProps {
   readonly identity: IdentityEntry;
   readonly scopes: readonly IdentityScope[];
@@ -196,7 +184,7 @@ function IdentityDetail({ identity, scopes, viewer, navigate, onEdit, onDuplicat
   return (
     <section className="panel identity-detail" aria-labelledby="identity-heading">
       <header className="identity-head">
-        <Avatar handle={identity.handle} image={identity.avatar} large />
+        <IdentityAvatar handle={identity.handle} image={identity.avatar} size="header" />
         <div className="identity-title">
           <h2 id="identity-heading">{identity.handle}</h2>
           <p className="muted">{identity.name}</p>
@@ -457,7 +445,7 @@ function IdentityFormView({ initialForm, page, viewer, onCancel, onSaved, onSign
                 Avatar
               </span>
               <div className="avatar-field">
-                <Avatar handle={`@${viewer}/${form.handleName || "?"}`} image={form.avatar?.url ?? null} large />
+                <IdentityAvatar handle={`@${viewer}/${form.handleName}`} image={form.avatar?.url ?? null} size="header" />
                 <label className="button">
                   Choose image
                   <input

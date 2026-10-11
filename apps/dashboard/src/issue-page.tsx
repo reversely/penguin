@@ -17,6 +17,7 @@ import type {
 import { useEffect, useState, type ChangeEvent, type FormEvent } from "react";
 
 import { fetchIssue, SignedOut, submitOperation } from "./api.ts";
+import { EYE } from "./character.ts";
 import {
   authorName,
   checkSignal,
@@ -255,17 +256,31 @@ export function PenguinIndicator({ state }: { state: PenguinState }) {
   const slug = state.replaceAll(" ", "-");
   return (
     <span className={`penguin penguin-${slug}`} role="status">
-      <svg className="penguin-mark" viewBox="0 0 24 24" aria-hidden="true">
-        <ellipse className="penguin-body" cx="12" cy="13" rx="7.5" ry="9" />
-        <ellipse className="penguin-belly" cx="12" cy="15" rx="4.6" ry="6.2" />
-        <circle className="penguin-eye" cx="9.6" cy="8.6" r="1" />
-        <circle className="penguin-eye" cx="14.4" cy="8.6" r="1" />
-        <path className="penguin-beak" d="M10.6 10.6h2.8L12 12.6z" />
-      </svg>
+      <PenguinMark />
       <span>Penguin {state}</span>
     </span>
   );
 }
+
+/** Penguin's own mark in the character style: a flat body with flippers, a two-lobed face, the
+    characters' eye ovals and a beak, with no outline. */
+function PenguinMark() {
+  return (
+    <svg className="penguin-mark" viewBox="0 0 40 40" focusable="false" aria-hidden="true">
+      <path className="penguin-body" d={PENGUIN_BODY} />
+      <path className="penguin-face" d={PENGUIN_FACE} />
+      <ellipse className="penguin-eye" cx="16" cy="16" rx={EYE.rx} ry={EYE.ry} />
+      <ellipse className="penguin-eye" cx="24" cy="16" rx={EYE.rx} ry={EYE.ry} />
+      <path className="penguin-beak" d={PENGUIN_BEAK} />
+    </svg>
+  );
+}
+
+const PENGUIN_BODY =
+  "M20 2.5C28 2.5 33 10 33.5 19C37 24 37.5 30 35 33C32 37 26 38 20 38C14 38 8 37 5 33C2.5 30 3 24 6.5 19C7 10 12 2.5 20 2.5Z";
+const PENGUIN_FACE =
+  "M20 13.2C21.3 9.8 24 8.6 26.4 9.6C29.6 11 30.2 15.6 28.4 19.6C30 24 29.6 30 26.6 33.4C24.8 35.4 22.4 36 20 36C17.6 36 15.2 35.4 13.4 33.4C10.4 30 10 24 11.6 19.6C9.8 15.6 10.4 11 13.6 9.6C16 8.6 18.7 9.8 20 13.2Z";
+const PENGUIN_BEAK = "M18.2 22.2h3.6a.6.6 0 0 1 .5.9l-1.8 2.6a.6.6 0 0 1-1 0l-1.8-2.6a.6.6 0 0 1 .5-.9Z";
 
 function CheckRow({
   check,
