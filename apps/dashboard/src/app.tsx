@@ -1,15 +1,17 @@
 import { useCallback, useEffect, useState } from "react";
 
+import { AccountMenu } from "./account-menu.tsx";
 import { fetchSession, type Session } from "./api.ts";
 import { BoardPage } from "./board-page.tsx";
+import { DetailsPane, DetailsProvider, useDetails } from "./details-pane.tsx";
 import { IdentitiesPageView } from "./identities-page.tsx";
-import { InboxPage, useInbox } from "./inbox-page.tsx";
+import { InboxPage, useInbox, type InboxState } from "./inbox-page.tsx";
 import { unreadCount } from "./inbox-view.ts";
 import { IssuePageView } from "./issue-page.tsx";
 import { linkHandler } from "./links.ts";
 import { NewIssuePage } from "./new-issue-page.tsx";
 import { NAVIGATION, parseRoute, signInProblem, type Route, type SignInProblem } from "./routes.ts";
-import { useLive, type LiveStatus } from "./use-live.ts";
+import { useLive, type Live } from "./use-live.ts";
 
 type SessionState = { readonly kind: "loading" } | { readonly kind: "signed-out" } | { readonly kind: "signed-in"; readonly session: Session };
 
@@ -70,18 +72,26 @@ function useRoute(): [Route | undefined, (path: string) => void] {
   return [route, navigate];
 }
 
+/**
+ * The three-pane shell (identity plan section 4): the sidebar with the wordmark, the navigation, the
+ * route's list and the signed-in owner; the centre pane; and the right panel for a page's details.
+ * Below 760px the sidebar becomes the phone header. app.css switches the layouts; the markup and its
+ * keyboard order stay the same in each.
+ */
 function Shell({ session, onSignedOut }: { session: Session; onSignedOut: () => void }) {
   const [route, navigate] = useRoute();
   const live = useLive();
-  // The shell holds the inbox, so the header's unread count and the inbox page read it once.
+  // The shell holds the inbox, so the navigation's unread count and the inbox page read it once.
   const inbox = useInbox(live, onSignedOut);
   const unread = inbox.load.kind === "ready" ? unreadCount(inbox.load.items) : 0;
+  const details = useDetails(route?.page === "issue" ? `issue:${route.issueId}` : (route?.page ?? ""));
+  const covered = details.shown && !details.docked;
 
   return (
-    <div className="shell">
-      <header className="top-bar">
-        <div className="top-bar-inner">
-          <a className="brand" href="/" onClick={linkHandler(navigate, "/")}>
+    <DetailsProvider value={details}>
+      <div className="shell" data-details={details.shown && details.docked ? "docked" : undefined}>
+        <header className="sidebar" inert={covered}>
+          <a className="wordmark" href="/" onClick={linkHandler(navigate, "/")}>
             Penguin
           </a>
           <nav className="nav" aria-label="Main">
@@ -102,44 +112,44 @@ function Shell({ session, onSignedOut }: { session: Session; onSignedOut: () => 
               </a>
             ))}
           </nav>
-          <div className="account">
-            <LiveTag status={live.status} />
-            <span className="owner" title={`GitHub ${session.login}`}>
-              {session.owner}
-            </span>
-            <form method="post" action="/auth/signout">
-              <button type="submit" className="button">
-                Sign out
-              </button>
-            </form>
+          {/* The route's list sits here once its page fills it; until then the space keeps the
+              owner at the foot of the sidebar. */}
+          <div className="sidebar-list" />
+          <AccountMenu session={session} status={live.status} />
+        </header>
+        <main className="centre" inert={covered}>
+          <div className={route?.page === "board" ? "page page-wide" : "page"} data-audit-center>
+            <Page route={route} session={session} live={live} inbox={inbox} navigate={navigate} onSignedOut={onSignedOut} />
           </div>
-        </div>
-      </header>
-      <main className={route?.page === "board" ? "page page-wide" : "page"} data-audit-center>
-        {route?.page === "issue" ? (
-          <IssuePageView key={route.issueId} issueId={route.issueId} live={live} navigate={navigate} onSignedOut={onSignedOut} />
-        ) : route?.page === "board" ? (
-          <BoardPage viewer={session.owner} showAll={route.showAll} live={live} navigate={navigate} onSignedOut={onSignedOut} />
-        ) : route?.page === "inbox" ? (
-          <InboxPage inbox={inbox} showAll={route.showAll} navigate={navigate} />
-        ) : route?.page === "new-issue" ? (
-          <NewIssuePage live={live} navigate={navigate} onSignedOut={onSignedOut} />
-        ) : route?.page === "identities" ? (
-          <IdentitiesPageView viewer={session.owner} live={live} navigate={navigate} onSignedOut={onSignedOut} />
-        ) : (
-          <h1>{pageTitle(route)}</h1>
-        )}
-      </main>
-    </div>
+        </main>
+        <DetailsPane details={details} />
+      </div>
+    </DetailsProvider>
   );
 }
 
-function LiveTag({ status }: { status: LiveStatus }) {
-  return (
-    <span className={`tag tag-${status}`} role="status">
-      {status}
-    </span>
-  );
+interface PageProps {
+  readonly route: Route | undefined;
+  readonly session: Session;
+  readonly live: Live;
+  readonly inbox: InboxState;
+  readonly navigate: (path: string) => void;
+  readonly onSignedOut: () => void;
+}
+
+function Page({ route, session, live, inbox, navigate, onSignedOut }: PageProps) {
+  if (route?.page === "issue") {
+    return <IssuePageView key={route.issueId} issueId={route.issueId} live={live} navigate={navigate} onSignedOut={onSignedOut} />;
+  }
+  if (route?.page === "board") {
+    return <BoardPage viewer={session.owner} showAll={route.showAll} live={live} navigate={navigate} onSignedOut={onSignedOut} />;
+  }
+  if (route?.page === "inbox") return <InboxPage inbox={inbox} showAll={route.showAll} navigate={navigate} />;
+  if (route?.page === "new-issue") return <NewIssuePage live={live} navigate={navigate} onSignedOut={onSignedOut} />;
+  if (route?.page === "identities") {
+    return <IdentitiesPageView viewer={session.owner} live={live} navigate={navigate} onSignedOut={onSignedOut} />;
+  }
+  return <h1>{pageTitle(route)}</h1>;
 }
 
 function pageTitle(route: Route | undefined): string {

@@ -18,6 +18,7 @@ import { useEffect, useState, type ChangeEvent, type FormEvent } from "react";
 
 import { fetchIssue, SignedOut, submitOperation } from "./api.ts";
 import { EYE } from "./character.ts";
+import { DetailsPanel, DetailsToggle } from "./details-pane.tsx";
 import { Icon } from "./icon.tsx";
 import {
   APPROVAL_LABEL,
@@ -98,7 +99,13 @@ export function IssuePageView({ issueId, live, navigate, onSignedOut }: Props) {
       </div>
     );
   }
-  if (page === undefined) return <div className="issue" aria-busy="true" />;
+  if (page === undefined) {
+    return (
+      <div className="issue" aria-busy="true">
+        <DetailsPanel />
+      </div>
+    );
+  }
   return (
     <IssueContent
       page={page}
@@ -136,6 +143,7 @@ function IssueContent({
         <h1>
           <span className="issue-number">#{issue.id}</span> {issue.title}
         </h1>
+        <DetailsToggle />
         <div className="issue-status">
           <span className={`tag state state-${issue.state}`}>{STATE_LABEL[issue.state]}</span>
           <PenguinIndicator state={penguinState(page)} />
@@ -194,7 +202,7 @@ function IssueContent({
           </section>
         </div>
 
-        <aside className="issue-side">
+        <DetailsPanel>
           <section className="panel" aria-labelledby="issue-labels">
             <h2 id="issue-labels">Labels</h2>
             {issue.labels.length === 0 ? (
@@ -246,7 +254,7 @@ function IssueContent({
               </ul>
             </section>
           )}
-        </aside>
+        </DetailsPanel>
       </div>
     </article>
   );

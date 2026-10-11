@@ -135,6 +135,13 @@
   --elevation-raised: 0 0 0 1px rgb(0 0 0 / 0.05), 0 1px 3px rgb(0 0 0 / 0.05), 0 4px 10px -4px rgb(0 0 0 / 0.05);
   --elevation-raised-hover: 0 0 0 1px rgb(0 0 0 / 0.07), 0 1px 3px rgb(0 0 0 / 0.07), 0 4px 10px -4px rgb(0 0 0 / 0.08);
   --elevation-float: 0 0 0 1px rgb(0 0 0 / 0.06), 0 8px 24px rgb(0 0 0 / 0.12), 0 2px 6px rgb(0 0 0 / 0.06);
+  /* The shade behind the details drawer */
+  --scrim: rgb(0 0 0 / 0.24);
+
+  /* Stacking: the Account menu, the drawer's scrim, then the drawer */
+  --z-menu: 10;
+  --z-scrim: 20;
+  --z-drawer: 30;
 
   /* Motion */
   --ease-out: cubic-bezier(0.32, 0.72, 0, 1);
@@ -198,6 +205,7 @@
     --elevation-raised: 0 0 0 1px rgb(255 255 255 / 0.09);
     --elevation-raised-hover: 0 0 0 1px rgb(255 255 255 / 0.14);
     --elevation-float: 0 0 0 1px rgb(255 255 255 / 0.12);
+    --scrim: rgb(0 0 0 / 0.48);
   }
 }
 
@@ -302,54 +310,69 @@ time {
   color: var(--offline);
 }
 
-/* Shell */
+/* Shell (identity plan section 4). From 760px: the sidebar (248px) beside the centre pane. From
+   1100px: the details panel (280px) docks as a third pane; below 1100px it opens as a drawer. Below
+   760px the sidebar becomes the phone header. Panes differ by one surface step with a hairline
+   between them and carry no shadow. */
 
-.top-bar {
-  border-bottom: 1px solid var(--line);
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
   background: var(--surface);
 }
 
-.top-bar-inner {
-  display: flex;
-  flex-wrap: wrap;
+.wordmark {
+  display: inline-flex;
   align-items: center;
-  gap: 0.5rem 1.5rem;
-  max-width: 72rem;
-  margin: 0 auto;
-  padding: 0.75rem 16px;
-}
-
-.brand {
+  align-self: start;
+  min-height: 2.75rem;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-sm);
+  color: var(--ink-name);
   font: var(--text-title);
   text-decoration: none;
 }
 
 .nav {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.25rem;
+  display: grid;
+  gap: 2px;
 }
 
 .nav-link {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  gap: 0.375rem;
-  min-height: 2.25rem;
-  padding: 0 0.625rem;
-  border-radius: 6px;
+  gap: var(--space-2);
+  min-height: 2.5rem;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-row);
   color: var(--ink-muted);
+  font: var(--text-ui);
+  font-weight: 500;
   text-decoration: none;
+  transition:
+    background-color var(--dur-hover) var(--ease-out),
+    color var(--dur-hover) var(--ease-out);
 }
 
 .nav-link[aria-current="page"] {
-  background: var(--field);
+  background: var(--selected);
   color: var(--ink);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .nav-link:not([aria-current="page"]):hover {
+    background: color-mix(in oklab, var(--selected) 60%, transparent);
+    color: var(--ink);
+  }
 }
 
 .count {
   min-width: 1.25rem;
+  margin-left: auto;
   padding: 0 0.375rem;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--accent);
   color: var(--accent-ink);
   font: var(--text-meta);
@@ -358,12 +381,27 @@ time {
   text-align: center;
 }
 
+/* The route's list; until a page fills it, it keeps the owner at the foot of the sidebar. */
+.sidebar-list {
+  flex: 1;
+}
+
+.account-toggle {
+  display: none;
+}
+
 .account {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-3) var(--space-1);
+  border-top: 1px solid var(--line);
+}
+
+.account-owner {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 0.75rem;
-  margin-left: auto;
+  gap: var(--space-2);
+  min-width: 0;
 }
 
 .account form {
@@ -371,8 +409,287 @@ time {
 }
 
 .owner {
+  flex: 1;
+  min-width: 0;
   font: var(--text-ui);
+  font-weight: 500;
   overflow-wrap: anywhere;
+}
+
+.sign-out {
+  width: 100%;
+}
+
+/* Positioned, so the centre pane is the page's offset parent and its centring measures the pane. */
+.centre {
+  position: relative;
+  min-width: 0;
+  container: centre / inline-size;
+}
+
+/* A control drawn as an icon alone; its label is its aria-label. */
+.icon-button {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--ink-muted);
+  cursor: pointer;
+  transition:
+    background-color var(--dur-hover) var(--ease-out),
+    color var(--dur-hover) var(--ease-out),
+    scale var(--dur-press) var(--ease-out);
+}
+
+.icon-button:active {
+  scale: 0.96;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .icon-button:hover {
+    background: var(--selected);
+    color: var(--ink);
+  }
+}
+
+.details-pane {
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+}
+
+.details-pane[hidden] {
+  display: none;
+}
+
+.details-head {
+  position: sticky;
+  top: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-2) var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.details-head h2 {
+  margin: 0;
+  font: var(--text-heading);
+}
+
+.details-body {
+  padding: var(--space-4);
+}
+
+/* In the panel a page's sections read as one surface, split by hairlines. */
+.details-body .issue-side {
+  gap: 0;
+}
+
+.details-body .panel {
+  padding: var(--space-4) 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+  background: none;
+}
+
+.details-body .panel:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+@media (min-width: 760px) {
+  .shell {
+    display: grid;
+    grid-template-columns: 248px minmax(0, 1fr);
+    min-height: 100vh;
+  }
+
+  .sidebar {
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    height: 100dvh;
+    overflow-y: auto;
+    border-right: 1px solid var(--line);
+  }
+}
+
+@media (min-width: 1100px) {
+  .shell[data-details="docked"] {
+    grid-template-columns: 248px minmax(0, 1fr) 280px;
+  }
+
+  .details-pane {
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    height: 100dvh;
+    overflow-y: auto;
+    border-left: 1px solid var(--line);
+  }
+
+  .details-pane:not([data-open]) {
+    display: none;
+  }
+}
+
+/* The drawer slides in from the right edge; the exit runs faster than the enter. */
+@media (max-width: 1099.98px) {
+  .details-pane {
+    position: fixed;
+    inset: 0 0 0 auto;
+    z-index: var(--z-drawer);
+    width: min(280px, 100% - 2.75rem);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    box-shadow: var(--elevation-float);
+    transform: translateX(100%);
+    visibility: hidden;
+    transition:
+      transform var(--dur-exit) var(--ease-out),
+      visibility 0s linear var(--dur-exit);
+  }
+
+  .details-pane[data-open] {
+    transform: none;
+    visibility: visible;
+    transition:
+      transform var(--dur-enter) var(--ease-out),
+      visibility 0s;
+  }
+
+  .details-scrim {
+    position: fixed;
+    inset: 0;
+    z-index: var(--z-scrim);
+    background: transparent;
+    visibility: hidden;
+    transition:
+      background-color var(--dur-exit) var(--ease-out),
+      visibility 0s linear var(--dur-exit);
+  }
+
+  .details-scrim[data-open] {
+    background: var(--scrim);
+    visibility: visible;
+    transition:
+      background-color var(--dur-enter) var(--ease-out),
+      visibility 0s;
+  }
+}
+
+/* Phone header: the wordmark, then the navigation as a segmented control beside the Account menu. */
+@media (max-width: 759.98px) {
+  .sidebar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "wordmark wordmark"
+      "nav account";
+    align-items: center;
+    gap: var(--space-1) var(--space-2);
+    padding: var(--space-1) 16px var(--space-3);
+    border-bottom: 1px solid var(--line);
+  }
+
+  .wordmark {
+    grid-area: wordmark;
+    margin-left: calc(-1 * var(--space-3));
+  }
+
+  .nav {
+    grid-area: nav;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .nav-link {
+    justify-content: center;
+    padding: 0 var(--space-2);
+  }
+
+  .count {
+    margin-left: 0;
+  }
+
+  .sidebar-list {
+    display: none;
+  }
+
+  .account-menu {
+    position: relative;
+    grid-area: account;
+  }
+
+  .account-toggle {
+    display: inline-grid;
+    place-items: center;
+    width: 2.75rem;
+    height: 2.75rem;
+    padding: 0;
+    border: 0;
+    border-radius: var(--radius-full);
+    background: none;
+    cursor: pointer;
+  }
+
+  /* The menu drops under the Account button's right edge. */
+  .account {
+    position: absolute;
+    top: calc(100% + var(--space-2));
+    right: 0;
+    z-index: var(--z-menu);
+    width: max-content;
+    min-width: 14rem;
+    max-width: calc(100vw - 32px);
+    padding: var(--space-3);
+    border: 0;
+    border-radius: var(--radius-float);
+    background: var(--surface-raised);
+    box-shadow: var(--elevation-float);
+    visibility: hidden;
+  }
+
+  .account[data-open] {
+    visibility: visible;
+  }
+}
+
+/* On a phone or a touch screen the shell's controls take a 44px target; 40px suits a mouse. */
+@media (max-width: 759.98px), (pointer: coarse) {
+  .nav-link,
+  .details-toggle,
+  .sign-out {
+    min-height: 2.75rem;
+  }
+
+  .icon-button {
+    width: 2.75rem;
+    height: 2.75rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nav-link,
+  .icon-button,
+  .details-pane,
+  .details-pane[data-open],
+  .details-scrim,
+  .details-scrim[data-open] {
+    transition: none;
+  }
+
+  .icon-button:active {
+    scale: none;
+  }
 }
 
 .tag {
@@ -399,7 +716,13 @@ time {
   width: 100%;
   max-width: 72rem;
   margin: 0 auto;
-  padding: 1.5rem 16px;
+  padding: var(--space-6) 16px;
+}
+
+@media (min-width: 760px) {
+  .page {
+    padding: var(--space-6) var(--space-7);
+  }
 }
 
 .muted {
@@ -429,9 +752,20 @@ code {
   gap: 1.25rem;
 }
 
+/* The title with the Details button at its right; the status row spans both. */
 .issue-header {
   display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
   gap: 0.75rem;
+}
+
+.issue-status {
+  grid-column: 1 / -1;
+}
+
+.details-toggle[hidden] {
+  display: none;
 }
 
 .issue-number {
@@ -480,18 +814,6 @@ a.tag .icon {
   align-items: start;
 }
 
-@media (min-width: 960px) {
-  .issue-layout {
-    grid-template-columns: minmax(0, 1fr) 18rem;
-  }
-}
-
-/* In one column, labels, assignees and the trigger come before the long timeline. */
-@media (max-width: 959.98px) {
-  .issue-side {
-    order: -1;
-  }
-}
 
 .issue-main,
 .issue-side {
@@ -873,6 +1195,21 @@ a.row-title {
   font-size: 0.875rem;
 }
 
+/* On a phone, Show all and the parent-issue link keep their 24px look and take a 44px hit area. */
+@media (max-width: 639.98px) {
+  .show-all,
+  .issue-status a.tag {
+    position: relative;
+  }
+
+  .show-all::before,
+  .issue-status a.tag::before {
+    content: "";
+    position: absolute;
+    inset: -10px 0;
+  }
+}
+
 .board-columns,
 .lane-grid {
   display: grid;
@@ -1126,7 +1463,8 @@ a.row-title {
   color: var(--ink-muted);
 }
 
-@media (min-width: 1024px) {
+/* A page's breakpoints measure the centre pane, so the sidebar and the details panel count. */
+@container centre (min-width: 1024px) {
   .board-columns,
   .lane-grid {
     grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -1255,14 +1593,14 @@ a.row-title {
   align-items: start;
 }
 
-@media (min-width: 960px) {
+@container centre (min-width: 960px) {
   .identities-layout {
     grid-template-columns: 20rem minmax(0, 1fr);
   }
 }
 
 /* In one column the chosen identity or the open form comes before the list. */
-@media (max-width: 959.98px) {
+@container centre (max-width: 959.98px) {
   .identity-detail {
     order: -1;
   }

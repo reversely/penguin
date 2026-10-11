@@ -81,3 +81,21 @@ test("markup in a handle stays an escaped attribute on a character and an initia
   assert.match(html, /<svg[^>]*aria-hidden="true"/);
   assert.doesNotMatch(html, /<img|onerror="/);
 });
+
+test("markup in the owner's name and an issue title renders as text in the shell's menu and details panel", async () => {
+  const { render } = await load<{ render: (owner: string, title: string) => string }>(`
+    import { renderToStaticMarkup } from "react-dom/server";
+    import { createElement, Fragment } from "react";
+    import { AccountMenu } from "./src/account-menu.tsx";
+    import { DetailsPanel } from "./src/details-pane.tsx";
+    export function render(owner, title) {
+      return renderToStaticMarkup(createElement(Fragment, null,
+        createElement(AccountMenu, { session: { owner, login: owner }, status: "live" }),
+        createElement(DetailsPanel, null, createElement("h2", null, title))));
+    }`);
+  const html = render(MARKUP, "<script>globalThis.pwned = 2</script>");
+  assert.match(html, /title="GitHub &lt;img src=x onerror=&quot;globalThis\.pwned = 1&quot;&gt;"/);
+  assert.match(html, />&lt;img src=x onerror=&quot;globalThis\.pwned = 1&quot;&gt;</);
+  assert.match(html, /&lt;script&gt;globalThis\.pwned = 2&lt;\/script&gt;/);
+  assert.doesNotMatch(html, /<img|<script|onerror="/);
+});
