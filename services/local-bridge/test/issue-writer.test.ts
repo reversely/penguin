@@ -13,6 +13,7 @@ import {
   MemoryKeyStore,
   runCli,
   signingKeyAccount,
+  Spool,
   type BridgeSigningKey,
 } from "@penguin/local-bridge";
 import { operationPath, parseOperationFile, type Operation } from "@penguin/protocol";
@@ -51,7 +52,8 @@ function bridge(owner: string, store = new MemoryKeyStore()) {
     const code = await runCli(
       ["issue", ...args.slice(0, 1), "--owner", owner, "--repo", bare, "--clone", clone, ...args.slice(1)],
       { write: (text) => out.push(text), ask: async () => "" },
-      { keyStore: store },
+      // Each owner's bridge keeps its own state folder, as on separate machines.
+      { keyStore: store, stateDir: join(root, `state-${owner}`) },
     );
     return { code, out: out.join("") };
   };
@@ -85,6 +87,7 @@ describe("the bridge signing key", () => {
     const out: string[] = [];
     const code = await runCli(["key", "--owner", OWNER], { write: (t) => out.push(t), ask: async () => "" }, {
       keyStore: store,
+      stateDir: join(root, "state"),
     });
     assert.equal(code, 0);
     const printed = JSON.parse(out.join(""));
@@ -215,8 +218,10 @@ describe("the issue commands", () => {
 
   test("an invalid payload is refused before anything is committed", async () => {
     const key: BridgeSigningKey = await loadSigningKey(new MemoryKeyStore(), OWNER);
-    const writer = new IssueWriter({ remote: bare, clonePath: join(root, "clone"), ownerId: OWNER, key });
+    const spool = new Spool(join(root, "spool.jsonl"));
+    const writer = new IssueWriter({ remote: bare, clonePath: join(root, "clone"), ownerId: OWNER, key, spool });
     await assert.rejects(writer.write({ type: "create", payload: { title: "" } }), /invalid/);
     assert.equal(await commitCount(), 0);
+    assert.deepEqual(await spool.read(), [], "an invalid operation never reaches the spool");
   });
 });

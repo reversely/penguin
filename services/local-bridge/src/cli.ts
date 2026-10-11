@@ -9,6 +9,7 @@ import { CheckpointPublisher, type ConsentScope } from "./checkpoint.ts";
 import { ISSUE_USAGE, runIssueCommand, runKeyCommand } from "./issue-cli.ts";
 import { KeychainStore, type KeyStore } from "./key-store.ts";
 import { WorktreeRegistry, worktreeId } from "./registry.ts";
+import { bridgeSpool, defaultStateDir, runSpoolCommand, SPOOL_USAGE } from "./spool-cli.ts";
 
 export interface CliIo {
   write: (text: string) => void;
@@ -18,12 +19,17 @@ export interface CliIo {
 
 const USAGE = `Usage: penguin-bridge checkpoint --owner <id> --project <id> --fork <bare repo path>
                       [--worktree <path>] [--consent each-publish|worktree|project]
-                      [--remote <url>]
+                      [--remote <url>] [--state-dir <dir>]
 `;
 
 export interface CliDependencies {
   /** Where the bridge signing key lives. Defaults to the OS keychain. */
   keyStore?: KeyStore;
+  /**
+   * The bridge's state folder: the outbound spool and the issues clones. Defaults to ~/.penguin;
+   * a command's --state-dir overrides it.
+   */
+  stateDir?: string;
 }
 
 const CONSENT_SCOPES: readonly ConsentScope[] = ["each-publish", "worktree", "project"];
@@ -32,10 +38,12 @@ const CONSENT_SCOPES: readonly ConsentScope[] = ["each-publish", "worktree", "pr
 export async function runCli(argv: readonly string[], io: CliIo, deps: CliDependencies = {}): Promise<number> {
   const [command, ...rest] = argv;
   const keyStore = deps.keyStore ?? new KeychainStore();
-  if (command === "issue") return runIssueCommand(rest, io, keyStore);
+  const stateDir = deps.stateDir ?? defaultStateDir();
+  if (command === "issue") return runIssueCommand(rest, io, keyStore, stateDir);
   if (command === "key") return runKeyCommand(rest, io, keyStore);
+  if (command === "spool") return runSpoolCommand(rest, io, stateDir);
   if (command !== "checkpoint") {
-    io.write(USAGE + ISSUE_USAGE);
+    io.write(USAGE + ISSUE_USAGE + SPOOL_USAGE);
     return 2;
   }
   const { values } = parseArgs({
@@ -47,6 +55,7 @@ export async function runCli(argv: readonly string[], io: CliIo, deps: CliDepend
       worktree: { type: "string", default: process.cwd() },
       consent: { type: "string", default: "worktree" },
       remote: { type: "string" },
+      "state-dir": { type: "string" },
     },
     strict: true,
   });
@@ -72,10 +81,12 @@ export async function runCli(argv: readonly string[], io: CliIo, deps: CliDepend
       publishing_consent: consent,
     },
     write: io.write,
+    spool: bridgeSpool(values["state-dir"] ?? stateDir),
     confirm: async () => /^y(es)?$/i.test((await io.ask("Publish this checkpoint? [y/N] ")).trim()),
   });
   const result = await publisher.publish(worktreeId(bridgeId, worktree), values.remote);
   if (result.status === "up-to-date") io.write(`The fork already has checkpoint ${result.checkpoint_sha}.\n`);
+  // A queued checkpoint has the owner's consent and waits only for the fork to be reachable.
   return result.status === "refused" ? 1 : 0;
 }
 

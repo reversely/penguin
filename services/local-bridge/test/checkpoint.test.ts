@@ -270,6 +270,7 @@ test("the checkpoint command publishes on yes and exits 1 on no", async () => {
     const code = await runCli(
       ["checkpoint", "--owner", OWNER, "--project", "p", "--fork", forkPath, "--worktree", repo.worktreeA],
       { write: (text) => out.push(text), ask: async () => answer },
+      { stateDir: join(repo.root, "bridge-state") },
     );
     return { code, out: out.join("") };
   };

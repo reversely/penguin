@@ -1,9 +1,12 @@
+import { createHash } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 
 import { runGit, splitNul } from "@penguin/git-analysis";
 
 import type { WorktreeRegistry } from "./registry.ts";
+import type { Spool } from "./spool.ts";
+import { drainSpool } from "./spool-drain.ts";
 
 /**
  * How far one "yes" reaches. PRD open decision 3 (consent per worktree or per project) is still
@@ -40,11 +43,18 @@ export interface CheckpointPreview {
   /** The newest commit the fork already shares with the checkpoint; null when it shares none. */
   base_sha: string | null;
   files: CheckpointFile[];
+  /**
+   * False when the fork could not be read: the preview then lists every tracked file and the
+   * push waits in the spool. Absent means true.
+   */
+  fork_reachable?: boolean;
 }
 
 export type PublishResult =
   | { status: "published"; preview: CheckpointPreview }
   | { status: "refused"; preview: CheckpointPreview }
+  /** Consented and spooled; the fork was unreachable, so a later drain pushes it. */
+  | { status: "queued"; preview: CheckpointPreview; reason: string }
   | { status: "up-to-date"; checkpoint_sha: string };
 
 export interface CheckpointPublisherOptions {
@@ -53,6 +63,11 @@ export interface CheckpointPublisherOptions {
   /** Asks the owner after the preview has been written. Resolves true only on an explicit yes. */
   confirm: (preview: CheckpointPreview) => Promise<boolean>;
   write: (text: string) => void;
+  /**
+   * The bridge's outbound spool. When given, a consented push is spooled before it is attempted,
+   * and an unreachable fork queues the push instead of failing the publish.
+   */
+  spool?: Spool;
 }
 
 /**
@@ -74,8 +89,8 @@ export class CheckpointPublisher {
    * given, must be the configured fork; any other destination is refused before Git runs.
    */
   async publish(id: string, remote?: string): Promise<PublishResult> {
-    const { registry, fork, confirm, write } = this.#options;
-    const forkPath = await resolveFork(fork, remote);
+    const { registry, fork, confirm, write, spool } = this.#options;
+    const { path: forkPath, reachable } = await resolveFork(fork, remote, spool !== undefined);
     const record = registry.get(id);
     if (!record) throw new Error(`unknown worktree ${id}`);
     if (record.owner_id !== fork.owner_id) {
@@ -85,7 +100,7 @@ export class CheckpointPublisher {
     const worktree = registry.pathOf(id);
     const forkRef = `refs/heads/${record.branch}`;
 
-    const forkTips = await listForkBranches(worktree, forkPath);
+    const forkTips = reachable ? await listForkBranches(worktree, forkPath) : new Map<string, string>();
     const localTips = await filterAsync([...forkTips.values()], (sha) =>
       gitSucceeds(worktree, ["cat-file", "-e", `${sha}^{commit}`]),
     );
@@ -110,6 +125,7 @@ export class CheckpointPublisher {
       checkpoint_sha: checkpoint,
       base_sha: base,
       files: await checkpointFiles(worktree, base, checkpoint),
+      ...(reachable ? {} : { fork_reachable: false }),
     };
     write(formatPreview(preview, fork.owner_id));
 
@@ -123,8 +139,21 @@ export class CheckpointPublisher {
       return { status: "refused", preview };
     }
 
-    // No force: a fork branch that moved elsewhere rejects the push instead of being overwritten.
-    await runGit(worktree, ["push", "--porcelain", "--end-of-options", forkPath, `${checkpoint}:${forkRef}`]);
+    if (spool === undefined) {
+      // No force: a fork branch that moved elsewhere rejects the push instead of being overwritten.
+      await runGit(worktree, ["push", "--porcelain", "--end-of-options", forkPath, `${checkpoint}:${forkRef}`]);
+    } else {
+      const id = checkpointEntryId(forkPath, forkRef, checkpoint);
+      await spool.enqueue({ kind: "checkpoint", id, worktree, fork: forkPath, ref: forkRef, sha: checkpoint });
+      const drained = await drainSpool(spool);
+      const failed = drained.failed.find((item) => item.id === id);
+      if (failed) throw new Error(failed.reason);
+      const waiting = drained.waiting.find((item) => item.id === id);
+      if (waiting) {
+        write(`Queued ${checkpoint} for ${forkRef}: ${waiting.reason}. The bridge pushes it when the fork is reachable.\n`);
+        return { status: "queued", preview, reason: waiting.reason };
+      }
+    }
     fork.latest_checkpoint_sha = checkpoint;
     write(`Published ${checkpoint} to ${forkRef}.\n`);
     return { status: "published", preview };
@@ -136,23 +165,39 @@ export class CheckpointPublisher {
   }
 }
 
+/** The spool ID of one checkpoint push: the commit and a hash of its destination. */
+export function checkpointEntryId(fork: string, ref: string, sha: string): string {
+  return `checkpoint-${sha}-${createHash("sha256").update(`${fork}\0${ref}`).digest("hex").slice(0, 16)}`;
+}
+
 /**
  * Returns the fork's real path after checking that it is an absolute path to a bare repository
- * and that `remote`, if given, names the same repository.
+ * and that `remote`, if given, names the same repository. With `allowUnreachable`, a fork path
+ * that does not resolve is returned as given and marked unreachable; the bare check then runs
+ * when the spooled push is drained.
  */
-async function resolveFork(fork: OwnerFork, remote: string | undefined): Promise<string> {
+async function resolveFork(
+  fork: OwnerFork,
+  remote: string | undefined,
+  allowUnreachable: boolean,
+): Promise<{ path: string; reachable: boolean }> {
   if (!isAbsolute(fork.repo)) throw new Error(`fork path must be absolute, got ${JSON.stringify(fork.repo)}`);
-  const forkPath = await realpath(fork.repo);
+  const resolved = await realpath(fork.repo).catch((error: unknown) => {
+    if (allowUnreachable) return null;
+    throw error;
+  });
+  const forkPath = resolved ?? fork.repo;
   if (remote !== undefined) {
     const target = isAbsolute(remote) ? await realpath(remote).catch(() => remote) : remote;
     if (target !== forkPath) {
       throw new Error(`refusing to push to ${JSON.stringify(remote)}: the only allowed remote is the owner's fork ${forkPath}`);
     }
   }
+  if (resolved === null) return { path: forkPath, reachable: false };
   if ((await runGit(forkPath, ["rev-parse", "--is-bare-repository"])).trim() !== "true") {
     throw new Error(`fork ${forkPath} is not a bare repository`);
   }
-  return forkPath;
+  return { path: forkPath, reachable: true };
 }
 
 /**
@@ -262,8 +307,10 @@ export function formatPreview(preview: CheckpointPreview, ownerId: string): stri
   const lines = [
     `Checkpoint ${short(preview.checkpoint_sha)} of branch ${preview.branch}`,
     `Destination: ${ownerId}'s fork, refs/heads/${preview.branch}`,
-    preview.base_sha === null
-      ? "The fork shares no commit with it, so every tracked file is listed."
+    preview.fork_reachable === false
+      ? "The fork is unreachable, so every tracked file is listed and the push is queued."
+      : preview.base_sha === null
+        ? "The fork shares no commit with it, so every tracked file is listed."
       : `Changes since ${short(preview.base_sha)}, the newest commit the fork already has.`,
     `${preview.files.length} tracked file${preview.files.length === 1 ? "" : "s"} will be published:`,
   ];

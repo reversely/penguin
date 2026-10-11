@@ -1,19 +1,14 @@
-// The bridge's issue writer: builds one issue operation, signs it with the bridge key, writes it at
-// issues/<id>/ops/<op_id>.json in the bridge's own clone of the issues repo, commits and pushes.
-// Phase 1 pushes to a local bare repository; #16 points the remote at Artifacts.
+// The bridge's issue writer: builds one issue operation, signs it with the bridge key, appends it
+// to the outbound spool and drains the spool, which writes issues/<id>/ops/<op_id>.json in the
+// bridge's own clone of the issues repo, commits and pushes. With the remote unreachable the
+// operation stays queued and a later drain pushes it.
 
-import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, join } from "node:path";
-
-import { runGit } from "@penguin/git-analysis";
 import { signOperation, verifyOperation } from "@penguin/issues";
 import {
   authorSegment,
   formatOpId,
   OPERATION_SCHEMA_VERSION,
   operationPath,
-  OP_ID_PATTERN,
   validateOperation,
   type Author,
   type IssueId,
@@ -21,7 +16,10 @@ import {
   type OperationType,
 } from "@penguin/protocol";
 
+import { authorOwner, IssuesClone, isOperationPath, opIdOfPath } from "./issues-clone.ts";
 import type { BridgeSigningKey } from "./key-store.ts";
+import { pendingOf, type OperationEntry, type Spool, type SpoolEntry } from "./spool.ts";
+import { drainLocked } from "./spool-drain.ts";
 
 /** The six operation types the bridge command line writes. */
 export type BridgeOperationType = Extract<
@@ -63,7 +61,9 @@ export interface IssueWriterOptions {
   /** The human owner this bridge belongs to. */
   ownerId: string;
   key: BridgeSigningKey;
-  /** How many times a rejected push is rebased and retried before the write fails. */
+  /** The bridge's outbound spool. Every operation is appended here before any push. */
+  spool: Spool;
+  /** How many times a rejected push is rebased and retried before the operation stays queued. */
   maxPushAttempts?: number;
 }
 
@@ -71,8 +71,9 @@ export interface WriteOptions {
   /** Who the operation is written as: the owner (default) or one of the owner's identities. */
   author?: Author;
   /**
-   * The issue version the author saw. Phase 1 has no index, so by default it is the number of
-   * operation files in the issue's folder after fetching; a create always carries 0.
+   * The issue version the author saw. Phase 1 has no index, so by default it is the number of the
+   * issue's operation files after fetching plus its operations still queued in the spool; a
+   * create always carries 0.
    */
   baseVersion?: number;
 }
@@ -81,43 +82,74 @@ export interface WriteResult {
   readonly operation: Operation;
   /** The operation file's repo path. */
   readonly path: string;
-  readonly commit: string;
-  /** Push attempts made; above 1 means another writer pushed first and the commit was rebased. */
-  readonly pushAttempts: number;
+  /**
+   * `pushed`: the remote holds the operation. `queued`: it waits in the spool for the remote.
+   * `failed`: the remote holds a different file at its path, so it is never pushed.
+   */
+  readonly status: "pushed" | "queued" | "failed";
+  /** The commit that carries the operation on the remote; null unless pushed. */
+  readonly commit: string | null;
+  /** Why the operation is queued or failed; null when pushed. */
+  readonly reason: string | null;
 }
 
-// Hooks off and signing off: the bridge's clone runs no code from the repo or the owner's Git setup.
-const GIT_CONFIG = ["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false"];
-
-const OP_FILE = new RegExp(`^issues/[^/]+/ops/(${OP_ID_PATTERN.slice(1, -1)})\\.json$`, "u");
-const SEQUENCE_FILE = "penguin-sequence.json";
-
 /**
- * Writes signed issue operations from the bridge. Each `write` produces exactly one file and one
- * commit, then pushes. Text fields reach Git only inside the JSON file, never as an argument.
+ * Writes signed issue operations from the bridge. Each `write` spools exactly one operation, which
+ * becomes one file and one commit on the remote. Text fields reach Git only inside the JSON file,
+ * never as an argument.
  */
 export class IssueWriter {
   readonly #options: Required<IssueWriterOptions>;
+  readonly #clone: IssuesClone;
 
   constructor(options: IssueWriterOptions) {
-    if (!isAbsolute(options.clonePath)) throw new Error("the issues clone path must be absolute");
     this.#options = { branch: "main", maxPushAttempts: 5, ...options };
+    this.#clone = new IssuesClone(this.#options);
   }
 
   async write(change: IssueChange, options: WriteOptions = {}): Promise<WriteResult> {
-    const { ownerId, key } = this.#options;
+    const { ownerId, spool } = this.#options;
     const author: Author = options.author ?? { person: ownerId };
     if (authorOwner(author) !== ownerId) {
       throw new Error(`this bridge belongs to ${ownerId} and cannot write as ${authorName(author)}`);
     }
 
-    await this.#sync();
+    return spool.withLock(async () => {
+      const sync = await this.#clone.sync();
+      const spooled = await spool.read();
+      const entry = await this.#enqueue(change, author, options.baseVersion, spooled);
+      if (!sync.online) {
+        // The fetch just failed, so a push would too; the retry loop takes it from here.
+        return { operation: entry.operation, path: entry.path, status: "queued", commit: null, reason: sync.reason };
+      }
+      const drained = await drainLocked(spool, this.#clone);
+      const pushed = drained.pushed.find((item) => item.id === entry.id);
+      const failed = drained.failed.find((item) => item.id === entry.id);
+      const waiting = drained.waiting.find((item) => item.id === entry.id);
+      return {
+        operation: entry.operation,
+        path: entry.path,
+        status: pushed ? "pushed" : failed ? "failed" : "queued",
+        commit: pushed?.commit ?? null,
+        reason: failed?.reason ?? waiting?.reason ?? null,
+      };
+    });
+  }
+
+  /** Builds, signs and spools the operation. Runs under the spool lock. */
+  async #enqueue(
+    change: IssueChange,
+    author: Author,
+    baseVersion: number | undefined,
+    spooled: readonly SpoolEntry[],
+  ): Promise<OperationEntry> {
+    const { remote, clonePath, branch, key, spool } = this.#options;
     const segment = authorSegment(author);
-    const seq = (await this.#lastSequence(segment)) + 1;
+    const ops = spooled.filter((entry): entry is OperationEntry => entry.kind === "operation");
+    const seq = (await this.#lastSequence(segment, ops)) + 1;
     const opId = formatOpId(author, seq);
     const issue = change.type === "create" ? opId : change.issue;
-    const baseVersion =
-      change.type === "create" ? 0 : (options.baseVersion ?? (await this.#operationCount(issue)));
+    const version = change.type === "create" ? 0 : (baseVersion ?? (await this.#operationCount(issue, spooled)));
 
     const operation = await signOperation(
       {
@@ -126,7 +158,7 @@ export class IssueWriter {
         issue,
         type: change.type,
         author,
-        base_version: baseVersion,
+        base_version: version,
         payload: withoutUndefined(change.payload),
       },
       key.privateKey,
@@ -139,77 +171,26 @@ export class IssueWriter {
     if (!(await verifyOperation(operation, key.publicKey))) throw new Error("the signature does not verify");
 
     const path = operationPath(operation);
-    const file = join(this.#options.clonePath, path);
-    if (await this.#tracked(path)) throw new Error(`${path} already exists in the issues repo`);
-    await mkdir(dirname(file), { recursive: true });
-    await writeFile(file, `${JSON.stringify(operation, null, 2)}\n`, { flag: "wx" });
-    await this.#git("add", "--", path);
-    // The message holds only validated identifiers, never a title, body or reason.
-    await this.#git("commit", "--quiet", "-m", `issue ${String(issue)}: ${change.type} ${opId}`, "--", path);
-    await this.#saveSequence(segment, seq);
-
-    const pushAttempts = await this.#push();
-    // Read after the push: a rebase during a retry gives the commit a new ID.
-    return { operation, path, commit: (await this.#git("rev-parse", "HEAD")).trim(), pushAttempts };
-  }
-
-  /** Clones on first use, fetches, and replays any local commits onto the remote branch. */
-  async #sync(): Promise<void> {
-    const { remote, clonePath, branch } = this.#options;
-    if (!existsSync(join(clonePath, ".git"))) {
-      await mkdir(dirname(clonePath), { recursive: true });
-      await runGit(dirname(clonePath), [...GIT_CONFIG, "clone", "--quiet", "--no-checkout", "--", remote, clonePath]);
+    if ((await this.#clone.trackedFiles("issues")).includes(path) || ops.some((entry) => entry.id === opId)) {
+      throw new Error(`${path} already exists in the issues repo or the spool`);
     }
-    await this.#git("fetch", "--quiet", "origin");
-    const remoteRef = `refs/remotes/origin/${branch}`;
-    const remoteExists = await succeeds(clonePath, ["rev-parse", "--verify", "--quiet", remoteRef]);
-    if (await succeeds(clonePath, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`])) {
-      await this.#git("checkout", "--quiet", branch);
-      if (remoteExists) await this.#rebase(remoteRef);
-    } else if (remoteExists) {
-      await this.#git("checkout", "--quiet", "-B", branch, remoteRef);
-    } else {
-      // An empty issues repo: the first operation starts the branch.
-      await this.#git("symbolic-ref", "HEAD", `refs/heads/${branch}`);
-    }
+    const entry = await spool.enqueue({ kind: "operation", id: opId, remote, clone: clonePath, branch, path, operation });
+    await this.#clone.saveSequence(segment, seq);
+    return entry as OperationEntry;
   }
 
   /**
-   * Pushes HEAD. Another writer's push makes this one non-fast-forward; the commit is then rebased
-   * onto the fetched branch, which cannot conflict because every operation is a new file.
+   * The highest sequence number this author has used: the largest of the bridge's counter, the
+   * author's files in the repo and the author's entries in the spool, so neither a lost counter
+   * nor a queued operation lets an op_id be reused.
    */
-  async #push(): Promise<number> {
-    const { branch, maxPushAttempts } = this.#options;
-    for (let attempt = 1; ; attempt++) {
-      try {
-        await this.#git("push", "--quiet", "origin", `HEAD:refs/heads/${branch}`);
-        return attempt;
-      } catch (error) {
-        if (attempt >= maxPushAttempts) throw error;
-      }
-      await this.#git("fetch", "--quiet", "origin");
-      await this.#rebase(`refs/remotes/origin/${branch}`);
-    }
-  }
-
-  async #rebase(onto: string): Promise<void> {
-    try {
-      await this.#git("rebase", "--quiet", onto);
-    } catch (error) {
-      // Only the same op_id written from two clones can conflict; leave the clone as it was.
-      await this.#git("rebase", "--abort").catch(() => undefined);
-      throw new Error(`could not rebase the issues clone onto ${onto}: ${(error as Error).message}`);
-    }
-  }
-
-  /**
-   * The highest sequence number this author has used: the larger of the bridge's counter and the
-   * highest number among the author's files in the repo, so a lost counter never reuses an op_id.
-   */
-  async #lastSequence(segment: string): Promise<number> {
-    let highest = (await this.#readSequences())[segment] ?? 0;
-    for (const path of await this.#trackedFiles("issues")) {
-      const opId = OP_FILE.exec(path)?.[1];
+  async #lastSequence(segment: string, spooled: readonly OperationEntry[]): Promise<number> {
+    let highest = await this.#clone.savedSequence(segment);
+    const opIds = [
+      ...(await this.#clone.trackedFiles("issues")).map(opIdOfPath),
+      ...spooled.map((entry) => entry.operation.op_id),
+    ];
+    for (const opId of opIds) {
       if (opId === undefined || !opId.startsWith(`${segment}-`)) continue;
       const rest = opId.slice(segment.length + 1);
       // A longer segment such as "jun-two" also starts with "jun-"; only digits follow our own.
@@ -218,65 +199,21 @@ export class IssueWriter {
     return highest;
   }
 
-  async #operationCount(issue: IssueId): Promise<number> {
-    const folder = `issues/${String(issue)}/ops`;
-    const files = await this.#trackedFiles(folder);
-    if (files.length === 0) throw new Error(`issue ${String(issue)} has no operations in the issues repo`);
-    return files.filter((path) => OP_FILE.test(path)).length;
+  /** The issue's operations on the branch plus those of its operations still queued for this clone. */
+  async #operationCount(issue: IssueId, spooled: readonly SpoolEntry[]): Promise<number> {
+    const files = (await this.#clone.trackedFiles(`issues/${String(issue)}/ops`)).filter(isOperationPath);
+    const onBranch = new Set(files);
+    const queued = pendingOf(spooled).filter(
+      (entry) =>
+        entry.kind === "operation" &&
+        entry.clone === this.#options.clonePath &&
+        String(entry.operation.issue) === String(issue) &&
+        !onBranch.has(entry.path),
+    );
+    const count = files.length + queued.length;
+    if (count === 0) throw new Error(`issue ${String(issue)} has no operations in the issues repo or the spool`);
+    return count;
   }
-
-  async #trackedFiles(folder: string): Promise<string[]> {
-    if (!(await succeeds(this.#options.clonePath, ["rev-parse", "--verify", "--quiet", "HEAD"]))) return [];
-    const output = await this.#git("ls-tree", "-r", "-z", "--name-only", "HEAD", "--", `${folder}/`);
-    return output.split("\0").filter((path) => path !== "");
-  }
-
-  async #tracked(path: string): Promise<boolean> {
-    return (await this.#trackedFiles(dirname(path))).includes(path);
-  }
-
-  // The per-author counter lives in the clone's Git directory, outside the tracked tree.
-  async #sequenceFile(): Promise<string> {
-    const path = (await this.#git("rev-parse", "--git-path", SEQUENCE_FILE)).trim();
-    return isAbsolute(path) ? path : join(this.#options.clonePath, path);
-  }
-
-  async #readSequences(): Promise<Record<string, number>> {
-    try {
-      const value: unknown = JSON.parse(await readFile(await this.#sequenceFile(), "utf8"));
-      return typeof value === "object" && value !== null ? (value as Record<string, number>) : {};
-    } catch {
-      return {};
-    }
-  }
-
-  async #saveSequence(segment: string, seq: number): Promise<void> {
-    const sequences = await this.#readSequences();
-    sequences[segment] = Math.max(sequences[segment] ?? 0, seq);
-    await writeFile(await this.#sequenceFile(), `${JSON.stringify(sequences, null, 2)}\n`);
-  }
-
-  #git(...args: string[]): Promise<string> {
-    return runGit(this.#options.clonePath, [...GIT_CONFIG, ...this.#identity(), ...args]);
-  }
-
-  #identity(): string[] {
-    const owner = this.#options.ownerId;
-    return ["-c", `user.name=Penguin bridge (${owner})`, "-c", `user.email=${owner}@bridge.penguin.invalid`];
-  }
-}
-
-function succeeds(cwd: string, args: string[]): Promise<boolean> {
-  return runGit(cwd, args).then(
-    () => true,
-    () => false,
-  );
-}
-
-function authorOwner(author: Author): string | undefined {
-  if ("person" in author) return author.person;
-  if ("identity" in author) return author.identity.slice(1, author.identity.indexOf("/"));
-  return undefined;
 }
 
 function authorName(author: Author): string {

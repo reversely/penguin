@@ -2,7 +2,6 @@
 // parsed argument into the operation's JSON; nothing here starts a shell.
 
 import { createHash } from "node:crypto";
-import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
@@ -11,9 +10,11 @@ import type { Author, IssueId, Party } from "@penguin/protocol";
 import type { CliIo } from "./cli.ts";
 import { IssueWriter, type IssueChange } from "./issue-writer.ts";
 import { loadSigningKey, type KeyStore } from "./key-store.ts";
+import { bridgeSpool } from "./spool-cli.ts";
 
 export const ISSUE_USAGE = `Usage: penguin-bridge issue <command> --owner <id> --repo <issues repo> [--clone <dir>]
                       [--branch <name>] [--as <person|@owner/name>] [--base-version <n>]
+                      [--state-dir <dir>]
   create  --title <text> [--body <text>]
   comment --issue <id> --body <text>
   label   --issue <id> --label <label>
@@ -39,6 +40,7 @@ const OPTIONS = {
   commit: { type: "string" },
   reason: { type: "string" },
   state: { type: "string" },
+  "state-dir": { type: "string" },
 } as const;
 
 const parseIssueArgs = (args: string[]) => parseArgs({ args, options: OPTIONS, strict: true });
@@ -47,7 +49,12 @@ type Values = ReturnType<typeof parseIssueArgs>["values"];
 class UsageError extends Error {}
 
 /** Runs `issue <command> ...`. Resolves with the exit code. */
-export async function runIssueCommand(args: readonly string[], io: CliIo, keyStore: KeyStore): Promise<number> {
+export async function runIssueCommand(
+  args: readonly string[],
+  io: CliIo,
+  keyStore: KeyStore,
+  defaultStateDir: string,
+): Promise<number> {
   const [command, ...rest] = args;
   let values: Values;
   let change: IssueChange;
@@ -66,18 +73,33 @@ export async function runIssueCommand(args: readonly string[], io: CliIo, keySto
   }
 
   const started = performance.now();
+  const stateDir = values["state-dir"] ?? defaultStateDir;
   const remote = resolve(values.repo);
   const writer = new IssueWriter({
     remote,
-    clonePath: resolve(values.clone ?? defaultClonePath(remote)),
+    clonePath: resolve(values.clone ?? defaultClonePath(stateDir, remote)),
     branch: values.branch,
     ownerId: values.owner,
     key: await loadSigningKey(keyStore, values.owner),
+    spool: bridgeSpool(stateDir),
   });
   const result = await writer.write(change, { author, baseVersion });
   const elapsed = Math.round(performance.now() - started);
-  io.write(`Pushed ${result.path} in commit ${result.commit.slice(0, 12)} (${elapsed} ms).\n`);
-  return 0;
+  switch (result.status) {
+    case "pushed":
+      io.write(`Pushed ${result.path} in commit ${(result.commit ?? "").slice(0, 12)} (${elapsed} ms).\n`);
+      return 0;
+    case "queued":
+      // Queued is a success: the operation is signed and on disk, and a drain pushes it later.
+      io.write(
+        `Queued ${result.path} (${elapsed} ms): ${result.reason}\n` +
+          "It is pushed by the next issue command or `penguin-bridge spool drain|watch` once the remote is reachable.\n",
+      );
+      return 0;
+    case "failed":
+      io.write(`Not pushed ${result.path}: ${result.reason}\n`);
+      return 1;
+  }
 }
 
 /** Runs `key --owner <id>`: prints the bridge's public signing key, creating the key pair if needed. */
@@ -141,7 +163,7 @@ function parseCount(text: string): number {
   return Number(text);
 }
 
-/** The bridge's clone of an issues repo, under ~/.penguin/issues/, one folder per remote. */
-function defaultClonePath(remote: string): string {
-  return join(homedir(), ".penguin", "issues", createHash("sha256").update(remote).digest("hex").slice(0, 16));
+/** The bridge's clone of an issues repo, under <state dir>/issues/, one folder per remote. */
+function defaultClonePath(stateDir: string, remote: string): string {
+  return join(stateDir, "issues", createHash("sha256").update(remote).digest("hex").slice(0, 16));
 }

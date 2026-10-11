@@ -9,7 +9,24 @@ export {
 } from "./command-allowlist.ts";
 export type { ResolvedCommand } from "./command-allowlist.ts";
 
-export { CheckpointPublisher, formatPreview } from "./checkpoint.ts";
+export { checkpointEntryId, CheckpointPublisher, formatPreview } from "./checkpoint.ts";
+export { pushCheckpoint } from "./checkpoint-push.ts";
+export type { CheckpointPushResult } from "./checkpoint-push.ts";
+export { IssuesClone, operationText, RemoteUnavailableError } from "./issues-clone.ts";
+export type { IssuesCloneOptions, PublishOutcome, SyncResult } from "./issues-clone.ts";
+export { pendingOf, Spool, SPOOL_VERSION } from "./spool.ts";
+export type {
+  CheckpointEntry,
+  FailedEntry,
+  OperationEntry,
+  PushedEntry,
+  QueuedEntry,
+  SpoolEntry,
+  SpoolOptions,
+} from "./spool.ts";
+export { bridgeSpool, defaultStateDir, formatDrain } from "./spool-cli.ts";
+export { drainLocked, drainSpool, RetryLoop } from "./spool-drain.ts";
+export type { DrainResult, RetryLoopOptions } from "./spool-drain.ts";
 export type {
   CheckpointFile,
   CheckpointPreview,
