@@ -85,24 +85,35 @@ checkpoint, not at merge. Ines's agent adds a mechanical fix for it to the plan,
 
 ### 5. Land as a block
 
-When Ines's code is ready, Penguin builds the block: the change plus every agreed fix. It merges the
-block onto main, and onto each of the now 24 affected running branches. On each merged tree it runs
-the deterministic checks:
+A block is a short-lived fork in Artifacts. The binding's `fork(name, { readOnly, defaultBranchOnly })`
+makes a repo server-side, and `createToken(scope, ttl)` mints a token for one repo that expires.
 
-- the merge itself
-- ruff
-- the type checker
-- the contract diff
-- each affected scope's tests
+1. **Mint the block.** When Ines's code is ready, Penguin forks main into `block-<id>` with
+   `defaultBranchOnly`. Nobody clones the whole project.
+2. **Write into it.** Penguin mints write tokens scoped to the block repo, valid for a few minutes,
+   for Ines's agent and for Penguin's own fixing tools. They push the change, the seven codemod fixes
+   and the three agent-written fixes. When the tokens expire, nothing else can write to the block.
+3. **Check it.** Penguin merges the block onto each of the now 24 affected running branches and runs
+   the deterministic checks on each result:
+   - the merge itself
+   - ruff
+   - the type checker
+   - the contract diff
+   - each affected scope's tests
+4. **Owners try it.** Jun gets a read-only fork of the block to clone and checks the protected file
+   before confirming. There is no branch to check out or rebuild.
+5. **Promote.** When everything is green, Penguin moves main to the block's commit in one push, with a
+   write token on main that only Penguin holds, for minutes. Main changes once, never in pieces.
+6. **Keep the record.** The block stays as a read-only fork showing exactly what landed.
 
 | Result | Count | What happens |
 |---|---|---|
 | Clean | 21 branches | Nothing |
 | Routine merge conflicts: imports and formatting | 2 branches | Resolved by Penguin's tools |
-| A failing test in `promotions` | 1 | Lena's promotion stacking, which landed first, still adds floats. Penguin classifies this as mechanical and applies the codemod. The checks pass |
-| Protected file | `analytics/revenue_report` | Jun confirms the final lines |
+| A failing test in `promotions` | 1 | Lena's promotion stacking, which landed first, still adds floats. Penguin classifies this as mechanical, writes the codemod into the block and checks again. The checks pass |
+| Protected file | `analytics/revenue_report` | Jun confirms after trying the read-only fork |
 
-The block merges as one unit. Main is never red.
+Main is never red.
 
 ### 6. Late starters
 
@@ -125,7 +136,8 @@ to resolve.
 | Times main was broken | 0 |
 
 Every step lives as a signed record in the `issues` repo in Artifacts: the plan, each approval and
-its reason, Rahul's revision, the block's checks and the merge. That record answers why each line
+its reason, Rahul's revision, the block's checks and the promotion. The read-only block fork holds the
+exact code that landed. That record answers why each line
 changed.
 
 ## The same change without Penguin
