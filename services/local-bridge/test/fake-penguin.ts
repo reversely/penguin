@@ -37,6 +37,8 @@ export class FakePenguin {
   role: "owner" | "runner" = "owner";
   /** Answers GET /operations/pending for the registered bridge; unset answers 404. */
   pendingOperations: ((caller: { bridgeId: string; role: string }) => unknown) | undefined;
+  /** Every checkpoint report recorded through POST /checkpoints, in order. */
+  readonly checkpoints: { fork: string; sha: string }[] = [];
   #codeUsed = false;
   readonly #valid = new Map<string, { repo: string; expires: number }>();
   #server: Server | undefined;
@@ -77,6 +79,7 @@ export class FakePenguin {
     if (request.method === "POST" && url.pathname === "/bridges") return this.#register(request, response);
     if (request.method === "POST" && url.pathname === "/tokens") return this.#token(request, response);
     if (request.method === "GET" && url.pathname === "/operations/pending") return this.#pending(request, response);
+    if (request.method === "POST" && url.pathname === "/checkpoints") return this.#checkpoint(request, response);
     const git = /^\/git\/penguin\/([A-Za-z0-9._-]+)\.git(\/.*)$/.exec(url.pathname);
     if (git) return this.#git(request, response, git[1]!, git[2]!, url);
     response.writeHead(404).end();
@@ -116,6 +119,20 @@ export class FakePenguin {
     };
     if (listing.status === "forbidden") return json(response, 403, { error: "forbidden", message: listing.message });
     json(response, 200, { files: listing.files });
+  }
+
+  /** Mirrors the Worker's route: the owner comes from the bridge token and the commit must be in the fork. */
+  async #checkpoint(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    if (request.headers.authorization !== `Bearer ${this.bridgeToken}`) return json(response, 401, { error: "unauthorized" });
+    const { sha, fork } = JSON.parse(await readBody(request)) as { sha: string; fork: string };
+    if (fork !== `owner-${this.owner}`) return json(response, 403, { error: "forbidden", message: `not ${this.owner}'s fork` });
+    const found = await runGit(this.repoPath(fork), ["cat-file", "-e", `${sha}^{commit}`]).then(
+      () => true,
+      () => false,
+    );
+    if (!found) return json(response, 422, { error: "not_found", message: `commit ${sha} is not in ${fork}` });
+    this.checkpoints.push({ fork, sha });
+    json(response, 200, { fork, ownerId: this.owner, latestCheckpointSha: sha, reportedAt: new Date().toISOString() });
   }
 
   async #git(request: IncomingMessage, response: ServerResponse, repo: string, rest: string, url: URL): Promise<void> {

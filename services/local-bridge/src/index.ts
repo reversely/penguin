@@ -19,6 +19,13 @@ export {
 export { pushCheckpoint } from "./checkpoint-push.ts";
 export type { CheckpointPushResult } from "./checkpoint-push.ts";
 export {
+  bridgeReporter,
+  CHECKPOINT_ROUTE,
+  checkpointReportId,
+  unregisteredReporter,
+} from "./checkpoint-report.ts";
+export type { CheckpointReporter, CheckpointReportResult } from "./checkpoint-report.ts";
+export {
   ARTIFACTS_GIT_OPTIONS,
   artifactsRemote,
   isAuthFailure,
@@ -57,6 +64,7 @@ export type { RunnerLoopOptions, RunnerPassOptions, RunnerPassResult } from "./r
 export { pendingOf, Spool, SPOOL_VERSION } from "./spool.ts";
 export type {
   CheckpointEntry,
+  CheckpointReportEntry,
   FailedEntry,
   OperationEntry,
   PushedEntry,

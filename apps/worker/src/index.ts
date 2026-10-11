@@ -55,6 +55,7 @@ export default {
             base: names.base,
             ownerFork: names.owner(owner),
           }),
+        ownerForkRepo: (owner) => names.owner(owner),
         mintToken: (repo, scope, ttl) => {
           const parsed = parseProjectRepo(repo);
           if (parsed === undefined) throw new Error(`not a project repo: ${repo}`);

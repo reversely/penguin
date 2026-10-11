@@ -9,6 +9,7 @@ import { generateSigningKeyPair } from "@penguin/issues";
 import { BridgeRegistry } from "../../../services/project-agent/src/bridge-registry.ts";
 import { IssueIndex } from "../../../services/project-agent/src/issue-index.ts";
 import type { SqlDatabase } from "../../../services/project-agent/src/issue-index.ts";
+import { OwnerForkStore, recordReportedCheckpoint } from "../../../services/project-agent/src/owner-forks.ts";
 
 import { type GatewayHandlers, handleRequest } from "../src/gateway.ts";
 import { RepoNames } from "../src/repos.ts";
@@ -82,6 +83,10 @@ function gateway(artifacts = fakeArtifacts(PROJECT_REPOS)) {
   const db = sqlite();
   const registry = new BridgeRegistry(db);
   const issues = new IssueIndex(db);
+  const forks = new OwnerForkStore(db);
+  /** The commits each fork holds, by prefixed repo name, as `readCommit` would find them. */
+  const commits = new Map<string, Set<string>>();
+  const commitExists = async (repo: string, sha: string) => commits.get(repo)?.has(sha) ?? false;
   const handlers: GatewayHandlers = {
     routeAgents: async () => null,
     setUpProject: async () => {
@@ -94,7 +99,9 @@ function gateway(artifacts = fakeArtifacts(PROJECT_REPOS)) {
       authenticateBridge: (token) => registry.authenticate(token),
       revokeBridge: (bridgeId) => registry.revoke(bridgeId),
       pendingOperations: (caller) => issues.pendingFiles(caller),
+      reportBridgeCheckpoint: (owner, sha, fork) => recordReportedCheckpoint({ forks, commitExists }, owner, sha, fork, null),
     }),
+    ownerForkRepo: (owner) => names.owner(owner),
     mintToken: (repo, scope, ttl) => {
       const parsed = parseProjectRepo(repo);
       assert.ok(parsed);
@@ -111,7 +118,7 @@ function gateway(artifacts = fakeArtifacts(PROJECT_REPOS)) {
       options,
       handlers,
     );
-  return { artifacts, call, registry, db };
+  return { artifacts, call, registry, db, forks, commits };
 }
 
 type Call = ReturnType<typeof gateway>["call"];
@@ -276,4 +283,39 @@ test("the pending route lists operations to a runner bridge only, by the role it
   // A revoked runner loses the listing.
   assert.equal((await call(`/bridges/${runner.bridgeId}`, { method: "DELETE", token: DEPLOYER_TOKEN })).status, 204);
   assert.equal((await list(runner.bridgeToken)).status, 401);
+});
+
+test("a bridge report records its owner's latest checkpoint with no agent session", async () => {
+  const { call, forks, commits } = gateway();
+  const sha = "4c1d9e0a7b3f2e8d6c5b4a3928170f6e5d4c3b2a"; // pragma: allowlist secret
+  commits.set("test-owner-jun", new Set([sha]));
+  commits.set("test-owner-priya", new Set([sha]));
+  const report = (token: string | undefined, body: unknown, method = "POST") =>
+    call("/checkpoints", { method, ...(token ? { token } : {}), body });
+
+  const jun = await registerBridge(call, "jun");
+  const response = await report(jun.bridgeToken, { sha, fork: "penguin:owner-jun" });
+  assert.equal(response.status, 200);
+  const { reportedAt, ...body } = (await response.json()) as Record<string, unknown>;
+  assert.deepEqual(body, { fork: "owner-jun", ownerId: "jun", latestCheckpointSha: sha });
+  const recorded = forks.get("jun");
+  assert.equal(recorded?.reportedAt, reportedAt);
+  assert.equal(recorded?.artifactsRepo, "test-owner-jun");
+  assert.equal(recorded?.latestCheckpointSha, sha);
+  assert.equal(recorded?.reportedBySession, null);
+
+  // Another owner's fork is refused, whatever owner the body claims.
+  const priya = await report(jun.bridgeToken, { sha, fork: "owner-priya", owner: "priya" });
+  assert.equal(priya.status, 403);
+  assert.equal(forks.get("priya"), undefined);
+
+  // A commit the fork does not hold, a malformed SHA or fork, and a missing token are refused.
+  const missing = "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c"; // pragma: allowlist secret
+  assert.equal((await report(jun.bridgeToken, { sha: missing, fork: "owner-jun" })).status, 422);
+  assert.equal((await report(jun.bridgeToken, { sha: sha.slice(0, 7), fork: "owner-jun" })).status, 400);
+  assert.equal((await report(jun.bridgeToken, { sha, fork: "issues" })).status, 400);
+  assert.equal((await report(undefined, { sha, fork: "owner-jun" })).status, 401);
+  assert.equal((await report(DEPLOYER_TOKEN, { sha, fork: "owner-jun" })).status, 401);
+  assert.equal((await call("/checkpoints", { method: "GET", token: jun.bridgeToken })).status, 405);
+  assert.equal(forks.get("jun")?.latestCheckpointSha, sha);
 });

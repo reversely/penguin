@@ -12,6 +12,7 @@ import {
   type GitRemote,
   type RemoteResolver,
 } from "./git-remote.ts";
+import { checkpointReportId, type CheckpointReporter } from "./checkpoint-report.ts";
 import type { WorktreeRegistry } from "./registry.ts";
 import type { Spool } from "./spool.ts";
 import { drainSpool } from "./spool-drain.ts";
@@ -99,6 +100,11 @@ export interface CheckpointPublisherOptions {
   spool?: Spool;
   /** Turns the fork's name into the remote Git talks to. Defaults to local paths only. */
   remotes?: RemoteResolver;
+  /**
+   * Tells Penguin about a checkpoint pushed to an Artifacts fork. Without it the report waits in
+   * the spool for a drain that has one.
+   */
+  reporter?: CheckpointReporter;
 }
 
 /**
@@ -192,7 +198,7 @@ export class CheckpointPublisher {
     } else {
       const id = checkpointEntryId(forkPath, forkRef, checkpoint);
       await spool.enqueue({ kind: "checkpoint", id, worktree, fork: forkPath, ref: forkRef, sha: checkpoint });
-      const drained = await drainSpool(spool, this.#options.remotes);
+      const drained = await drainSpool(spool, this.#options.remotes, this.#options.reporter);
       const failed = drained.failed.find((item) => item.id === id);
       if (failed) throw new Error(failed.reason);
       const waiting = drained.waiting.find((item) => item.id === id);
@@ -200,6 +206,9 @@ export class CheckpointPublisher {
         write(`Queued ${checkpoint} for ${forkRef}: ${waiting.reason}. The bridge pushes it when the fork is reachable.\n`);
         return { status: "queued", preview, reason: waiting.reason };
       }
+      const reportId = checkpointReportId(id);
+      const report = [...drained.waiting, ...drained.failed].find((item) => item.id === reportId);
+      if (report) write(`Penguin has not recorded ${checkpoint} as the fork's latest checkpoint: ${report.reason}\n`);
     }
     fork.latest_checkpoint_sha = checkpoint;
     write(`Published ${checkpoint} to ${forkRef}.\n`);

@@ -10,6 +10,9 @@
  *   repo's Git remote.
  * - GET /operations/pending, bridge token of a runner bridge: lists the operations from MCP, the
  *   dashboard and Penguin that wait for the runner to push them to the issues repo.
+ * - POST /checkpoints, bridge token: records a checkpoint the bridge pushed to its owner's fork as
+ *   that fork's latest checkpoint. The owner comes from the token; the body carries only the SHA
+ *   and the fork, which must be the owner's own.
  *
  * Responses that carry a code or token are marked `Cache-Control: no-store`.
  */
@@ -18,6 +21,7 @@ import type {
   BridgeCaller,
   BridgeIdentity,
   BridgeRole,
+  CheckpointOutcome,
   PendingListing,
   RegisterOutcome,
   RegistrationCode,
@@ -45,6 +49,8 @@ export interface BridgeDirectory {
   revokeBridge(bridgeId: string): Promise<boolean> | boolean;
   /** The operations waiting for the runner; refused unless `caller` holds the runner role. */
   pendingOperations(caller: BridgeCaller): Promise<PendingListing> | PendingListing;
+  /** Records `sha` as `owner`'s latest checkpoint once the commit is found in `fork`, an Artifacts repo name. */
+  reportBridgeCheckpoint(owner: string, sha: string, fork: string): Promise<CheckpointOutcome>;
 }
 
 /** Mints a token on a repo named without the deployment's prefix, such as `owner-jun`. */
@@ -53,6 +59,8 @@ export type TokenMinter = (repo: string, scope: TokenScope, ttlSeconds: number) 
 export interface BridgeHandlers {
   readonly bridges: () => BridgeDirectory | Promise<BridgeDirectory>;
   readonly mintToken: TokenMinter;
+  /** The Artifacts repo name of an owner's fork, with the deployment's repo prefix. */
+  readonly ownerForkRepo: (ownerId: string) => string;
 }
 
 export interface BridgeOptions {
@@ -177,6 +185,42 @@ async function listPending(request: Request, handlers: BridgeHandlers): Promise<
   return json({ files }, 200, NO_STORE);
 }
 
+const CHECKPOINT_FORK = /^(?:penguin:)?(owner-[A-Za-z0-9][A-Za-z0-9._-]*)$/u;
+
+async function reportCheckpoint(request: Request, handlers: BridgeHandlers): Promise<Response> {
+  const token = bearerToken(request);
+  const directory = await handlers.bridges();
+  const bridge = token === undefined ? undefined : await directory.authenticateBridge(token);
+  if (bridge === undefined) return unauthorized();
+  if (request.method !== "POST") return methodNotAllowed("POST");
+
+  const body = await readObject(request);
+  if (body === undefined) return invalid("", "must be a JSON object");
+  const { sha, fork } = body;
+  if (typeof sha !== "string") return invalid("sha", "must be the checkpoint commit's full SHA");
+  const forkRepo = typeof fork === "string" ? CHECKPOINT_FORK.exec(fork)?.[1] : undefined;
+  if (forkRepo === undefined) return invalid("fork", "must be owner-<id> or penguin:owner-<id>");
+  // The owner comes from the registry record the token authenticated, never from the request.
+  const own = `owner-${bridge.ownerId}`;
+  if (forkRepo !== own) {
+    return json({ error: "forbidden", message: `this bridge reports checkpoints only for ${own}, not ${forkRepo}` }, 403);
+  }
+
+  let outcome: CheckpointOutcome;
+  try {
+    outcome = await directory.reportBridgeCheckpoint(bridge.ownerId, sha, handlers.ownerForkRepo(bridge.ownerId));
+  } catch (error) {
+    return json({ error: "artifacts", code: artifactsErrorCode(error) ?? null }, 502);
+  }
+  if (outcome.status === "rejected") {
+    // 422, not 404, for a commit missing from the fork, so a bridge can tell it from a missing route.
+    const status = outcome.reason === "invalid" ? 400 : outcome.reason === "not_found" ? 422 : 403;
+    return json({ error: outcome.reason, message: outcome.message }, status);
+  }
+  const { ownerId, latestCheckpointSha, reportedAt } = outcome.fork;
+  return json({ fork: own, ownerId, latestCheckpointSha, reportedAt }, 200);
+}
+
 /** Answers a bridge route, or returns null when the path is not one. */
 export async function handleBridgeRoute(
   request: Request,
@@ -186,6 +230,7 @@ export async function handleBridgeRoute(
 ): Promise<Response | null> {
   if (url.pathname === "/tokens") return issueToken(request, options, handlers);
   if (url.pathname === "/operations/pending") return listPending(request, handlers);
+  if (url.pathname === "/checkpoints") return reportCheckpoint(request, handlers);
   if (url.pathname === "/bridges/codes") return issueCode(request, options, handlers);
   if (url.pathname === "/bridges") return register(request, handlers);
   const bridgeId = /^\/bridges\/([A-Za-z0-9_-]+)$/.exec(url.pathname)?.[1];

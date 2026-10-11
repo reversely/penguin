@@ -6,6 +6,7 @@ import { parseArgs } from "node:util";
 import { runGit } from "@penguin/git-analysis";
 
 import { CheckpointPublisher, type ConsentScope } from "./checkpoint.ts";
+import { bridgeReporter } from "./checkpoint-report.ts";
 import { isPenguinRemote, penguinRemote } from "./git-remote.ts";
 import { ISSUE_USAGE, runIssueCommand, runKeyCommand } from "./issue-cli.ts";
 import { KeychainStore, type KeyStore } from "./key-store.ts";
@@ -47,10 +48,11 @@ export async function runCli(argv: readonly string[], io: CliIo, deps: CliDepend
   const keyStore = deps.keyStore ?? new KeychainStore();
   const stateDir = deps.stateDir ?? defaultStateDir();
   const remotesFor = (dir: string) => bridgeRemotes(dir, keyStore, deps.fetch);
+  const reporterFor = (dir: string) => bridgeReporter(dir, keyStore, deps.fetch);
   if (command === "register") return runRegisterCommand(rest, io, keyStore, stateDir, deps.fetch);
   if (command === "issue") return runIssueCommand(rest, io, keyStore, stateDir, remotesFor);
   if (command === "key") return runKeyCommand(rest, io, keyStore);
-  if (command === "spool") return runSpoolCommand(rest, io, stateDir, remotesFor);
+  if (command === "spool") return runSpoolCommand(rest, io, stateDir, remotesFor, reporterFor);
   if (command === "runner") return runRunnerCommand(rest, io, keyStore, stateDir, deps.fetch);
   if (command !== "checkpoint") {
     io.write(USAGE + ISSUE_USAGE + SPOOL_USAGE + RUNNER_USAGE);
@@ -100,6 +102,7 @@ export async function runCli(argv: readonly string[], io: CliIo, deps: CliDepend
     write: io.write,
     spool: bridgeSpool(checkpointStateDir),
     remotes: remotesFor(checkpointStateDir),
+    reporter: reporterFor(checkpointStateDir),
     confirm: async () => /^y(es)?$/i.test((await io.ask("Publish this checkpoint? [y/N] ")).trim()),
   });
   const started = performance.now();

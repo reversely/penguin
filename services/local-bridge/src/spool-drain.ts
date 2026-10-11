@@ -3,6 +3,7 @@
 // reachable stay queued for the next attempt.
 
 import { pushCheckpoint } from "./checkpoint-push.ts";
+import { checkpointReportFor, unregisteredReporter, type CheckpointReporter } from "./checkpoint-report.ts";
 import { unregisteredRemotes, type RemoteResolver } from "./git-remote.ts";
 import { authorOwner, IssuesClone, RemoteUnavailableError } from "./issues-clone.ts";
 import type { CheckpointEntry, OperationEntry, Spool } from "./spool.ts";
@@ -17,21 +18,28 @@ export interface DrainResult {
 
 /**
  * Drains the spool under its lock. `remotes` resolves each entry's remote name; without it only
- * local paths are reachable and Artifacts entries stay queued.
+ * local paths are reachable and Artifacts entries stay queued. `reporter` sends checkpoint reports
+ * to Penguin; without it they stay queued.
  */
-export function drainSpool(spool: Spool, remotes: RemoteResolver = unregisteredRemotes): Promise<DrainResult> {
-  return spool.withLock(() => drainLocked(spool, remotes));
+export function drainSpool(
+  spool: Spool,
+  remotes: RemoteResolver = unregisteredRemotes,
+  reporter: CheckpointReporter = unregisteredReporter,
+): Promise<DrainResult> {
+  return spool.withLock(() => drainLocked(spool, remotes, undefined, reporter));
 }
 
 /**
  * Drains the spool. The caller holds the spool lock. Operations are grouped by the clone they push
  * through and pushed together; checkpoints are pushed one at a time in the order they were queued.
- * `synced` is a clone the caller has just synced online; its group skips a second fetch.
+ * `synced` is a clone the caller has just synced online; its group skips a second fetch. A
+ * checkpoint pushed to an Artifacts fork queues a report, and reports are sent last.
  */
 export async function drainLocked(
   spool: Spool,
   remotes: RemoteResolver = unregisteredRemotes,
   synced?: IssuesClone,
+  reporter: CheckpointReporter = unregisteredReporter,
 ): Promise<DrainResult> {
   const pushed: { id: string; commit: string }[] = [];
   const failed: { id: string; reason: string }[] = [];
@@ -41,7 +49,7 @@ export async function drainLocked(
   const checkpoints = new Map<string, CheckpointEntry[]>();
   for (const entry of await spool.pending()) {
     if (entry.kind === "operation") append(operations, [entry.remote, entry.clone, entry.branch].join("\0"), entry);
-    else append(checkpoints, [entry.fork, entry.ref].join("\0"), entry);
+    else if (entry.kind === "checkpoint") append(checkpoints, [entry.fork, entry.ref].join("\0"), entry);
   }
 
   for (const entries of operations.values()) {
@@ -82,12 +90,31 @@ export async function drainLocked(
         break;
       }
       if (result.status === "pushed") {
+        // The report is queued before the push is acknowledged: a crash between the two pushes
+        // again (a no-op) and queues the same report ID, which the spool keeps once.
+        const report = checkpointReportFor(entry);
+        if (report !== undefined) await spool.enqueue(report);
         await spool.acknowledge([{ kind: "pushed", id: entry.id, commit: entry.sha }]);
         pushed.push({ id: entry.id, commit: entry.sha });
       } else {
         await spool.acknowledge([{ kind: "failed", id: entry.id, reason: result.reason }]);
         failed.push({ id: entry.id, reason: result.reason });
       }
+    }
+  }
+
+  // Read again: the checkpoint pushes above queue reports of their own.
+  for (const entry of await spool.pending()) {
+    if (entry.kind !== "checkpoint-report") continue;
+    const result = await reporter(entry);
+    if (result.status === "waiting") {
+      waiting.push({ id: entry.id, reason: result.reason });
+    } else if (result.status === "reported") {
+      await spool.acknowledge([{ kind: "pushed", id: entry.id, commit: entry.sha }]);
+      pushed.push({ id: entry.id, commit: entry.sha });
+    } else {
+      await spool.acknowledge([{ kind: "failed", id: entry.id, reason: result.reason }]);
+      failed.push({ id: entry.id, reason: result.reason });
     }
   }
   return { pushed, failed, waiting };
@@ -103,6 +130,8 @@ export interface RetryLoopOptions {
   spool: Spool;
   /** Resolves each entry's remote name. Defaults to local paths only. */
   remotes?: RemoteResolver;
+  /** Sends checkpoint reports to Penguin. Defaults to leaving them queued. */
+  reporter?: CheckpointReporter;
   /** The first wait after a drain that left entries queued. Doubles up to `maxDelayMs`. */
   minDelayMs?: number;
   maxDelayMs?: number;
@@ -130,6 +159,7 @@ export class RetryLoop {
       idleDelayMs: 30_000,
       onDrain: () => undefined,
       remotes: unregisteredRemotes,
+      reporter: unregisteredReporter,
       ...options,
     };
     this.#delay = this.#options.minDelayMs;
@@ -156,10 +186,10 @@ export class RetryLoop {
   }
 
   async #tick(): Promise<void> {
-    const { spool, remotes, minDelayMs, maxDelayMs, idleDelayMs, onDrain } = this.#options;
+    const { spool, remotes, reporter, minDelayMs, maxDelayMs, idleDelayMs, onDrain } = this.#options;
     let next: number;
     try {
-      const result = await drainSpool(spool, remotes);
+      const result = await drainSpool(spool, remotes, reporter);
       onDrain(result);
       if (result.waiting.length > 0) {
         next = this.#delay;

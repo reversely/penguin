@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
-import { OwnerForkStore, reportCheckpoint, type CheckpointDeps } from "../src/owner-forks.ts";
+import { OwnerForkStore, recordReportedCheckpoint, reportCheckpoint, type CheckpointDeps } from "../src/owner-forks.ts";
 import type { SessionOutcome } from "../src/session-store.ts";
 import { sqlite } from "./issues-repo.ts";
 
@@ -72,5 +72,17 @@ describe("OwnerFork checkpoints", () => {
     assert.equal(priya.status === "rejected" && priya.reason, "forbidden");
     assert.deepEqual(reads, []);
     assert.equal(forks.get("jun"), undefined);
+  });
+
+  test("a bridge report needs no session and replaces a session's report", async () => {
+    const { forks, deps, tick } = setup([FIRST, SECOND]);
+    await reportCheckpoint(deps, "jun", "ses_1", FIRST, "owner-jun");
+    tick(1_000);
+    const bridge = await recordReportedCheckpoint(deps, "jun", SECOND, "owner-jun", null);
+    assert.equal(bridge.status, "ok");
+    assert.equal(forks.get("jun")?.latestCheckpointSha, SECOND);
+    assert.equal(forks.get("jun")?.reportedBySession, null);
+    const absent = await recordReportedCheckpoint(deps, "jun", SECOND, "owner-priya", null);
+    assert.equal(absent.status === "rejected" && absent.reason, "not_found");
   });
 });

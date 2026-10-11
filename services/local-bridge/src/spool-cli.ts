@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
+import { unregisteredReporter, type CheckpointReporter } from "./checkpoint-report.ts";
 import type { CliIo } from "./cli.ts";
 import { unregisteredRemotes, type RemoteResolver } from "./git-remote.ts";
 import { Spool } from "./spool.ts";
@@ -31,6 +32,7 @@ export async function runSpoolCommand(
   io: CliIo,
   stateDir: string,
   remotesFor: (stateDir: string) => RemoteResolver = () => unregisteredRemotes,
+  reporterFor: (stateDir: string) => CheckpointReporter = () => unregisteredReporter,
 ): Promise<number> {
   const [command, ...rest] = args;
   const { values } = parseArgs({
@@ -42,8 +44,9 @@ export async function runSpoolCommand(
   const spool = bridgeSpool(dir);
   // One resolver for the whole command, so `watch` reuses its cached tokens until they expire.
   const remotes = remotesFor(dir);
+  const reporter = reporterFor(dir);
   if (command === "drain") {
-    const result = await drainSpool(spool, remotes);
+    const result = await drainSpool(spool, remotes, reporter);
     io.write(formatDrain(result));
     return result.failed.length > 0 ? 1 : 0;
   }
@@ -56,6 +59,7 @@ export async function runSpoolCommand(
     const loop = new RetryLoop({
       spool,
       remotes,
+      reporter,
       minDelayMs: interval,
       idleDelayMs: interval,
       onDrain: (result) => {

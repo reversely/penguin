@@ -1,7 +1,8 @@
 // The owner forks' latest checkpoints (PRD section 7, `OwnerFork`). Checkpoints in owner forks reach
-// Penguin through a `report_checkpoint` call rather than a push subscription (PRD section 5), so a
-// new fork needs no new subscription. A report is recorded only after the commit is confirmed to
-// exist in the reporting owner's own fork.
+// Penguin through a report rather than a push subscription (PRD section 5), so a new fork needs no
+// new subscription. An agent session reports through the MCP `report_checkpoint` tool; the owner's
+// bridge reports through its checkpoint route after each push. A report is recorded only after the
+// commit is confirmed to exist in the reporting owner's own fork.
 //
 // The table holds the fields a report sets. `project_id` is implied by the ProjectAgent, which serves
 // one project, and `publishing_consent` stays with the owner's bridge, which asks before each publish.
@@ -25,6 +26,7 @@ export interface OwnerFork {
   /** The fork's Artifacts repo name, with the deployment's repo prefix. */
   readonly artifactsRepo: string;
   readonly latestCheckpointSha: string | null;
+  /** The agent session that reported the latest checkpoint, or null when the owner's bridge did. */
   readonly reportedBySession: string | null;
   /** When the latest checkpoint was reported, as an ISO 8601 time, or null. */
   readonly reportedAt: string | null;
@@ -48,7 +50,7 @@ export class OwnerForkStore {
   }
 
   /** Records `sha` as the owner's latest checkpoint in `artifactsRepo`. */
-  recordCheckpoint(ownerId: string, artifactsRepo: string, sha: string, sessionId: string): OwnerFork {
+  recordCheckpoint(ownerId: string, artifactsRepo: string, sha: string, sessionId: string | null): OwnerFork {
     this.#db.exec(
       `INSERT INTO OwnerFork (owner_id, artifacts_repo, latest_checkpoint_sha, reported_by_session, reported_at)
        VALUES (?, ?, ?, ?, ?)
@@ -65,11 +67,14 @@ export class OwnerForkStore {
   }
 }
 
-export interface CheckpointDeps {
-  readonly sessions: Pick<SessionStore, "heartbeat">;
+export interface CheckpointRecordDeps {
   readonly forks: OwnerForkStore;
   /** True when the commit exists in `artifactsRepo` (the binding's `readCommit` returns it). */
   readonly commitExists: (artifactsRepo: string, sha: string) => Promise<boolean>;
+}
+
+export interface CheckpointDeps extends CheckpointRecordDeps {
+  readonly sessions: Pick<SessionStore, "heartbeat">;
 }
 
 /**
@@ -86,13 +91,28 @@ export async function reportCheckpoint(
 ): Promise<CheckpointOutcome> {
   const live = deps.sessions.heartbeat(caller, sessionId);
   if (live.status === "rejected") return live;
+  return recordReportedCheckpoint(deps, caller, sha, artifactsRepo, sessionId);
+}
+
+/**
+ * Records a checkpoint reported for `owner`'s fork `artifactsRepo` once the commit is found there.
+ * `sessionId` names the reporting agent session, or is null for a report from the owner's bridge,
+ * which runs no session. The caller authenticates `owner` and names `artifactsRepo` from it.
+ */
+export async function recordReportedCheckpoint(
+  deps: CheckpointRecordDeps,
+  owner: string,
+  sha: string,
+  artifactsRepo: string,
+  sessionId: string | null,
+): Promise<CheckpointOutcome> {
   if (typeof sha !== "string" || !CHECKPOINT_SHA_PATTERN.test(sha)) {
     return { status: "rejected", reason: "invalid", message: "the checkpoint must be a full 40-character lowercase SHA" };
   }
   if (!(await deps.commitExists(artifactsRepo, sha))) {
-    return { status: "rejected", reason: "not_found", message: `commit ${sha} is not in ${caller}'s fork` };
+    return { status: "rejected", reason: "not_found", message: `commit ${sha} is not in ${owner}'s fork` };
   }
-  return { status: "ok", fork: deps.forks.recordCheckpoint(caller, artifactsRepo, sha, sessionId) };
+  return { status: "ok", fork: deps.forks.recordCheckpoint(owner, artifactsRepo, sha, sessionId) };
 }
 
 function ownerFork(row: Row): OwnerFork {

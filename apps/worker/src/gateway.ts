@@ -12,8 +12,8 @@
  * POST /index/rebuild, deployer only, rebuilds the issue index from the issues repo into shadow
  * tables and returns their comparison with the live tables.
  *
- * The bridge routes (/bridges, /bridges/codes, /bridges/<id>, /tokens and /operations/pending)
- * carry their own credentials; see bridges.ts. So do the MCP routes (/mcp, /mcp/tokens and
+ * The bridge routes (/bridges, /bridges/codes, /bridges/<id>, /tokens, /operations/pending and
+ * /checkpoints) carry their own credentials; see bridges.ts. So do the MCP routes (/mcp, /mcp/tokens and
  * /mcp/tokens/<id>); see mcp.ts. /mcp requires an MCP token in local development too.
  */
 

@@ -10,6 +10,7 @@ import {
   bridgeRemotes,
   bridgeSpool,
   bridgeTokenAccount,
+  CHECKPOINT_ROUTE,
   IssueWriter,
   isAuthFailure,
   loadSigningKey,
@@ -20,6 +21,7 @@ import {
   runCli,
   tokenEnvironment,
   TokenClient,
+  type Fetch,
 } from "@penguin/local-bridge";
 
 import { createFixtureRepo } from "../../../tests/fixtures/git-repo.ts";
@@ -32,12 +34,15 @@ let stateDir: string;
 let store: MemoryKeyStore;
 let penguin: FakePenguin;
 let output: string[];
+/** Which Penguin routes the bridge cannot reach: the checkpoint route alone, or all of them. */
+let offline: "reports" | "all" | null;
 
 beforeEach(async () => {
   root = await realpath(await mkdtemp(join(tmpdir(), "penguin-artifacts-")));
   stateDir = join(root, "state");
   store = new MemoryKeyStore();
   output = [];
+  offline = null;
   penguin = new FakePenguin(join(root, "artifacts"), OWNER);
   await mkdir(join(root, "artifacts"));
   await penguin.start(["issues", `owner-${OWNER}`, "owner-priya"]);
@@ -48,8 +53,19 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
+const bridgeFetch: Fetch = async (input, init) => {
+  if (offline === "all" || (offline === "reports" && String(input).endsWith(CHECKPOINT_ROUTE))) {
+    throw new TypeError("fetch failed");
+  }
+  return fetch(input, init);
+};
+
 function cli(args: string[], answer = "") {
-  return runCli(args, { write: (text) => output.push(text), ask: async () => answer }, { keyStore: store, stateDir });
+  return runCli(
+    args,
+    { write: (text) => output.push(text), ask: async () => answer },
+    { keyStore: store, stateDir, fetch: bridgeFetch },
+  );
 }
 
 const register = () => cli(["register", "--server", penguin.origin, "--owner", OWNER, "--code", penguin.code]);
@@ -167,6 +183,9 @@ describe("pushing to Artifacts", () => {
       assert.match(output.join(""), /^Published [0-9a-f]{40} to refs\/heads\/feature-a\.$/m);
       const fork = penguin.repoPath(`owner-${OWNER}`);
       assert.equal(await runGit(fork, ["show", "refs/heads/feature-a:a.txt"]), "checkpointed edit\n");
+      // Penguin records the pushed checkpoint as the fork's latest, with no agent session.
+      const tip = (await runGit(fork, ["rev-parse", "refs/heads/feature-a"])).trim();
+      assert.deepEqual(penguin.checkpoints, [{ fork: `owner-${OWNER}`, sha: tip }]);
       assertProtocolV1("git-receive-pack");
       assert.deepEqual(new Set(penguin.minted.map(({ repo: name }) => name)), new Set([`owner-${OWNER}`]));
       await assertNoSecretLeaked();
@@ -177,6 +196,50 @@ describe("pushing to Artifacts", () => {
       await repo.cleanup();
     }
   });
+
+  for (const scope of ["reports", "all"] as const) {
+    test(`a report queued while ${scope === "all" ? "Penguin is" : "the checkpoint route is"} offline is sent once on reconnect`, async () => {
+      await register();
+      const repo = await createFixtureRepo();
+      try {
+        for (const [key, value] of [
+          ["user.name", "Penguin Fixture"],
+          ["user.email", "fixture@penguin.invalid"],
+          ["commit.gpgsign", "false"],
+        ]) {
+          await repo.git(repo.main, "config", key!, value!);
+        }
+        await repo.write(repo.worktreeA, "a.txt", "offline edit\n");
+        offline = scope;
+        const code = await cli(["checkpoint", "--owner", OWNER, "--project", "p", "--worktree", repo.worktreeA], "y");
+        assert.equal(code, 0, output.join(""));
+        if (scope === "reports") {
+          // The push went through; only the report waits.
+          assert.match(output.join(""), /^Published [0-9a-f]{40}/m);
+          assert.match(output.join(""), /^Penguin has not recorded [0-9a-f]{40} .*unreachable/m);
+        } else {
+          assert.match(output.join(""), /^Queued [0-9a-f]{40} for refs\/heads\/feature-a: /m);
+        }
+        assert.deepEqual(penguin.checkpoints, []);
+
+        offline = null;
+        output = [];
+        assert.equal(await cli(["spool", "drain"]), 0, output.join(""));
+        assert.match(output.join(""), /^\d pushed, 0 queued, 0 failed\.$/m);
+        const tip = (await runGit(penguin.repoPath(`owner-${OWNER}`), ["rev-parse", "refs/heads/feature-a"])).trim();
+        assert.deepEqual(penguin.checkpoints, [{ fork: `owner-${OWNER}`, sha: tip }]);
+
+        // A second drain sends nothing again.
+        output = [];
+        assert.equal(await cli(["spool", "drain"]), 0);
+        assert.match(output.join(""), /^0 pushed, 0 queued, 0 failed\.$/m);
+        assert.equal(penguin.checkpoints.length, 1);
+        await assertNoSecretLeaked();
+      } finally {
+        await repo.cleanup();
+      }
+    });
+  }
 
   test("a checkpoint to another owner's fork is refused before Git runs", async () => {
     await register();

@@ -16,7 +16,14 @@ import {
 } from "./issue-index.ts";
 import { InboxStore, type InboxItem, type InboxOutcome, type InboxReason } from "./inbox-store.ts";
 import { McpTokenStore, type IssuedMcpToken, type McpCaller } from "./mcp-tokens.ts";
-import { OwnerForkStore, reportCheckpoint, type CheckpointOutcome, type OwnerFork } from "./owner-forks.ts";
+import {
+  OwnerForkStore,
+  recordReportedCheckpoint,
+  reportCheckpoint,
+  type CheckpointOutcome,
+  type CheckpointRecordDeps,
+  type OwnerFork,
+} from "./owner-forks.ts";
 import { postSessionUpdate, type SessionUpdate, type SessionUpdateOutcome } from "./session-updates.ts";
 import { IngestLedger, ingestPush, type IngestReport } from "./push-ingest.ts";
 import { rebuildIndex, type RebuildReport } from "./rebuild.ts";
@@ -87,9 +94,11 @@ export { McpTokenStore, type IssuedMcpToken, type McpCaller } from "./mcp-tokens
 export {
   CHECKPOINT_SHA_PATTERN,
   OwnerForkStore,
+  recordReportedCheckpoint,
   reportCheckpoint,
   type CheckpointDeps,
   type CheckpointOutcome,
+  type CheckpointRecordDeps,
   type OwnerFork,
 } from "./owner-forks.ts";
 export {
@@ -374,18 +383,23 @@ export class ProjectAgent extends Agent {
    * Artifacts repo name of the caller's fork, which the Worker derives from the authenticated owner.
    */
   reportCheckpoint(caller: string, sessionId: string, sha: string, fork: string): Promise<CheckpointOutcome> {
-    return reportCheckpoint(
-      {
-        sessions: this.#sessionStore(),
-        forks: this.#ownerForks(),
-        commitExists: (repoName, commit) =>
-          withRepo(this.env.ARTIFACTS, repoName, async (repo) => (await repo.readCommit(commit)) !== null),
-      },
-      caller,
-      sessionId,
-      sha,
-      fork,
-    );
+    return reportCheckpoint({ sessions: this.#sessionStore(), ...this.#checkpointDeps() }, caller, sessionId, sha, fork);
+  }
+
+  /**
+   * Records a checkpoint the owner's bridge pushed (the bridge checkpoint route), with no agent
+   * session. `owner` comes from the bridge token and `fork` is that owner's fork, named by the Worker.
+   */
+  reportBridgeCheckpoint(owner: string, sha: string, fork: string): Promise<CheckpointOutcome> {
+    return recordReportedCheckpoint(this.#checkpointDeps(), owner, sha, fork, null);
+  }
+
+  #checkpointDeps(): CheckpointRecordDeps {
+    return {
+      forks: this.#ownerForks(),
+      commitExists: (repoName, commit) =>
+        withRepo(this.env.ARTIFACTS, repoName, async (repo) => (await repo.readCommit(commit)) !== null),
+    };
   }
 
   /** An owner's fork record with its latest reported checkpoint, or undefined before the first report. */

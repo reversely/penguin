@@ -39,7 +39,21 @@ export interface CheckpointEntry {
   readonly sha: string;
 }
 
-export type QueuedEntry = OperationEntry | CheckpointEntry;
+/**
+ * Telling Penguin about a checkpoint already pushed to the owner's Artifacts fork. A drain queues
+ * it when the push lands; its ID derives from the checkpoint entry's, so it is queued once.
+ */
+export interface CheckpointReportEntry {
+  readonly v: typeof SPOOL_VERSION;
+  readonly kind: "checkpoint-report";
+  readonly id: string;
+  readonly queued_at: string;
+  /** The fork the checkpoint was pushed to, `penguin:owner-<id>`. */
+  readonly fork: string;
+  readonly sha: string;
+}
+
+export type QueuedEntry = OperationEntry | CheckpointEntry | CheckpointReportEntry;
 
 /** The remote holds the entry. `commit` is the commit that carries it there. */
 export interface PushedEntry {
@@ -64,7 +78,7 @@ export type SpoolEntry = QueuedEntry | PushedEntry | FailedEntry;
 /** Distributes `Omit` over a union, so each queued kind keeps its own fields. */
 type Unstamped<T> = T extends unknown ? Omit<T, "v" | "queued_at"> : never;
 
-const ENTRY_KINDS = new Set(["operation", "checkpoint", "pushed", "failed"]);
+const ENTRY_KINDS = new Set(["operation", "checkpoint", "checkpoint-report", "pushed", "failed"]);
 
 // A lock older than this whose holder wrote no process ID is taken to be left by a crash.
 const UNNAMED_LOCK_GRACE_MS = 2_000;
@@ -188,7 +202,7 @@ export function pendingOf(entries: readonly SpoolEntry[]): QueuedEntry[] {
   const seen = new Set<string>();
   const pending: QueuedEntry[] = [];
   for (const entry of entries) {
-    if (entry.kind !== "operation" && entry.kind !== "checkpoint") continue;
+    if (entry.kind === "pushed" || entry.kind === "failed") continue;
     // A second entry with the same ID is the same push; the first one stands.
     if (answered.has(entry.id) || seen.has(entry.id)) continue;
     seen.add(entry.id);
