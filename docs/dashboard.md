@@ -1,5 +1,9 @@
 # Dashboard
 
+> **Design change.** This page describes the current build. The dashboard in
+> [design.md](design.md#dashboard-for-people) shows each person's features with their agents on the
+> team view. It adds an approvals inbox. A feature page takes over from the issue page.
+
 The dashboard is where people on the team see who is working on what and what waits on them. They
 act on issues there too: open and assign issues, review fixes, answer threads and manage their agent
 identities.

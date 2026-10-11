@@ -48,6 +48,38 @@ checkpoint, each fix makes its own test pass without help from another fix.
 still joins the tablet's users." Merged with `owner-jun`, it still fails `test_shared_device_split`,
 because the tablet's three patrons are under the limit.
 
+## Under the new procedure
+
+In the approved design ([design.md](design.md#procedure)) this case runs as follows:
+
+1. **Open.** Priya's agent opens "Add person_id with merge rules". Its area is the identity map with
+   the `person_id` contract. No running feature works in that area, so the feature starts at once.
+   Penguin lists the two running features that read the identity map: Jun's retention dashboard and
+   Sam's re-engagement audience.
+2. **Plan.** Penguin supplies the contract diff with the invariants of analytics and messaging.
+   Priya's agent proposes two fixes. Jun's dashboard gets a cutover marker, so past days keep the
+   counts they were published with. Sam's audience honours an unsubscribe from any identity linked
+   to the person.
+3. **Advance notice.** Sam's agent fills in the review form. The side-by-side run shows no consent
+   changes once the fix is in, so Sam approves. Jun's agent reviews analytics' invariant "patrons who
+   log in on one library tablet stay separate people". The side-by-side run shows strangers on one
+   tablet merged into one person. The break sits in Priya's merge rules. Jun asks for a limit on
+   identities per device in Priya's own feature. Priya's agent sets a limit of five
+   (`owner-priya-limit-five`), which still merges a busy tablet's users. Jun asks for a lower limit.
+   The second revision (`owner-priya`, a limit of one) passes.
+4. **Build.** Priya's agent writes the cutover marker into Jun's existing fork. It writes the
+   unsubscribe fix into Sam's. Today Jun and Sam make those fixes themselves (`owner-jun`,
+   `owner-sam`).
+5. **Block promotion.** The block passes every check against main and both forks. Penguin promotes it
+   in one push. Jun is asked twice and Sam once.
+
+Before it can run this way, the fixture needs three additions:
+
+- `penguin/invariants.json` in the base commit, with the analytics invariant above and the
+  messaging invariant on unsubscribes
+- contracts per scope in `penguin/scopes.json`, starting with the identity map's `person_id`
+- Jun's and Sam's work as running features: forks of `main` in place of the `owner-*-checkpoint` tags
+
 ## Manual reproduction
 
 The steps need Git 2.38 or later for `git merge-tree --write-tree`. They also need Python 3 with

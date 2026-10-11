@@ -53,6 +53,32 @@ their own code to it. Merged with `owner-priya`, each fix makes its own test pas
 `owner-priya` holds the helper that both fixes import. Priya reviews the helper. Jun and Sam review
 the changes in their own scopes.
 
+## Under the new procedure
+
+In the approved design ([design.md](design.md#procedure)) this case runs as follows:
+
+1. **Open.** The feature's area is `shared/dates` with the `start_of_day()` contract. Penguin lists
+   Jun's weekly report and Sam's reminders as callers.
+2. **Plan.** The signature stays the same, so the contract diff alone shows nothing. Penguin's
+   side-by-side run shows `start_of_day()` returning a different day for users west of UTC, which
+   makes the change a behaviour change. Priya's agent adds `start_of_local_day()` in its own feature.
+   It proposes switching Jun's and Sam's calls to the new helper. Penguin classifies that switch as
+   mechanical: a codemod on each call site.
+3. **Advance notice.** Jun and Sam each approve their part. Their review forms cite the two tests in
+   [Expected failures](#expected-failures).
+4. **Build.** Penguin's codemod writes the switch into Jun's and Sam's existing forks. No agent
+   writes a fix. Today Jun and Sam write the switch themselves (`owner-jun`, `owner-sam`), so those
+   commits become the codemod's expected output.
+5. **Block promotion.** One promotion. Neither Jun's report nor Sam's reminders ever runs on the UTC
+   helper. Jun and Sam are each asked once, for approval.
+
+Before it can run this way, the fixture needs three additions:
+
+- `penguin/invariants.json` in the base commit, with the local-day and local-hour invariants the two
+  tests check
+- contracts per scope in `penguin/scopes.json`, starting with `start_of_day()`
+- Jun's and Sam's work as running features: forks of `main` in place of the `owner-*-checkpoint` tags
+
 ## Manual reproduction
 
 The steps need Git 2.38 or later for `git merge-tree --write-tree`. They also need Python 3.11 or

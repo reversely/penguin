@@ -1,5 +1,11 @@
 # Huddle flow
 
+> **Design change.** This page describes the current build. The design replaces the Huddle with the
+> procedure in [design.md](design.md#procedure). A feature declares its area at open. A change that
+> others depend on carries a merge plan, which each affected author approves in advance through the
+> review form. The originating agent writes each approved fix into the affected feature's fork.
+> Penguin promotes the whole set to main in one push.
+
 A Huddle is the issue Penguin opens when one owner's checkpoint breaks another owner's tests before
 either change reaches the main branch. It brings in only the owners whose work is involved, hands
 each fix to the agent session that should make it and closes once the affected owners approve. This

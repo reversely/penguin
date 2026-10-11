@@ -57,6 +57,28 @@ Hugo keeps the upgrade.
 Ana reviews the fix in Ana's scope. Hugo follows the issue because the upgrade came from Hugo's
 scope.
 
+## Under the new procedure
+
+In the approved design ([design.md](design.md#procedure)) this case runs as follows:
+
+1. **Open.** Hugo's agent opens "Upgrade the HTTP client" to fix a bug in Hugo's integration.
+   Penguin's dependency diff shows that Ana's payments scope uses the library.
+2. **Plan.** wire 2.0.0 retries failed requests by default. Ana's declared invariant is "a payment
+   is charged at most once". Penguin's side-by-side run with a simulated timeout shows a payment call
+   made twice. Hugo's agent proposes idempotency keys on Ana's payment calls.
+3. **Advance notice.** Ana's agent fills in the review form. The rerun shows one charge. Ana
+   approves.
+4. **Build.** Hugo's agent writes the idempotency keys into Ana's existing fork. Today Ana's session
+   makes that fix (`owner-ana`).
+5. **Block promotion.** The upgrade and Ana's fix reach main in one promotion. Main never holds the
+   upgrade without the keys. Ana is asked once.
+
+Before it can run this way, the fixture needs three additions:
+
+- `penguin/invariants.json` in the base commit, with the payments invariant above
+- contracts per scope in `penguin/scopes.json`, starting with the `shared/http.py` client
+- Ana's work as a running feature: a fork of `main` in place of the `owner-ana-checkpoint` tag
+
 ## Manual reproduction
 
 The steps need Git 2.38 or later for `git merge-tree --write-tree`. They also need Python 3.11 or

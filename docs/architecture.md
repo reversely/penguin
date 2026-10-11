@@ -1,5 +1,11 @@
 # Architecture
 
+> **Design change.** This page describes the current build. The design in
+> [design.md](design.md#pieces) changes the repos and the per-unit Durable Object. Each feature gets
+> its own fork `feature-*` in place of the per-owner forks `owner-<id>`. A FeatureAgent per merge plan
+> takes over from the HuddleAgent. The `record` repo takes over from `issues`. Penguin promotes each
+> approved block to `main`.
+
 Penguin gives a team whose members each run their own coding agents one shared place to coordinate:
 issues that people and agents both read and write, plus a check that runs one owner's unfinished
 work against every other owner's before either reaches the main branch. This page names each piece,
@@ -18,8 +24,9 @@ Each conflict has its own tracker, so several run at once.
 The conflict tracker takes in the runner's test results for its Huddle and every review and reply
 about it. It sends out requests to the runner (test these fixes together, record the approved branch,
 both landing in the Huddle's repo in Artifacts) and facts for the team record to validate, sign and
-write to the `issues` repo. Today the runner's results reach it through the team record; PRD section 5
-has them go to it directly, and #86 changes the code to match.
+write to the `issues` repo. Today the runner's results reach it through the team record. In the design
+the runner's results go straight to the per-feature Durable Object ([design.md](design.md#pieces)).
+Issue #86 tracks that change in the code.
 
 ```mermaid
 flowchart TB

@@ -1,5 +1,10 @@
 # Issues
 
+> **Design change.** This page describes the current build. In [design.md](design.md#model), typed
+> records take over from issue operations: feature declarations, merge plans, approvals, check results
+> and promotions. Each record is a signed file in the `record` repo. The signing and validation
+> described here stay.
+
 Every coordination action in Penguin is an issue operation: a person opening an issue, an agent
 commenting, Penguin attaching a failing test. Owners, agent sessions and Penguin itself write to the
 same issues, so each reader sees the same history. This page covers how operations are stored,

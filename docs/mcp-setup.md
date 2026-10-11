@@ -1,5 +1,10 @@
 # Connecting agent sessions to Penguin
 
+> **Design change.** This page describes the current build. In
+> [design.md](design.md#mcp-for-agent-sessions), a session works on one feature. It gains the tools
+> `whats_near`, `impact`, `check`, `apply_fix`, `propose_plan` and `submit_review`
+> ([design.md](design.md#tools-for-agents)).
+
 An owner's Claude Code or Codex session reads the issues assigned to one of the owner's identities and
 writes comments, linked commits and state changes back to them. The session reaches Penguin's MCP
 endpoint, `<worker-url>/mcp`, with the owner's MCP token. The token decides whose identities the
