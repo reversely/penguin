@@ -3,7 +3,7 @@
 // from agents at a glance. The vendor of a session never changes the character.
 
 import { initial } from "./board-view.ts";
-import { BODIES, characterFor, EYE, eyes } from "./character.ts";
+import { BODIES, characterFor, EYE, eyes, personHue } from "./character.ts";
 
 /** 24px in cards and bylines, 32px in rows, 56px in the identity header. */
 export type AvatarSize = "card" | "row" | "header";
@@ -47,10 +47,10 @@ export function IdentityAvatar({ handle, image, size }: { handle: string; image:
   );
 }
 
-/** A person's avatar: the initial of their id in a round ink badge. */
+/** A person's avatar: the initial of their id in a round badge filled with their hue. */
 export function PersonAvatar({ id, size }: { id: string; size: AvatarSize }) {
   return (
-    <span className={`avatar avatar-${size} avatar-initial`} aria-hidden="true">
+    <span className={`avatar avatar-${size} avatar-initial person-${personHue(id)}`} aria-hidden="true">
       {initial(id)}
     </span>
   );

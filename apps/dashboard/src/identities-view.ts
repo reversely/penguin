@@ -210,18 +210,13 @@ export function scopeTestCommand(scopes: readonly IdentityScope[], id: string): 
   return scopes.find((scope) => scope.id === id)?.testCommand;
 }
 
-/** An identity's owners for its header's meta line, joined with commas. */
-export function ownersLine(identity: IdentityEntry): string {
-  return identity.owners.join(", ");
-}
-
 /** Whether any session of the identity runs now, which its list row marks with a dot. */
 export function isOnline(identity: IdentityEntry): boolean {
   return identity.sessions.some((session) => session.status === "running");
 }
 
-/** The detail's tabs, in order. */
-export const IDENTITY_TABS = ["details", "sessions", "history"] as const;
+/** The agent card's tabs, in order. */
+export const IDENTITY_TABS = ["overview", "charter", "history"] as const;
 export type IdentityTab = (typeof IDENTITY_TABS)[number];
 
 /** The tab an arrow, Home or End key moves to from `current`, wrapping at the ends; undefined for another key. */

@@ -542,6 +542,31 @@ export class IssueIndex {
   }
 
   /**
+   * The newest `limit` applied operations the identity `handle` wrote, newest first, each under its
+   * issue's number. The author index serves the lookup, so each identity costs one indexed read.
+   */
+  authoredOperations(
+    handle: string,
+    limit: number,
+  ): { readonly seq: number; readonly opId: string; readonly issueId: string; readonly type: string; readonly payload: unknown }[] {
+    return this.#db
+      .exec(
+        `SELECT seq, op_id, issue_id, type, payload FROM AppliedOp
+         WHERE author = ? AND status = 'applied' AND issue_id IS NOT NULL AND type IS NOT NULL
+         ORDER BY seq DESC LIMIT ?`,
+        authorSegment({ identity: handle }),
+        limit,
+      )
+      .map((row) => ({
+        seq: Number(row["seq"]),
+        opId: row["op_id"] as string,
+        issueId: this.resolve(row["issue_id"] as string),
+        type: row["type"] as string,
+        payload: row["payload"] === null ? null : (JSON.parse(row["payload"] as string) as unknown),
+      }));
+  }
+
+  /**
    * The issue a submission is written under: the temporary ID of an issue created offline, however
    * the caller named it, so its files share the folder the bridge counts; otherwise the caller's value.
    */

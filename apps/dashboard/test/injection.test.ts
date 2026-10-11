@@ -104,7 +104,7 @@ test("markup in an identity's handle, name, job, charter and owners renders as t
       const noop = () => {};
       return renderToStaticMarkup(createElement(Fragment, null,
         createElement(IdentityList, { identities: [identity], selectedId: identity.id, onChoose: noop }),
-        createElement(IdentityDetail, { identity, scopes, viewer: identity.owners[0], navigate: noop, onBack: noop, onEdit: noop, onDuplicate: noop }),
+        createElement(IdentityDetail, { identity, board: undefined, scopes, viewer: identity.owners[0], navigate: noop, onBack: noop, onEdit: noop, onDuplicate: noop }),
         createElement(IdentityFormView, { initialForm: formFor(identity, "edit", identity.owners[0], new Set()), page, viewer: identity.owners[0], onCancel: noop, onSaved: noop, onSignedOut: noop })));
     }`);
   const html = render(
@@ -121,15 +121,17 @@ test("markup in an identity's handle, name, job, charter and owners renders as t
       charterRules: ["<em>rule</em>"],
       autoAccept: true,
       duplicatedFrom: null,
-      sessions: [{ id: "s1", vendor: "<b>codex</b>", branch: "b", status: "running", lastSeen: "2026-10-11T09:00:00.000Z" }],
+      sessions: [{ id: "s1", vendor: "<b>codex</b>", branch: "b", worktreeId: "wt", status: "running", currentIssueId: null, lastSeen: "2026-10-11T09:00:00.000Z" }],
       history: [],
+      lastCheckpoint: null,
+      recentOperations: [],
     },
     [{ id: "analytics", name: "<s>Analytics</s>", ownerId: "jun", testCommand: "<kbd>pytest</kbd>" }],
   );
   assert.match(html, /@jun\/&lt;img src=x onerror=&quot;globalThis\.pwned = 1&quot;&gt;/);
   assert.match(html, /&lt;b&gt;Reports&lt;\/b&gt;/);
   assert.match(html, /&lt;script&gt;globalThis\.pwned = 2&lt;\/script&gt;/);
-  assert.match(html, /jun, &lt;i&gt;sam&lt;\/i&gt;/);
+  assert.match(html, />&lt;i&gt;sam&lt;\/i&gt;</);
   assert.match(html, /&lt;s&gt;Analytics&lt;\/s&gt;/);
   assert.match(html, /&lt;kbd&gt;pytest&lt;\/kbd&gt;/);
   assert.match(html, /&lt;u&gt;analytics&lt;\/u&gt;/);
@@ -155,54 +157,88 @@ test("markup in the owner's name and an issue title renders as text in the shell
   assert.doesNotMatch(html, /<img|<script|onerror="/);
 });
 
-test("markup in an owner, a handle, a session, an issue title, a reviewer and a thread renders as text on the board", async () => {
-  const { render } = await load<{ render: (board: unknown) => string }>(`
-    import { renderToStaticMarkup } from "react-dom/server";
-    import { createElement } from "react";
-    import { BoardView } from "./src/board-page.tsx";
-    export function render(board) {
-      return renderToStaticMarkup(createElement(BoardView, { board, viewer: "jun", showAll: false, navigate() {} }));
-    }`);
+/** A board and an identities page whose owner, handles, title, scope and session values carry markup. */
+function markedTeam() {
   const handle = `@jun/${MARKUP}`;
+  const owner = `<em>${MARKUP}</em>`;
   const session = { id: "s1", vendor: "<b>codex</b>", branch: "<i>main</i>", status: "running" };
-  const html = render({
+  const issue = {
+    issue: {
+      id: "7",
+      alias: null,
+      title: "<script>globalThis.pwned = 2</script>",
+      body: MARKUP,
+      state: "in_review",
+      stateReason: null,
+      labels: [],
+      parentId: null,
+      version: 1,
+      assignees: [{ kind: "identity", id: handle, session, waitingFor: null }],
+      commits: [],
+      checks: [],
+      reviews: [],
+      threads: [{ id: "t1", status: "open", needsPersonIds: [`<kbd>${MARKUP}</kbd>`] }],
+    },
+    subIssues: [],
+    laneOwners: { [handle]: ["jun"] },
+  };
+  const board = {
     owners: [
       {
         id: "jun",
         identities: [{ handle, name: `<u>${MARKUP}</u>`, avatar: null, team: false, sessions: [{ ...session, lastSeen: "2026-10-11T09:00:00.000Z" }] }],
       },
-      { id: `<em>${MARKUP}</em>`, identities: [{ handle: "@x/<s>idle</s>", name: "idle", avatar: null, team: true, sessions: [] }] },
+      { id: owner, identities: [{ handle: "@x/<s>idle</s>", name: "idle", avatar: null, team: true, sessions: [] }] },
     ],
-    issues: [
-      {
-        issue: {
-          id: "7",
-          alias: null,
-          title: "<script>globalThis.pwned = 2</script>",
-          body: MARKUP,
-          state: "in_review",
-          stateReason: null,
-          labels: [],
-          parentId: null,
-          version: 1,
-          assignees: [{ kind: "identity", id: handle, session, waitingFor: null }],
-          commits: [],
-          checks: [],
-          reviews: [{ opId: "r1", reviewer: `<q>${MARKUP}</q>`, verdict: "approve", reason: null, repo: "r", sha: "1", counts: false, uncountedReason: MARKUP }],
-          threads: [{ id: "t1", status: "open", needsPersonIds: [`<kbd>${MARKUP}</kbd>`] }],
-        },
-        subIssues: [],
-        laneOwners: { [handle]: ["jun"] },
-      },
-    ],
-  });
+    issues: [issue],
+    waiting: [{ personId: "jun", issueId: "7", reason: "review_requested" }],
+  };
+  const identity = {
+    id: "identity-1",
+    handle,
+    name: "<b>Reports</b>",
+    avatar: null,
+    job: "job",
+    team: false,
+    owners: ["jun"],
+    charterScopes: [],
+    charterPaths: [],
+    charterRules: [],
+    autoAccept: true,
+    duplicatedFrom: null,
+    sessions: [{ ...session, worktreeId: "<q>wt</q>", currentIssueId: "7", lastSeen: "2026-10-11T09:00:00.000Z" }],
+    history: [],
+    lastCheckpoint: { sha: "9b2f10c4e1a7d3f58b6e2c0a9d4f71e3b5c8a2d6", sessionId: "s1", reportedAt: "2026-10-11T09:00:00.000Z" }, // pragma: allowlist secret
+    recentOperations: [{ seq: 3, opId: "op", issueId: "7", type: "add_label", payload: { label: "<mark>x</mark>" } }],
+  };
+  const page = {
+    identities: [identity],
+    scopes: [{ id: "analytics", name: "<s>Analytics</s>", ownerId: "jun", testCommand: "pytest" }],
+    owners: ["jun", owner],
+    limits: {},
+  };
+  return { board, page, identity };
+}
+
+test("markup in an owner, a handle, a session, an issue title and a scope renders as text on the team map and a person's view", async () => {
+  const { render } = await load<{ render: (board: unknown, page: unknown, person: string) => string }>(`
+    import { renderToStaticMarkup } from "react-dom/server";
+    import { createElement, Fragment } from "react";
+    import { PersonView, TeamMapView } from "./src/team-page.tsx";
+    export function render(board, page, person) {
+      const props = { board, page, viewer: "jun", navigate() {} };
+      return renderToStaticMarkup(createElement(Fragment, null,
+        createElement(TeamMapView, props),
+        createElement(PersonView, { ...props, person })));
+    }`);
+  const { board, page } = markedTeam();
+  const html = render(board, page, "jun");
   assert.match(html, /@jun\/&lt;img src=x onerror=&quot;globalThis\.pwned = 1&quot;&gt;/);
   assert.match(html, /&lt;script&gt;globalThis\.pwned = 2&lt;\/script&gt;/);
-  assert.match(html, /&lt;b&gt;codex&lt;\/b&gt;/);
-  assert.match(html, /title="&lt;i&gt;main&lt;\/i&gt;"/);
   assert.match(html, /&lt;em&gt;/);
   assert.match(html, /@x\/&lt;s&gt;idle&lt;\/s&gt;/);
-  assert.match(html, /Reply from &lt;kbd&gt;/);
+  assert.match(html, /&lt;s&gt;Analytics&lt;\/s&gt;/);
+  assert.match(html, /1 review/);
   assert.doesNotMatch(html, /<img|<script|<b>|<i>|<em>|<s>|<u>|<q>|<kbd>|onerror="/);
 });
 
@@ -307,4 +343,23 @@ test("markup in an issue title, body, comment, thread, check, review and identit
   // Only the fix waiting for the viewer carries an ink primary.
   assert.equal(html.match(/class="button primary/g)?.length, 1);
   assert.doesNotMatch(html, /<img|<script|<b>|<i>|<em>|<s>|<u>|<q>|<kbd>|<mark>|<strong>|<sup>|<sub>|<cite>|<small>|<code>fix|onerror="/);
+});
+
+test("markup in a held issue's title, a session's worktree and an operation renders as text on the agent card", async () => {
+  const { render } = await load<{ render: (board: unknown, identity: unknown) => string }>(`
+    import { renderToStaticMarkup } from "react-dom/server";
+    import { createElement } from "react";
+    import { IdentityDetail } from "./src/identities-page.tsx";
+    export function render(board, identity) {
+      const noop = () => {};
+      return renderToStaticMarkup(createElement(IdentityDetail, { identity, board, scopes: [], viewer: "jun", navigate: noop, onBack: undefined, onEdit: noop, onDuplicate: noop }));
+    }`);
+  const { board, identity } = markedTeam();
+  const html = render(board, identity);
+  assert.match(html, /&lt;script&gt;globalThis\.pwned = 2&lt;\/script&gt;/);
+  assert.match(html, /&lt;q&gt;wt&lt;\/q&gt;/);
+  assert.match(html, /added &lt;mark&gt;x&lt;\/mark&gt;/);
+  assert.match(html, /Reply from &lt;kbd&gt;/);
+  assert.match(html, /9b2f10c/);
+  assert.doesNotMatch(html, /<img|<script|<b>|<i>|<q>|<kbd>|<mark>|onerror="/);
 });

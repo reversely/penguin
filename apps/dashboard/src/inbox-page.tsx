@@ -112,7 +112,7 @@ export function useInbox(live: Live, onSignedOut: () => void): InboxState {
 type Read<T> = { readonly kind: "loading" } | { readonly kind: "ready"; readonly value: T } | { readonly kind: "failed" };
 
 /** One API answer, read again whenever `revision` changes; a failed refresh keeps the last answer. */
-function useRead<T>(read: () => Promise<T>, revision: string, onSignedOut: () => void): Read<T> {
+export function useRead<T>(read: () => Promise<T>, revision: string, onSignedOut: () => void): Read<T> {
   const [state, setState] = useState<Read<T>>({ kind: "loading" });
   useEffect(() => {
     let current = true;

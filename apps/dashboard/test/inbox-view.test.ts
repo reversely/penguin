@@ -137,6 +137,7 @@ test("the board's facts find each issue by id and each identity by handle; a ses
       { id: "sam", identities: [team] },
     ],
     issues: [boardIssue("40", "open")],
+    waiting: [],
   };
   const facts = boardFacts(board);
   assert.equal(facts.issues.get("40")?.issue.id, "40");

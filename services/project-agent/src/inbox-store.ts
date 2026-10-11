@@ -87,6 +87,19 @@ export class InboxStore implements StartRequestListener {
       .map(inboxItem);
   }
 
+  /**
+   * Every person's items that ask them to act (a review request, a thread or a session to start),
+   * oldest first, for the dashboard's team map. Read or unread, an item still asks until it goes.
+   */
+  actionItems(): InboxItem[] {
+    return this.#db
+      .exec(
+        `SELECT * FROM InboxItem WHERE reason IN ('review_requested', 'thread', 'start_session')
+         ORDER BY raised_at, rowid`,
+      )
+      .map(inboxItem);
+  }
+
   /** Marks one of the caller's items read. Another person's item is never found. */
   markRead(caller: string, issueId: string, reason: InboxReason): InboxOutcome {
     if (typeof caller !== "string" || typeof issueId !== "string" || !REASONS.has(reason)) {

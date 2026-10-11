@@ -1,5 +1,6 @@
-// What GET /api/board returns to the dashboard: every issue without its timeline, and each owner with
-// the identities they own or serve and those identities' running sessions. The ProjectAgent builds it
+// What GET /api/board returns to the dashboard: every issue without its timeline, each owner with
+// the identities they own or serve and those identities' running sessions, and the inbox items that
+// ask each person to act. The ProjectAgent builds it
 // (services/project-agent/src/board.ts); the board page sorts it into columns and swimlanes
 // (apps/dashboard/src/board-view.ts).
 
@@ -39,7 +40,16 @@ export interface BoardIssue extends Omit<IssuePage, "timeline"> {
   readonly laneOwners: Readonly<Record<string, readonly string[]>>;
 }
 
+/** An inbox item that asks a person to act: review a fix, reply in a thread or start a session. */
+export interface BoardWaiting {
+  readonly personId: string;
+  readonly issueId: string;
+  readonly reason: "review_requested" | "thread" | "start_session";
+}
+
 export interface Board {
   readonly owners: readonly BoardOwner[];
   readonly issues: readonly BoardIssue[];
+  /** Every person's inbox items of those three reasons on issues still open, oldest first. */
+  readonly waiting: readonly BoardWaiting[];
 }

@@ -2,7 +2,7 @@
   "name": "@penguin/dashboard",
   "version": "0.0.0",
   "private": true,
-  "description": "React UI: issue page, board, inbox, identities, scope map, diff viewer",
+  "description": "React UI: issue page, team map, inbox, identities, scope map, diff viewer",
   "type": "module",
   "scripts": {
     "build": "node build.ts",

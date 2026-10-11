@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState } from "react";
 
 import { AccountMenu } from "./account-menu.tsx";
 import { fetchSession, type Session } from "./api.ts";
-import { BoardPage } from "./board-page.tsx";
 import { DetailsPane, DetailsProvider, useDetails } from "./details-pane.tsx";
 import { IdentitiesPageView } from "./identities-page.tsx";
 import { InboxPage, InboxSidebar, useInbox, type InboxState } from "./inbox-page.tsx";
@@ -11,6 +10,7 @@ import { IssuePageView } from "./issue-page.tsx";
 import { linkHandler } from "./links.ts";
 import { NewIssuePage } from "./new-issue-page.tsx";
 import { NAVIGATION, parseRoute, signInProblem, type Route, type SignInProblem } from "./routes.ts";
+import { TeamPage } from "./team-page.tsx";
 import { useLive, type Live } from "./use-live.ts";
 
 type SessionState = { readonly kind: "loading" } | { readonly kind: "signed-out" } | { readonly kind: "signed-in"; readonly session: Session };
@@ -120,7 +120,7 @@ function Shell({ session, onSignedOut }: { session: Session; onSignedOut: () => 
           <AccountMenu session={session} status={live.status} />
         </header>
         <main className="centre" inert={covered}>
-          <div className={route?.page === "board" ? "page page-wide" : "page"} data-audit-center>
+          <div className={route?.page === "team" ? "page page-wide" : "page"} data-audit-center>
             <Page route={route} session={session} live={live} inbox={inbox} navigate={navigate} onSignedOut={onSignedOut} />
           </div>
         </main>
@@ -143,8 +143,8 @@ function Page({ route, session, live, inbox, navigate, onSignedOut }: PageProps)
   if (route?.page === "issue") {
     return <IssuePageView key={route.issueId} issueId={route.issueId} viewer={session.owner} live={live} navigate={navigate} onSignedOut={onSignedOut} />;
   }
-  if (route?.page === "board") {
-    return <BoardPage viewer={session.owner} showAll={route.showAll} live={live} navigate={navigate} onSignedOut={onSignedOut} />;
+  if (route?.page === "team") {
+    return <TeamPage viewer={session.owner} person={route.person} live={live} navigate={navigate} onSignedOut={onSignedOut} />;
   }
   if (route?.page === "inbox") {
     return <InboxPage inbox={inbox} viewer={session.owner} live={live} showAll={route.showAll} navigate={navigate} onSignedOut={onSignedOut} />;

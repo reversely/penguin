@@ -1,24 +1,35 @@
 // The dashboard's route frame. The Worker serves index.html on exactly these paths (see
-// PAGE_PATH in apps/worker/src/dashboard.ts); the pages themselves are built by later tickets.
+// PAGE_PATH in apps/worker/src/dashboard.ts) and redirects the former board at /board to /.
 
 export type Route =
+  /** The team map, or one person's view of it when `person` names them. */
+  | { readonly page: "team"; readonly person: string | null }
   | { readonly page: "inbox"; readonly showAll: boolean }
-  | { readonly page: "board"; readonly showAll: boolean }
   | { readonly page: "identities" }
   | { readonly page: "new-issue" }
   | { readonly page: "issue"; readonly issueId: string };
 
 export type Page = Route["page"];
 
-/** The inbox with every closed issue and the board with every Done issue; each lists only the newest by default. */
+/** The inbox with every closed issue; it lists only the newest by default. */
 export const INBOX_ALL_PATH = "/inbox?closed=all";
-export const BOARD_ALL_PATH = "/board?done=all";
+
+/** A person's view of the team map. */
+export function personPath(person: string): string {
+  return `/?person=${encodeURIComponent(person)}`;
+}
+
+/** An identity's agent card on the identities page. */
+export function identityPath(id: string | null): string {
+  return id === null ? "/identities" : `/identities?identity=${encodeURIComponent(id)}`;
+}
 
 /** The route for a path and its query, or undefined for a path the dashboard does not serve. */
 export function parseRoute(pathname: string, search = ""): Route | undefined {
   const query = new URLSearchParams(search);
-  if (pathname === "/" || pathname === "/inbox") return { page: "inbox", showAll: query.get("closed") === "all" };
-  if (pathname === "/board") return { page: "board", showAll: query.get("done") === "all" };
+  // A history entry from before the board was retired still opens the team map.
+  if (pathname === "/" || pathname === "/board") return { page: "team", person: query.get("person") || null };
+  if (pathname === "/inbox") return { page: "inbox", showAll: query.get("closed") === "all" };
   if (pathname === "/identities") return { page: "identities" };
   // No issue takes this id: a number is digits and a temporary ID is an op_id, which has hyphens.
   if (pathname === "/issues/new") return { page: "new-issue" };
@@ -28,8 +39,8 @@ export function parseRoute(pathname: string, search = ""): Route | undefined {
 
 /** The navigation entries in the shell's header, in order. */
 export const NAVIGATION: readonly { readonly page: Page; readonly path: string; readonly label: string }[] = [
+  { page: "team", path: "/", label: "Team" },
   { page: "inbox", path: "/inbox", label: "Inbox" },
-  { page: "board", path: "/board", label: "Board" },
   { page: "identities", path: "/identities", label: "Identities" },
 ];
 

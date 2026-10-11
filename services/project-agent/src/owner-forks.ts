@@ -62,6 +62,11 @@ export class OwnerForkStore {
     return row === undefined ? undefined : ownerFork(row);
   }
 
+  /** Every owner's fork, in owner order. */
+  list(): OwnerFork[] {
+    return this.#db.exec(`SELECT * FROM OwnerFork ORDER BY owner_id`).map(ownerFork);
+  }
+
   /** Records `sha` as the owner's latest checkpoint in `artifactsRepo`. */
   recordCheckpoint(ownerId: string, artifactsRepo: string, sha: string, sessionId: string | null): OwnerFork {
     this.#db.exec(

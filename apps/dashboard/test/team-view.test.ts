@@ -1,0 +1,167 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+
+import type { Board, IdentitiesPage, IdentityEntry } from "@penguin/protocol";
+
+import { PERSON_HUES, personHue } from "../src/character.ts";
+import { agentStatus, agentWork, heldIssues, personIssues, sessionIssue, teamMap } from "../src/team-view.ts";
+import { boardIdentity, identity, issue, person, running, thread } from "./board-fixtures.ts";
+
+function page(owners: string[], handles: string[]): IdentitiesPage {
+  return {
+    identities: handles.map((handle, n): IdentityEntry => ({
+      id: `identity-${n + 1}`,
+      handle,
+      name: handle,
+      avatar: null,
+      job: "",
+      team: false,
+      owners: [handle.slice(1, handle.indexOf("/"))],
+      charterScopes: [],
+      charterPaths: [],
+      charterRules: [],
+      autoAccept: true,
+      duplicatedFrom: null,
+      sessions: [],
+      history: [],
+      lastCheckpoint: null,
+      recentOperations: [],
+    })),
+    scopes: [],
+    owners,
+    limits: { nameLength: 1, jobLength: 1, rules: 1, ruleLength: 1, scopes: 1, paths: 1, pathLength: 1, teamOwners: 1, avatarBytes: 1 },
+  };
+}
+
+const offline = { ...running, status: "offline" as const };
+
+/** Jun with a running agent on two issues, Priya with an idle agent, and a team identity of both. */
+function board(): Board {
+  const pair = boardIdentity("@jun/data-pair", 0, true);
+  return {
+    owners: [
+      { id: "jun", identities: [boardIdentity("@jun/reports"), pair] },
+      { id: "priya", identities: [boardIdentity("@priya/merge-rules", 0), pair] },
+      // The board lists an owner with no identity whose lane holds an issue.
+      { id: "sam", identities: [] },
+    ],
+    issues: [
+      issue("31", "verifying", { assignees: [identity("@jun/reports")] }),
+      issue("32", "fixing", { assignees: [identity("@jun/reports")], threads: [thread({ needsPersonIds: ["priya"] })] }),
+      issue("33", "closed", { assignees: [identity("@jun/reports")] }),
+      issue("34", "fixing", { assignees: [identity("@jun/data-pair", null)] }, { laneOwners: { "@jun/data-pair": ["priya"] } }),
+      issue("35", "open"),
+      issue("36", "fixing", { assignees: [person("sam")] }),
+    ],
+    waiting: [
+      { personId: "priya", issueId: "32", reason: "thread" },
+      { personId: "priya", issueId: "31", reason: "review_requested" },
+      { personId: "priya", issueId: "34", reason: "start_session" },
+      { personId: "lee", issueId: "35", reason: "thread" },
+    ],
+  };
+}
+
+test("every owner, scope owner and person asked to act gets a square, the viewer's first", () => {
+  const map = teamMap(board(), page(["jun", "priya", "zoe"], ["@jun/reports"]), "priya");
+  assert.deepEqual(
+    map.people.map((entry) => entry.id),
+    ["priya", "jun", "lee", "sam", "zoe"],
+  );
+  assert.deepEqual(
+    map.unassigned.map((entry) => entry.issue.id),
+    ["35"],
+  );
+});
+
+test("an agent box carries its card's id, its most pressing status and its open issues", () => {
+  const map = teamMap(board(), page([], ["@jun/reports"]), "jun");
+  const jun = map.people.find((entry) => entry.id === "jun");
+  assert.deepEqual(
+    jun?.agents.map((agent) => [agent.identity.handle, agent.id, agent.status, agent.held.map((held) => held.issue.id)]),
+    // Issue 32 blocks the session on Priya's reply, so it comes before 31, which waits at a checkpoint.
+    [["@jun/reports", "identity-1", "blocked", ["32", "31"]]],
+  );
+  const priya = map.people.find((entry) => entry.id === "priya");
+  assert.deepEqual(
+    priya?.agents.map((agent) => [agent.identity.handle, agent.id, agent.status]),
+    // The team identity sits under Priya, who assigned it its issue, and not under Jun. Agents with no
+    // session follow by handle.
+    [
+      ["@jun/data-pair", null, "none"],
+      ["@priya/merge-rules", null, "none"],
+    ],
+  );
+});
+
+test("a team identity holding nothing sits under every owner it serves", () => {
+  const idle = { ...board(), issues: [] };
+  const map = teamMap(idle, page([], []), "jun");
+  const handles = (id: string) => map.people.find((entry) => entry.id === id)?.agents.map((agent) => agent.identity.handle);
+  assert.deepEqual(handles("jun"), ["@jun/reports", "@jun/data-pair"]);
+  assert.deepEqual(handles("priya"), ["@jun/data-pair", "@priya/merge-rules"]);
+});
+
+test("what needs a person counts reviews, threads still open on them and sessions to start", () => {
+  const map = teamMap(board(), page([], []), "jun");
+  const needs = (id: string) => map.people.find((entry) => entry.id === id)?.needs;
+  assert.deepEqual(needs("priya"), { reviews: 1, threads: 1, sessions: 1 });
+  // Lee's thread item is on an issue with no open thread that needs Lee.
+  assert.deepEqual(needs("lee"), { reviews: 0, threads: 0, sessions: 0 });
+  assert.deepEqual(needs("jun"), { reviews: 0, threads: 0, sessions: 0 });
+});
+
+test("an identity's status is its sessions' most pressing one, working with none routed and none offline", () => {
+  const two = boardIdentity("@jun/reports", 2);
+  assert.equal(agentStatus(two, new Map([["session-1", "done"], ["session-2", "waiting at a checkpoint"]])), "waiting at a checkpoint");
+  assert.equal(agentStatus(two, new Map()), "working");
+  assert.equal(agentStatus(boardIdentity("@jun/reports", 0), new Map()), "none");
+});
+
+test("a person's issues are those assigned to them or their agents or waiting on them, open first and newest first", () => {
+  const rows = (id: string) => personIssues(board(), id).map((row) => [row.issue.issue.id, row.involvement]);
+  assert.deepEqual(rows("jun"), [
+    ["32", ["assigned"]],
+    ["31", ["assigned"]],
+    ["33", ["assigned"]],
+  ]);
+  assert.deepEqual(rows("priya"), [
+    ["34", ["assigned", "session"]],
+    ["32", ["reply"]],
+    ["31", ["review"]],
+  ]);
+  assert.deepEqual(rows("sam"), [["36", ["assigned"]]]);
+  assert.deepEqual(rows("nobody"), []);
+});
+
+test("an agent's work is its most pressing open issue, what that waits on and the rest it holds", () => {
+  const work = agentWork(board(), "@jun/reports");
+  assert.equal(work.issue?.issue.id, "32");
+  assert.equal(work.waitsOn, "Reply from priya");
+  assert.deepEqual(
+    work.others.map((held) => held.issue.id),
+    ["31"],
+  );
+  assert.deepEqual(agentWork(board(), "@priya/merge-rules"), { issue: null, waitsOn: null, others: [] });
+  const stalled = { ...board(), issues: [issue("40", "fixing", { assignees: [identity("@jun/reports", offline)] })] };
+  assert.equal(agentWork(stalled, "@jun/reports").waitsOn, "A running session");
+  assert.deepEqual(
+    heldIssues(stalled, "@jun/reports").map((held) => held.issue.id),
+    ["40"],
+  );
+});
+
+test("a session's issue is its delivered fix task, else the open issue routed to it", () => {
+  const session = { id: "session-1", currentIssueId: null };
+  assert.equal(sessionIssue(board(), "@jun/reports", session), "32");
+  assert.equal(sessionIssue(board(), "@jun/reports", { ...session, currentIssueId: "40" }), "40");
+  assert.equal(sessionIssue(board(), "@jun/reports", { ...session, id: "session-9" }), null);
+  assert.equal(sessionIssue(undefined, "@jun/reports", session), null);
+});
+
+test("a person's hue comes from their owner id alone and every person hue is reachable", () => {
+  assert.equal(personHue("jun"), personHue("jun"));
+  assert.ok(PERSON_HUES.includes(personHue("<em>x</em>")));
+  const seen = new Set(Array.from({ length: 200 }, (_, n) => personHue(`owner-${n}`)));
+  assert.equal(seen.size, PERSON_HUES.length);
+});

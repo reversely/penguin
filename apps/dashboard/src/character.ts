@@ -44,6 +44,22 @@ export function characterFor(handle: string): Character {
   };
 }
 
+/**
+ * The hues a person takes: the character hues without red, orange and amber, which sit beside the
+ * failure and attention colours that mark a blocked agent and a waiting review, and without teal,
+ * which two squares side by side cannot tell from green.
+ */
+export const PERSON_HUES = ["green", "blue", "violet", "pink"] as const satisfies readonly Hue[];
+
+/**
+ * A person's hue, from their owner id the way a character's comes from its handle, so a person keeps
+ * one colour on every page with nothing stored. The team map edges the person's square in it and
+ * tints their agents' boxes with it.
+ */
+export function personHue(ownerId: string): (typeof PERSON_HUES)[number] {
+  return PERSON_HUES[fnv1a(ownerId) % PERSON_HUES.length]!;
+}
+
 /** A body outline in a 40 by 40 box, the point the pair of eyes centres on, and how far of a full
     pose shift the eyes take, so they stay inside a body that narrows towards the top. */
 interface Body {

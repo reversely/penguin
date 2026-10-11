@@ -9,6 +9,7 @@ import { parseScopeMap } from "@penguin/scope-map";
 
 import { buildBoard } from "../src/board.ts";
 import { IdentityStore } from "../src/identity-store.ts";
+import { InboxStore } from "../src/inbox-store.ts";
 import { IssueIndex, type OperationKeys } from "../src/issue-index.ts";
 import { LiveFeed } from "../src/live-feed.ts";
 import { importServiceKey, type ServiceKey } from "../src/service-key.ts";
@@ -48,14 +49,21 @@ function project() {
   );
   const identities = new IdentityStore(sql, () => `identity-${++nextIdentity}`);
   let sessions: SessionStore | undefined;
+  let inbox: InboxStore | undefined;
   const index = new IssueIndex(sql, {
     assignmentsChanged: (issueId, added, removed) => sessions?.assignmentsChanged(issueId, added, removed),
-    issueChanged: (change) => feed.issueChanged(change.issueId),
+    issueChanged: (change) => {
+      inbox?.issueChanged(change);
+      feed.issueChanged(change.issueId);
+    },
   });
+  inbox = new InboxStore(sql, identities, { now: () => clock, assigningOwner: (issueId, handle) => index.assigningOwner(issueId, handle) });
+  const items = inbox;
   sessions = new SessionStore(sql, identities, {
     now: () => clock,
     newId: () => `session-${++nextSession}`,
     assigningOwner: (issueId, handle) => index.assigningOwner(issueId, handle),
+    startRequests: items,
     listener: {
       sessionChanged: (handle) => feed.sessionChanged(handle),
       routeChanged: (issueId) => feed.issueChanged(issueId),
@@ -82,6 +90,7 @@ function project() {
       routes: (issueId) => store.routes(issueId),
       session: (sessionId) => store.get(sessionId),
       assigningOwner: (issueId, handle) => index.assigningOwner(issueId, handle),
+      actionItems: () => items.actionItems(),
     });
   /** The live messages sent since the last call, as issues and sessions. */
   const messages = () => {
@@ -94,6 +103,7 @@ function project() {
   return {
     identities,
     sessions: store,
+    inbox: items,
     submit,
     board,
     messages,
@@ -178,6 +188,27 @@ test("the board lists every issue and each owner's identities with their running
   );
   const reports = board.owners[0]?.identities.find((entry) => entry.handle === "@jun/reports");
   assert.equal(reports?.avatar, `data:image/png;base64,${Buffer.from(PNG).toString("base64")}`);
+});
+
+test("the board lists each person's review, thread and session-start items on open issues", async () => {
+  const p = project();
+  seedIdentities(p);
+  await p.submit({ person: "priya" }, 50, "create", { title: "Needs a session" });
+  await p.submit({ person: "priya" }, 50, "assign", { assignee: { identity: "@sam/campaigns" } });
+  await p.submit({ person: "priya" }, 51, "create", { title: "Needs a reply" });
+  await p.submit({ person: "priya" }, 51, "open_thread", { body: "Which key?", needs: ["jun"] });
+  await p.submit({ person: "priya" }, 52, "create", { title: "Needs a review" });
+  p.inbox.reviewRequested("jun", "52");
+  await p.submit({ person: "priya" }, 53, "create", { title: "Closed" });
+  p.inbox.reviewRequested("sam", "53");
+  await p.submit({ person: "priya" }, 53, "change_state", { state: "closed", reason: "done" });
+
+  // Assignments, mentions and closes never ask anyone to act, and a closed issue asks nothing.
+  assert.deepEqual(p.board().waiting, [
+    { personId: "sam", issueId: "50", reason: "start_session" },
+    { personId: "jun", issueId: "51", reason: "thread" },
+    { personId: "jun", issueId: "52", reason: "review_requested" },
+  ]);
 });
 
 test("an owner with no identity but an issue in their lane is listed", async () => {

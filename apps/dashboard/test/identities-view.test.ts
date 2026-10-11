@@ -10,7 +10,6 @@ import {
   fieldProblem,
   handleIsFree,
   isOnline,
-  ownersLine,
   scopeTestCommand,
   tabAfterKey,
   formFor,
@@ -56,6 +55,8 @@ const reports: IdentityEntry = {
   duplicatedFrom: null,
   sessions: [],
   history: [{ issueId: "31", title: "Retention shifts", state: "fixing" }],
+  lastCheckpoint: null,
+  recentOperations: [],
 };
 
 test("only an identity's owners see its edit controls", () => {
@@ -175,10 +176,17 @@ test("a field shows its own problem when left, and a free handle is one no ident
   assert.equal(handleIsFree(formFor(reports, "edit", "jun", taken), "jun", taken), false);
 });
 
-test("the header's owners, the online dot and a scope's test command", () => {
-  assert.equal(ownersLine({ ...reports, owners: ["sam", "jun"] }), "sam, jun");
+test("the online dot and a scope's test command", () => {
   assert.equal(isOnline(reports), false);
-  const session = { id: "s1", vendor: "codex", branch: "b", status: "offline" as const, lastSeen: "2026-10-11T09:00:00Z" };
+  const session = {
+    id: "s1",
+    vendor: "codex",
+    branch: "b",
+    worktreeId: "wt1",
+    status: "offline" as const,
+    currentIssueId: null,
+    lastSeen: "2026-10-11T09:00:00Z",
+  };
   assert.equal(isOnline({ ...reports, sessions: [session] }), false);
   assert.equal(isOnline({ ...reports, sessions: [session, { ...session, id: "s2", status: "running" as const }] }), true);
   assert.equal(scopeTestCommand(SCOPES, "analytics"), "python -m pytest analytics");
@@ -186,10 +194,10 @@ test("the header's owners, the online dot and a scope's test command", () => {
 });
 
 test("arrow, Home and End keys move between the detail's tabs and wrap at the ends", () => {
-  assert.equal(tabAfterKey("details", "ArrowRight"), "sessions");
-  assert.equal(tabAfterKey("history", "ArrowRight"), "details");
-  assert.equal(tabAfterKey("details", "ArrowLeft"), "history");
-  assert.equal(tabAfterKey("sessions", "Home"), "details");
-  assert.equal(tabAfterKey("sessions", "End"), "history");
-  assert.equal(tabAfterKey("sessions", "Enter"), undefined);
+  assert.equal(tabAfterKey("overview", "ArrowRight"), "charter");
+  assert.equal(tabAfterKey("history", "ArrowRight"), "overview");
+  assert.equal(tabAfterKey("overview", "ArrowLeft"), "history");
+  assert.equal(tabAfterKey("charter", "Home"), "overview");
+  assert.equal(tabAfterKey("charter", "End"), "history");
+  assert.equal(tabAfterKey("charter", "Enter"), undefined);
 });

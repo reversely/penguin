@@ -1,13 +1,14 @@
 // Builds the dashboard's board (PRD section 8) from the issue index, the identities and the session
-// router: every issue as the issue page shows it, without the timeline, and every owner with their
-// identities and those identities' running sessions. The dashboard sorts issues into columns and
+// router: every issue as the issue page shows it, without the timeline, every owner with their
+// identities and those identities' running sessions, and the inbox items that ask a person to act. The dashboard sorts issues into columns and
 // swimlanes (apps/dashboard/src/board-view.ts). The result is plain JSON for Durable Object RPC.
 
 import type { IssueRecord } from "@penguin/issues";
-import type { Board, BoardIdentity, BoardIssue, BoardOwner } from "@penguin/protocol";
+import type { Board, BoardIdentity, BoardIssue, BoardOwner, BoardWaiting } from "@penguin/protocol";
 
 import { avatarUrl } from "./identities-page.ts";
 import type { Identity } from "./identity-store.ts";
+import type { InboxItem } from "./inbox-store.ts";
 import { issueView, type IssuePageSources } from "./issue-page.ts";
 import { responsibleOwners, type Session } from "./session-store.ts";
 
@@ -19,6 +20,8 @@ export interface BoardSources extends Omit<IssuePageSources, "read"> {
   running(): readonly Session[];
   /** The owner who assigned an identity to an issue (IssueIndex.assigningOwner). */
   assigningOwner(issueId: string, handle: string): string | undefined;
+  /** Every person's review, thread and session-start items (InboxStore.actionItems). */
+  actionItems(): readonly InboxItem[];
 }
 
 export function buildBoard(sources: BoardSources): Board {
@@ -28,7 +31,11 @@ export function buildBoard(sources: BoardSources): Board {
     const issue = sources.issue(id);
     return issue === undefined ? [] : [boardIssue(sources, issue, byHandle)];
   });
-  return { owners: owners(identities, sources.running(), issues), issues };
+  const open = new Set(issues.filter((issue) => issue.issue.state !== "closed").map((issue) => issue.issue.id));
+  const waiting = sources.actionItems().flatMap(({ personId, issueId, reason }): BoardWaiting[] =>
+    open.has(issueId) && reason !== "assigned" && reason !== "mentioned" && reason !== "closed" ? [{ personId, issueId, reason }] : [],
+  );
+  return { owners: owners(identities, sources.running(), issues), issues, waiting };
 }
 
 function boardIssue(sources: BoardSources, issue: IssueRecord, byHandle: ReadonlyMap<string, Identity>): BoardIssue {

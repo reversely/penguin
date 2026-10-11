@@ -1,12 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { BOARD_ALL_PATH, INBOX_ALL_PATH, parseRoute, signInProblem } from "../src/routes.ts";
+import { identityPath, INBOX_ALL_PATH, NAVIGATION, parseRoute, personPath, signInProblem } from "../src/routes.ts";
 
 test("each page path maps to its route and other paths to none", () => {
-  assert.deepEqual(parseRoute("/"), { page: "inbox", showAll: false });
+  assert.deepEqual(parseRoute("/"), { page: "team", person: null });
   assert.deepEqual(parseRoute("/inbox"), { page: "inbox", showAll: false });
-  assert.deepEqual(parseRoute("/board"), { page: "board", showAll: false });
   assert.deepEqual(parseRoute("/identities"), { page: "identities" });
   assert.deepEqual(parseRoute("/issues/40"), { page: "issue", issueId: "40" });
   assert.deepEqual(parseRoute("/issues/new"), { page: "new-issue" });
@@ -15,15 +14,30 @@ test("each page path maps to its route and other paths to none", () => {
   }
 });
 
-test("the full closed lists come from their own query parameter only", () => {
+test("the team map is home, a person's view is its query and the retired board opens the team map", () => {
+  assert.deepEqual(NAVIGATION.map((entry) => [entry.label, entry.path]), [
+    ["Team", "/"],
+    ["Inbox", "/inbox"],
+    ["Identities", "/identities"],
+  ]);
+  const route = (path: string) => {
+    const url = new URL(path, "https://penguin.test");
+    return parseRoute(url.pathname, url.search);
+  };
+  assert.deepEqual(route(personPath("jun")), { page: "team", person: "jun" });
+  assert.deepEqual(route(personPath("a&b c")), { page: "team", person: "a&b c" });
+  assert.deepEqual(route("/?person="), { page: "team", person: null });
+  assert.deepEqual(route("/board?done=all"), { page: "team", person: null });
+  assert.equal(identityPath("identity-1"), "/identities?identity=identity-1");
+  assert.equal(identityPath(null), "/identities");
+});
+
+test("the full closed list comes from its own query parameter only", () => {
   const all = (path: string) => {
     const url = new URL(path, "https://penguin.test");
     return parseRoute(url.pathname, url.search);
   };
   assert.deepEqual(all(INBOX_ALL_PATH), { page: "inbox", showAll: true });
-  assert.deepEqual(all("/?closed=all"), { page: "inbox", showAll: true });
-  assert.deepEqual(all(BOARD_ALL_PATH), { page: "board", showAll: true });
-  assert.deepEqual(all("/board?closed=all"), { page: "board", showAll: false });
   assert.deepEqual(all("/inbox?done=all"), { page: "inbox", showAll: false });
   assert.deepEqual(all("/inbox?closed=yes"), { page: "inbox", showAll: false });
 });

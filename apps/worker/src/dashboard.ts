@@ -2,8 +2,8 @@
  * The dashboard's routes: the built React app, GitHub sign-in (K6), the dashboard API and the live
  * connection to the ProjectAgent.
  *
- * - GET /, /board, /inbox, /identities and /issues/<id>: the app's page; GET /app.js and /app.css:
- *   its bundle; GET /fonts/<name>.woff2: the self-hosted Inter and Piazzolla files;
+ * - GET /, /inbox, /identities and /issues/<id>: the app's page, with the team map at /. GET /board
+ *   redirects to /, which replaced the board. GET /app.js and /app.css: its bundle; GET /fonts/<name>.woff2: the self-hosted Inter and Piazzolla files;
  *   GET /fonts/<name>.txt: their OFL texts. These carry no data, so they need no session: an
  *   unauthenticated visit shows sign-in.
  * - GET /auth/github: starts GitHub sign-in. GET /auth/github/callback: finishes it and sets the
@@ -11,7 +11,8 @@
  * - /api/*: every route checks the session first and answers 401 without one.
  *   - GET /api/session: the signed-in person.
  *   - GET /api/issues/<id>: the issue page: one issue, its sub-issues and its timeline.
- *   - GET /api/board: every issue without its timeline, and each owner's identities and sessions.
+ *   - GET /api/board: every issue without its timeline, each owner's identities and sessions, and
+ *     the inbox items that ask each person to act.
  *   - GET /api/inbox: the signed-in person's inbox, checked against INBOX_SCHEMA; an inbox that
  *     breaks it answers 500 and is never sent.
  *   - POST /api/inbox/read: marks one of the signed-in person's inbox items read, named by its
@@ -127,7 +128,7 @@ export const CONTENT_SECURITY_POLICY = [
 const OAUTH_COOKIE = "__Host-penguin_oauth";
 const OAUTH_TTL_SECONDS = 600;
 const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]"]);
-const PAGE_PATH = /^\/(?:|board|inbox|identities|issues\/[A-Za-z0-9_-]+)$/;
+const PAGE_PATH = /^\/(?:|inbox|identities|issues\/[A-Za-z0-9_-]+)$/;
 const ASSET_PATH = /^\/(?:app\.(?:js|css)|fonts\/[a-z0-9-]+\.(?:woff2|txt))$/;
 const FONT_PATH = /^\/fonts\/[a-z0-9-]+\.woff2$/;
 /**
@@ -422,6 +423,7 @@ export async function handleDashboardRoute(
   if (pathname === "/auth/github") response = await startSignIn(request, url, options);
   else if (pathname === "/auth/github/callback") response = await finishSignIn(request, url, options);
   else if (pathname === "/auth/signout") response = signOut(request, url);
+  else if (pathname === "/board") response = redirect("/");
   else if (pathname === "/api" || pathname.startsWith("/api/")) response = await handleApi(request, url, options, handlers);
   else if (PAGE_PATH.test(pathname) || ASSET_PATH.test(pathname)) response = await servePage(request, url, handlers);
   else return null;

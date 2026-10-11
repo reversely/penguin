@@ -1,13 +1,15 @@
 // The identities page (PRD section 8; identity plan sections 4 and 5): every identity as a row in
-// the sidebar. The chosen one's detail fills the centre with a header, its actions and three tabs:
-// Details, Sessions and Issue history. Create, edit and duplicate open a form of settings rows in
+// the sidebar. The chosen one's agent card fills the centre with a header, its actions and three
+// tabs. Overview holds Penguin's facts about the agent: the issue it holds and what that waits on,
+// its last reported checkpoint, its recent operations and its registered sessions. Charter holds its
+// job and charter, and Issue history its issues. Create, edit and duplicate open a form of settings rows in
 // the centre. Edit and duplicate controls show only on the signed-in person's own identities. On a
 // phone the list fills the screen and the chosen identity opens as its own screen with a back link.
 // The page reads the identities again on every live change, so an identity created in another
 // browser shows without reload. Every value renders as React text, so markup in a name, job or rule
 // shows as text and runs nothing.
 
-import type { IdentitiesPage, IdentityEntry, IdentityScope } from "@penguin/protocol";
+import type { Board, IdentitiesPage, IdentityEntry, IdentityScope, IssuePageTimelineEntry } from "@penguin/protocol";
 import {
   useEffect,
   useLayoutEffect,
@@ -21,8 +23,8 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 
-import { fetchIdentities, SignedOut, writeIdentity } from "./api.ts";
-import { IdentityAvatar } from "./avatar.tsx";
+import { fetchBoard, fetchIdentities, SignedOut, writeIdentity } from "./api.ts";
+import { IdentityAvatar, PersonAvatar } from "./avatar.tsx";
 import { useMediaQuery } from "./details-pane.tsx";
 import { Icon } from "./icon.tsx";
 import {
@@ -39,7 +41,6 @@ import {
   handleNameMaxLength,
   IDENTITY_TABS,
   isOnline,
-  ownersLine,
   scopeChoices,
   scopeLabel,
   scopeTestCommand,
@@ -50,8 +51,11 @@ import {
   type IdentityForm,
   type IdentityTab,
 } from "./identities-view.ts";
-import { STATE_LABEL } from "./issue-view.ts";
+import { useRead } from "./inbox-page.tsx";
+import { describeEntry, shortSha, STATE_LABEL } from "./issue-view.ts";
 import { linkHandler } from "./links.ts";
+import { identityPath, personPath } from "./routes.ts";
+import { agentWork, sessionIssue } from "./team-view.ts";
 import type { Live } from "./use-live.ts";
 
 type Load = { readonly kind: "loading" } | { readonly kind: "ready"; readonly page: IdentitiesPage } | { readonly kind: "failed" };
@@ -74,10 +78,6 @@ function chosenFromAddress(): string | null {
 /** The history state of an entry this page pushed, so its back link can return through history. */
 const PUSHED = "penguin-identities";
 
-function identityPath(id: string | null): string {
-  return id === null ? "/identities" : `/identities?identity=${encodeURIComponent(id)}`;
-}
-
 /** The shell's sidebar list slot, which the shell renders before the page's effects run. */
 function useSidebarSlot(): HTMLElement | null {
   const [slot, setSlot] = useState<HTMLElement | null>(null);
@@ -92,6 +92,9 @@ export function IdentitiesPageView({ viewer, live, navigate, onSignedOut }: Prop
   const phone = useMediaQuery(PHONE);
   const slot = useSidebarSlot();
   const connected = live.status === "live";
+  // The board says which issue each agent holds and what it waits on; a session going online or
+  // offline reads it again.
+  const board = useRead(fetchBoard, `${live.revision}:${live.identitiesRevision}:${connected}`, onSignedOut);
 
   useEffect(() => {
     let current = true;
@@ -156,7 +159,8 @@ export function IdentitiesPageView({ viewer, live, navigate, onSignedOut }: Prop
       </div>
     );
   }
-  if (load.kind === "loading") return <div className="identities" aria-busy="true" />;
+  // The card waits for the board too, so its facts never push the tabs down after they paint.
+  if (load.kind === "loading" || board.kind === "loading") return <div className="identities" aria-busy="true" />;
 
   const { page } = load;
   const picked = page.identities.find((identity) => identity.id === chosen);
@@ -190,6 +194,7 @@ export function IdentitiesPageView({ viewer, live, navigate, onSignedOut }: Prop
       <IdentityDetail
         key={shown.id}
         identity={shown}
+        board={board.kind === "ready" ? board.value : undefined}
         scopes={page.scopes}
         viewer={viewer}
         navigate={navigate}
@@ -280,6 +285,8 @@ export function IdentityList({ identities, selectedId, onChoose }: ListProps) {
 
 interface DetailProps {
   readonly identity: IdentityEntry;
+  /** The board, for the work the agent holds; undefined when it could not be read. */
+  readonly board: Board | undefined;
   readonly scopes: readonly IdentityScope[];
   readonly viewer: string;
   readonly navigate: (path: string) => void;
@@ -297,18 +304,18 @@ function seenLabel(iso: string): string {
 }
 
 const TAB_LABEL: Readonly<Record<IdentityTab, string>> = {
-  details: "Details",
-  sessions: "Sessions",
+  overview: "Overview",
+  charter: "Charter",
   history: "Issue history",
 };
 
-/** The chosen identity: its header with the owners' actions, then its Details, Sessions and Issue history tabs. */
-export function IdentityDetail({ identity, scopes, viewer, navigate, onBack, onEdit, onDuplicate }: DetailProps) {
-  const [tab, setTab] = useState<IdentityTab>("details");
+/** The agent card: its header with the owners' actions, then its Overview, Charter and Issue history tabs. */
+export function IdentityDetail({ identity, board, scopes, viewer, navigate, onBack, onEdit, onDuplicate }: DetailProps) {
+  const [tab, setTab] = useState<IdentityTab>("overview");
   const tabRefs = useRef(new Map<IdentityTab, HTMLButtonElement>());
   const counts: Readonly<Record<IdentityTab, number | undefined>> = {
-    details: undefined,
-    sessions: identity.sessions.length,
+    overview: undefined,
+    charter: undefined,
     history: identity.history.length,
   };
   // Arrow keys move between the tabs; only the selected tab sits in the tab order (WAI-ARIA tabs).
@@ -334,7 +341,13 @@ export function IdentityDetail({ identity, scopes, viewer, navigate, onBack, onE
           <h1 id="identity-heading">{identity.handle}</h1>
           <p className="identity-name">{identity.name}</p>
           <p className="identity-meta">
-            {identity.team ? "Owners" : "Owner"} {ownersLine(identity)}
+            {identity.team ? "Owners" : "Owner"}
+            {identity.owners.map((owner) => (
+              <a key={owner} className="identity-owner" href={personPath(owner)} onClick={linkHandler(navigate, personPath(owner))}>
+                <PersonAvatar id={owner} size="card" />
+                {owner}
+              </a>
+            ))}
             {identity.team ? <span className="tag">Team</span> : null}
           </p>
         </div>
@@ -375,15 +388,15 @@ export function IdentityDetail({ identity, scopes, viewer, navigate, onBack, onE
       </div>
 
       <div className="identity-panel" role="tabpanel" id={`identity-panel-${tab}`} aria-labelledby={`identity-tab-${tab}`} tabIndex={0}>
-        {tab === "details" ? <DetailsTab identity={identity} scopes={scopes} /> : null}
-        {tab === "sessions" ? <SessionsTab identity={identity} /> : null}
+        {tab === "overview" ? <OverviewTab identity={identity} board={board} navigate={navigate} /> : null}
+        {tab === "charter" ? <CharterTab identity={identity} scopes={scopes} /> : null}
         {tab === "history" ? <HistoryTab identity={identity} navigate={navigate} /> : null}
       </div>
     </article>
   );
 }
 
-function DetailsTab({ identity, scopes }: { identity: IdentityEntry; scopes: readonly IdentityScope[] }) {
+function CharterTab({ identity, scopes }: { identity: IdentityEntry; scopes: readonly IdentityScope[] }) {
   return (
     <>
       <section className="identity-card" aria-labelledby="identity-job">
@@ -468,25 +481,149 @@ function TestCommand({ command }: { command: string | undefined }) {
   );
 }
 
-function SessionsTab({ identity }: { identity: IdentityEntry }) {
-  if (identity.sessions.length === 0) return <p className="muted identity-empty">None</p>;
+interface OverviewProps {
+  readonly identity: IdentityEntry;
+  readonly board: Board | undefined;
+  readonly navigate: (path: string) => void;
+}
+
+/** A link to an issue by its number, with its title when the board knows it. */
+function IssueLink({ id, title, navigate }: { id: string; title?: string; navigate: (path: string) => void }) {
+  const path = `/issues/${id}`;
   return (
-    <ul className="identity-card identity-list-rows">
-      {identity.sessions.map((session) => (
-        <li key={session.id} className="identity-list-row">
-          <span className={`session-state session-${session.status}`}>
-            <span className="session-dot" aria-hidden="true" />
-            {session.status === "running" ? "Running" : "Offline"}
-          </span>
-          <span className="tag">{session.vendor}</span>
-          <code className="identity-branch">{session.branch}</code>
-          <time className="muted identity-time" dateTime={session.lastSeen}>
-            {seenLabel(session.lastSeen)}
-          </time>
-        </li>
-      ))}
-    </ul>
+    <a className={title === undefined ? "identity-issue-link" : "identity-issue-link identity-issue-titled"} href={path} onClick={linkHandler(navigate, path)}>
+      <span className="issue-number">#{id}</span>
+      {title === undefined ? null : ` ${title}`}
+    </a>
   );
+}
+
+/**
+ * Penguin's facts about the agent: the issue it holds, what that issue waits on, its last reported
+ * checkpoint, the operations it wrote and its registered sessions. Penguin holds no session's
+ * conversation, so the card shows none.
+ */
+function OverviewTab({ identity, board, navigate }: OverviewProps) {
+  const work = board === undefined ? undefined : agentWork(board, identity.handle);
+  const titles = new Map(board?.issues.map((issue) => [issue.issue.id, issue.issue.title]) ?? []);
+  const checkpoint = identity.lastCheckpoint;
+  return (
+    <>
+      {board === undefined ? (
+        <p className="notice" role="alert">
+          Please reload the page to see the issue it holds
+        </p>
+      ) : null}
+      <dl className="identity-card settings" aria-label="Work">
+        {work === undefined ? null : (
+          <>
+            <Fact label="Issue">
+              {work.issue === null ? <span className="muted">None</span> : <IssueLink id={work.issue.issue.id} title={work.issue.issue.title} navigate={navigate} />}
+            </Fact>
+            <Fact label="Waits on">{work.waitsOn ?? <span className="muted">None</span>}</Fact>
+          </>
+        )}
+        {work === undefined || work.others.length === 0 ? null : (
+          <Fact label="Also holds">
+            <span className="identity-issue-links">
+              {work.others.map((issue) => (
+                <IssueLink key={issue.issue.id} id={issue.issue.id} navigate={navigate} />
+              ))}
+            </span>
+          </Fact>
+        )}
+        <Fact label="Last checkpoint">
+          {checkpoint === null ? (
+            <span className="muted">None</span>
+          ) : (
+            <span className="identity-checkpoint">
+              <code title={checkpoint.sha}>{shortSha(checkpoint.sha)}</code>
+              <time className="muted" dateTime={checkpoint.reportedAt}>
+                {seenLabel(checkpoint.reportedAt)}
+              </time>
+            </span>
+          )}
+        </Fact>
+      </dl>
+      <section className="identity-section" aria-labelledby="identity-operations">
+        <h2 id="identity-operations">
+          Recent operations <span className="tab-count">{identity.recentOperations.length}</span>
+        </h2>
+        {identity.recentOperations.length === 0 ? (
+          <p className="muted">None</p>
+        ) : (
+          <ul className="identity-card identity-operations">
+            {identity.recentOperations.map((operation) => (
+              <li key={operation.opId} className="identity-operation">
+                <span className="identity-operation-text">{describeEntry(timelineEntry(operation)).summary}</span>
+                <IssueLink id={operation.issueId} navigate={navigate} />
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+      <section className="identity-section" aria-labelledby="identity-sessions">
+        <h2 id="identity-sessions">
+          Sessions <span className="tab-count">{identity.sessions.length}</span>
+        </h2>
+        {identity.sessions.length === 0 ? <p className="muted">None</p> : null}
+        {identity.sessions.map((session) => {
+          const current = sessionIssue(board, identity.handle, session);
+          return (
+            <div key={session.id} className="identity-card">
+              <h3 className="identity-session-head">
+                {session.vendor}
+                <span className={`session-state session-${session.status}`}>
+                  <span className="session-dot" aria-hidden="true" />
+                  {session.status === "running" ? "Running" : "Offline"}
+                </span>
+              </h3>
+              <dl className="settings">
+                <Fact label="Branch">
+                  <code className="identity-branch">{session.branch}</code>
+                </Fact>
+                <Fact label="Worktree">
+                  <code className="identity-branch">{session.worktreeId}</code>
+                </Fact>
+                <Fact label="Last heartbeat">
+                  <time dateTime={session.lastSeen}>{seenLabel(session.lastSeen)}</time>
+                </Fact>
+                <Fact label="Current issue">
+                  {current === null ? <span className="muted">None</span> : <IssueLink id={current} title={titles.get(current)} navigate={navigate} />}
+                </Fact>
+              </dl>
+            </div>
+          );
+        })}
+      </section>
+    </>
+  );
+}
+
+/** One fact as a settings row: its bare label at the left and its value at the right. */
+function Fact({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="setting">
+      <dt className="setting-label">{label}</dt>
+      <dd className="setting-value">{children}</dd>
+    </div>
+  );
+}
+
+/** An operation as the timeline's describer reads it; only its type and payload are read. */
+function timelineEntry(operation: IdentityEntry["recentOperations"][number]): IssuePageTimelineEntry {
+  return {
+    seq: operation.seq,
+    opId: operation.opId,
+    author: null,
+    type: operation.type,
+    payload: operation.payload,
+    status: "applied",
+    rejectReason: null,
+    message: null,
+    gitCommit: null,
+    waitingForGitLog: false,
+  };
 }
 
 function HistoryTab({ identity, navigate }: { identity: IdentityEntry; navigate: (path: string) => void }) {

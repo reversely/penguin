@@ -7,9 +7,10 @@ import { generateSigningKeyPair } from "@penguin/issues";
 import type { Author } from "@penguin/protocol";
 import { parseScopeMap } from "@penguin/scope-map";
 
-import { buildIdentitiesPage, identityWriteOutcome } from "../src/identities-page.ts";
+import { buildIdentitiesPage, identityWriteOutcome, PAGE_OPERATIONS_PER_IDENTITY } from "../src/identities-page.ts";
 import { IDENTITY_LIMITS, IdentityStore } from "../src/identity-store.ts";
 import { IssueIndex, type OperationKeys } from "../src/issue-index.ts";
+import { OwnerForkStore } from "../src/owner-forks.ts";
 import { importServiceKey, type ServiceKey } from "../src/service-key.ts";
 import { SessionStore } from "../src/session-store.ts";
 import { sqlite } from "./issues-repo.ts";
@@ -46,6 +47,7 @@ function project() {
     assigningOwner: (issueId, handle) => index.assigningOwner(issueId, handle),
   });
   const store = sessions;
+  const forks = new OwnerForkStore(sql, () => clock);
   const keys: OperationKeys = { bridges: [], serviceKey: service.publicKey, scopeMap, identities };
   const submit = async (author: Author, issue: number, type: string, payload: Record<string, unknown>) => {
     const outcome = await index.submit({
@@ -63,9 +65,11 @@ function project() {
       sessions: () => store.byIdentity(perIdentity),
       history: () => index.identityHistory(),
       issue: (issueId) => index.issue(issueId),
+      forks: () => forks.list(),
+      operations: (handle) => index.authoredOperations(handle, PAGE_OPERATIONS_PER_IDENTITY),
       scopeMap,
     });
-  return { identities, sessions: store, submit, page, advance: (ms: number) => (clock += ms) };
+  return { identities, sessions: store, forks, submit, page, advance: (ms: number) => (clock += ms) };
 }
 
 const reports = {
@@ -105,6 +109,8 @@ test("lists each identity with every field, its owners and the scopes and owners
     duplicatedFrom: null,
     sessions: [],
     history: [],
+    lastCheckpoint: null,
+    recentOperations: [],
   });
   assert.equal(page.identities[1]?.team, true);
   assert.deepEqual(page.identities[1]?.owners, ["sam", "jun"]);
@@ -159,6 +165,53 @@ test("an identity's issue history holds the issues it was assigned or wrote on, 
     { issueId: "1", title: "Retention shifts", state: "open" },
   ]);
   assert.deepEqual(history("@priya/merge-rules")?.map((entry) => entry.issueId), ["3"]);
+});
+
+test("a session's worktree, current issue and reported checkpoint reach its identity", () => {
+  const p = project();
+  p.identities.create("jun", reports, scopeMap);
+  p.identities.create("jun", { ...reports, handle: "@jun/cohorts", avatar: undefined }, scopeMap);
+  p.sessions.register("jun", { identity: "@jun/reports", vendor: "codex", worktreeId: "wt1", branch: "a" });
+  p.sessions.register("jun", { identity: "@jun/cohorts", vendor: "codex", worktreeId: "wt2", branch: "b" });
+  const sha = "9b2f10c4e1a7d3f58b6e2c0a9d4f71e3b5c8a2d6"; // pragma: allowlist secret
+  p.forks.recordCheckpoint("jun", "owner-jun", sha, "session-1");
+
+  const of = (handle: string) => p.page().identities.find((identity) => identity.handle === handle);
+  const first = of("@jun/reports");
+  const second = of("@jun/cohorts");
+  assert.deepEqual(first?.sessions[0], {
+    id: "session-1",
+    vendor: "codex",
+    branch: "a",
+    worktreeId: "wt1",
+    status: "running",
+    currentIssueId: null,
+    lastSeen: new Date(START).toISOString(),
+  });
+  assert.deepEqual(first?.lastCheckpoint, { sha, sessionId: "session-1", reportedAt: new Date(START).toISOString() });
+  assert.equal(second?.lastCheckpoint, null);
+
+  // The fork keeps its latest checkpoint only, so a newer one from another session moves it.
+  p.forks.recordCheckpoint("jun", "owner-jun", sha.replace("9", "8"), "session-2");
+  assert.equal(of("@jun/reports")?.lastCheckpoint, null);
+  assert.equal(of("@jun/cohorts")?.lastCheckpoint?.sessionId, "session-2");
+});
+
+test("an identity's recent operations are the applied ones it wrote, newest first", async () => {
+  const p = project();
+  p.identities.create("jun", reports, scopeMap);
+  await p.submit({ person: "priya" }, 1, "create", { title: "Retention shifts" });
+  await p.submit({ person: "priya" }, 1, "assign", { assignee: { identity: "@jun/reports" } });
+  for (let n = 1; n <= PAGE_OPERATIONS_PER_IDENTITY + 1; n += 1) {
+    await p.submit({ identity: "@jun/reports" }, 1, "comment", { body: `Note ${n}` });
+  }
+  const operations = p.page().identities[0]?.recentOperations ?? [];
+  assert.equal(operations.length, PAGE_OPERATIONS_PER_IDENTITY);
+  assert.deepEqual(
+    operations.map(({ issueId, type, payload }) => [issueId, type, payload]),
+    [6, 5, 4, 3, 2].map((n) => ["1", "comment", { body: `Note ${n}` }]),
+  );
+  assert.ok(operations.every((operation, i) => i === 0 || operation.seq < (operations[i - 1]?.seq ?? 0)));
 });
 
 test("a duplicate carries the charter over, names its original and starts with no history", async () => {

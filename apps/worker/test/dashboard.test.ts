@@ -159,7 +159,7 @@ class Browser {
 describe("an unauthenticated visit", () => {
   test("gets the app's page, which carries no data, under a policy that blocks inline scripts", async () => {
     const browser = new Browser();
-    for (const path of ["/", "/inbox", "/board", "/identities", "/issues/40"]) {
+    for (const path of ["/", "/inbox", "/identities", "/issues/40"]) {
       const response = await browser.request(path);
       assert.equal(response.status, 200, path);
       assert.equal(await response.text(), INDEX_HTML, path);
@@ -171,6 +171,16 @@ describe("an unauthenticated visit", () => {
     const script = await browser.request("/app.js");
     assert.equal(script.status, 200);
     assert.ok(script.headers.get("Content-Security-Policy"));
+  });
+
+  test("is sent from the retired board to the team map, with or without its query", async () => {
+    const browser = new Browser();
+    for (const path of ["/board", "/board?done=all"]) {
+      const response = await browser.request(path);
+      assert.equal(response.status, 303, path);
+      assert.equal(response.headers.get("Location"), "/", path);
+      assert.equal(response.headers.get("Content-Security-Policy"), CONTENT_SECURITY_POLICY, path);
+    }
   });
 
   test("loads fonts from the Worker's own origin only", async () => {

@@ -21,7 +21,12 @@ import { buildBoard } from "./board.ts";
 import { buildIssuePage } from "./issue-page.ts";
 import { LiveFeed, liveOwner, sendToOwner } from "./live-feed.ts";
 import { buildInbox } from "./inbox-page.ts";
-import { buildIdentitiesPage, identityWriteOutcome, PAGE_SESSIONS_PER_IDENTITY } from "./identities-page.ts";
+import {
+  buildIdentitiesPage,
+  identityWriteOutcome,
+  PAGE_OPERATIONS_PER_IDENTITY,
+  PAGE_SESSIONS_PER_IDENTITY,
+} from "./identities-page.ts";
 import { InboxStore, type InboxItem, type InboxOutcome, type InboxReason } from "./inbox-store.ts";
 import { McpTokenStore, type IssuedMcpToken, type McpCaller } from "./mcp-tokens.ts";
 import {
@@ -146,6 +151,7 @@ export {
   avatarUrl,
   buildIdentitiesPage,
   identityWriteOutcome,
+  PAGE_OPERATIONS_PER_IDENTITY,
   PAGE_SESSIONS_PER_IDENTITY,
   type IdentitiesPageSources,
 } from "./identities-page.ts";
@@ -740,6 +746,7 @@ export class ProjectAgent extends Agent {
       session: (sessionId) => sessions.get(sessionId),
       approval: (issueId) => this.#approvalStore().get(issueId),
       assigningOwner: (issueId, handle) => index.assigningOwner(issueId, handle),
+      actionItems: () => this.#inboxStore().actionItems(),
     });
   }
 
@@ -823,8 +830,8 @@ export class ProjectAgent extends Agent {
   }
 
   /**
-   * The dashboard's identities page: every identity with its charter, sessions and issue history, and
-   * the scope map's scopes a charter may name.
+   * The dashboard's identities page: every identity with its charter, sessions, issue history, last
+   * checkpoint and recent operations, and the scope map's scopes a charter may name.
    */
   async identitiesPage(repos: ProjectRepos): Promise<IdentitiesPage> {
     const index = this.#index();
@@ -835,6 +842,8 @@ export class ProjectAgent extends Agent {
       sessions: () => sessions.byIdentity(PAGE_SESSIONS_PER_IDENTITY),
       history: () => index.identityHistory(),
       issue: (issueId) => index.issue(issueId),
+      forks: () => this.#ownerForks().list(),
+      operations: (handle) => index.authoredOperations(handle, PAGE_OPERATIONS_PER_IDENTITY),
       scopeMap: await this.#scopeMap(repos),
     });
   }
