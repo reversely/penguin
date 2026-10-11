@@ -31,9 +31,6 @@ const VENV_BIN = join(REPO_ROOT, ".venv", "bin");
 const PYTHON = join(VENV_BIN, "python");
 // The runner's allowlisted test commands run `python -m pytest` from the PATH.
 process.env.PATH = [VENV_BIN, process.env.PATH].join(delimiter);
-// Playwright sets FORCE_COLOR for its workers, and pytest then colours its `FAILED <node id>` summary
-// lines, which the runner reads the failing tests from. An operator's runner shell has no such setting.
-delete process.env.FORCE_COLOR;
 
 /** The use cases of PRD section 1, in order, by fixture folder. */
 const USE_CASES = ["identity-unification", "helpful-fix", "dependency-bump"] as const;

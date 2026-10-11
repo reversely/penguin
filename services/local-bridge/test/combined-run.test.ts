@@ -101,12 +101,12 @@ describe("on the identity-unification fixture", () => {
 
   after(() => rm(root, { recursive: true, force: true }));
 
-  const combinedRun = (asked: ConsentRequest[]) =>
+  const combinedRun = (asked: ConsentRequest[], env: NodeJS.ProcessEnv = TEST_ENV) =>
     new CombinedRunner({
       repoPath: repo,
       runner: new TestRunner({
         repoPath: repo,
-        env: TEST_ENV,
+        env,
         scratchDir: scratch,
         consent: (request) => {
           asked.push(request);
@@ -158,6 +158,15 @@ describe("on the identity-unification fixture", () => {
     assert.equal(await worktreeList(repo), worktreesBefore);
     assert.deepEqual(await Promise.all([repo, ...ownerWorktrees].map(snapshot)), snapshots);
     assert.deepEqual(await readdir(scratch), []);
+  });
+
+  test("a runner environment that forces colour still yields each failing test", async () => {
+    const report = await combinedRun([], { ...TEST_ENV, FORCE_COLOR: "1", PY_COLORS: "1" });
+    assert.deepEqual(failing(report).sort(), [
+      "test_consent::unsubscribe_survives",
+      "test_identity::shared_device_split",
+      "test_retention::dau_stable",
+    ]);
   });
 
   test("running the same inputs twice returns the same fingerprints", async () => {
@@ -266,6 +275,17 @@ test("parseFailingTests reads pytest's short summary into node IDs and PRD test 
   ].join("\n");
   assert.deepEqual(parseFailingTests(log), [
     { nodeId: "analytics/tests/test_identity.py::test_shared_device_split", testId: "test_identity::shared_device_split" },
+    { nodeId: "analytics/tests/test_retention.py::test_dau_stable", testId: "test_retention::dau_stable" },
+  ]);
+});
+
+test("parseFailingTests reads a summary that pytest coloured with ANSI escapes", () => {
+  // As pytest 9 writes it under FORCE_COLOR: `FAILED` in red and the test name in bold.
+  const log = [
+    "\x1b[31mFAILED\x1b[0m analytics/tests/test_retention.py::\x1b[1mtest_dau_stable\x1b[0m - assert 1 == 2",
+    "\x1b[31m==== \x1b[31m\x1b[1m1 failed\x1b[0m\x1b[31m in 0.13s\x1b[0m\x1b[31m ====\x1b[0m",
+  ].join("\n");
+  assert.deepEqual(parseFailingTests(log), [
     { nodeId: "analytics/tests/test_retention.py::test_dau_stable", testId: "test_retention::dau_stable" },
   ]);
 });

@@ -53,9 +53,17 @@ export class ConsentRefusedError extends Error {
 // credential that can mint them (K1) never reach a command the repository defines.
 const TOKEN_VARIABLE = /^(?:PENGUIN_|ARTIFACTS_|CLOUDFLARE_API_TOKEN$)/i;
 
-/** Copies an environment without the Penguin, Artifacts and Cloudflare credential variables. */
+// Variables that force colour on (pytest reads PY_COLORS before NO_COLOR, and FORCE_COLOR after).
+// Playwright and some operator shells set FORCE_COLOR; a coloured log hides `FAILED <node ID>` lines.
+const FORCE_COLOUR_VARIABLE = /^(?:FORCE_COLOR|PY_COLORS|CLICOLOR_FORCE)$/;
+
+/**
+ * Copies an environment without the Penguin, Artifacts and Cloudflare credential variables, with
+ * colour turned off: the variables that force colour are removed and `NO_COLOR=1` is set.
+ */
 export function childEnvironment(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  return Object.fromEntries(Object.entries(base).filter(([name]) => !TOKEN_VARIABLE.test(name)));
+  const kept = Object.entries(base).filter(([name]) => !TOKEN_VARIABLE.test(name) && !FORCE_COLOUR_VARIABLE.test(name));
+  return { ...Object.fromEntries(kept), NO_COLOR: "1" };
 }
 
 /**

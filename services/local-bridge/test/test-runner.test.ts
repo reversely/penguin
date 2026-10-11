@@ -200,4 +200,9 @@ describe("on a scratch repository", () => {
     const leaked = Object.values(childEnvironment(env)).filter((value) => value?.endsWith("-secret"));
     assert.deepEqual(leaked, []);
   });
+
+  test("the child environment turns colour off", () => {
+    const env = { PATH: "/bin", FORCE_COLOR: "1", PY_COLORS: "1", CLICOLOR_FORCE: "1", NO_COLOR: "" };
+    assert.deepEqual(childEnvironment(env), { PATH: "/bin", NO_COLOR: "1" });
+  });
 });

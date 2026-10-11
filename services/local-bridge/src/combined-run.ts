@@ -85,10 +85,14 @@ export interface CombinedRunnerOptions {
 // pytest's short test summary (on by default through `-r fE`) names each failure on a line of
 // the form `FAILED <node ID>` or `FAILED <node ID> - <message>`.
 const PYTEST_FAILED = /^FAILED (.+?)(?: - .*)?$/gm;
+// An ANSI control sequence (CSI), such as the colour codes pytest writes around `FAILED` and the
+// test name when FORCE_COLOR or PY_COLORS is set.
+const ANSI_ESCAPE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 
-/** Lists the failed tests in a pytest log, sorted and unique. */
+/** Lists the failed tests in a pytest log, sorted and unique. ANSI escapes are ignored. */
 export function parseFailingTests(log: string): FailingTest[] {
-  const nodeIds = new Set([...log.matchAll(PYTEST_FAILED)].map((match) => (match[1] as string).trim()));
+  const plain = log.replace(ANSI_ESCAPE, "");
+  const nodeIds = new Set([...plain.matchAll(PYTEST_FAILED)].map((match) => (match[1] as string).trim()));
   return [...nodeIds].sort().map((nodeId) => {
     const separator = nodeId.indexOf("::");
     const module = basename(nodeId.slice(0, separator)).replace(/\.py$/, "");
