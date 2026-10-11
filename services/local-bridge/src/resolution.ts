@@ -223,13 +223,7 @@ export class ResolutionLadder {
   }
 
   #classify(check: BlockCheck, report: CombinedRunReport, context: RoutingContext, failedFixes: Map<string, number>, round: number): LadderDecision {
-    const owner = check.target === MAIN_TARGET ? null : check.target;
-    const targetScopes = owner === null ? [] : report.results.filter((result) => result.ownerId === owner).map((result) => result.scopeId);
-    const codemod = report.impact === undefined || report.impact === null ? null : codemodPlan(report.impact, owner);
-    return classifyFailure(
-      { check, targetScopes, codemod, failedFixes: failedFixes.get(`${check.target}:${check.check}`) ?? 0, round },
-      context,
-    );
+    return classifyCheck(check, report, context, failedFixes.get(`${check.target}:${check.check}`) ?? 0, round);
   }
 
   /**
@@ -277,6 +271,14 @@ export class ResolutionLadder {
     });
     return { planned: [...planned.values()], unplanned };
   }
+}
+
+/** One failed or erred check of a combined run classified into its next step (`classifyFailure`). */
+export function classifyCheck(check: BlockCheck, report: CombinedRunReport, context: RoutingContext, failedFixes = 0, round = 0): LadderDecision {
+  const owner = check.target === MAIN_TARGET ? null : check.target;
+  const targetScopes = owner === null ? [] : report.results.filter((result) => result.ownerId === owner).map((result) => result.scopeId);
+  const codemod = report.impact === undefined || report.impact === null ? null : codemodPlan(report.impact, owner);
+  return classifyFailure({ check, targetScopes, codemod, failedFixes, round }, context);
 }
 
 const key = (decision: Pick<LadderDecision, "target" | "check">) => `${decision.target}:${decision.check}`;

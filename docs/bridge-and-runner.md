@@ -218,7 +218,10 @@ penguin-bridge runner --combined
    - lists approved branches and pushes the Huddle repo's `approved` branch (`approval-run.ts`);
    - claims the reviews agents submitted with `submit_review`. It fetches each feature's fork,
      runs the [review harness](#side-by-side-runs) on the checkpoint's baseline and the checkpoint,
-     then reports the record (`review-run.ts`, [design.md](design.md#reviews-on-the-runner)).
+     then reports the record (`review-run.ts`, [design.md](design.md#reviews-on-the-runner));
+   - claims the `impact`, `check` and `apply_fix` requests agents made. It fetches the feature's
+     fork and the other running features' forks, runs the tool on the checkpoint and reports the
+     result (`tool-run.ts`, [Agent tools on the runner](#agent-tools-on-the-runner)).
 
 Passing `--combined` or `--repo` is the runner operator's consent to those runs and pushes. The test
 jobs loop on their own, so a long test run never holds up the operation pushes. `--once` runs a
@@ -226,7 +229,7 @@ single pass of each and exits 1 when anything was refused or failed.
 
 The runner fetches owner forks and feature forks with read tokens. It pushes Huddle repos with write
 tokens. The Worker grants a runner bridge `write` on `huddle-<id>` repos and an owner bridge only
-`read`. No bridge gets `write` on a `feature-<id>` repo.
+`read`. No bridge gets `write` on a `feature-<id>` repo, so the runner pushes no `apply_fix` commit.
 
 ### Plan facts runs
 
@@ -538,6 +541,30 @@ charter. With an unused import added to Priya's `shared/dates.py`, lint fails on
 failure goes to step 1. One `fix:ruff-autofix` commit on Priya's checkpoint clears it on all
 three. On an Apple silicon laptop one codemod run takes about 1 second, most of it libcst's import.
 Each round of checks takes 8 to 12 seconds.
+
+### Agent tools on the runner
+
+Runner mode answers the `impact`, `check` and `apply_fix` calls agents make through MCP
+([design.md](design.md#tools-on-the-runner)). Each pass claims the waiting requests from
+`POST /tool-runs/claim` under a 30-minute lease. For each request the runner fetches `feature-<id>`
+and every other running feature's fork with read tokens into the runner's repository:
+
+- `impact` runs the [impact analysis](#impact-analysis) on the checkpoint's baseline and the
+  checkpoint, with each other fork searched in its person's scopes.
+- `check` runs the [block checks](#block-checks) on the checkpoint merged onto its baseline and onto
+  each other fork. Each fork's merged tree is named by its person. Each failed or erred check gets
+  one decision from the [resolution ladder](#resolution-ladder). No fix runs.
+- `apply_fix` runs the [fix](#resolution-ladder) the agent asked for on the checkpoint. The fix may
+  change only the named files inside the caller identity's charter.
+
+The runner reports each result to `POST /tool-runs/<id>`. Penguin hands it to the requesting session
+at its next safe checkpoint. A request whose forks cannot be fetched stays claimed and runs again
+after its lease. A tool that runs and fails is reported with the result `error`.
+
+A write token on another feature's fork comes only with an approved merge plan part. No plan grants
+one yet. The runner therefore pushes no fix. Each `apply_fix` commit stays at
+`refs/penguin/fixes/<commit>` in the runner's repository. Its result carries `pushed: false` with
+the commit and the files it changed.
 
 ### Colour handling
 

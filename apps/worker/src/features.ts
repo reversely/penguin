@@ -359,7 +359,15 @@ export function checkpointFields(reported: Extract<FeatureCheckpointOutcome, { s
     newThreads: reported.threads.map(({ issueId, threadId }) => ({ issueId, threadId })),
     newOverlaps: reported.overlaps.map(({ featureId, blockedFeatureId }) => ({ feature: featureId, blockedFeature: blockedFeatureId })),
     locksSettled: settledFields(reported.settled),
+    toolResults: toolResultFields(reported.toolResults ?? []),
   };
+}
+
+/** The check runner's results of the session's tool requests, as a safe checkpoint names them. */
+export function toolResultFields(
+  results: readonly { readonly runId: number; readonly tool: string; readonly featureId: string; readonly result: string; readonly summary: string }[],
+): Record<string, unknown>[] {
+  return results.map(({ runId, tool, featureId, result, summary }) => ({ recordedAs: runId, tool, feature: featureId, result, summary }));
 }
 
 /** Locks on the session's feature that were approved or withdrawn, as the wire names them. */

@@ -46,6 +46,11 @@
  * - POST /reviews/<review id>, bridge token of a runner bridge: reports a claimed review's record from
  *   the review harness. The review becomes accepted or refused with the record attached; an exception
  *   goes to the scope's owner. A review already completed answers 409.
+ * - POST /tool-runs/claim, bridge token of a runner bridge: claims the waiting `impact`, `check` and
+ *   `apply_fix` requests. Each names its feature's fork, the checkpoint, its baseline on main, the
+ *   caller's charter and the other running features' forks.
+ * - POST /tool-runs/<run id>, bridge token of a runner bridge: reports a claimed request's result. The
+ *   requesting session hears of it at its next safe checkpoint. A request already completed answers 409.
  *
  * Responses that carry a code or token are marked `Cache-Control: no-store`.
  */
@@ -69,14 +74,16 @@ import type {
   RegistrationCode,
   ReviewClaim,
   ReviewReportOutcome,
+  ToolReportOutcome,
+  ToolRunClaim,
   VerificationOutcome,
 } from "@penguin/project-agent";
 
-import { REVIEW_LIMITS } from "@penguin/protocol";
+import { REVIEW_LIMITS, TOOL_RESULT_LIMITS } from "@penguin/protocol";
 import type { PlanFactsRequest } from "@penguin/protocol";
 
 import { bearerToken, isDeployer } from "./auth.ts";
-import { checkpointFields, FEATURE_FORK, settledFields } from "./features.ts";
+import { checkpointFields, FEATURE_FORK, settledFields, toolResultFields } from "./features.ts";
 import { artifactsErrorCode, huddleRepoId, isValidRepoName } from "./repos.ts";
 import {
   allowedScope,
@@ -127,6 +134,10 @@ export interface BridgeDirectory {
   ): MaybePromise<{ readonly status: "ok"; readonly runs: readonly PlanFactsRequest[] } | { readonly status: "forbidden"; readonly message: string }>;
   /** Records the runner's report of facts run `runId`; refused unless `caller` holds the runner role. */
   reportPlanFacts(caller: BridgeCaller, runId: string, report: unknown): MaybePromise<PlanFactsReportOutcome>;
+  /** Claims the waiting agent tool requests; refused unless `caller` holds the runner role. */
+  claimToolRuns(caller: BridgeCaller): Promise<ToolRunClaim> | ToolRunClaim;
+  /** Attaches the runner's result to tool request `runId`; refused unless `caller` holds the runner role. */
+  reportToolRun(caller: BridgeCaller, runId: number, result: unknown): Promise<ToolReportOutcome> | ToolReportOutcome;
 }
 
 /** Opening Huddle issues: the ProjectAgent's side over Durable Object RPC, and the Huddle repo fork. */
@@ -344,7 +355,14 @@ async function reportFeatureCheckpoint(
   if (outcome.status === "rejected") {
     return json({ error: outcome.reason, message: outcome.message }, FEATURE_REJECTION_STATUS[outcome.reason] ?? 409);
   }
-  const { newWork: _work, newThreads: _threads, newOverlaps: _overlaps, locksSettled: _settled, ...fields } = checkpointFields(outcome);
+  const {
+    newWork: _work,
+    newThreads: _threads,
+    newOverlaps: _overlaps,
+    locksSettled: _settled,
+    toolResults: _results,
+    ...fields
+  } = checkpointFields(outcome);
   return json(fields, 200);
 }
 
@@ -369,13 +387,14 @@ async function sessionCheckpoint(request: Request, handlers: BridgeHandlers): Pr
   return json(
     {
       worktreeId,
-      sessions: deliveries.map(({ sessionId, handle, delivered, threads, overlaps, settled }) => ({
+      sessions: deliveries.map(({ sessionId, handle, delivered, threads, overlaps, settled, toolResults }) => ({
         sessionId,
         identity: handle,
         delivered,
         threads: threads.map(({ issueId, threadId }) => ({ issueId, threadId })),
         overlaps: overlaps.map(({ featureId, blockedFeatureId }) => ({ feature: featureId, blockedFeature: blockedFeatureId })),
         locksSettled: settledFields(settled),
+        toolResults: toolResultFields(toolResults ?? []),
       })),
     },
     200,
@@ -599,6 +618,48 @@ async function reportPlanFacts(request: Request, runId: string, handlers: Bridge
   return json({ error: outcome.reason, message: outcome.message }, status);
 }
 
+/** Hands a runner bridge the waiting `impact`, `check` and `apply_fix` requests, each marked claimed by it. */
+async function claimToolRuns(request: Request, handlers: BridgeHandlers): Promise<Response> {
+  const bridge = await runnerBridge(request, handlers);
+  if (bridge instanceof Response) return bridge;
+  if (request.method !== "POST") return methodNotAllowed("POST");
+  // The role comes from the registry record the token authenticated, never from the request.
+  const listing = await (await handlers.bridges()).claimToolRuns({ bridgeId: bridge.bridgeId, role: bridge.role });
+  if (listing.status === "forbidden") return json({ error: "forbidden", message: listing.message }, 403);
+  const runs = listing.runs.map(({ runId, tool, feature, fork, base, checkpoint, input, charter, forks }) => ({
+    runId,
+    tool,
+    feature,
+    fork,
+    base,
+    checkpoint,
+    input,
+    charter,
+    forks,
+  }));
+  return json({ runs }, 200, NO_STORE);
+}
+
+/** A tool result body over twice the result cap is refused before it is parsed. */
+const MAX_TOOL_RESULT_BODY_BYTES = 2 * TOOL_RESULT_LIMITS.resultBytes;
+
+async function reportToolRun(request: Request, runId: number, handlers: BridgeHandlers): Promise<Response> {
+  const bridge = await runnerBridge(request, handlers);
+  if (bridge instanceof Response) return bridge;
+  if (request.method !== "POST") return methodNotAllowed("POST");
+  if (Number(request.headers.get("Content-Length") ?? 0) > MAX_TOOL_RESULT_BODY_BYTES) {
+    return json({ error: "too large", message: `the result is over ${TOOL_RESULT_LIMITS.resultBytes} bytes` }, 413);
+  }
+  const body = await readObject(request);
+  if (body === undefined) return invalid("", "must be a JSON object");
+  const outcome = await (await handlers.bridges()).reportToolRun({ bridgeId: bridge.bridgeId, role: bridge.role }, runId, body);
+  if (outcome.status === "rejected") {
+    return json({ error: outcome.reason, message: outcome.message }, REVIEW_REJECTION_STATUS[outcome.reason] ?? 409);
+  }
+  const { run } = outcome;
+  return json({ status: outcome.status, runId: run.id, tool: run.tool, result: run.result, summary: run.summary }, 200);
+}
+
 function huddleBody(status: "opened" | "existing", huddle: Huddle): Record<string, unknown> {
   const { issueId, triggerCommit, baselineSha, huddleRepo, openedAt } = huddle;
   return { status, issueId, triggerCommit, baselineSha, huddleRepo, openedAt };
@@ -629,6 +690,9 @@ export async function handleBridgeRoute(
   if (url.pathname === "/reviews/claim") return claimReviews(request, handlers);
   const reviewId = /^\/reviews\/([1-9][0-9]{0,14})$/.exec(url.pathname)?.[1];
   if (reviewId !== undefined) return reportReview(request, Number(reviewId), handlers);
+  if (url.pathname === "/tool-runs/claim") return claimToolRuns(request, handlers);
+  const toolRunId = /^\/tool-runs\/([1-9][0-9]{0,14})$/.exec(url.pathname)?.[1];
+  if (toolRunId !== undefined) return reportToolRun(request, Number(toolRunId), handlers);
   if (url.pathname === "/bridges/codes") return issueCode(request, options, handlers);
   if (url.pathname === "/bridges") return register(request, handlers);
   const bridgeId = /^\/bridges\/([A-Za-z0-9_-]+)$/.exec(url.pathname)?.[1];

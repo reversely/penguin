@@ -214,9 +214,24 @@ identity, its input, its answer and its duration, so the feature page and a demo
 | `apply_fix` | `feature`, `kind`, `paths`, `edits` | The request with its fix's command ID, recorded the same way |
 
 `impact`, `check` and `apply_fix` act only on the feature the session works on, once its fork has a
-checkpoint. Their answer has `state: "waiting"` and `message: "waiting for the check runner"`: the
-runner computes the impact graph, runs the checks and applies the fix
-([bridge-and-runner.md](bridge-and-runner.md#resolution-ladder)).
+checkpoint. Their answer has `state: "waiting"` and `message: "waiting for the check runner"`, with
+the request's id as `recordedAs`. The check runner then computes the impact graph, runs the checks or
+applies the fix ([bridge-and-runner.md](bridge-and-runner.md#agent-tools-on-the-runner)).
+
+The result reaches the session at its next safe checkpoint, once. The bridge hook names it by tool
+and id. `report_checkpoint` lists it under `toolResults`. `get_work` lists the session's last 10
+delivered results under `toolResults`, newest first. Each entry carries the full `outcome`:
+
+| Tool | `outcome` holds |
+|---|---|
+| `impact` | `impact`: the impact graph and contract diff, with each other running feature's fork |
+| `check` | `checks`: every block check; `decisions`: one next step from the ladder per failing check |
+| `apply_fix` | `fix`: the fix's run with the files it changed; `fixRef` and `pushed` |
+
+`apply_fix` leaves the feature's fork as it is. The check runner holds no write token on a feature's
+fork until an approved merge plan part grants one. The fix commit stays on the check runner. The
+result carries `pushed: false` with the files the fix changed, so the agent makes the same change in
+its worktree.
 
 `apply_fix` takes one of four kinds: `format`, `lint`, `lockfile` or `codemod`. `paths` names Python
 files inside the session identity's charter. A lockfile fix names no files. A codemod carries

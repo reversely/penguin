@@ -6,8 +6,8 @@
 //   Codex both run a command hook in the session's working directory and add a JSON answer's
 //   `hookSpecificOutput.additionalContext` to the model's context, which is how the agent hears
 //   that a fix task arrived, that a thread now needs its developer, that another feature's start
-//   waits for its developer's approval, or that a lock on its own feature's start was approved or
-//   withdrawn;
+//   waits for its developer's approval, that a lock on its own feature's start was approved or
+//   withdrawn, or that the check runner answered one of its `impact`, `check` or `apply_fix` calls;
 // - as an explicit bridge checkpoint, by hand or after `penguin-bridge checkpoint` publishes.
 //
 // Penguin knows the session by the worktree id it registered with, which `penguin-bridge
@@ -54,6 +54,15 @@ export interface SettledNotice extends OverlapNotice {
   readonly outcome: string;
 }
 
+/** The check runner's answer to one of the session's tool calls, by the id the call was recorded as. */
+export interface ToolResultNotice {
+  readonly recordedAs: number;
+  readonly tool: string;
+  readonly feature: string;
+  readonly result: string;
+  readonly summary: string;
+}
+
 /**
  * One session's part of a safe checkpoint: the fix tasks Penguin delivered to it, the threads and
  * overlapping starts needing the session's developer, and the settled locks on its own feature, each
@@ -66,6 +75,7 @@ export interface SessionDelivery {
   readonly threads: readonly ThreadNotice[];
   readonly overlaps: readonly OverlapNotice[];
   readonly locksSettled: readonly SettledNotice[];
+  readonly toolResults?: readonly ToolResultNotice[];
 }
 
 /** The worktree that holds `path`, and the id sessions in it register with. */
@@ -110,7 +120,7 @@ export async function sendSessionCheckpoint(
  */
 function asDelivery(value: unknown): SessionDelivery | undefined {
   if (typeof value !== "object" || value === null) return undefined;
-  const { sessionId, identity, delivered, threads = [], overlaps = [], locksSettled = [] } = value as Record<string, unknown>;
+  const { sessionId, identity, delivered, threads = [], overlaps = [], locksSettled = [], toolResults = [] } = value as Record<string, unknown>;
   const wellFormed =
     typeof sessionId === "string" &&
     typeof identity === "string" &&
@@ -121,8 +131,18 @@ function asDelivery(value: unknown): SessionDelivery | undefined {
     Array.isArray(overlaps) &&
     overlaps.every(isOverlapNotice) &&
     Array.isArray(locksSettled) &&
-    locksSettled.every((notice) => isOverlapNotice(notice) && typeof (notice as { outcome?: unknown }).outcome === "string");
-  return wellFormed ? { sessionId, identity, delivered, threads, overlaps, locksSettled: locksSettled as SettledNotice[] } : undefined;
+    locksSettled.every((notice) => isOverlapNotice(notice) && typeof (notice as { outcome?: unknown }).outcome === "string") &&
+    Array.isArray(toolResults) &&
+    toolResults.every(isToolResultNotice);
+  return wellFormed
+    ? { sessionId, identity, delivered, threads, overlaps, locksSettled: locksSettled as SettledNotice[], toolResults: toolResults as ToolResultNotice[] }
+    : undefined;
+}
+
+function isToolResultNotice(value: unknown): value is ToolResultNotice {
+  if (typeof value !== "object" || value === null) return false;
+  const { recordedAs, tool, feature, result, summary } = value as Record<string, unknown>;
+  return Number.isSafeInteger(recordedAs) && [tool, feature, result, summary].every((field) => typeof field === "string");
 }
 
 function isOverlapNotice(value: unknown): value is OverlapNotice {
@@ -162,6 +182,9 @@ export function formatDeliveries(deliveries: readonly SessionDelivery[]): string
       for (const { feature, blockedFeature, outcome } of delivery.locksSettled) {
         lines.push(`Penguin: the lock of feature ${feature} on feature ${blockedFeature} was ${outcome} for ${session}.\n`);
       }
+      for (const { recordedAs, tool, feature, result, summary } of delivery.toolResults ?? []) {
+        lines.push(`Penguin: the check runner answered ${tool} ${recordedAs} on feature ${feature} for ${session}: ${result}, ${summary}.\n`);
+      }
       return lines;
     })
     .join("");
@@ -184,9 +207,12 @@ export function hookAnswer(deliveries: readonly SessionDelivery[]): string | und
   const settled = deliveries.some((delivery) => delivery.locksSettled.length > 0)
     ? " Once get_work's feature.waitingOn is empty, call feature_token for the write token on your feature's fork."
     : "";
+  const results = deliveries.some((delivery) => (delivery.toolResults ?? []).length > 0)
+    ? " Read each tool result in get_work's toolResults under the id its call was recorded as."
+    : "";
   const additionalContext =
     `${delivered.trim().replaceAll("\n", " ")} Finish the step you are on, then call the penguin get_work tool with ` +
-    `your sessionId to read each task's pinned base, allowed paths, failing tests and acceptance criteria.${threads}${overlaps}${settled}`;
+    `your sessionId to read each task's pinned base, allowed paths, failing tests and acceptance criteria.${threads}${overlaps}${settled}${results}`;
   return `${JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext } })}\n`;
 }
 

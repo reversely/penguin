@@ -48,7 +48,7 @@ hooks before each tool call. The project's hook settings run `penguin-bridge ses
 there. The hook asks Penguin whether anything new is waiting for this session:
 
 - Nothing waiting: the hook prints nothing and the tool call goes ahead.
-- A fix task or a thread arrived: the hook adds one line to the agent's context telling it to call
+- A fix task, a thread or a check runner result arrived: the hook adds one line to the agent's context telling it to call
   `get_work`. The agent reads the task at that point, between two steps, never in the middle of one.
 - Penguin unreachable: the hook stays silent and the tool call goes ahead.
 

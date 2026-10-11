@@ -129,7 +129,9 @@ features, which make no lock. `OverlapSettled` records each lock that was approv
 `OverlapNotice` and `SettledNotice` record which sessions heard of each lock and each settlement.
 `FeatureReview` (`services/project-agent/src/review-submit.ts`) holds each submitted review form. A
 form that passed waits as `pending` until the check runner claims it and attaches its record
-(`review-record.ts`).
+(`review-record.ts`). `AgentToolRun` (`agent-tools.ts`) holds each agent tool call. An `impact`,
+`check` or `apply_fix` request waits until the check runner claims it and reports its result
+(`agent-tool-runner.ts`). The row records when the requesting session's safe checkpoint delivered it.
 
 Each HuddleAgent keeps the state of one Huddle in its own SQLite store: `VerificationRun`,
 `FixReview`, `HuddleThread` and `ApprovedBranch`. The ProjectAgent names the instance

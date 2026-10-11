@@ -5,16 +5,19 @@
 import { mkdir, open, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
-import type {
-  ApprovalReport,
-  ApprovalSpec,
-  CombinedRunEvent,
-  ReviewException,
-  ReviewRecord,
-  PlanFactsReport,
-  PlanFactsRequest,
-  VerificationReport,
-  VerificationRunSpec,
+import {
+  RUNNER_TOOLS,
+  type AgentToolResult,
+  type ApprovalReport,
+  type ApprovalSpec,
+  type CombinedRunEvent,
+  type PlanFactsReport,
+  type PlanFactsRequest,
+  type ReviewException,
+  type ReviewRecord,
+  type RunnerToolName,
+  type VerificationReport,
+  type VerificationRunSpec,
 } from "@penguin/protocol";
 
 import {
@@ -621,6 +624,123 @@ export async function reportReview(
     throw new RemoteRefusedError(`Penguin refused the record of review ${reviewId} (HTTP ${status})${message}`);
   }
   throw new RemoteUnavailableError(`Penguin could not take the record of review ${reviewId} (HTTP ${status})${message}`);
+}
+
+/** The route a runner claims agent tool requests from, and reports each one's result to under `/<run id>`. */
+export const TOOL_RUN_ROUTE = "/tool-runs";
+
+/** Another running feature's fork the checks merge the checkpoint onto, named by its person. */
+export interface ClaimedFork {
+  readonly feature: string;
+  readonly person: string;
+  /** The fork, `feature-<id>`. */
+  readonly fork: string;
+  readonly checkpoint: string;
+}
+
+/** An `impact`, `check` or `apply_fix` request an agent made and this runner claimed. */
+export interface ClaimedToolRun {
+  readonly runId: number;
+  readonly tool: RunnerToolName;
+  readonly feature: string;
+  /** The feature's fork, `feature-<id>`. */
+  readonly fork: string;
+  /** The checkpoint's baseline on main. */
+  readonly base: string;
+  readonly checkpoint: string;
+  /** The request's checked input: for `apply_fix` its kind, paths and edits. */
+  readonly input: Readonly<Record<string, unknown>>;
+  /** The calling identity's charter. */
+  readonly charter: { readonly handle: string; readonly person: string; readonly scopes: readonly string[]; readonly paths: readonly string[] };
+  /** The other running features' forks, one per person. */
+  readonly forks: readonly ClaimedFork[];
+}
+
+/** Penguin's answer to a tool result. */
+export interface ToolRunReply {
+  readonly status: "recorded";
+  readonly runId: number;
+  readonly tool: RunnerToolName;
+  readonly result: AgentToolResult["result"];
+  readonly summary: string;
+}
+
+const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every((item) => typeof item === "string");
+
+function claimedFork(value: unknown): ClaimedFork | undefined {
+  const { feature, person, fork, checkpoint } = (value ?? {}) as Record<string, unknown>;
+  const valid =
+    typeof feature === "string" &&
+    typeof person === "string" &&
+    fork === `feature-${feature}` &&
+    FEATURE_FORK.test(fork) &&
+    typeof checkpoint === "string" &&
+    COMMIT.test(checkpoint);
+  return valid ? { feature, person, fork, checkpoint } : undefined;
+}
+
+/**
+ * Claims the agent tool requests Penguin keeps waiting, which marks them as this runner's until they
+ * are reported or their lease runs out. Penguin answers only a bridge registered with the runner role.
+ */
+export async function claimToolRuns(server: string, bridgeToken: string, fetchImpl: Fetch = fetch): Promise<ClaimedToolRun[]> {
+  const { status, body } = await runnerRequest(server, bridgeToken, `${TOOL_RUN_ROUTE}/claim`, {}, fetchImpl);
+  if (status !== 200 || !Array.isArray(body["runs"])) {
+    throw new RemoteUnavailableError(`Penguin could not hand out tool requests (HTTP ${status})`);
+  }
+  return body["runs"].map((entry: unknown): ClaimedToolRun => {
+    const { runId, tool, feature, fork, base, checkpoint, input, charter, forks } = (entry ?? {}) as Record<string, unknown>;
+    const { handle, person, scopes, paths } = (charter ?? {}) as Record<string, unknown>;
+    const others = Array.isArray(forks) ? forks.map(claimedFork) : [undefined];
+    if (
+      !Number.isSafeInteger(runId) ||
+      !(RUNNER_TOOLS as readonly unknown[]).includes(tool) ||
+      typeof feature !== "string" ||
+      fork !== `feature-${feature}` ||
+      !FEATURE_FORK.test(fork) ||
+      typeof base !== "string" ||
+      !COMMIT.test(base) ||
+      typeof checkpoint !== "string" ||
+      !COMMIT.test(checkpoint) ||
+      typeof input !== "object" ||
+      input === null ||
+      typeof handle !== "string" ||
+      typeof person !== "string" ||
+      !strings(scopes) ||
+      !strings(paths) ||
+      others.some((other) => other === undefined)
+    ) {
+      throw new RemoteUnavailableError("Penguin listed a tool request without its feature fork, commits and charter");
+    }
+    return {
+      runId: runId as number,
+      tool: tool as RunnerToolName,
+      feature,
+      fork,
+      base,
+      checkpoint,
+      input: input as Record<string, unknown>,
+      charter: { handle, person, scopes, paths },
+      forks: others as ClaimedFork[],
+    };
+  });
+}
+
+/** Reports a claimed tool request's result, which reaches the requesting session at its next safe checkpoint. */
+export async function reportToolRun(
+  server: string,
+  bridgeToken: string,
+  runId: number,
+  result: AgentToolResult,
+  fetchImpl: Fetch = fetch,
+): Promise<ToolRunReply> {
+  const { status, body } = await runnerRequest(server, bridgeToken, `${TOOL_RUN_ROUTE}/${runId}`, result, fetchImpl);
+  if (status === 200) return body as unknown as ToolRunReply;
+  const message = typeof body["message"] === "string" ? `: ${body["message"]}` : "";
+  if ([400, 404, 409, 413].includes(status)) {
+    throw new RemoteRefusedError(`Penguin refused the result of tool request ${runId} (HTTP ${status})${message}`);
+  }
+  throw new RemoteUnavailableError(`Penguin could not take the result of tool request ${runId} (HTTP ${status})${message}`);
 }
 
 /** One runner request: GET without a body, else POST of `body` as JSON. Answers 401 and 403 throw. */

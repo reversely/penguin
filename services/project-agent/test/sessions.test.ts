@@ -639,7 +639,7 @@ describe("sessions: fix tasks at safe checkpoints", () => {
 
     project.now += 1_000;
     const delivery = project.sessions.checkpoint("jun", id);
-    assert.deepEqual(delivery, { status: "ok", sessionId: id, handle: "@jun/reports", delivered: ["41"], threads: [], overlaps: [], settled: [] });
+    assert.deepEqual(delivery, { status: "ok", sessionId: id, handle: "@jun/reports", delivered: ["41"], threads: [], overlaps: [], settled: [], toolResults: [] });
     assert.deepEqual(project.work("jun", id), ["40", "41"]);
     assert.equal(project.sessions.get(id)?.currentIssueId, "41");
     assert.equal(project.sessions.get(id)?.lastSeen, new Date(project.now).toISOString());
@@ -661,11 +661,11 @@ describe("sessions: fix tasks at safe checkpoints", () => {
     const { project, id } = await working();
     const elsewhere = project.register("jun", "@jun/reports", { worktreeId: "wt_elsewhere" });
     assert.deepEqual(project.sessions.checkpointWorktree("jun", "wt_elsewhere"), [
-      { sessionId: elsewhere.id, handle: "@jun/reports", delivered: [], threads: [], overlaps: [], settled: [] },
+      { sessionId: elsewhere.id, handle: "@jun/reports", delivered: [], threads: [], overlaps: [], settled: [], toolResults: [] },
     ]);
     assert.deepEqual(project.work("jun", id), ["40"]);
     assert.deepEqual(project.sessions.checkpointWorktree("jun", "wt_0123456789abcdef"), [
-      { sessionId: id, handle: "@jun/reports", delivered: ["41"], threads: [], overlaps: [], settled: [] },
+      { sessionId: id, handle: "@jun/reports", delivered: ["41"], threads: [], overlaps: [], settled: [], toolResults: [] },
     ]);
     assert.deepEqual(project.work("jun", id), ["40", "41"]);
   });
@@ -706,7 +706,7 @@ describe("sessions: fix tasks at safe checkpoints", () => {
     assert.equal(project.sessions.get(id)?.status, "offline");
     assert.deepEqual(project.work("jun", second.id), ["40"]);
     assert.deepEqual(project.sessions.checkpointWorktree("jun", "wt_second"), [
-      { sessionId: second.id, handle: "@jun/reports", delivered: ["41"], threads: [], overlaps: [], settled: [] },
+      { sessionId: second.id, handle: "@jun/reports", delivered: ["41"], threads: [], overlaps: [], settled: [], toolResults: [] },
     ]);
   });
 
@@ -722,6 +722,7 @@ describe("sessions: fix tasks at safe checkpoints", () => {
       threads: [],
       overlaps: [],
       settled: [],
+      toolResults: [],
     });
     assert.deepEqual(project.work("jun", id), ["40"]);
   });

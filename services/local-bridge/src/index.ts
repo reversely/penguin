@@ -34,6 +34,8 @@ export {
 export type { ReviewOptions, ReviewRequest, ReviewResult } from "./review-harness.ts";
 export { formatReviewPass, reviewPass } from "./review-run.ts";
 export type { ReviewPassOptions, ReviewPassResult, ReviewRunResult } from "./review-run.ts";
+export { formatToolPass, toolPass } from "./tool-run.ts";
+export type { ToolPassOptions, ToolPassResult, ToolRunResult } from "./tool-run.ts";
 
 export {
   AGENT_TRAILER_KEY,
@@ -71,6 +73,7 @@ export {
   checkedOrigin,
   claimCombinedRuns,
   claimReviews,
+  claimToolRuns,
   COMBINED_RUN_CLAIM_ROUTE,
   COMBINED_RUN_ROUTE,
   fetchApprovals,
@@ -87,19 +90,24 @@ export {
   reportCombinedRun,
   reportReview,
   reportPlanFacts,
+  reportToolRun,
   reportVerification,
   REVIEW_ROUTE,
   TokenClient,
+  TOOL_RUN_ROUTE,
   VERIFICATION_ROUTE,
 } from "./penguin-client.ts";
 export type {
   ApprovalReply,
   BridgeRegistration,
   ClaimedCombinedRun,
+  ClaimedFork,
   ClaimedReview,
+  ClaimedToolRun,
   CombinedRunReply,
   ReviewReply,
   PlanFactsReply,
+  ToolRunReply,
   VerificationReply,
   Fetch,
   PendingOperation,
@@ -199,6 +207,7 @@ export {
 } from "./apply-fix.ts";
 export {
   charterPaths,
+  classifyCheck,
   DEFAULT_ROUND_LIMIT,
   formatResolution,
   loadIdentities,

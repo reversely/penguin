@@ -358,16 +358,54 @@ feature whose area touches the asked paths or scopes. It also lists each feature
 `depends_on` names one of them. The session's own feature is left out.
 
 `impact`, `check` and `apply_fix` need the check runner's programs. The ProjectAgent checks the
-request and records it at the feature's latest checkpoint. Its answer says the request waits for the
-check runner. Only an agent session of the feature may call them. `apply_fix` takes one of the fixed
-kinds `format`, `lint`, `lockfile` and `codemod`. It takes only Python files inside the caller
-identity's charter. Its codemod edits must name dotted Python names. On the runner,
-`penguin-bridge apply-fix` applies one fix and `penguin-bridge resolve` runs the checks with the
-ladder ([bridge-and-runner.md](bridge-and-runner.md#resolution-ladder)).
+request and records it at the feature's latest checkpoint, with that checkpoint's baseline on main.
+Its answer says the request waits for the check runner. Only an agent session of the feature may
+call them. `apply_fix` takes one of the fixed kinds `format`, `lint`, `lockfile` and `codemod`. It
+takes only Python files inside the caller identity's charter. Its codemod edits must name dotted
+Python names. By hand, `penguin-bridge apply-fix` applies one fix and `penguin-bridge resolve` runs
+the checks with the ladder ([bridge-and-runner.md](bridge-and-runner.md#resolution-ladder)).
 
 Each call is an `AgentToolRun` row: the feature, the session, the caller's identity, the tool, its
 input, its answer and its duration. The feature page and demos read the rows. Their count per
 resolved failure is the agent calls metric of PRD section 11.
+
+#### Tools on the runner
+
+Runner mode claims waiting requests with `POST /tool-runs/claim`, as it claims reviews. A claim hands
+out up to 8 requests and holds them for 30 minutes. An unreported request is handed out again after
+that. Each claimed request names the feature's fork `feature-<id>`, the checkpoint, its baseline, the
+caller's charter and the other running features' forks. Each of those forks comes with its person
+and latest checkpoint. When one person runs several features, the claim names the one updated last.
+The runner fetches every fork with a read token and runs the tool (`tool-run.ts`):
+
+| Tool | What the runner does | Result |
+|---|---|---|
+| `impact` | `analysis:python-impact` on the baseline and the checkpoint, searching each other fork in its person's scopes | The impact report and the people whose forks use the change |
+| `check` | A combined run with the [checks](#checks): the checkpoint merged onto its baseline (`main`) and onto each other fork | Every block check, plus one ladder decision per failed or erred check |
+| `apply_fix` | The requested fix on the checkpoint, allowed only inside the caller's charter | The fix's tool run with the files it changed |
+
+`check` applies no fix. A step 1 to 3 decision names the fix the agent requests with `apply_fix`.
+
+The runner reports each result to `POST /tool-runs/<id>`. The ProjectAgent checks it against
+`TOOL_RESULT_SCHEMA` (`packages/protocol/src/tool-result.ts`). The result must name the request's
+own tool, baseline and checkpoint. A fix result must come from the requested fix's command and change
+only the files the request named. The ProjectAgent keeps the result on the `AgentToolRun` row. The
+first report wins. A later report of the same request answers 409. A result over 1 MiB of JSON drops
+its impact report and says so in its summary.
+
+The result reaches the requesting session once, at its next safe checkpoint. The bridge's PreToolUse
+hook names it. `report_checkpoint` lists it under `toolResults`. `get_work` lists the session's last
+10 delivered results with each full outcome.
+
+PRD section 8 gives Penguin a write token on another feature's fork only for an approved merge plan
+part. Merge plans grant no token yet, so no bridge holds write on any `feature-<id>` repo. The
+runner keeps each fix commit at `refs/penguin/fixes/<commit>` in its own repository. The result
+reports the commit with `pushed: false`. The feature's fork keeps its commits.
+
+On the helpful-fix fixture, Priya's agent calls `check` on Priya's checkpoint with Jun's and Sam's
+features running. With no manual run, the session's next safe checkpoint brings the block checks
+on `main`, `jun` and `sam`. Jun's and Sam's tests fail. Both failures go to step 5, to
+`@jun/reports` and `@sam/reminders` (`apps/worker/test/tool-runner.test.ts`).
 
 ### Routing and the resolution ladder
 

@@ -68,6 +68,7 @@ class Project {
       heartbeat: (caller, sessionId) => this.sessions.heartbeat(caller, sessionId),
       session: (sessionId) => this.sessions.get(sessionId),
       identity: (identityId) => this.identities.get(identityId),
+      baseline: async () => "b".repeat(40),
     };
     const unused = () => {
       throw new Error("not used");

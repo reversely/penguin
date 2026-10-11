@@ -36,3 +36,4 @@ export type * from "./identities.ts";
 export * from "./review.ts";
 export * from "./overlap.ts";
 export * from "./resolution.ts";
+export * from "./tool-result.ts";

@@ -274,6 +274,7 @@ export type FeatureCheckpointOutcome =
       readonly threads: readonly { readonly issueId: string; readonly threadId: string }[];
       readonly overlaps: readonly OverlapRef[];
       readonly settled: Delivery["settled"];
+      readonly toolResults: Delivery["toolResults"];
       readonly durationMs: number;
     })
   | FeatureRejection;
@@ -282,8 +283,8 @@ export interface FeatureCheckpointDeps extends FeatureDeps {
   /** True when the commit is in the Artifacts repo (the binding's `readCommit` finds it). */
   readonly commitExists: (repo: string, sha: string) => Promise<boolean>;
   readonly readChange: CheckpointReader;
-  /** The session's safe checkpoint: the fix tasks, threads and overlapping starts it delivers (SessionStore.checkpoint). */
-  readonly deliver: (caller: string, sessionId: string) => Pick<Delivery, "delivered" | "threads" | "overlaps" | "settled"> | undefined;
+  /** The session's safe checkpoint: the fix tasks, threads, overlapping starts and tool results it delivers (SessionStore.checkpoint). */
+  readonly deliver: (caller: string, sessionId: string) => Pick<Delivery, "delivered" | "threads" | "overlaps" | "settled" | "toolResults"> | undefined;
   readonly now?: () => number;
 }
 
@@ -327,6 +328,7 @@ export async function reportFeatureCheckpoint(
     threads: delivery?.threads ?? [],
     overlaps: delivery?.overlaps ?? [],
     settled: delivery?.settled ?? [],
+    toolResults: delivery?.toolResults ?? [],
     durationMs: now() - started,
   };
 }

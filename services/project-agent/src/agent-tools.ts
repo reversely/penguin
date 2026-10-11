@@ -1,20 +1,30 @@
 // The agent tools of PRD section 5.2 as the ProjectAgent serves them: `whats_near`, `impact`, `check`
 // and `apply_fix`. `whats_near` is answered here from the running features' areas, the scope map and
 // the sessions. `impact`, `check` and `apply_fix` need the check runner's tools (Python, ruff,
-// pyright, uv, libcst), so the ProjectAgent checks the request, records it and answers that it waits
-// for the runner, as `submit_review` does for the side-by-side run. `apply_fix` accepts only the fixed
-// fix kinds, files inside the caller's charter and codemod edits that are dotted Python names.
+// pyright, uv, libcst), so the ProjectAgent checks the request, records it with the checkpoint's
+// baseline on main and answers that it waits for the runner, as `submit_review` does for the
+// side-by-side run. The runner claims it under a lease and reports the result (agent-tool-runner.ts),
+// which reaches the requesting session at its next safe checkpoint. `apply_fix` accepts only the
+// fixed fix kinds, files inside the caller's charter and codemod edits that are dotted Python names.
 //
 // Every call is recorded with its tool, caller, input and answer, so a feature page or a demo shows
 // each tool's use and how many calls an agent made per resolution (PRD section 11).
 
 import { withinCharter, type CharterIdentity } from "@penguin/policies";
-import { codemodEditProblem, FIX_COMMAND_IDS, FIX_KINDS, type AgentToolName, type FixKind } from "@penguin/protocol";
+import {
+  codemodEditProblem,
+  FIX_COMMAND_IDS,
+  FIX_KINDS,
+  type AgentToolName,
+  type AgentToolResult,
+  type FixKind,
+  type ToolRunResult,
+} from "@penguin/protocol";
 import type { ScopeMap } from "@penguin/scope-map";
 
 import { parseAreaPath, parseFeatureId, type Feature, type FeatureStore } from "./feature-store.ts";
 import type { FeatureRejection } from "./feature-open.ts";
-import type { SqlDatabase, SqlValue } from "./issue-index.ts";
+import type { BridgeCaller, SqlDatabase, SqlValue } from "./issue-index.ts";
 import { findOverlaps, RUNNING_STATES, type Overlap } from "./overlap-lock.ts";
 import type { Session, SessionOutcome } from "./session-store.ts";
 
@@ -30,6 +40,29 @@ export const AGENT_TOOL_SCHEMA: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS AgentToolRun_feature ON AgentToolRun (feature_id, id)`,
 ];
 
+/**
+ * Columns added for the check runner's claim and result (#102). A table an earlier deploy created
+ * lacks them, so the store adds each one that is missing.
+ */
+const RUNNER_COLUMNS: readonly (readonly [string, string])[] = [
+  ["identity_id", "identity_id TEXT"],
+  ["base_sha", "base_sha TEXT"],
+  ["claimed_by", "claimed_by TEXT"],
+  ["claimed_at", "claimed_at INTEGER"],
+  ["completed_at", "completed_at INTEGER"],
+  ["outcome", "outcome TEXT"],
+  ["delivered_at", "delivered_at INTEGER"],
+];
+
+/** How long a claimed request stays with its runner before another claim may take it again. */
+export const TOOL_RUN_LEASE_MS = 30 * 60_000;
+
+/** The most requests one claim hands out. */
+export const TOOL_RUN_CLAIM_LIMIT = 8;
+
+/** The most delivered results `get_work` lists for a session, newest first. */
+export const TOOL_RESULTS_LISTED = 10;
+
 /** One recorded call of an agent tool. */
 export interface AgentToolRun {
   readonly id: number;
@@ -39,13 +72,40 @@ export interface AgentToolRun {
   readonly caller: string;
   readonly tool: AgentToolName;
   readonly input: Readonly<Record<string, unknown>>;
-  /** `found` for an answer, `waiting` for a request the check runner takes. */
-  readonly result: "found" | "waiting";
+  /**
+   * `found` for an answer, `waiting` for a request the check runner has not reported yet, then the
+   * runner's result: `found`, or for a fix `changed`, `unchanged` or `refused`, or `error`.
+   */
+  readonly result: ToolRunResult;
   readonly summary: string;
   readonly checkpointSha: string | null;
   readonly durationMs: number;
   readonly createdAt: string;
+  /** The calling session's identity; null for `whats_near` and rows from before #102. */
+  readonly identityId: string | null;
+  /** The checkpoint's baseline on main, the runner's base; null for `whats_near`. */
+  readonly baseSha: string | null;
+  readonly claimedBy: string | null;
+  readonly claimedAt: string | null;
+  readonly completedAt: string | null;
+  /** The runner's result, once reported. */
+  readonly outcome: AgentToolResult | null;
+  /** When the requesting session's safe checkpoint delivered the result. */
+  readonly deliveredAt: string | null;
 }
+
+/** A reported result as a session's safe checkpoint names it. */
+export interface ToolResultRef {
+  readonly runId: number;
+  readonly tool: AgentToolName;
+  readonly featureId: string;
+  readonly result: ToolRunResult;
+  readonly summary: string;
+}
+
+const text = (value: SqlValue | undefined): string | null => (value === null || value === undefined ? null : String(value));
+const time = (value: SqlValue | undefined): string | null =>
+  value === null || value === undefined ? null : new Date(Number(value)).toISOString();
 
 function toolRun(row: Row): AgentToolRun {
   return {
@@ -57,26 +117,48 @@ function toolRun(row: Row): AgentToolRun {
     input: JSON.parse(String(row["input"])) as Record<string, unknown>,
     result: String(row["result"]) as AgentToolRun["result"],
     summary: String(row["summary"]),
-    checkpointSha: row["checkpoint_sha"] === null ? null : String(row["checkpoint_sha"]),
+    checkpointSha: text(row["checkpoint_sha"]),
     durationMs: Number(row["duration_ms"]),
-    createdAt: new Date(Number(row["created_at"])).toISOString(),
+    createdAt: time(row["created_at"]) as string,
+    identityId: text(row["identity_id"]),
+    baseSha: text(row["base_sha"]),
+    claimedBy: text(row["claimed_by"]),
+    claimedAt: time(row["claimed_at"]),
+    completedAt: time(row["completed_at"]),
+    outcome: typeof row["outcome"] === "string" ? (JSON.parse(row["outcome"]) as AgentToolResult) : null,
+    deliveredAt: time(row["delivered_at"]),
   };
 }
+
+export type ToolRunClaimListing =
+  | { readonly status: "ok"; readonly runs: readonly AgentToolRun[] }
+  | { readonly status: "forbidden"; readonly message: string };
 
 export class AgentToolStore {
   readonly #db: SqlDatabase;
   readonly #now: () => number;
+  readonly #leaseMs: number;
 
-  constructor(db: SqlDatabase, now: () => number = Date.now) {
+  constructor(db: SqlDatabase, now: () => number = Date.now, leaseMs: number = TOOL_RUN_LEASE_MS) {
     this.#db = db;
     this.#now = now;
+    this.#leaseMs = leaseMs;
     for (const statement of AGENT_TOOL_SCHEMA) db.exec(statement);
+    // Column names and definitions come from the constant above, never from input.
+    const present = new Set(db.exec(`PRAGMA table_info(AgentToolRun)`).map((row) => row["name"]));
+    for (const [name, definition] of RUNNER_COLUMNS) {
+      if (!present.has(name)) db.exec(`ALTER TABLE AgentToolRun ADD COLUMN ${definition}`);
+    }
   }
 
-  insert(run: Omit<AgentToolRun, "id" | "createdAt">): AgentToolRun {
+  insert(
+    run: Pick<AgentToolRun, "featureId" | "sessionId" | "caller" | "tool" | "input" | "result" | "summary" | "checkpointSha" | "durationMs"> &
+      Partial<Pick<AgentToolRun, "identityId" | "baseSha">>,
+  ): AgentToolRun {
     const [row] = this.#db.exec(
-      `INSERT INTO AgentToolRun (feature_id, session_id, caller, tool, input, result, summary, checkpoint_sha, duration_ms, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
+      `INSERT INTO AgentToolRun (feature_id, session_id, caller, tool, input, result, summary, checkpoint_sha, duration_ms, created_at,
+         identity_id, base_sha)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
       run.featureId,
       run.sessionId,
       run.caller,
@@ -87,13 +169,94 @@ export class AgentToolStore {
       run.checkpointSha,
       Math.round(run.durationMs),
       this.#now(),
+      run.identityId ?? null,
+      run.baseSha ?? null,
     );
     return toolRun(row as Row);
+  }
+
+  get(id: number): AgentToolRun | undefined {
+    const [row] = this.#db.exec(`SELECT * FROM AgentToolRun WHERE id = ?`, id);
+    return row === undefined ? undefined : toolRun(row);
   }
 
   /** The recorded calls on one feature, oldest first. */
   list(featureId: string): AgentToolRun[] {
     return this.#db.exec(`SELECT * FROM AgentToolRun WHERE feature_id = ? ORDER BY id`, featureId).map(toolRun);
+  }
+
+  /**
+   * Hands the runner up to TOOL_RUN_CLAIM_LIMIT waiting requests, oldest first, and marks them
+   * claimed by `caller`. A request is claimable while waiting and unclaimed, or when its claim's lease
+   * ran out without a report. Only a bridge with the runner role may claim.
+   */
+  claim(caller: BridgeCaller): ToolRunClaimListing {
+    if (caller.role !== "runner") return { status: "forbidden", message: `bridge ${caller.bridgeId} does not hold the runner role` };
+    const now = this.#now();
+    return this.#db.transaction((): ToolRunClaimListing => {
+      const rows = this.#db.exec(
+        `SELECT id FROM AgentToolRun WHERE result = 'waiting' AND base_sha IS NOT NULL
+           AND (claimed_at IS NULL OR claimed_at <= ?) ORDER BY id LIMIT ?`,
+        now - this.#leaseMs,
+        TOOL_RUN_CLAIM_LIMIT,
+      );
+      const runs: AgentToolRun[] = [];
+      for (const row of rows) {
+        const id = Number(row["id"]);
+        this.#db.exec(`UPDATE AgentToolRun SET claimed_by = ?, claimed_at = ? WHERE id = ?`, caller.bridgeId, now, id);
+        runs.push(this.get(id) as AgentToolRun);
+      }
+      return { status: "ok", runs };
+    });
+  }
+
+  /**
+   * Attaches the runner's result to request `id` while it waits. Returns the completed request, or
+   * undefined when it was not waiting: a second report of the same request changes nothing.
+   */
+  complete(id: number, outcome: AgentToolResult): AgentToolRun | undefined {
+    const [row] = this.#db.exec(
+      `UPDATE AgentToolRun SET result = ?, summary = ?, outcome = ?, completed_at = ?
+       WHERE id = ? AND result = 'waiting' RETURNING *`,
+      outcome.result,
+      outcome.summary,
+      JSON.stringify(outcome),
+      this.#now(),
+      id,
+    );
+    return row === undefined ? undefined : toolRun(row);
+  }
+
+  /**
+   * The reported results of session `sessionId` that no safe checkpoint has delivered yet, oldest
+   * first, each marked delivered now (SessionStoreOptions.toolResultsFor).
+   */
+  deliver(sessionId: string): ToolResultRef[] {
+    return (
+      this.#db
+        .exec(
+          `UPDATE AgentToolRun SET delivered_at = ? WHERE session_id = ? AND completed_at IS NOT NULL AND delivered_at IS NULL
+           RETURNING id, tool, feature_id, result, summary`,
+          this.#now(),
+          sessionId,
+        )
+        // RETURNING follows no order; the requests' own order is the order the agent asked in.
+        .sort((a, b) => Number(a["id"]) - Number(b["id"]))
+        .map((row) => ({
+          runId: Number(row["id"]),
+          tool: String(row["tool"]) as AgentToolName,
+          featureId: String(row["feature_id"]),
+          result: String(row["result"]) as ToolRunResult,
+          summary: String(row["summary"]),
+        }))
+    );
+  }
+
+  /** The results delivered to session `sessionId`, newest first, at most TOOL_RESULTS_LISTED. */
+  delivered(sessionId: string): AgentToolRun[] {
+    return this.#db
+      .exec(`SELECT * FROM AgentToolRun WHERE session_id = ? AND delivered_at IS NOT NULL ORDER BY id DESC LIMIT ?`, sessionId, TOOL_RESULTS_LISTED)
+      .map(toolRun);
   }
 }
 
@@ -105,6 +268,8 @@ export interface AgentToolDeps {
   readonly session: (sessionId: string) => Session | undefined;
   /** The charter of an identity, by its id. */
   readonly identity: (identityId: string) => CharterIdentity | undefined;
+  /** The checkpoint `sha` of fork `repo`'s baseline on main (`checkpointBaseline`). */
+  readonly baseline: (repo: string, sha: string) => Promise<string>;
 }
 
 /** A running feature near the asked paths or scopes, with its person and agents. */
@@ -229,7 +394,9 @@ export async function requestTool(
   if (deps.features.featureOfSession(sessionId) !== featureId) {
     return rejected("forbidden", `this session is not an agent of feature ${featureId}`);
   }
-  if (feature.latestCheckpointSha === null) return rejected("not_found", `feature ${featureId} has no checkpoint on its fork yet`);
+  if (feature.latestCheckpointSha === null || feature.repo === null) {
+    return rejected("not_found", `feature ${featureId} has no checkpoint on its fork yet`);
+  }
 
   let recorded: Record<string, unknown> = { feature: featureId };
   let commandId: string | null = null;
@@ -239,6 +406,8 @@ export async function requestTool(
     recorded = { feature: featureId, ...fix.input };
     commandId = FIX_COMMAND_IDS[fix.input.kind];
   }
+  // The runner compares the checkpoint with its baseline on main, as a review's side-by-side run does.
+  const baseSha = await deps.baseline(feature.repo, feature.latestCheckpointSha);
   const run = deps.runs.insert({
     featureId,
     sessionId,
@@ -249,6 +418,8 @@ export async function requestTool(
     summary: `${tool} on ${featureId}@${feature.latestCheckpointSha.slice(0, 12)} waits for the check runner`,
     checkpointSha: feature.latestCheckpointSha,
     durationMs: performance.now() - started,
+    identityId: live.session.identityId,
+    baseSha,
   });
   return { status: "ok", runId: run.id, tool, featureId, checkpointSha: feature.latestCheckpointSha, input: recorded, commandId };
 }

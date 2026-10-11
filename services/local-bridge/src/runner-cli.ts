@@ -2,8 +2,9 @@
 // --combined or --repo it also runs the test jobs Penguin schedules in one repository: the combined
 // runs it claims (combined-run-pass.ts), the merge-plan facts runs it lists (plan-facts-run.ts), the
 // Huddle verification runs it lists (verification-run.ts), the approved branches it records in Huddle
-// repos (approval-run.ts) and the submitted reviews it claims and runs the review harness on
-// (review-run.ts).
+// repos (approval-run.ts), the submitted reviews it claims and runs the review harness on
+// (review-run.ts) and the agents' `impact`, `check` and `apply_fix` requests it claims and runs on
+// feature forks (tool-run.ts).
 
 import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
@@ -13,11 +14,13 @@ import { parseArgs } from "node:util";
 import { runGit } from "@penguin/git-analysis";
 import { RUNNER_INTERVAL_MS } from "@penguin/protocol";
 
+import { FixApplier } from "./apply-fix.ts";
 import { approvalPass, ApprovedBranchWriter, formatApprovalPass, type ApprovalPassResult } from "./approval-run.ts";
 import { BlockChecker, pythonDependencyAnalyzer } from "./block-checks.ts";
 import { checkTools } from "./check-tools.ts";
 import type { CliIo } from "./cli.ts";
 import { combinedRunPass, forkFetcher, formatCombinedPass, type CombinedPassResult } from "./combined-run-pass.ts";
+import { CombinedRunner } from "./combined-run.ts";
 import { penguinRemote } from "./git-remote.ts";
 import { pythonImpactAnalyzer } from "./impact-analysis.ts";
 import { factsFetcher, formatPlanFactsPass, planFactsPass, PlanFactsRunner, type PlanFactsPassResult } from "./plan-facts-run.ts";
@@ -28,6 +31,7 @@ import {
   bridgeRemotes,
   claimCombinedRuns,
   claimReviews,
+  claimToolRuns,
   fetchApprovals,
   fetchPendingOperations,
   fetchPlanFactsRuns,
@@ -37,6 +41,7 @@ import {
   reportCombinedRun,
   reportPlanFacts,
   reportReview,
+  reportToolRun,
   reportVerification,
   type BridgeRegistration,
   type Fetch,
@@ -47,6 +52,7 @@ import { fetchRepoBranches } from "./runner-repo.ts";
 import { formatPass, runnerPass, RunnerLoop } from "./runner.ts";
 import { bridgeSpool } from "./spool-cli.ts";
 import { TestRunner } from "./test-runner.ts";
+import { formatToolPass, toolPass, type ToolPassResult } from "./tool-run.ts";
 import {
   formatVerificationPass,
   verificationPass,
@@ -70,6 +76,9 @@ export const RUNNER_USAGE = `       penguin-bridge runner [--once] [--interval <
          plan's facts run fetches the feature forks it names, runs the impact graph and each
          listed scope's tests on the feature checkpoint merged onto main and onto each running
          feature.
+         Each impact, check and apply_fix an agent called is claimed too: the feature's fork and
+         the other running features' forks are fetched, and the tool runs on the checkpoint. A fix
+         commit stays in <path> and is not pushed.
 `;
 
 /** One pass of the test jobs: each job's result, or why it did not run. */
@@ -79,6 +88,7 @@ interface TestJobsResult {
   readonly verification: VerificationPassResult | Error;
   readonly approval: ApprovalPassResult | Error;
   readonly review: ReviewPassResult | Error;
+  readonly tools: ToolPassResult | Error;
 }
 
 /**
@@ -224,6 +234,8 @@ async function testJobsPass(
   const verifier = new VerificationRunner({ repoPath: repo, runner, readRemotes, writeRemotes });
   const approver = new ApprovedBranchWriter({ repoPath: repo, writeRemotes });
   const facts = new PlanFactsRunner({ repoPath: repo, runner, impact });
+  const combined = new CombinedRunner({ repoPath: repo, runner, impact, checks });
+  const fixes = new FixApplier({ repoPath: repo, ruff: programs.ruff });
   const settle = <T>(job: () => Promise<T>): Promise<T | Error> => job().catch((error: unknown) => error as Error);
   return async () => ({
     combined: await settle(() =>
@@ -268,21 +280,40 @@ async function testJobsPass(
         repoPath: repo,
       }),
     ),
+    tools: await settle(() =>
+      toolPass({
+        claim: () => claimToolRuns(server, bridgeToken, fetchImpl),
+        report: (runId, result) => reportToolRun(server, bridgeToken, runId, result, fetchImpl),
+        fetchFork: (fork) => fetchRepoBranches(repo, readRemotes, fork),
+        impact,
+        combined,
+        fixes,
+        repoPath: repo,
+      }),
+    ),
   });
 }
 
 /** True when every job ran and nothing in them was refused or stopped. */
-function testJobsClean({ combined, planFacts, verification, approval, review }: TestJobsResult): boolean {
-  if (combined instanceof Error || planFacts instanceof Error || verification instanceof Error || approval instanceof Error || review instanceof Error) {
+function testJobsClean({ combined, planFacts, verification, approval, review, tools }: TestJobsResult): boolean {
+  if (
+    combined instanceof Error ||
+    planFacts instanceof Error ||
+    verification instanceof Error ||
+    approval instanceof Error ||
+    review instanceof Error ||
+    tools instanceof Error
+  ) {
     return false;
   }
   const combinedClean = combined.batches.every((batch) => batch.error === null && batch.refused.length === 0);
   const reviewClean = review.reviews.every((entry) => entry.error === null);
-  return combinedClean && reviewClean && planFacts.failed.length === 0 && verification.failed.length === 0 && approval.failed.length === 0;
+  const toolsClean = tools.runs.every((entry) => entry.error === null);
+  return combinedClean && reviewClean && toolsClean && planFacts.failed.length === 0 && verification.failed.length === 0 && approval.failed.length === 0;
 }
 
 /** The pass's lines; `always` writes a job's summary even when it found no work. */
-function formatTestJobs({ combined, planFacts, verification, approval, review }: TestJobsResult, always: boolean): string {
+function formatTestJobs({ combined, planFacts, verification, approval, review, tools }: TestJobsResult, always: boolean): string {
   let text = "";
   if (combined instanceof Error) text += `No combined runs were claimed: ${combined.message}\n`;
   else if (always || combined.claimed > 0) text += formatCombinedPass(combined);
@@ -294,5 +325,7 @@ function formatTestJobs({ combined, planFacts, verification, approval, review }:
   else if (always || approval.listed > 0) text += formatApprovalPass(approval);
   if (review instanceof Error) text += `No reviews were claimed: ${review.message}\n`;
   else if (always || review.claimed > 0) text += formatReviewPass(review);
+  if (tools instanceof Error) text += `No tool requests were claimed: ${tools.message}\n`;
+  else if (always || tools.claimed > 0) text += formatToolPass(tools);
   return text;
 }

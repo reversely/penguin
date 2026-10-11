@@ -65,6 +65,22 @@ export interface FixTaskView {
   readonly acceptanceCriteria: readonly string[];
 }
 
+/**
+ * A tool request the check runner answered (the ProjectAgent's `AgentToolRun`): `outcome` holds the
+ * impact report, the block checks with each failure's next step, or the fix's run.
+ */
+export interface ToolResultView {
+  readonly id: number;
+  readonly featureId: string | null;
+  readonly tool: string;
+  readonly input: Readonly<Record<string, unknown>>;
+  readonly result: string;
+  readonly summary: string;
+  readonly checkpointSha: string | null;
+  readonly completedAt: string | null;
+  readonly outcome: object | null;
+}
+
 /** One applied or rejected operation of an issue's timeline. */
 export interface OperationView {
   readonly seq: number;
@@ -94,6 +110,8 @@ export interface McpProject {
   featureWork?(caller: string, sessionId: string): MaybePromise<FeatureWorkView | undefined>;
   /** The open overlap locks the person is asked to approve; absent without features. */
   overlapsNeeding?(person: string): MaybePromise<readonly OverlapLockView[]>;
+  /** The check runner's results delivered to the caller's session, newest first; absent without features. */
+  agentToolResults?(caller: string, sessionId: string): MaybePromise<readonly ToolResultView[]>;
   readIssue(
     id: string,
   ): MaybePromise<{ readonly issue: IssueRecord | undefined; readonly timeline: readonly OperationView[] }>;
@@ -225,6 +243,8 @@ export type CheckpointResult =
       readonly overlaps?: readonly { readonly featureId: string; readonly blockedFeatureId: string }[];
       /** Locks on the session's feature approved or withdrawn since the session last heard. */
       readonly settled?: readonly { readonly featureId: string; readonly blockedFeatureId: string; readonly outcome: string }[];
+      /** The check runner's results of the session's tool requests, reported since the session last heard. */
+      readonly toolResults?: readonly { readonly runId: number; readonly tool: string; readonly featureId: string; readonly result: string; readonly summary: string }[];
     }
   | Rejection;
 
@@ -569,7 +589,8 @@ export function createPenguinMcpServer(
         "people must approve before it starts; `approvedBy` lists the approvals and `ownOverlaps` your " +
         "developer's other running features that cover part of the area. `overlapsNeedingYou` lists the features whose start waits " +
         "for your developer's approval beside one of their running features: tell your developer, who " +
-        "approves on the dashboard's inbox.",
+        "approves on the dashboard's inbox. `toolResults` lists, newest first, the check runner's answers to " +
+        "this session's impact, check and apply_fix calls that reached it at a safe checkpoint.",
       inputSchema: workInput,
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -587,6 +608,7 @@ export function createPenguinMcpServer(
       const threads = await project.threadsNeeding(owner);
       const feature = await project.featureWork?.(owner, id);
       const overlaps = (await project.overlapsNeeding?.(owner)) ?? [];
+      const toolResults = (await project.agentToolResults?.(owner, id)) ?? [];
       return result({
         sessionId: id,
         identity: live.session.handle,
@@ -599,6 +621,7 @@ export function createPenguinMcpServer(
           overlap: overlapFields(lock.overlap),
           openedAt: lock.openedAt,
         })),
+        toolResults: toolResults.map(toolResultFields),
       });
     },
   );
@@ -675,8 +698,9 @@ export function createPenguinMcpServer(
         "commit as the fork's latest checkpoint once it finds the commit in that fork. A recorded " +
         "checkpoint is a safe checkpoint: `newWork` lists the fix tasks it delivered, `newThreads` the " +
         "threads that newly need your developer, `newOverlaps` the overlapping starts that newly wait " +
-        "for your developer's approval and `locksSettled` the locks on your feature that were approved or " +
-        "withdrawn; read them with get_work.",
+        "for your developer's approval, `locksSettled` the locks on your feature that were approved or " +
+        "withdrawn and `toolResults` the check runner's answers to your impact, check and apply_fix calls; " +
+        "read them with get_work.",
       inputSchema: checkpointInput,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
@@ -712,6 +736,13 @@ export function createPenguinMcpServer(
         blockedFeature: blockedFeatureId,
         outcome: settledAs,
       }));
+      const toolResults = (outcome.toolResults ?? []).map(({ runId, tool, featureId, result: answered, summary }) => ({
+        recordedAs: runId,
+        tool,
+        feature: featureId,
+        result: answered,
+        summary,
+      }));
       return result({
         fork: own,
         ownerId,
@@ -721,6 +752,7 @@ export function createPenguinMcpServer(
         newThreads,
         newOverlaps,
         locksSettled,
+        toolResults,
       });
     },
   );
@@ -825,8 +857,9 @@ function registerFeatureTools(server: McpServer, features: McpFeatures): void {
       title: "Impact",
       description:
         "The functions, contracts and forks your feature's latest checkpoint affects: the impact graph and " +
-        "contract diff of the change against main, with each running feature that uses a changed symbol. The " +
-        "check runner computes it; the answer records the request and says it is waiting.",
+        "contract diff of the change against its baseline on main, with each other running feature's fork that " +
+        "uses a changed symbol. The check runner computes it; the answer records the request and says it is " +
+        "waiting. The report reaches this session at its next safe checkpoint; read it in get_work's toolResults.",
       inputSchema: featureToolInput,
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -840,10 +873,11 @@ function registerFeatureTools(server: McpServer, features: McpFeatures): void {
       description:
         "Runs the deterministic checks (overlap, merge, impact graph, contract diff, type check, lint, " +
         "dependency diff and the affected scopes' tests) on your feature's latest checkpoint merged onto main " +
-        "and onto each affected fork. Penguin routes each failure through the resolution ladder and returns one " +
-        "next step: it applies format, lint, lockfile and codemod fixes itself; it sends a behaviour change to " +
-        "you when it lies inside your charter, to the scope owner's agent when it does not, and an exception to " +
-        "one person. Never try tools in turn. The check runner runs it; the answer says it is waiting.",
+        "and onto each other running feature's fork. Penguin routes each failure through the resolution ladder " +
+        "and returns one next step: a format, lint, lockfile or codemod fix; a behaviour change for you when it " +
+        "lies inside your charter, for the scope owner's agent when it does not; an exception for one person. " +
+        "Never try tools in turn. The check runner runs it; the answer says it is waiting. The checks and next " +
+        "steps reach this session at its next safe checkpoint; read them in get_work's toolResults.",
       inputSchema: featureToolInput,
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -859,7 +893,9 @@ function registerFeatureTools(server: McpServer, features: McpFeatures): void {
         "lint (ruff check --fix), lockfile (uv lock) or codemod (a rename, move or keyword rename generated " +
         "from the contract diff). Only these kinds exist, and only Python files inside your identity's charter " +
         "can be named. The result goes back through the checks before Penguin accepts it. The check runner " +
-        "applies it; the answer says it is waiting.",
+        "applies it; the answer says it is waiting. Until a merge plan grants a write token on the fork, the fix " +
+        "commit stays on the check runner and is not pushed to your fork. The result reaches this session at its " +
+        "next safe checkpoint; read it in get_work's toolResults, with the files the fix changed and `pushed: false`.",
       inputSchema: applyFixInput,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
@@ -938,6 +974,12 @@ function overlapFields(overlap: OverlapFieldsView): Record<string, unknown> {
 }
 
 /** The session's feature: the locks its start waits on, each with its person, and its dependents. */
+/** One delivered tool result as get_work reports it, under the id the tool's answer gave as `recordedAs`. */
+function toolResultFields(run: ToolResultView): Record<string, unknown> {
+  const { id, featureId, tool, input, result: answered, summary, checkpointSha, completedAt, outcome } = run;
+  return { recordedAs: id, feature: featureId, tool, input, result: answered, summary, checkpoint: checkpointSha, completedAt, outcome };
+}
+
 function featureWorkFields(work: FeatureWorkView): Record<string, unknown> {
   return {
     id: work.feature,

@@ -102,6 +102,7 @@ import { PlanFactsStore, type PlanFactsReportOutcome } from "./plan-facts.ts";
 import type { PlanKeeper } from "./plan-store.ts";
 import type { GitObjectReader } from "./repo-diff.ts";
 import { parseBreakLimit, proposePlan, type ProposePlanInput, type ProposePlanOutcome } from "./propose-plan.ts";
+import { claimToolRuns, recordToolResult, type ToolReportOutcome, type ToolRunClaim } from "./agent-tool-runner.ts";
 import { CloseOutStore, FixApprovalStore } from "./approval-store.ts";
 import type { HuddleReviewer, ReviewCollection } from "./huddle-reviews.ts";
 import type { HuddleThread, HuddleThreadKeeper } from "./huddle-threads.ts";
@@ -314,13 +315,28 @@ export {
   AGENT_TOOL_LIMITS,
   AgentToolStore,
   requestTool,
+  TOOL_RESULTS_LISTED,
+  TOOL_RUN_CLAIM_LIMIT,
+  TOOL_RUN_LEASE_MS,
   whatsNear,
   type AgentToolDeps,
   type AgentToolRun,
   type NearFeature,
   type ToolRequestOutcome,
+  type ToolResultRef,
+  type ToolRunClaimListing,
   type WhatsNearOutcome,
 } from "./agent-tools.ts";
+export {
+  claimToolRuns,
+  otherForks,
+  recordToolResult,
+  type ClaimedFork,
+  type ClaimedToolRun,
+  type ToolReportOutcome,
+  type ToolRunClaim,
+  type ToolRunnerDeps,
+} from "./agent-tool-runner.ts";
 export {
   REVIEW_CLAIM_LIMIT,
   REVIEW_LEASE_MS,
@@ -1575,6 +1591,32 @@ export class ProjectAgent extends Agent {
     return this.#toolStore().list(featureId);
   }
 
+  /**
+   * For `get_work`: the tool results delivered to `caller`'s session `sessionId` at its safe
+   * checkpoints, newest first. Empty for a session that is not the caller's.
+   */
+  agentToolResults(caller: string, sessionId: string): AgentToolRun[] {
+    if (this.sessionHeartbeat(caller, sessionId).status !== "ok") return [];
+    return this.#toolStore().delivered(sessionId);
+  }
+
+  /**
+   * For the integration runner only: claims the waiting `impact`, `check` and `apply_fix` requests,
+   * each with its fork, checkpoint, baseline, charter and the other running features' forks
+   * (agent-tool-runner.ts). Any other role is refused.
+   */
+  claimToolRuns(caller: BridgeCaller): ToolRunClaim {
+    return claimToolRuns(
+      { runs: this.#toolStore(), features: this.#featureStore(), identity: (identityId) => this.readIdentity(identityId) },
+      caller,
+    );
+  }
+
+  /** Attaches the runner's result to waiting tool request `runId`; the session hears of it at its next safe checkpoint. */
+  reportToolRun(caller: BridgeCaller, runId: number, result: unknown): ToolReportOutcome {
+    return recordToolResult(this.#toolStore(), caller, runId, result);
+  }
+
   #toolStore(): AgentToolStore {
     this.#toolRows ??= new AgentToolStore(this.#database());
     return this.#toolRows;
@@ -1588,6 +1630,8 @@ export class ProjectAgent extends Agent {
       heartbeat: (caller, session) => this.sessionHeartbeat(caller, session),
       session: (session) => this.readSession(session),
       identity: (identityId) => this.readIdentity(identityId),
+      baseline: (repo, sha) =>
+        withRepo(this.env.ARTIFACTS, repo, (fork) => withRepo(this.env.ARTIFACTS, repos.base, (base) => checkpointBaseline(fork, base, sha))),
     };
   }
 
@@ -1901,6 +1945,8 @@ export class ProjectAgent extends Agent {
         overlapsNeeding: (person) => this.#overlapStore().openFor(person),
         // A lock approved or withdrawn reaches the waiting feature's sessions the same way.
         settledFor: settledForSession(this.#featureStore(), this.#overlapStore()),
+        // The check runner's result of a session's tool request reaches that session the same way.
+        toolResultsFor: (sessionId) => this.#toolStore().deliver(sessionId),
         listener: {
           sessionChanged: (handle) => this.#liveFeed().sessionChanged(handle),
           routeChanged: (issueId) => this.#liveFeed().issueChanged(issueId),

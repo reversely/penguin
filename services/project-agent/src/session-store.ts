@@ -31,10 +31,14 @@
 // person's running sessions the same way, and OverlapNotice records that each session was told. When
 // such a lock is approved or withdrawn, the waiting feature's sessions hear of it once at their next
 // safe checkpoint, and SettledNotice records that each was told.
+//
+// The results the check runner reports for a session's `impact`, `check` and `apply_fix` requests
+// reach that session the same way, once each (AgentToolStore.deliver records the delivery).
 
 import type { Assignment } from "@penguin/issues";
 import { IDENTITY_HANDLE_MAX_LENGTH, SEGMENT_PATTERN } from "@penguin/protocol";
 
+import type { ToolResultRef } from "./agent-tools.ts";
 import type { Identity, IdentityStore } from "./identity-store.ts";
 import type { AssignmentListener, SqlDatabase, SqlValue } from "./issue-index.ts";
 
@@ -123,6 +127,8 @@ export interface Delivery {
   readonly overlaps: OverlapRef[];
   /** Locks on the session's feature that stopped holding its start since the session last heard. */
   readonly settled: Omit<SettledRef, "id">[];
+  /** The check runner's results of the session's tool requests, reported since it last heard. */
+  readonly toolResults: ToolResultRef[];
 }
 
 export type CheckpointDelivery = ({ readonly status: "ok" } & Delivery) | SessionRejection;
@@ -199,6 +205,11 @@ export interface SessionStoreOptions {
   readonly overlapsNeeding?: (person: string) => readonly OverlapRef[];
   /** The locks on the session's feature settled since it joined (OverlapStore.settledSince). None when absent. */
   readonly settledFor?: (sessionId: string) => readonly SettledRef[];
+  /**
+   * The tool results reported for the session and not yet delivered, each marked delivered by the
+   * call (AgentToolStore.deliver). None when absent.
+   */
+  readonly toolResultsFor?: (sessionId: string) => readonly ToolResultRef[];
 }
 
 /** The routing tables. They hold live state only: a rebuild from the issues repo never routes. */
@@ -256,6 +267,7 @@ export class SessionStore implements AssignmentListener {
   readonly #threadsNeeding: (person: string) => readonly ThreadRef[];
   readonly #overlapsNeeding: (person: string) => readonly OverlapRef[];
   readonly #settledFor: (sessionId: string) => readonly SettledRef[];
+  readonly #toolResultsFor: (sessionId: string) => readonly ToolResultRef[];
 
   /** Create after the IssueIndex on the same handle: routing reads and writes its Assignment table. */
   constructor(db: SqlDatabase, identities: IdentityStore, options: SessionStoreOptions = {}) {
@@ -271,6 +283,7 @@ export class SessionStore implements AssignmentListener {
     this.#threadsNeeding = options.threadsNeeding ?? (() => []);
     this.#overlapsNeeding = options.overlapsNeeding ?? (() => []);
     this.#settledFor = options.settledFor ?? (() => []);
+    this.#toolResultsFor = options.toolResultsFor ?? (() => []);
     for (const statement of SESSION_SCHEMA) db.exec(statement);
   }
 
@@ -593,6 +606,7 @@ export class SessionStore implements AssignmentListener {
       threads: threads.map((ref) => ({ ...ref })),
       overlaps: overlaps.map(({ featureId, blockedFeatureId }) => ({ featureId, blockedFeatureId })),
       settled: settled.map(({ featureId, blockedFeatureId, outcome }) => ({ featureId, blockedFeatureId, outcome })),
+      toolResults: this.#toolResultsFor(session.id).map((ref) => ({ ...ref })),
     };
   }
 
