@@ -61,3 +61,11 @@ The team, from `examples/identity-unification/base/penguin/`:
 - Plain words on screen: no hashes, fingerprints or test ids as the main text. They stay available
   one click away for anyone checking.
 - One frame, one point. A frame that needs the caption to make sense fails.
+
+## Tools on screen
+
+Whenever a deterministic tool acts in a frame, the frame names the tool and shows what it reported or
+changed: the `ast` impact graph listing the callers of a changed function, the contract diff naming
+the changed signature, pyright's error on the merged tree, ruff's fixes, a LibCST codemod's rewritten
+call sites, the side-by-side run's differing cases. A viewer sees which step a tool settled and which
+step needed an agent or a person.
