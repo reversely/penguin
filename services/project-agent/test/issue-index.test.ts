@@ -47,6 +47,7 @@ before(async () => {
     ],
     serviceKey: service.publicKey,
     scopeMap,
+    identities: { byHandle: () => undefined },
   };
 });
 

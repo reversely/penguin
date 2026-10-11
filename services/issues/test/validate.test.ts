@@ -16,6 +16,8 @@ import {
   generateSigningKeyPair,
   signOperation,
   validate,
+  type CharterIdentity,
+  type IdentityLookup,
   type IssueState,
   type ValidationContext,
   type Verdict,
@@ -41,8 +43,15 @@ before(async () => {
   ]);
 });
 
-function context(issue: IssueState | undefined, applied: Iterable<string> = []): ValidationContext {
+const noIdentities: IdentityLookup = { identity: () => undefined, assigningOwner: () => undefined };
+
+function context(
+  issue: IssueState | undefined,
+  applied: Iterable<string> = [],
+  identities: IdentityLookup = noIdentities,
+): ValidationContext {
   return {
+    identities,
     bridges: [
       { bridgeId: "bridge-priya-laptop", ownerId: "priya", publicKey: priyaBridge.publicKey },
       { bridgeId: "bridge-jun-laptop", ownerId: "jun", publicKey: junBridge.publicKey },
@@ -227,6 +236,98 @@ describe("validate: review rights", () => {
   test("a review from an identity is rejected with the rights reason", async () => {
     const operation = await signOperation(review({ identity: "@priya/merge-rules" }), priyaBridge.privateKey);
     expectRejected(await validate(operation, context(issue33)), "no_right");
+  });
+});
+
+describe("validate: charter", () => {
+  const reports: CharterIdentity = {
+    handle: "@jun/reports",
+    ownerId: "jun",
+    teamOwners: [],
+    charterScopes: ["analytics"],
+    charterPaths: [],
+  };
+  const pair: CharterIdentity = {
+    handle: "@jun/data-pair",
+    ownerId: null,
+    teamOwners: ["jun", "priya"],
+    charterScopes: ["analytics", "identity-map"],
+    charterPaths: [],
+  };
+
+  /** A lookup that holds `identities`, each assigned to issue 33 by the owner in `assigners`. */
+  function lookup(identities: CharterIdentity[], assigners: Record<string, string> = {}): IdentityLookup {
+    return {
+      identity: (handle) => identities.find((identity) => identity.handle === handle),
+      assigningOwner: (issue, handle) => (issue === "33" ? assigners[handle] : undefined),
+    };
+  }
+
+  const label = (author: Author, name: string): UnsignedOperation => draft(author, "add_label", { label: name });
+
+  test("an identity naming a scope outside its charter is rejected with a reason naming the charter", async () => {
+    const operation = await signOperation(label({ identity: "@jun/reports" }, "scope:identity-map"), junBridge.privateKey);
+    const verdict = await validate(operation, context(issue33, [], lookup([reports])));
+    expectRejected(verdict, "outside_charter");
+    assert.equal(
+      verdict.status === "rejected" && verdict.message,
+      "@jun/reports acts outside its charter (scopes: analytics; paths: none): the operation names scope identity-map",
+    );
+  });
+
+  test("an identity naming a scope inside its charter is accepted", async () => {
+    const operation = await signOperation(label({ identity: "@jun/reports" }, "scope:analytics"), junBridge.privateKey);
+    assert.equal((await validate(operation, context(issue33, [], lookup([reports])))).status, "accepted");
+  });
+
+  test("an identity's operation that names no scope reads no identity", async () => {
+    const throwing: IdentityLookup = {
+      identity: () => assert.fail("read an identity"),
+      assigningOwner: () => assert.fail("read an assigner"),
+    };
+    for (const unsigned of [label({ identity: "@jun/reports" }, "huddle"), comment({ identity: "@jun/reports" })]) {
+      const operation = await signOperation(unsigned, junBridge.privateKey);
+      assert.equal((await validate(operation, context(issue33, [], throwing))).status, "accepted");
+    }
+  });
+
+  test("an identity with no stored record cannot name a scope", async () => {
+    const operation = await signOperation(label({ identity: "@jun/ghost" }, "scope:analytics"), junBridge.privateKey);
+    const verdict = await validate(operation, context(issue33, [], lookup([reports])));
+    expectRejected(verdict, "outside_charter");
+    assert.match(verdict.status === "rejected" ? verdict.message : "", /@jun\/ghost has no charter/u);
+  });
+
+  test("a person naming any scope is not charter-checked", async () => {
+    const operation = await signOperation(label({ person: "jun" }, "scope:messaging"), junBridge.privateKey);
+    assert.equal((await validate(operation, context(issue33))).status, "accepted");
+  });
+
+  test("a team identity assigned by Jun is refused an operation in Priya's scope", async () => {
+    const operation = await signOperation(label({ identity: "@jun/data-pair" }, "scope:identity-map"), service.privateKey);
+    const verdict = await validate(operation, context(issue33, [], lookup([pair], { "@jun/data-pair": "jun" })));
+    expectRejected(verdict, "outside_charter");
+    assert.match(
+      verdict.status === "rejected" ? verdict.message : "",
+      /^@jun\/data-pair acts outside its charter \(scopes: analytics, identity-map; paths: none\).*assigned by jun, it works only within jun's scopes$/u,
+    );
+    const own = await signOperation(label({ identity: "@jun/data-pair" }, "scope:analytics"), service.privateKey);
+    assert.equal((await validate(own, context(issue33, [], lookup([pair], { "@jun/data-pair": "jun" })))).status, "accepted");
+  });
+
+  test("a team identity assigned by Priya works in Priya's scope only", async () => {
+    const byPriya = lookup([pair], { "@jun/data-pair": "priya" });
+    const priyaScope = await signOperation(label({ identity: "@jun/data-pair" }, "scope:identity-map"), service.privateKey);
+    assert.equal((await validate(priyaScope, context(issue33, [], byPriya))).status, "accepted");
+    const junScope = await signOperation(label({ identity: "@jun/data-pair" }, "scope:analytics"), service.privateKey);
+    expectRejected(await validate(junScope, context(issue33, [], byPriya)), "outside_charter");
+  });
+
+  test("a team identity unassigned, or assigned by an owner it does not serve, changes no scope", async () => {
+    for (const assigners of [{}, { "@jun/data-pair": "sam" }] as Record<string, string>[]) {
+      const operation = await signOperation(label({ identity: "@jun/data-pair" }, "scope:analytics"), service.privateKey);
+      expectRejected(await validate(operation, context(issue33, [], lookup([pair], assigners))), "outside_charter");
+    }
   });
 });
 

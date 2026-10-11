@@ -15,6 +15,14 @@ import {
 } from "./issue-index.ts";
 import { IngestLedger, ingestPush, type IngestReport } from "./push-ingest.ts";
 import { parseScopeFile, SCOPE_MAP_PATH } from "./scope-file.ts";
+import {
+  IdentityStore,
+  type Identity,
+  type IdentityChanges,
+  type IdentityInput,
+  type IdentityOutcome,
+  type TeamIdentityInput,
+} from "./identity-store.ts";
 import { importServiceKey, type ServiceKey } from "./service-key.ts";
 import type { IssueRecord } from "@penguin/issues";
 import type { Author } from "@penguin/protocol";
@@ -33,6 +41,7 @@ export {
   type ApplyInput,
   type ApplyOutcome,
   type BridgeCaller,
+  type IdentitySource,
   type OperationKeys,
   type PendingFile,
   type PendingListing,
@@ -42,6 +51,18 @@ export {
   type SubmitOutcome,
   type TimelineEntry,
 } from "./issue-index.ts";
+export {
+  IDENTITY_LIMITS,
+  IdentityStore,
+  type Avatar,
+  type AvatarMediaType,
+  type Identity,
+  type IdentityChanges,
+  type IdentityInput,
+  type IdentityOutcome,
+  type IdentityRejectReason,
+  type TeamIdentityInput,
+} from "./identity-store.ts";
 export { importServiceKey, type ServiceKey } from "./service-key.ts";
 export type { IngestReport } from "./push-ingest.ts";
 
@@ -89,6 +110,7 @@ export type IngestResult = IngestReport & { readonly durationMs: number };
 export class ProjectAgent extends Agent {
   #sql: SqlDatabase | undefined;
   #issues: IssueIndex | undefined;
+  #identities: IdentityStore | undefined;
   #serviceKey: Promise<ServiceKey> | undefined;
   #bridges: BridgeRegistry | undefined;
   #ledger: IngestLedger | undefined;
@@ -150,7 +172,7 @@ export class ProjectAgent extends Agent {
       source,
       signingKey: serviceKey.privateKey,
       // Service-signed operations verify under the service key alone, so no bridge key is needed.
-      keys: { bridges: [], serviceKey: serviceKey.publicKey, scopeMap },
+      keys: { bridges: [], serviceKey: serviceKey.publicKey, scopeMap, identities: this.#identityStore() },
     });
   }
 
@@ -160,6 +182,40 @@ export class ProjectAgent extends Agent {
    */
   pendingOperations(caller: BridgeCaller): PendingListing {
     return this.#index().pendingFiles(caller);
+  }
+
+  /**
+   * Creates an identity owned by `caller`, the person the gateway authenticated. The handle must be
+   * "@<caller>/<name>", and each charter scope must be one of the caller's scopes in `scopeMap`.
+   */
+  createIdentity(caller: string, input: IdentityInput, scopeMap: ScopeMap): IdentityOutcome {
+    return this.#identityStore().create(caller, input, scopeMap);
+  }
+
+  /**
+   * Creates a team identity that serves `input.owners`, the caller among them. It works only within
+   * the scopes of the owner who assigns it to an issue.
+   */
+  createTeamIdentity(caller: string, input: TeamIdentityInput, scopeMap: ScopeMap): IdentityOutcome {
+    return this.#identityStore().createTeam(caller, input, scopeMap);
+  }
+
+  /** Changes an identity's fields. Only its owner, or one of a team identity's owners, may. */
+  editIdentity(caller: string, id: string, changes: IdentityChanges, scopeMap: ScopeMap): IdentityOutcome {
+    return this.#identityStore().edit(caller, id, changes, scopeMap);
+  }
+
+  /** Copies an identity under a new handle; the charter carries over and the history stays with the original. */
+  duplicateIdentity(
+    caller: string,
+    id: string,
+    copy: { readonly handle: string; readonly name?: string },
+  ): IdentityOutcome {
+    return this.#identityStore().duplicate(caller, id, copy);
+  }
+
+  readIdentity(id: string): Identity | undefined {
+    return this.#identityStore().get(id);
   }
 
   #loadServiceKey(): Promise<ServiceKey> {
@@ -209,6 +265,7 @@ export class ProjectAgent extends Agent {
   /**
    * The keys operations are judged by, read fresh for each call: the service key (K5), the signing
    * keys of unrevoked bridges only, so a revoked bridge's key no longer verifies, and the scope map.
+   * The identity store supplies the charters of identity-authored operations.
    */
   async #operationKeys(repos: ProjectRepos): Promise<OperationKeys> {
     const [serviceKey, bridges, scopeFile] = await Promise.all([
@@ -219,7 +276,12 @@ export class ProjectAgent extends Agent {
         return blob === null ? null : new Uint8Array(await blob.arrayBuffer());
       }),
     ]);
-    return { serviceKey: serviceKey.publicKey, bridges, scopeMap: parseScopeFile(scopeFile) };
+    return {
+      serviceKey: serviceKey.publicKey,
+      bridges,
+      scopeMap: parseScopeFile(scopeFile),
+      identities: this.#identityStore(),
+    };
   }
 
   #database(): SqlDatabase {
@@ -235,6 +297,11 @@ export class ProjectAgent extends Agent {
   #index(): IssueIndex {
     this.#issues ??= new IssueIndex(this.#database());
     return this.#issues;
+  }
+
+  #identityStore(): IdentityStore {
+    this.#identities ??= new IdentityStore(this.#database());
+    return this.#identities;
   }
 }
 

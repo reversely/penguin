@@ -1,9 +1,10 @@
 // Decides whether one issue operation counts: its form, its signature, the binding between the
-// signing key and the author, its base version and the author's rights (PRD sections 4, 5 and 12).
+// signing key and the author, its base version, the author's rights and, for an identity, its
+// charter (PRD sections 4, 5 and 12).
 // The function reads no file and no network, so the Node bridge and the Workers runtime both run it.
 // It never throws on any input: every problem with an operation becomes a rejection with a reason.
 
-import { reviewRight } from "@penguin/policies";
+import { operationTargets, reviewRight, withinCharter, type CharterIdentity } from "@penguin/policies";
 import {
   operationPath,
   parseOperationFile,
@@ -15,6 +16,7 @@ import {
 } from "@penguin/protocol";
 import type { ScopeMap } from "@penguin/scope-map";
 
+import { issueKey } from "./reduce.ts";
 import { verifyOperation } from "./signature.ts";
 
 export const REJECT_REASONS = [
@@ -32,6 +34,8 @@ export const REJECT_REASONS = [
   "unknown_version",
   /** The author has no right to perform this operation. */
   "no_right",
+  /** An identity's operation names a scope or path outside the identity's charter. */
+  "outside_charter",
 ] as const;
 
 export type RejectReason = (typeof REJECT_REASONS)[number];
@@ -50,6 +54,14 @@ export interface IssueState {
   readonly labels: readonly string[];
 }
 
+/** The identity records the charter check reads. */
+export interface IdentityLookup {
+  /** The identity with this handle, or undefined when none is stored. */
+  identity(handle: string): CharterIdentity | undefined;
+  /** The owner who assigned the identity to the issue, or undefined when it is not assigned there now. */
+  assigningOwner(issueId: string, handle: string): string | undefined;
+}
+
 export interface ValidationContext {
   readonly bridges: readonly BridgeKey[];
   /** Penguin's service key, which signs operations from MCP, the dashboard and Penguin itself. */
@@ -58,6 +70,8 @@ export interface ValidationContext {
   readonly issue: IssueState | undefined;
   readonly appliedOpIds: ReadonlySet<string>;
   readonly scopeMap: ScopeMap;
+  /** Read only for an operation an identity authors that names a scope or path. */
+  readonly identities: IdentityLookup;
   /** The repo path the operation was read from. When given, it must match the operation. */
   readonly path?: string;
 }
@@ -81,7 +95,7 @@ export type Verdict =
 /**
  * Validate one operation. `input` is the operation file's bytes (or text), or an already parsed
  * JSON value. Checks run in this order: form, path, duplicate, signature, author binding, base
- * version, rights. The first failing check gives the reason.
+ * version, rights, charter. The first failing check gives the reason.
  */
 export async function validate(input: unknown, context: ValidationContext): Promise<Verdict> {
   try {
@@ -130,7 +144,26 @@ async function validateUnsafe(input: unknown, context: ValidationContext): Promi
     if (!right.allowed) return reject("no_right", right.message);
   }
 
+  if ("identity" in operation.author) {
+    const charterError = charterCheck(operation, operation.author.identity, context);
+    if (charterError !== undefined) return reject("outside_charter", charterError);
+  }
+
   return { status: "accepted", operation, signer };
+}
+
+/**
+ * The charter error for an identity's operation, or undefined when it names nothing outside the
+ * charter. An operation that names no scope or path needs no charter, so it reads no identity.
+ */
+function charterCheck(operation: Operation, handle: string, context: ValidationContext): string | undefined {
+  const targets = operationTargets(operation);
+  if (targets.scopes.length === 0 && targets.paths.length === 0) return undefined;
+  const identity = context.identities.identity(handle);
+  if (identity === undefined) return `${handle} has no charter: no identity with this handle is stored`;
+  const assigner = context.identities.assigningOwner(issueKey(operation.issue), handle);
+  const verdict = withinCharter(identity, assigner, targets.scopes, targets.paths, context.scopeMap);
+  return verdict.allowed ? undefined : verdict.message;
 }
 
 function parse(input: unknown): ValidationResult {

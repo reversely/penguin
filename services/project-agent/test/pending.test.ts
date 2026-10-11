@@ -44,6 +44,7 @@ before(async () => {
     bridges: [{ bridgeId: "bridge-jun", ownerId: "jun", publicKey: junBridge.publicKey }],
     serviceKey: service.publicKey,
     scopeMap,
+    identities: { byHandle: () => undefined },
   };
 });
 
@@ -145,6 +146,7 @@ describe("submitted operations", () => {
       ...keys,
       issue: undefined,
       appliedOpIds: new Set(),
+      identities: { identity: () => undefined, assigningOwner: () => undefined },
       path: first?.path ?? "",
     });
     assert.equal(verdict.status, "accepted");

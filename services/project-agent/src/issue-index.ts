@@ -6,6 +6,10 @@
 // the service key, applies them at once and holds them in PendingOp until the runner pushes them to
 // the issues repo. The push event then reaches `apply`, which drops the PendingOp row and records
 // the commit on the existing AppliedOp row (PRD sections 5, 7 and 12).
+//
+// An operation an identity authors is checked against the identity's charter, which `keys.identities`
+// supplies. A team identity's rights depend on the owner who assigned it to the issue, which the index
+// reads from its AppliedOp log: the first applied assign of the identity since its last applied unassign.
 
 import {
   canonicalBytes,
@@ -15,6 +19,7 @@ import {
   signOperation,
   validate,
   type BridgeKey,
+  type CharterIdentity,
   type Comment,
   type IssueRecord,
   type IssueStateName,
@@ -44,11 +49,13 @@ export interface SqlDatabase {
   transaction<T>(body: () => T): T;
 }
 
-/** The keys and scope map the validator checks an operation against. */
+/** The keys, scope map and identities the validator checks an operation against. */
 export interface OperationKeys {
   readonly bridges: readonly BridgeKey[];
   readonly serviceKey: CryptoKey;
   readonly scopeMap: ScopeMap;
+  /** Finds an identity by handle for the charter check: the ProjectAgent's identity store. */
+  readonly identities: IdentitySource;
 }
 
 export interface ApplyInput {
@@ -72,6 +79,11 @@ export type ApplyOutcome =
       readonly message: string;
     }
   | { readonly status: "duplicate"; readonly opId: string };
+
+/** Finds an identity by handle for the charter check. The identity store is one. */
+export interface IdentitySource {
+  byHandle(handle: string): CharterIdentity | undefined;
+}
 
 /** Where a submitted operation came from. Penguin's own operations wait for the runner as well. */
 export type PendingSource = "mcp" | "dashboard" | "penguin";
@@ -152,6 +164,7 @@ const AUTHENTICATED_REJECTIONS: ReadonlySet<RejectReason> = new Set([
   "superseded_version",
   "unknown_version",
   "no_right",
+  "outside_charter",
 ]);
 
 const ISSUE_IN_PATH = /^issues\/([a-z0-9.-]{1,128})\/ops\//u;
@@ -293,6 +306,32 @@ export class IssueIndex {
     return { ...outcome, path: operationPath(signed) };
   }
 
+  /**
+   * The owner who assigned `handle` to the issue, when the identity is assigned there now: the author
+   * of the first applied assign since the last applied unassign. A person's assign names that person;
+   * an identity's names the identity's owner half; Penguin's names no owner.
+   */
+  #assigningOwner(issueId: string, handle: string): string | undefined {
+    if (!this.issue(issueId)?.assignments.has(`identity:${handle}`)) return undefined;
+    const [row] = this.#db.exec(
+      `SELECT author FROM AppliedOp
+       WHERE issue_id = ? AND status = 'applied' AND type = 'assign'
+         AND json_extract(payload, '$.assignee.identity') = ?
+         AND seq > COALESCE((SELECT MAX(seq) FROM AppliedOp
+           WHERE issue_id = ? AND status = 'applied' AND type = 'unassign'
+             AND json_extract(payload, '$.assignee.identity') = ?), 0)
+       ORDER BY seq LIMIT 1`,
+      issueId,
+      handle,
+      issueId,
+      handle,
+    );
+    const segment = row?.["author"];
+    if (typeof segment !== "string" || segment === authorSegment({ penguin: true })) return undefined;
+    // An author segment is a person id or "<owner>.<name>"; person ids contain no dots.
+    return segment.split(".")[0];
+  }
+
   /** The highest sequence number among the author's op_ids that the index holds as claimed. */
   #lastSeq(author: Author): number {
     const segment = authorSegment(author);
@@ -326,6 +365,10 @@ export class IssueIndex {
       ...keys,
       issue: current && { version: current.version, labels: current.labels },
       appliedOpIds: new Set(claimed),
+      identities: {
+        identity: (handle) => keys.identities.byHandle(handle),
+        assigningOwner: (issue, handle) => this.#assigningOwner(issue, handle),
+      },
       ...(path === undefined ? {} : { path }),
     });
     if (verdict.status === "duplicate") return verdict;

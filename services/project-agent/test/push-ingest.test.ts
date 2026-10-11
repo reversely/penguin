@@ -39,6 +39,7 @@ before(async () => {
     bridges: [{ bridgeId: "bridge-jun", ownerId: "jun", publicKey: junBridge.publicKey }],
     serviceKey: service.publicKey,
     scopeMap: parseScopeMap({ scopes: [] }),
+    identities: { byHandle: () => undefined },
   };
 });
 

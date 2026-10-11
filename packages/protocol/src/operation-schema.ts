@@ -17,6 +17,14 @@ export const SEGMENT_PATTERN = "[a-z0-9]+(?:[.-][a-z0-9]+)*";
 /** A person ID or one half of an identity handle: lowercase letters and digits, joined by single hyphens. */
 const NAME_PATTERN = "[a-z0-9]+(?:-[a-z0-9]+)*";
 
+/** A whole person ID. "penguin" also matches; it is reserved (see PENGUIN_AUTHOR_SEGMENT). */
+export const PERSON_ID_PATTERN = `^${NAME_PATTERN}$`;
+export const PERSON_ID_MAX_LENGTH = 39;
+
+/** A whole identity handle, "@<owner>/<name>". */
+export const IDENTITY_HANDLE_PATTERN = `^@${NAME_PATTERN}/${NAME_PATTERN}$`;
+export const IDENTITY_HANDLE_MAX_LENGTH = 80;
+
 /**
  * An author's sequence number: decimal, at least four digits, zero-padded to exactly four when it
  * is below 1000, and at least 1. One number has exactly one spelling, so "jun-7" and "jun-00007"
@@ -190,14 +198,14 @@ export const OPERATION_SCHEMA: JsonSchema = {
     },
     person: {
       type: "string",
-      maxLength: 39,
-      pattern: `^${NAME_PATTERN}$`,
+      maxLength: PERSON_ID_MAX_LENGTH,
+      pattern: PERSON_ID_PATTERN,
       not: { const: PENGUIN_AUTHOR_SEGMENT },
     },
     identity: {
       type: "string",
-      maxLength: 80,
-      pattern: `^@${NAME_PATTERN}/${NAME_PATTERN}$`,
+      maxLength: IDENTITY_HANDLE_MAX_LENGTH,
+      pattern: IDENTITY_HANDLE_PATTERN,
       description: "@<owner>/<name>. Its author segment is <owner>.<name>.",
     },
     party: {
