@@ -31,6 +31,8 @@ let root: string;
 /** The runner's combined-run event for Priya's checkpoint, as it crosses the network. */
 let event: unknown;
 let priyaCheckpoint: string;
+let junCheckpoint: string;
+let mainSha: string;
 
 before(async () => {
   root = await realpath(await mkdtemp(join(tmpdir(), "penguin-send-upstream-")));
@@ -42,6 +44,8 @@ before(async () => {
     tags: Record<string, string>;
   };
   priyaCheckpoint = pins.tags["owner-priya-checkpoint"] as string;
+  junCheckpoint = pins.tags["owner-jun-checkpoint"] as string;
+  mainSha = pins.branches.main as string;
   const report = await new CombinedRunner({
     repoPath: repo,
     runner: new TestRunner({ repoPath: repo, env: TEST_ENV, scratchDir: join(root, "bridge"), consent: () => true }),
@@ -65,7 +69,7 @@ function mcpProject(project: HuddleProject): McpProject {
     sessionHeartbeat: (caller, id) => project.sessions.heartbeat(caller, id),
     sessionWork: (caller, id) => project.sessions.work(caller, id),
     readIdentity: (id) => project.identities.get(id),
-    readFixTask: (id) => fixTask(project.huddles, project.index.resolve(id)),
+    readFixTask: (id) => fixTask(project.huddles, project.index.resolve(id), project.index.issue(id)),
     issueRoutes: (id) => project.sessions.routes(project.index.resolve(id)),
     readIssue: (id) => project.index.read(id),
     sessionUpdate: (caller, id, update) => project.sessionUpdate(caller, id, update),
@@ -127,6 +131,15 @@ function timeline(project: HuddleProject, issueId: string, fromSeq: number): str
     });
 }
 
+/** The shared-device sub-issue, #2, as get_work reports it to `owner`'s session. */
+async function sharedDeviceTask(project: HuddleProject, owner: string, sessionId: string): Promise<any> {
+  const { value, isError } = await call(project, owner, "get_work", { sessionId });
+  assert.equal(isError, false, JSON.stringify(value));
+  const task = value.issues.find((issue: { id: string }) => issue.id === "2");
+  assert.ok(task !== undefined, `#2 is not in ${owner}'s work`);
+  return task;
+}
+
 const lastSeq = (project: HuddleProject, issueId: string): number =>
   project.index.read(issueId).timeline.at(-1)?.seq ?? 0;
 
@@ -137,6 +150,8 @@ test("@jun/reports sends the shared-device sub-issue upstream and it is reassign
   await opened(project);
   project.sessions.checkpointWorktree("jun", "wt-retention");
   const from = lastSeq(project, "2") + 1;
+  const junTask = await sharedDeviceTask(project, "jun", jun);
+  const history = project.index.read("2").timeline.filter((entry) => entry.seq < from);
 
   const { value, isError } = await call(project, "jun", "post_update", {
     sessionId: jun,
@@ -161,6 +176,26 @@ test("@jun/reports sends the shared-device sub-issue upstream and it is reassign
   assert.deepEqual(project.sessions.work("priya", priya), { status: "ok", issueIds: ["2"] });
   assert.deepEqual(project.sessions.work("jun", jun), { status: "ok", issueIds: ["3"] });
   assert.ok(project.inbox.items("priya").some((item) => item.reason === "assigned" && item.issueId === "2"));
+
+  // Priya's task pins her checkpoint and states acceptance in her scope, against Jun's checkpoint.
+  const trigger = `owner-priya@${priyaCheckpoint}`;
+  const priyaTask = await sharedDeviceTask(project, "priya", priya);
+  assert.deepEqual(priyaTask.pinnedBase, { trigger, baseline: mainSha, checkpoint: trigger });
+  assert.deepEqual(priyaTask.failingTests, junTask.failingTests);
+  assert.deepEqual(priyaTask.acceptanceCriteria, [
+    `analytics test test_identity::shared_device_split passes when your fixed checkpoint of owner-priya is merged ` +
+      `with owner-jun@${junCheckpoint}.`,
+    "`test:analytics` passes in full on that merge.",
+  ]);
+
+  // Jun's task was in Jun's terms, and the issue's history before the reassignment is untouched.
+  assert.equal(junTask.pinnedBase.checkpoint, `owner-jun@${junCheckpoint}`);
+  assert.equal(
+    junTask.acceptanceCriteria[0],
+    `test_identity::shared_device_split passes when ${trigger} is merged with your fixed checkpoint of owner-jun.`,
+  );
+  assert.deepEqual(project.index.read("2").timeline.filter((entry) => entry.seq < from), history);
+  assert.ok(project.index.issue("2")?.body.includes(`fails when ${trigger} is merged with owner-jun@${junCheckpoint}.`));
 });
 
 test("with no running Priya session, the sub-issue stays assigned to Priya's identity and Priya is asked to start one", async () => {

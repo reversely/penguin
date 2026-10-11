@@ -690,7 +690,8 @@ export class ProjectAgent extends Agent {
 
   /** The task view of a fix sub-issue for `get_work`: pinned base, failing test, acceptance criteria. */
   readFixTask(issueId: string): FixTask | undefined {
-    return fixTask(this.#huddleStore(), this.#index().resolve(issueId));
+    const id = this.#index().resolve(issueId);
+    return fixTask(this.#huddleStore(), id, this.#index().issue(id));
   }
 
   /**

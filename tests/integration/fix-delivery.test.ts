@@ -64,7 +64,7 @@ function mcpProject(project: HuddleProject): McpProject {
     sessionHeartbeat: (caller, id) => project.sessions.heartbeat(caller, id),
     sessionWork: (caller, id) => project.sessions.work(caller, id),
     readIdentity: (id) => project.identities.get(id),
-    readFixTask: (id) => fixTask(project.huddles, project.index.resolve(id)),
+    readFixTask: (id) => fixTask(project.huddles, project.index.resolve(id), project.index.issue(id)),
     issueRoutes: (id) => project.sessions.routes(project.index.resolve(id)),
     readIssue: (id) => project.index.read(id),
     sessionUpdate: () => {
