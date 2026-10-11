@@ -4,8 +4,8 @@ import {
   IssueIndex,
   type ApplyInput,
   type ApplyOutcome,
-  type AssignmentListener,
   type BridgeCaller,
+  type IndexListener,
   type OperationKeys,
   type PendingListing,
   type PendingSource,
@@ -14,6 +14,7 @@ import {
   type SubmitOutcome,
   type TimelineEntry,
 } from "./issue-index.ts";
+import { InboxStore, type InboxItem, type InboxOutcome, type InboxReason } from "./inbox-store.ts";
 import { IngestLedger, ingestPush, type IngestReport } from "./push-ingest.ts";
 import { rebuildIndex, type RebuildReport } from "./rebuild.ts";
 import { parseScopeFile, SCOPE_MAP_PATH } from "./scope-file.ts";
@@ -56,6 +57,8 @@ export {
   type AssignmentListener,
   type BridgeCaller,
   type IdentitySource,
+  type IndexListener,
+  type IssueChange,
   type OperationKeys,
   type PendingFile,
   type PendingListing,
@@ -78,6 +81,14 @@ export {
   type TeamIdentityInput,
 } from "./identity-store.ts";
 export { importServiceKey, type ServiceKey } from "./service-key.ts";
+export {
+  INBOX_REASONS,
+  InboxStore,
+  type InboxItem,
+  type InboxOutcome,
+  type InboxReason,
+  type InboxStoreOptions,
+} from "./inbox-store.ts";
 export type { IngestReport } from "./push-ingest.ts";
 export type { IndexComparison, RebuildReport, RowDifference, TableComparison } from "./rebuild.ts";
 export {
@@ -95,6 +106,7 @@ export {
   type SessionStatus,
   type SessionStoreOptions,
   type SessionWork,
+  type StartRequestListener,
 } from "./session-store.ts";
 
 /**
@@ -140,7 +152,7 @@ export interface IssuesPush {
 export type IngestResult = IngestReport & { readonly durationMs: number };
 
 /**
- * Holds the project-wide state: issue index, scope map, owners, identities and sessions.
+ * Holds the project-wide state: issue index, scope map, owners, identities, sessions and inboxes.
  * It keeps a counter in its SQL storage beside the issue index.
  */
 export class ProjectAgent extends Agent {
@@ -148,6 +160,7 @@ export class ProjectAgent extends Agent {
   #issues: IssueIndex | undefined;
   #identities: IdentityStore | undefined;
   #sessions: SessionStore | undefined;
+  #inbox: InboxStore | undefined;
   #serviceKey: Promise<ServiceKey> | undefined;
   #bridges: BridgeRegistry | undefined;
   #ledger: IngestLedger | undefined;
@@ -299,6 +312,16 @@ export class ProjectAgent extends Agent {
     return this.#sessionStore().requests(caller);
   }
 
+  /** The caller's inbox items, newest first. `caller` is the person the gateway authenticated. */
+  inbox(caller: string): InboxItem[] {
+    return this.#inboxStore().items(caller);
+  }
+
+  /** Marks one of the caller's inbox items read. A person can mark only their own items. */
+  markInboxRead(caller: string, issueId: string, reason: InboxReason): InboxOutcome {
+    return this.#inboxStore().markRead(caller, issueId, reason);
+  }
+
   /** Where each identity assignment of an issue stands: its session, or what it waits for. */
   issueRoutes(issueId: string): AssignmentRoute[] {
     return this.#sessionStore().routes(issueId);
@@ -391,12 +414,14 @@ export class ProjectAgent extends Agent {
 
   #index(): IssueIndex {
     if (this.#issues === undefined) {
-      // The router hears of every assignment an applied operation changes, inside its transaction.
-      const router: AssignmentListener = {
+      // The router hears of every assignment an applied operation changes, and the inbox of every
+      // change to the issue, inside the operation's transaction.
+      const listener: IndexListener = {
         assignmentsChanged: (issueId, added, removed) =>
           this.#sessionStore().assignmentsChanged(issueId, added, removed),
+        issueChanged: (change) => this.#inboxStore().issueChanged(change),
       };
-      this.#issues = new IssueIndex(this.#database(), router);
+      this.#issues = new IssueIndex(this.#database(), listener);
     }
     return this.#issues;
   }
@@ -409,9 +434,17 @@ export class ProjectAgent extends Agent {
       this.#sessions = new SessionStore(this.#database(), this.#identityStore(), {
         offlineAfterMs: Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : SESSION_OFFLINE_AFTER_MS,
         assigningOwner: (issueId, handle) => index.assigningOwner(issueId, handle),
+        startRequests: this.#inboxStore(),
       });
     }
     return this.#sessions;
+  }
+
+  #inboxStore(): InboxStore {
+    this.#inbox ??= new InboxStore(this.#database(), this.#identityStore(), {
+      assigningOwner: (issueId, handle) => this.#index().assigningOwner(issueId, handle),
+    });
+    return this.#inbox;
   }
 
   #identityStore(): IdentityStore {

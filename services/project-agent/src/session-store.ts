@@ -97,6 +97,15 @@ export interface AssignmentRoute {
   readonly waitingFor: "acceptance" | "session" | null;
 }
 
+/**
+ * Hears when an owner is first asked to start a session for an issue, and when no start request for
+ * that owner and issue remains. Runs inside the caller's transaction and must not open one.
+ */
+export interface StartRequestListener {
+  startRequested(ownerId: string, issueId: string): void;
+  startWithdrawn(ownerId: string, issueId: string): void;
+}
+
 export interface SessionStoreOptions {
   readonly now?: () => number;
   readonly newId?: () => string;
@@ -106,6 +115,8 @@ export interface SessionStoreOptions {
    * requests go to that owner, and only that owner may accept for it.
    */
   readonly assigningOwner?: (issueId: string, handle: string) => string | undefined;
+  /** The inbox (inbox-store.ts), which turns each request to start a session into an inbox item. */
+  readonly startRequests?: StartRequestListener;
 }
 
 /** The routing tables. They hold live state only: a rebuild from the issues repo never routes. */
@@ -141,6 +152,7 @@ export class SessionStore implements AssignmentListener {
   readonly #newId: () => string;
   readonly #offlineAfterMs: number;
   readonly #assigningOwner: (issueId: string, handle: string) => string | undefined;
+  readonly #startRequests: StartRequestListener | undefined;
 
   /** Create after the IssueIndex on the same handle: routing reads and writes its Assignment table. */
   constructor(db: SqlDatabase, identities: IdentityStore, options: SessionStoreOptions = {}) {
@@ -150,6 +162,7 @@ export class SessionStore implements AssignmentListener {
     this.#newId = options.newId ?? (() => `ses_${crypto.randomUUID()}`);
     this.#offlineAfterMs = options.offlineAfterMs ?? SESSION_OFFLINE_AFTER_MS;
     this.#assigningOwner = options.assigningOwner ?? (() => undefined);
+    this.#startRequests = options.startRequests;
     for (const statement of SESSION_SCHEMA) db.exec(statement);
   }
 
@@ -372,38 +385,50 @@ export class SessionStore implements AssignmentListener {
   /** Asks each responsible owner, once, to accept the assignment or start a session. */
   #request(kind: OwnerRequestKind, issueId: string, identity: Identity): void {
     for (const owner of this.#responsibleOwners(issueId, identity)) {
-      this.#db.exec(
-        `INSERT OR IGNORE INTO OwnerRequest (kind, owner_id, identity_id, issue_id, created_at) VALUES (?, ?, ?, ?, ?)`,
+      // RETURNING yields the row only when it is new, so a request already waiting is not raised again.
+      const inserted = this.#db.exec(
+        `INSERT OR IGNORE INTO OwnerRequest (kind, owner_id, identity_id, issue_id, created_at) VALUES (?, ?, ?, ?, ?)
+         RETURNING owner_id`,
         kind,
         owner,
         identity.id,
         issueId,
         this.#now(),
       );
+      if (kind === "start" && inserted.length > 0) this.#startRequests?.startRequested(owner, issueId);
     }
   }
 
   #dropRequests(issueId: string, identityId: string, kind?: OwnerRequestKind): void {
-    if (kind === undefined) {
-      this.#db.exec(`DELETE FROM OwnerRequest WHERE issue_id = ? AND identity_id = ?`, issueId, identityId);
-    } else {
-      this.#db.exec(
-        `DELETE FROM OwnerRequest WHERE kind = ? AND issue_id = ? AND identity_id = ?`,
-        kind,
+    const dropped =
+      kind === undefined
+        ? this.#db.exec(
+            `DELETE FROM OwnerRequest WHERE issue_id = ? AND identity_id = ? RETURNING kind, owner_id`,
+            issueId,
+            identityId,
+          )
+        : this.#db.exec(
+            `DELETE FROM OwnerRequest WHERE kind = ? AND issue_id = ? AND identity_id = ? RETURNING kind, owner_id`,
+            kind,
+            issueId,
+            identityId,
+          );
+    for (const row of dropped) {
+      if (row["kind"] !== "start" || this.#startRequests === undefined) continue;
+      const owner = row["owner_id"] as string;
+      // Another identity of the same owner may still wait for a session on this issue.
+      const remaining = this.#db.exec(
+        `SELECT 1 FROM OwnerRequest WHERE kind = 'start' AND owner_id = ? AND issue_id = ? LIMIT 1`,
+        owner,
         issueId,
-        identityId,
       );
+      if (remaining.length === 0) this.#startRequests.startWithdrawn(owner, issueId);
     }
   }
 
-  /**
-   * The owners an identity's assignment answers to: a personal identity's owner; for a team identity,
-   * the owner who assigned it, or every team owner when Penguin assigned it.
-   */
+  /** The owners an identity's assignment to the issue answers to (see responsibleOwners). */
   #responsibleOwners(issueId: string, identity: Identity): string[] {
-    if (identity.ownerId !== null) return [identity.ownerId];
-    const assigner = this.#assigningOwner(issueId, identity.handle);
-    return assigner !== undefined && identity.teamOwners.includes(assigner) ? [assigner] : [...identity.teamOwners];
+    return responsibleOwners(identity, () => this.#assigningOwner(issueId, identity.handle));
   }
 
   #accepted(issueId: string, identityId: string): boolean {
@@ -464,6 +489,17 @@ export class SessionStore implements AssignmentListener {
       lastSeen: new Date(Number(row["last_seen"])).toISOString(),
     };
   }
+}
+
+/**
+ * The owners an identity's assignment answers to: a personal identity's owner; for a team identity,
+ * the owner who assigned it, or every team owner when Penguin assigned it. `assigner` is read only
+ * for a team identity.
+ */
+export function responsibleOwners(identity: Identity, assigner: () => string | undefined): string[] {
+  if (identity.ownerId !== null) return [identity.ownerId];
+  const owner = assigner();
+  return owner !== undefined && identity.teamOwners.includes(owner) ? [owner] : [...identity.teamOwners];
 }
 
 /** A personal identity's owner, or any of a team identity's owners, may act for its sessions. */

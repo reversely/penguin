@@ -11,8 +11,9 @@
 // supplies. A team identity's rights depend on the owner who assigned it to the issue, which the index
 // reads from its AppliedOp log: the first applied assign of the identity since its last applied unassign.
 //
-// An `AssignmentListener` hears of each assignment an applied operation adds or removes, inside the
-// operation's transaction, so the session router (session-store.ts) routes it in the same write.
+// An `IndexListener` hears of each assignment an applied operation adds or removes and of each change
+// the operation makes to its issue, inside the operation's transaction, so the session router
+// (session-store.ts) routes and the inbox (inbox-store.ts) derives its items in the same write.
 
 import {
   canonicalBytes,
@@ -96,6 +97,23 @@ export interface IdentitySource {
  */
 export interface AssignmentListener {
   assignmentsChanged(issueId: string, added: readonly Assignment[], removed: readonly Assignment[]): void;
+}
+
+/** One applied operation's effect on its issue. */
+export interface IssueChange {
+  readonly issueId: string;
+  /** The issue before the operation, or undefined when the operation created it. */
+  readonly previous: IssueRecord | undefined;
+  readonly next: IssueRecord;
+  readonly author: Author;
+}
+
+/**
+ * Hears of each applied operation. Both calls run inside the operation's transaction, under the
+ * AssignmentListener rules: `assignmentsChanged` first, then `issueChanged`.
+ */
+export interface IndexListener extends Partial<AssignmentListener> {
+  issueChanged?(change: IssueChange): void;
 }
 
 /** Where a submitted operation came from. Penguin's own operations wait for the runner as well. */
@@ -233,13 +251,13 @@ const ISSUE_CHILD_TABLES = ["Assignment", "Comment", "Mention", "LinkedCommit", 
 
 export class IssueIndex {
   readonly #db: SqlDatabase;
-  readonly #listener: AssignmentListener | undefined;
+  readonly #listener: IndexListener | undefined;
   /** Issue states read from or written to SQL. The index is the only writer, so the cache stays exact. */
   readonly #cache = new Map<string, IssueRecord | undefined>();
   /** Applies run one at a time: each awaits signature checks, and two must not interleave their reads and writes. */
   #queue: Promise<unknown> = Promise.resolve();
 
-  constructor(db: SqlDatabase, listener?: AssignmentListener) {
+  constructor(db: SqlDatabase, listener?: IndexListener) {
     this.#db = db;
     this.#listener = listener;
     for (const statement of ISSUE_INDEX_SCHEMA) db.exec(statement);
@@ -420,6 +438,7 @@ export class IssueIndex {
         // Set before the listener runs, so it reads the new state; the catch below clears it on rollback.
         this.#cache.set(id, result.issue);
         this.#notifyAssignments(id, current, result.issue);
+        this.#listener?.issueChanged?.({ issueId: id, previous: current, next: result.issue, author: operation.author });
         if (pending !== undefined) {
           this.#db.exec(
             `INSERT INTO PendingOp (op_id, source, created_at, file) VALUES (?, ?, ?, ?)`,
@@ -439,10 +458,11 @@ export class IssueIndex {
   }
 
   #notifyAssignments(id: string, prev: IssueRecord | undefined, next: IssueRecord): void {
-    if (this.#listener === undefined || prev?.assignments === next.assignments) return;
+    const listener = this.#listener;
+    if (listener?.assignmentsChanged === undefined || prev?.assignments === next.assignments) return;
     const added = [...next.assignments].filter(([key]) => !prev?.assignments.has(key)).map(([, a]) => a);
     const removed = [...(prev?.assignments ?? [])].filter(([key]) => !next.assignments.has(key)).map(([, a]) => a);
-    if (added.length > 0 || removed.length > 0) this.#listener.assignmentsChanged(id, added, removed);
+    if (added.length > 0 || removed.length > 0) listener.assignmentsChanged(id, added, removed);
   }
 
   #reject(
