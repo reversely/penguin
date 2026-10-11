@@ -47,10 +47,14 @@ class Backend implements DashboardBackend {
   }
   readonly reads: { owner: string; issueId: string; reason: string }[] = [];
 
+  readonly inboxReads: string[] = [];
+  /** The handles every inbox entry carries. */
+  assigneeHandles: unknown[] = ["@jun/reports"];
+
   async inbox(owner: string) {
-    return {
-      items: [{ personId: owner, issueId: "40", reason: "mentioned", read: false, raisedAt: "2026-10-10T12:00:00.000Z" }],
-    };
+    this.inboxReads.push(owner);
+    const entry = { issueId: "40", reason: "mentioned", read: false, raisedAt: "2026-10-10T12:00:00.000Z", state: "open" };
+    return { items: [{ ...entry, title: "<img src=x onerror=alert(1)>", assigneeHandles: this.assigneeHandles }] };
   }
   async markInboxRead(owner: string, issueId: string, reason: string): Promise<InboxReadOutcome> {
     this.reads.push({ owner, issueId, reason });
@@ -344,11 +348,28 @@ describe("a signed-in person", () => {
     assert.ok(board.headers.get("Content-Security-Policy"));
     assert.deepEqual(await board.json(), { owners: [{ id: "jun", identities: [] }], issues: [page] });
     assert.equal((await browser.request("/api/board", { method: "POST", headers: { Origin: ORIGIN } })).status, 405);
-    const inbox = (await (await browser.request("/api/inbox")).json()) as { items: { personId: string }[] };
+    const inbox = await browser.request("/api/inbox");
+    assert.equal(inbox.status, 200);
+    assert.deepEqual(browser.backend.inboxReads, ["jun"]);
     assert.deepEqual(
-      inbox.items.map((item) => item.personId),
-      ["jun"],
+      ((await inbox.json()) as { items: { assigneeHandles: string[] }[] }).items.map((item) => item.assigneeHandles),
+      [["@jun/reports"]],
     );
+  });
+
+  test("sends an inbox title with markup as JSON text, and never an inbox with a malformed handle", async () => {
+    const browser = new Browser();
+    await browser.signIn("jun-gh");
+    const inbox = await browser.request("/api/inbox");
+    assert.match(inbox.headers.get("Content-Type") ?? "", /^application\/json/);
+    assert.equal(((await inbox.json()) as { items: { title: string }[] }).items[0]?.title, "<img src=x onerror=alert(1)>");
+
+    for (const handle of ["<b>@jun/reports</b>", "@jun/<script>", "jun/reports", "@Jun/reports", 7]) {
+      browser.backend.assigneeHandles = [handle];
+      const answer = await browser.request("/api/inbox");
+      assert.equal(answer.status, 500, String(handle));
+      assert.deepEqual(await answer.json(), { error: "invalid inbox" });
+    }
   });
 
   test("marks only their own inbox items read, from the dashboard's origin", async () => {

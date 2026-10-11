@@ -10,7 +10,8 @@
  *   - GET /api/session: the signed-in person.
  *   - GET /api/issues/<id>: the issue page: one issue, its sub-issues and its timeline.
  *   - GET /api/board: every issue without its timeline, and each owner's identities and sessions.
- *   - GET /api/inbox: the signed-in person's inbox.
+ *   - GET /api/inbox: the signed-in person's inbox, checked against INBOX_SCHEMA; an inbox that
+ *     breaks it answers 500 and is never sent.
  *   - POST /api/inbox/read: marks one of the signed-in person's inbox items read, named by its
  *     `issueId` and `reason`. Another person's item is never found.
  *   - GET /api/identities: every identity with its charter, sessions and issue history, and the
@@ -26,6 +27,8 @@
  * Worker's own origin only, so no inline script runs. POST routes also require a same-origin
  * `Origin` header, on top of the SameSite=Lax session cookie.
  */
+
+import { checkInbox } from "@penguin/protocol";
 
 import {
   authorizeUrl,
@@ -354,7 +357,8 @@ async function handleApi(
   if (url.pathname === "/api/operations") return writeOperation(request, url, session, handlers);
   if (url.pathname === "/api/inbox") {
     if (request.method !== "GET") return methodNotAllowed("GET");
-    return json(await (await handlers.dashboard()).inbox(session.owner));
+    const inbox = await (await handlers.dashboard()).inbox(session.owner);
+    return checkInbox(inbox).length === 0 ? json(inbox) : json({ error: "invalid inbox" }, 500);
   }
   if (url.pathname === "/api/inbox/read") return markInboxRead(request, url, session, handlers);
   if (url.pathname === "/api/identities" || url.pathname.startsWith("/api/identities/")) {

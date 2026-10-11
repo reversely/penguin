@@ -6,7 +6,8 @@ import type { InboxEntry } from "@penguin/protocol";
 import { CLOSED_WINDOW, INBOX_GROUPS, groupInbox, itemKey, markedRead, newest, REASON_TAG, unreadCount } from "../src/inbox-view.ts";
 
 function entry(issueId: string, reason: InboxEntry["reason"], read = false): InboxEntry {
-  return { issueId, reason, read, raisedAt: "2026-10-10T12:00:00.000Z", title: `Issue ${issueId}`, state: "open" };
+  const raisedAt = "2026-10-10T12:00:00.000Z";
+  return { issueId, reason, read, raisedAt, title: `Issue ${issueId}`, state: "open", assigneeHandles: [] };
 }
 
 const keys = (items: readonly InboxEntry[]) => items.map(itemKey);

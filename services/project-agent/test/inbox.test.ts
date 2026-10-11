@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { before, describe, test } from "node:test";
 
 import { generateSigningKeyPair } from "@penguin/issues";
-import type { Author } from "@penguin/protocol";
+import { checkInbox, type Author } from "@penguin/protocol";
 import { parseScopeMap } from "@penguin/scope-map";
 
 import { IdentityStore, type IdentityOutcome } from "../src/identity-store.ts";
@@ -397,11 +397,59 @@ describe("inbox: the dashboard's inbox", () => {
 
     assert.deepEqual(inboxOf(project, "jun"), {
       items: [
-        { issueId: "40", reason: "closed", read: false, raisedAt: new Date(START + 3_000).toISOString(), title: "Issue 40", state: "closed" },
-        { issueId: "40", reason: "assigned", read: false, raisedAt: new Date(START + 1_000).toISOString(), title: "Issue 40", state: "closed" },
+        {
+          issueId: "40",
+          reason: "closed",
+          read: false,
+          raisedAt: new Date(START + 3_000).toISOString(),
+          title: "Issue 40",
+          state: "closed",
+          assigneeHandles: ["@jun/reports"],
+        },
+        {
+          issueId: "40",
+          reason: "assigned",
+          read: false,
+          raisedAt: new Date(START + 1_000).toISOString(),
+          title: "Issue 40",
+          state: "closed",
+          assigneeHandles: ["@jun/reports"],
+        },
       ],
     });
     assert.deepEqual(inboxOf(project, "lee"), { items: [] });
+  });
+
+  test("carries the handles of the issue's identity assignees, and none for an issue no identity holds", async () => {
+    const project = new Project();
+    await project.create(41);
+    await project.mention(41, { person: "sam" });
+    await project.create(42);
+    await project.assign(42, { identity: "@sam/campaigns" });
+    await project.assign(42, { person: "sam" });
+    await project.assign(42, { identity: "@jun/reports" });
+
+    const inbox = inboxOf(project, "sam");
+    // Issue 42 also raises a start_session item, as no @sam/campaigns session runs.
+    assert.deepEqual(
+      inbox.items.map((item) => [item.issueId, item.reason, item.assigneeHandles]).sort(),
+      [
+        ["41", "mentioned", []],
+        ["42", "assigned", ["@sam/campaigns", "@jun/reports"]],
+        ["42", "start_session", ["@sam/campaigns", "@jun/reports"]],
+      ],
+    );
+    assert.deepEqual(checkInbox(inbox), []);
+  });
+
+  test("passes markup in an issue title through as text, unchanged", async () => {
+    const project = new Project();
+    const title = '<img src=x onerror="alert(1)"> & </script>';
+    await project.submit(priya, 43, "create", { title });
+    await project.mention(43, { person: "sam" });
+    const inbox = inboxOf(project, "sam");
+    assert.equal(inbox.items[0]?.title, title);
+    assert.deepEqual(checkInbox(inbox), []);
   });
 
   test("shows a read item as read among the person's own items only", async () => {

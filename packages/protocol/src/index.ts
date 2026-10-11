@@ -25,5 +25,5 @@ export {
 } from "./live.ts";
 export type * from "./issue-page.ts";
 export type * from "./board.ts";
-export type * from "./inbox.ts";
+export * from "./inbox.ts";
 export type * from "./identities.ts";

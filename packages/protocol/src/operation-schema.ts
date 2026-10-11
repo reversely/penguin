@@ -34,6 +34,14 @@ export const PERSON_ID_MAX_LENGTH = 39;
 export const IDENTITY_HANDLE_PATTERN = `^@${NAME_PATTERN}/${NAME_PATTERN}$`;
 export const IDENTITY_HANDLE_MAX_LENGTH = 80;
 
+/** One identity handle, wherever the protocol carries one. */
+export const IDENTITY_HANDLE_SCHEMA: JsonSchema = {
+  type: "string",
+  maxLength: IDENTITY_HANDLE_MAX_LENGTH,
+  pattern: IDENTITY_HANDLE_PATTERN,
+  description: "@<owner>/<name>. Its author segment is <owner>.<name>.",
+};
+
 /**
  * A writer's sequence number for one author: decimal, at least four digits, zero-padded to exactly
  * four when it is below 1000, and at least 1. One number has exactly one spelling, so "jun-web-7" and
@@ -234,12 +242,7 @@ export const OPERATION_SCHEMA: JsonSchema = {
       pattern: PERSON_ID_PATTERN,
       not: { const: PENGUIN_AUTHOR_SEGMENT },
     },
-    identity: {
-      type: "string",
-      maxLength: IDENTITY_HANDLE_MAX_LENGTH,
-      pattern: IDENTITY_HANDLE_PATTERN,
-      description: "@<owner>/<name>. Its author segment is <owner>.<name>.",
-    },
+    identity: IDENTITY_HANDLE_SCHEMA,
     party: {
       oneOf: [
         {
