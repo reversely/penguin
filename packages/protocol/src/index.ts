@@ -11,10 +11,13 @@ export {
   type OperationFileRef,
 } from "./order.ts";
 export {
+  IDENTITIES_CHANGED,
+  identitiesChangedMessage,
   INBOX_CHANGED,
   inboxChangedMessage,
   INDEX_CHANGED,
   indexChangedMessage,
+  isIdentitiesChanged,
   isInboxChanged,
   parseIndexChanged,
   type IndexChangedMessage,
@@ -22,3 +25,4 @@ export {
 export type * from "./issue-page.ts";
 export type * from "./board.ts";
 export type * from "./inbox.ts";
+export type * from "./identities.ts";

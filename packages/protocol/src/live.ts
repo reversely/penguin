@@ -47,11 +47,31 @@ export function inboxChangedMessage(): string {
 
 /** Whether a WebSocket text frame is an inbox-changed message. */
 export function isInboxChanged(data: unknown): boolean {
-  if (typeof data !== "string") return false;
+  return messageType(data) === INBOX_CHANGED;
+}
+
+/**
+ * The message the ProjectAgent sends to every connected dashboard when an identity is created, edited
+ * or duplicated. It names nothing; the dashboard reads the identities again.
+ */
+export const IDENTITIES_CHANGED = "penguin.identities-changed";
+
+export function identitiesChangedMessage(): string {
+  return JSON.stringify({ type: IDENTITIES_CHANGED });
+}
+
+/** Whether a WebSocket text frame is an identities-changed message. */
+export function isIdentitiesChanged(data: unknown): boolean {
+  return messageType(data) === IDENTITIES_CHANGED;
+}
+
+/** The `type` of a JSON object in a text frame, or undefined. */
+function messageType(data: unknown): unknown {
+  if (typeof data !== "string") return undefined;
   try {
     const parsed: unknown = JSON.parse(data);
-    return typeof parsed === "object" && parsed !== null && (parsed as { type?: unknown }).type === INBOX_CHANGED;
+    return typeof parsed === "object" && parsed !== null ? (parsed as { type?: unknown }).type : undefined;
   } catch {
-    return false;
+    return undefined;
   }
 }

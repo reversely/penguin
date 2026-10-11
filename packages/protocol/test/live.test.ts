@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { inboxChangedMessage, INDEX_CHANGED, indexChangedMessage, isInboxChanged, parseIndexChanged } from "../src/index.ts";
+import {
+  identitiesChangedMessage,
+  inboxChangedMessage,
+  INDEX_CHANGED,
+  indexChangedMessage,
+  isIdentitiesChanged,
+  isInboxChanged,
+  parseIndexChanged,
+} from "../src/index.ts";
 
 test("an index-changed message names each changed issue once and parses back", () => {
   const text = indexChangedMessage(["40", "41", "40"]);
@@ -40,5 +48,14 @@ test("an inbox-changed message is told apart from an index-changed message and o
   assert.equal(parseIndexChanged(inboxChangedMessage()), undefined);
   for (const frame of [indexChangedMessage(["40"]), JSON.stringify({ type: "cf_agent_state" }), "null", "not json", new ArrayBuffer(4)]) {
     assert.equal(isInboxChanged(frame), false, String(frame));
+  }
+});
+
+test("an identities-changed message is told apart from the other messages and frames", () => {
+  assert.equal(isIdentitiesChanged(identitiesChangedMessage()), true);
+  assert.equal(isInboxChanged(identitiesChangedMessage()), false);
+  assert.equal(parseIndexChanged(identitiesChangedMessage()), undefined);
+  for (const frame of [indexChangedMessage(["40"]), inboxChangedMessage(), "null", "not json", new ArrayBuffer(4)]) {
+    assert.equal(isIdentitiesChanged(frame), false, String(frame));
   }
 });

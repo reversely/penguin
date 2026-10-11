@@ -1,6 +1,6 @@
 // The dashboard API client. Every call sends the session cookie; a 401 means the session ended.
 
-import type { Board, Inbox, InboxEntry, IssuePage } from "@penguin/protocol";
+import type { Board, IdentitiesPage, IdentityWriteOutcome, Inbox, InboxEntry, IssuePage } from "@penguin/protocol";
 
 export interface Session {
   readonly owner: string;
@@ -60,6 +60,31 @@ export async function markInboxRead(item: Pick<InboxEntry, "issueId" | "reason">
   if (response.status === 404) return false;
   if (!response.ok) throw new Error(`/api/inbox/read answered ${response.status}`);
   return true;
+}
+
+export async function fetchIdentities(): Promise<IdentitiesPage> {
+  return getJson<IdentitiesPage>("/api/identities");
+}
+
+/**
+ * Creates (`/api/identities`), edits (`/api/identities/<id>`) or duplicates
+ * (`/api/identities/<id>/duplicate`) an identity as the signed-in person.
+ */
+export async function writeIdentity(path: string, body: Readonly<Record<string, unknown>>): Promise<IdentityWriteOutcome> {
+  const response = await fetch(path, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (response.status === 401) {
+    await response.arrayBuffer();
+    throw new SignedOut();
+  }
+  // The ProjectAgent's outcome comes with 200, 201, 403, 404 or 422; the Worker's own refusals carry none.
+  const answer: unknown = await response.json().catch(() => undefined);
+  if (typeof answer === "object" && answer !== null && "status" in answer) return answer as IdentityWriteOutcome;
+  throw new Error(`${path} answered ${response.status}`);
 }
 
 export async function fetchBoard(): Promise<Board> {

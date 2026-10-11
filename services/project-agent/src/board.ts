@@ -6,6 +6,7 @@
 import type { IssueRecord } from "@penguin/issues";
 import type { Board, BoardIdentity, BoardIssue, BoardOwner } from "@penguin/protocol";
 
+import { avatarUrl } from "./identities-page.ts";
 import type { Identity } from "./identity-store.ts";
 import { issueView, type IssuePageSources } from "./issue-page.ts";
 import { responsibleOwners, type Session } from "./session-store.ts";
@@ -61,7 +62,7 @@ function owners(identities: readonly Identity[], running: readonly Session[], is
     const entry: BoardIdentity = {
       handle: identity.handle,
       name: identity.name,
-      avatar: identity.avatar === null ? null : `data:${identity.avatar.mediaType};base64,${base64(identity.avatar.data)}`,
+      avatar: avatarUrl(identity.avatar),
       team: identity.ownerId === null,
       sessions: (sessions.get(identity.id) ?? []).map((session) => ({
         id: session.id,
@@ -74,10 +75,4 @@ function owners(identities: readonly Identity[], running: readonly Session[], is
   }
   for (const issue of issues) for (const owners of Object.values(issue.laneOwners)) owners.forEach(lane);
   return [...lanes.keys()].sort().map((id) => ({ id, identities: lanes.get(id) as BoardIdentity[] }));
-}
-
-function base64(bytes: Uint8Array): string {
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary);
 }

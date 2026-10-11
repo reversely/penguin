@@ -250,6 +250,28 @@ export class SessionStore implements AssignmentListener {
   }
 
   /**
+   * Every identity's sessions, running and offline, keyed by identity id: the `perIdentity` most
+   * recently seen of each, most recent first.
+   */
+  byIdentity(perIdentity: number): Map<string, Session[]> {
+    return this.#db.transaction(() => {
+      this.#expire();
+      const sessions = new Map<string, Session[]>();
+      const rows = this.#db.exec(
+        `SELECT id FROM (
+           SELECT id, ROW_NUMBER() OVER (PARTITION BY identity_id ORDER BY last_seen DESC, rowid DESC) AS n
+           FROM Session) WHERE n <= ? ORDER BY n`,
+        perIdentity,
+      );
+      for (const row of rows) {
+        const session = this.#session(row["id"] as string);
+        if (session !== undefined) sessions.set(session.identityId, [...(sessions.get(session.identityId) ?? []), session]);
+      }
+      return sessions;
+    });
+  }
+
+  /**
    * Marks the sessions whose offline window has passed, and returns when the next running session's
    * window ends, in epoch milliseconds, or undefined when no session is running.
    */

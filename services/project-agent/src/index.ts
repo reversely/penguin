@@ -18,6 +18,7 @@ import { buildBoard } from "./board.ts";
 import { buildIssuePage } from "./issue-page.ts";
 import { LiveFeed, liveOwner, sendToOwner } from "./live-feed.ts";
 import { buildInbox } from "./inbox-page.ts";
+import { buildIdentitiesPage, identityWriteOutcome, PAGE_SESSIONS_PER_IDENTITY } from "./identities-page.ts";
 import { InboxStore, type InboxItem, type InboxOutcome, type InboxReason } from "./inbox-store.ts";
 import { McpTokenStore, type IssuedMcpToken, type McpCaller } from "./mcp-tokens.ts";
 import {
@@ -54,7 +55,16 @@ import {
   type SessionWork,
 } from "./session-store.ts";
 import type { IssueRecord } from "@penguin/issues";
-import { inboxChangedMessage, type Author, type Board, type Inbox, type IssuePage } from "@penguin/protocol";
+import {
+  identitiesChangedMessage,
+  inboxChangedMessage,
+  type Author,
+  type Board,
+  type IdentitiesPage,
+  type IdentityWriteOutcome,
+  type Inbox,
+  type IssuePage,
+} from "@penguin/protocol";
 import type { ScopeMap } from "@penguin/scope-map";
 
 import {
@@ -99,6 +109,13 @@ export { buildBoard, type BoardSources } from "./board.ts";
 export { buildIssuePage, issueView, type IssuePageSources } from "./issue-page.ts";
 export { LIVE_OWNER_HEADER, LiveFeed, liveOwner, sendToOwner, type OwnedConnection } from "./live-feed.ts";
 export { buildInbox, type InboxPageSources } from "./inbox-page.ts";
+export {
+  avatarUrl,
+  buildIdentitiesPage,
+  identityWriteOutcome,
+  PAGE_SESSIONS_PER_IDENTITY,
+  type IdentitiesPageSources,
+} from "./identities-page.ts";
 export { McpTokenStore, type IssuedMcpToken, type McpCaller } from "./mcp-tokens.ts";
 export {
   CHECKPOINT_SHA_PATTERN,
@@ -386,6 +403,65 @@ export class ProjectAgent extends Agent {
     copy: { readonly handle: string; readonly name?: string },
   ): IdentityOutcome {
     return this.#identityStore().duplicate(caller, id, copy);
+  }
+
+  /**
+   * The dashboard's identities page: every identity with its charter, sessions and issue history, and
+   * the scope map's scopes a charter may name.
+   */
+  async identitiesPage(repos: ProjectRepos): Promise<IdentitiesPage> {
+    const index = this.#index();
+    const sessions = this.#sessionStore();
+    const identities = this.#identityStore();
+    return buildIdentitiesPage({
+      identities: () => identities.list(),
+      sessions: () => sessions.byIdentity(PAGE_SESSIONS_PER_IDENTITY),
+      history: () => index.identityHistory(),
+      issue: (issueId) => index.issue(issueId),
+      scopeMap: await this.#scopeMap(repos),
+    });
+  }
+
+  /**
+   * Creates an identity a signed-in person wrote on the dashboard: a team identity when the input
+   * names `owners`, else a personal one. `owner` is the person the Worker's session names.
+   */
+  async createIdentityFromDashboard(owner: string, input: unknown, repos: ProjectRepos): Promise<IdentityWriteOutcome> {
+    const scopeMap = await this.#scopeMap(repos);
+    const store = this.#identityStore();
+    const team = typeof input === "object" && input !== null && "owners" in input;
+    return this.#identityWritten(
+      team
+        ? store.createTeam(owner, input as TeamIdentityInput, scopeMap)
+        : store.create(owner, input as IdentityInput, scopeMap),
+    );
+  }
+
+  /** Edits an identity from the dashboard. Only its owner, or one of a team identity's owners, may. */
+  async editIdentityFromDashboard(
+    owner: string,
+    id: string,
+    changes: unknown,
+    repos: ProjectRepos,
+  ): Promise<IdentityWriteOutcome> {
+    const scopeMap = await this.#scopeMap(repos);
+    return this.#identityWritten(this.#identityStore().edit(owner, id, changes as IdentityChanges, scopeMap));
+  }
+
+  /** Duplicates an identity from the dashboard under the handle, and optionally the name, in `copy`. */
+  duplicateIdentityFromDashboard(owner: string, id: string, copy: unknown): IdentityWriteOutcome {
+    const { handle, name } = (typeof copy === "object" && copy !== null ? copy : {}) as {
+      handle?: unknown;
+      name?: unknown;
+    };
+    const named = name === undefined ? {} : { name: name as string };
+    return this.#identityWritten(this.#identityStore().duplicate(owner, id, { handle: handle as string, ...named }));
+  }
+
+  /** Tells every connected dashboard that an identity changed; the answer carries no avatar bytes. */
+  #identityWritten(outcome: IdentityOutcome): IdentityWriteOutcome {
+    if (outcome.status === "ok") this.broadcast(identitiesChangedMessage());
+    return identityWriteOutcome(outcome);
   }
 
   readIdentity(id: string): Identity | undefined {

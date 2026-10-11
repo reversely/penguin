@@ -13,6 +13,11 @@
  *   - GET /api/inbox: the signed-in person's inbox.
  *   - POST /api/inbox/read: marks one of the signed-in person's inbox items read, named by its
  *     `issueId` and `reason`. Another person's item is never found.
+ *   - GET /api/identities: every identity with its charter, sessions and issue history, and the
+ *     scopes a charter may name.
+ *   - POST /api/identities, /api/identities/<id> and /api/identities/<id>/duplicate: create, edit
+ *     and duplicate an identity as the signed-in person. The ProjectAgent refuses an edit or a
+ *     duplicate of an identity that person does not own. The body is capped at 256 KiB.
  *   - POST /api/operations: one issue operation, applied with the signed-in person as author. An
  *     operation that carries `author` is refused: only the session names the author.
  *   - GET /api/live: the WebSocket to the ProjectAgent, which sends a message on each index change.
@@ -52,6 +57,11 @@ export type InboxReadOutcome =
   | { readonly status: "ok"; readonly item: unknown }
   | { readonly status: "rejected"; readonly reason: "invalid" | "not_found"; readonly message: string };
 
+/** What creating, editing or duplicating an identity returns (IdentityWriteOutcome in @penguin/protocol). */
+export type IdentityWriteOutcome =
+  | { readonly status: "ok"; readonly id: string; readonly handle: string }
+  | { readonly status: "rejected"; readonly reason: "invalid" | "forbidden" | "not_found" | "handle_taken"; readonly message: string };
+
 /** The ProjectAgent's dashboard surface, reached over Durable Object RPC in the Worker. */
 export interface DashboardBackend {
   /** The issue page as plain JSON (IssuePage in @penguin/protocol), or undefined for no such issue. */
@@ -63,6 +73,14 @@ export interface DashboardBackend {
   /** Marks one of the person's own inbox items read. */
   markInboxRead(owner: string, issueId: string, reason: string): Promise<InboxReadOutcome>;
   submit(owner: string, operation: unknown): Promise<DashboardWriteOutcome>;
+  /** The identities page as plain JSON (IdentitiesPage in @penguin/protocol). */
+  identities(): Promise<unknown>;
+  /** Creates a personal identity, or a team identity when `input` names `owners`, owned by `owner`. */
+  createIdentity(owner: string, input: unknown): Promise<IdentityWriteOutcome>;
+  /** Edits an identity; the ProjectAgent refuses unless `owner` owns it. */
+  editIdentity(owner: string, id: string, changes: unknown): Promise<IdentityWriteOutcome>;
+  /** Duplicates an identity under a new handle; the ProjectAgent refuses unless `owner` owns it. */
+  duplicateIdentity(owner: string, id: string, copy: unknown): Promise<IdentityWriteOutcome>;
   /** Forwards the WebSocket upgrade to the ProjectAgent with `owner` as the connection's person. */
   connectLive(request: Request, owner: string): Promise<Response>;
 }
@@ -249,6 +267,77 @@ async function markInboxRead(
   return json(outcome, status);
 }
 
+/**
+ * The largest identity request body: every text field at its cap plus a 64 KiB avatar in base64 fits
+ * well under it, and a larger body is refused before it is parsed.
+ */
+const MAX_IDENTITY_BODY_BYTES = 256 * 1024;
+
+/** An identity request's JSON object with its avatar's base64 decoded to bytes, or a 4xx answer. */
+async function readIdentityBody(request: Request): Promise<Record<string, unknown> | Response> {
+  const invalid = (message: string, status = 400) => json({ error: "invalid request", message }, status);
+  if (Number(request.headers.get("Content-Length") ?? 0) > MAX_IDENTITY_BODY_BYTES) {
+    return invalid("the identity is too large", 413);
+  }
+  const text = await request.text();
+  if (text.length > MAX_IDENTITY_BODY_BYTES) return invalid("the identity is too large", 413);
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    return invalid("the identity must be a JSON object");
+  }
+  if (typeof body !== "object" || body === null || Array.isArray(body)) return invalid("the identity must be a JSON object");
+  const fields = body as Record<string, unknown>;
+  const avatar = fields["avatar"];
+  if (avatar === undefined || avatar === null) return fields;
+  const { mediaType, data } = avatar as { mediaType?: unknown; data?: unknown };
+  const bytes = typeof data === "string" ? fromBase64(data) : undefined;
+  if (bytes === undefined) return invalid("the avatar must carry its image as base64");
+  return { ...fields, avatar: { mediaType, data: bytes } };
+}
+
+function fromBase64(text: string): Uint8Array | undefined {
+  try {
+    return Uint8Array.from(atob(text), (char) => char.charCodeAt(0));
+  } catch {
+    return undefined;
+  }
+}
+
+function identityAnswer(outcome: IdentityWriteOutcome, created = false): Response {
+  if (outcome.status === "ok") return json(outcome, created ? 201 : 200);
+  const status = { forbidden: 403, not_found: 404, invalid: 422, handle_taken: 422 }[outcome.reason] ?? 422;
+  return json(outcome, status);
+}
+
+/**
+ * The identity routes. GET /api/identities reads the page; POST /api/identities creates an identity,
+ * POST /api/identities/<id> edits one and POST /api/identities/<id>/duplicate copies one. A write
+ * acts as the session's person only; the ProjectAgent refuses one on an identity they do not own.
+ */
+async function identityRoute(
+  request: Request,
+  url: URL,
+  session: DashboardSession,
+  handlers: DashboardHandlers,
+): Promise<Response | undefined> {
+  if (url.pathname === "/api/identities" && request.method === "GET") {
+    return json(await (await handlers.dashboard()).identities());
+  }
+  const match = /^\/api\/identities(?:\/([A-Za-z0-9_-]{1,128})(\/duplicate)?)?$/.exec(url.pathname);
+  if (match === null) return undefined;
+  if (request.method !== "POST") return methodNotAllowed(match[1] === undefined ? "GET, POST" : "POST");
+  if (!isSameOrigin(request, url)) return json({ error: "cross-origin request" }, 403);
+  const body = await readIdentityBody(request);
+  if (body instanceof Response) return body;
+  const backend = await handlers.dashboard();
+  const [, id, duplicate] = match;
+  if (id === undefined) return identityAnswer(await backend.createIdentity(session.owner, body), true);
+  if (duplicate !== undefined) return identityAnswer(await backend.duplicateIdentity(session.owner, id, body), true);
+  return identityAnswer(await backend.editIdentity(session.owner, id, body));
+}
+
 async function handleApi(
   request: Request,
   url: URL,
@@ -268,6 +357,10 @@ async function handleApi(
     return json(await (await handlers.dashboard()).inbox(session.owner));
   }
   if (url.pathname === "/api/inbox/read") return markInboxRead(request, url, session, handlers);
+  if (url.pathname === "/api/identities" || url.pathname.startsWith("/api/identities/")) {
+    const answer = await identityRoute(request, url, session, handlers);
+    if (answer !== undefined) return answer;
+  }
   if (url.pathname === "/api/board") {
     if (request.method !== "GET") return methodNotAllowed("GET");
     return json(await (await handlers.dashboard()).board());

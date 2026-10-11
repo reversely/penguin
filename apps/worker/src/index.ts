@@ -65,6 +65,10 @@ export default {
             markInboxRead: async (owner, issueId, reason) =>
               agent.markInboxRead(owner, issueId, reason as InboxReason),
             submit: (owner, operation) => agent.submitFromDashboard(owner, operation, repos),
+            identities: async () => agent.identitiesPage(repos),
+            createIdentity: async (owner, input) => agent.createIdentityFromDashboard(owner, input, repos),
+            editIdentity: async (owner, id, changes) => agent.editIdentityFromDashboard(owner, id, changes, repos),
+            duplicateIdentity: async (owner, id, copy) => agent.duplicateIdentityFromDashboard(owner, id, copy),
             connectLive: (liveRequest, owner) => {
               // The browser cannot name the owner: the header is replaced with the session's.
               const headers = new Headers(liveRequest.headers);

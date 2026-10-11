@@ -6,6 +6,7 @@ import {
   type DashboardBackend,
   type DashboardOptions,
   type DashboardWriteOutcome,
+  type IdentityWriteOutcome,
   type InboxReadOutcome,
 } from "../src/dashboard.ts";
 import { type GatewayHandlers, handleRequest } from "../src/gateway.ts";
@@ -59,6 +60,25 @@ class Backend implements DashboardBackend {
   async submit(owner: string, operation: unknown): Promise<DashboardWriteOutcome> {
     this.writes.push({ owner, operation });
     return { status: "applied", opId: `${owner}-web-0001`, issueId: "40", version: 1 };
+  }
+  readonly identityWrites: { action: string; owner: string; id?: string; body: unknown }[] = [];
+
+  async identities() {
+    return { identities: [], scopes: [], owners: ["jun", "priya"], limits: {} };
+  }
+  async createIdentity(owner: string, body: unknown): Promise<IdentityWriteOutcome> {
+    this.identityWrites.push({ action: "create", owner, body });
+    return { status: "ok", id: "identity-1", handle: `@${owner}/reports` };
+  }
+  async editIdentity(owner: string, id: string, body: unknown): Promise<IdentityWriteOutcome> {
+    this.identityWrites.push({ action: "edit", owner, id, body });
+    if (id === "theirs") return { status: "rejected", reason: "forbidden", message: "not yours" };
+    if (id === "gone") return { status: "rejected", reason: "not_found", message: "no identity" };
+    return { status: "ok", id, handle: `@${owner}/reports` };
+  }
+  async duplicateIdentity(owner: string, id: string, body: unknown): Promise<IdentityWriteOutcome> {
+    this.identityWrites.push({ action: "duplicate", owner, id, body });
+    return { status: "ok", id: "identity-2", handle: `@${owner}/reports-copy` };
   }
   async connectLive(request: Request, owner: string) {
     this.live.push({ owner, upgrade: request.headers.get("Upgrade") });
@@ -154,6 +174,9 @@ describe("an unauthenticated visit", () => {
       ["/api/board"],
       ["/api/live", { headers: { Upgrade: "websocket" } }],
       ["/api/operations", { method: "POST", headers: { Origin: ORIGIN }, body: "{}" }],
+      ["/api/identities"],
+      ["/api/identities", { method: "POST", headers: { Origin: ORIGIN }, body: "{}" }],
+      ["/api/identities/identity-1", { method: "POST", headers: { Origin: ORIGIN }, body: "{}" }],
       ["/api/anything"],
     ];
     for (const [path, init] of calls) {
@@ -162,6 +185,7 @@ describe("an unauthenticated visit", () => {
       assert.ok(response.headers.get("Content-Security-Policy"), path);
     }
     assert.deepEqual(browser.backend.writes, []);
+    assert.deepEqual(browser.backend.identityWrites, []);
     assert.deepEqual(browser.backend.reads, []);
     assert.deepEqual(browser.backend.live, []);
   });
@@ -348,6 +372,55 @@ describe("a signed-in person", () => {
 
     const signedOut = new Browser();
     assert.equal((await signedOut.post("/api/inbox/read", { issueId: "40", reason: "mentioned" })).status, 401);
+  });
+
+  test("reads the identities and creates, edits and duplicates them as themselves", async () => {
+    const browser = new Browser();
+    await browser.signIn("jun-gh");
+    const page = await browser.request("/api/identities");
+    assert.equal(page.status, 200);
+    assert.deepEqual(((await page.json()) as { owners: string[] }).owners, ["jun", "priya"]);
+
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+    const created = await browser.post("/api/identities", {
+      handle: "@jun/reports",
+      name: "Reports",
+      avatar: { mediaType: "image/png", data: png.toString("base64") },
+    });
+    assert.equal(created.status, 201);
+    assert.deepEqual(await created.json(), { status: "ok", id: "identity-1", handle: "@jun/reports" });
+    assert.equal((await browser.post("/api/identities/identity-1", { name: "Renamed", avatar: null })).status, 200);
+    assert.equal((await browser.post("/api/identities/identity-1/duplicate", { handle: "@jun/reports-copy" })).status, 201);
+
+    const [create, edit, duplicate] = browser.backend.identityWrites;
+    assert.equal(create?.owner, "jun");
+    // The avatar's base64 reaches the ProjectAgent as bytes.
+    const avatar = (create?.body as { avatar: { mediaType: string; data: Uint8Array } }).avatar;
+    assert.equal(avatar.mediaType, "image/png");
+    assert.ok(avatar.data instanceof Uint8Array);
+    assert.deepEqual([...avatar.data], [...png]);
+    assert.deepEqual(edit, { action: "edit", owner: "jun", id: "identity-1", body: { name: "Renamed", avatar: null } });
+    assert.deepEqual(duplicate, { action: "duplicate", owner: "jun", id: "identity-1", body: { handle: "@jun/reports-copy" } });
+
+    // The ProjectAgent's refusals keep their reason in the status.
+    assert.equal((await browser.post("/api/identities/theirs", { name: "Mine" })).status, 403);
+    assert.equal((await browser.post("/api/identities/gone", { name: "Mine" })).status, 404);
+  });
+
+  test("cannot write an identity from another origin, with a bad body or past the size cap", async () => {
+    const browser = new Browser();
+    await browser.signIn("jun-gh");
+    assert.equal((await browser.post("/api/identities", { handle: "@jun/x" }, "https://evil.example")).status, 403);
+    assert.equal((await browser.post("/api/identities/identity-1", { name: "x" }, "https://evil.example")).status, 403);
+    for (const body of [[1], "text", null, { avatar: { mediaType: "image/png", data: "not base64!" } }, { avatar: { mediaType: "image/png" } }]) {
+      assert.equal((await browser.post("/api/identities", body)).status, 400, JSON.stringify(body));
+    }
+    const large = await browser.post("/api/identities", { handle: "@jun/x", job: "x".repeat(300 * 1024) });
+    assert.equal(large.status, 413);
+    assert.equal((await browser.request("/api/identities/identity-1")).status, 405);
+    assert.equal((await browser.request("/api/identities", { method: "DELETE", headers: { Origin: ORIGIN } })).status, 405);
+    assert.equal((await browser.post("/api/identities/../x", {})).status, 404);
+    assert.deepEqual(browser.backend.identityWrites, []);
   });
 
   test("opens the live connection as themselves, and only as a WebSocket upgrade", async () => {

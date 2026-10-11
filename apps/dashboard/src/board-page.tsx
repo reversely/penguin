@@ -52,8 +52,9 @@ export function BoardPage({ viewer, live, navigate, onSignedOut }: Props) {
     return () => {
       current = false;
     };
-    // `connected` reads the board again after a reconnect, which may have missed a change.
-  }, [live.revision, connected, onSignedOut]);
+    // `connected` reads the board again after a reconnect, which may have missed a change. The board
+    // shows each owner's identities, so an identity change reads it again too.
+  }, [live.revision, live.identitiesRevision, connected, onSignedOut]);
 
   if (load.kind === "failed") {
     return (

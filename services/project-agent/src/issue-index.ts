@@ -435,6 +435,35 @@ export class IssueIndex {
   }
 
   /**
+   * Each identity's issue history, by handle: the issues with an applied operation that assigned the
+   * identity or that the identity wrote, most recent activity first. One scan of AppliedOp serves
+   * every identity. History follows the handle, so a duplicate starts with none.
+   */
+  identityHistory(): Map<string, string[]> {
+    const rows = this.#db.exec(
+      `SELECT issue_id, party, MAX(seq) AS last FROM (
+         SELECT issue_id, seq, json_extract(payload, '$.assignee.identity') AS party FROM AppliedOp
+           WHERE status = 'applied' AND type = 'assign'
+         UNION ALL
+         SELECT issue_id, seq, author AS party FROM AppliedOp
+           WHERE status = 'applied' AND instr(author, '.') > 0)
+       WHERE party IS NOT NULL AND issue_id IS NOT NULL
+       GROUP BY issue_id, party ORDER BY last DESC`,
+    );
+    const history = new Map<string, string[]>();
+    for (const row of rows) {
+      const party = String(row["party"]);
+      // An author segment "<owner>.<name>" is the handle "@<owner>/<name>".
+      const handle = party.startsWith("@") ? party : `@${party.replace(".", "/")}`;
+      const issueId = this.resolve(String(row["issue_id"]));
+      const issues = history.get(handle) ?? [];
+      if (!issues.includes(issueId)) issues.push(issueId);
+      history.set(handle, issues);
+    }
+    return history;
+  }
+
+  /**
    * The issue a submission is written under: the temporary ID of an issue created offline, however
    * the caller named it, so its files share the folder the bridge counts; otherwise the caller's value.
    */

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { fetchSession, type Session } from "./api.ts";
 import { BoardPage } from "./board-page.tsx";
+import { IdentitiesPageView } from "./identities-page.tsx";
 import { InboxPage, useInbox } from "./inbox-page.tsx";
 import { unreadCount } from "./inbox-view.ts";
 import { IssuePageView } from "./issue-page.tsx";
@@ -116,6 +117,8 @@ function Shell({ session, onSignedOut }: { session: Session; onSignedOut: () => 
           <BoardPage viewer={session.owner} live={live} navigate={navigate} onSignedOut={onSignedOut} />
         ) : route?.page === "inbox" ? (
           <InboxPage inbox={inbox} navigate={navigate} />
+        ) : route?.page === "identities" ? (
+          <IdentitiesPageView viewer={session.owner} live={live} navigate={navigate} onSignedOut={onSignedOut} />
         ) : (
           <h1>{pageTitle(route)}</h1>
         )}
