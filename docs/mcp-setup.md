@@ -165,6 +165,17 @@ When no session of the assigned identity is running, the owner's inbox lists the
 to start one. The Huddle issue stays in Fixing. When a session goes offline before or during a fix,
 the sub-issue stays open and assigned. The next session of the identity receives it when it registers.
 
+## Threads that need the developer
+
+An owner's request for changes on a fix opens a thread on the fix sub-issue. The thread carries the
+reviewer's reason and needs the owners of the fix's assignees. Penguin adds it to each needed
+person's inbox. Each running session of that person hears of it once, at its next safe checkpoint:
+the hook answer says which issue has the thread, and `report_checkpoint` lists it under `newThreads`.
+`get_work` lists every open thread that needs the session's developer under `threadsNeedingYou`. The
+agent tells its developer about each one in its own conversation and replies with `post_update`
+(`reply_thread`). A person in the thread resolves it on the issue page: the reviewer, a person it
+needs or a person who replied.
+
 ## Sending a fix upstream
 
 A session can find that its fix task belongs in the scope the trigger changed, outside its identity's

@@ -62,11 +62,7 @@ export function issueView(
       })),
       checks: [...issue.checks.values()].map(check),
       reviews: [...issue.reviews.values()].map(review),
-      threads: [...issue.threads.values()].map((thread) => ({
-        id: thread.id,
-        status: thread.status,
-        needsPersonIds: thread.needsPersonIds,
-      })),
+      threads: [...issue.threads.values()].map((thread) => ({ ...thread })),
     },
     subIssues: [...issue.subIssues.values()].flatMap((link) => {
       const child = sources.issue(link.childId);

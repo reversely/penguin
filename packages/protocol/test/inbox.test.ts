@@ -22,8 +22,9 @@ describe("inbox schema", () => {
     assert.deepEqual(checkInbox({ items: [] }), []);
   });
 
-  test("accepts a request to review a fix", () => {
+  test("accepts a request to review a fix and a thread that needs the person", () => {
     assert.deepEqual(checkInbox(inboxWith({ reason: "review_requested" })), []);
+    assert.deepEqual(checkInbox(inboxWith({ reason: "thread" })), []);
   });
 
   test("checks handles with the operation schema's identity handle schema", () => {

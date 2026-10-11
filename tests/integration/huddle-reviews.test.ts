@@ -2,7 +2,9 @@
 // Huddle opens from the owners' unfixed checkpoints, @jun/reports sends the shared-device fix
 // upstream to Priya, the owners' fixed checkpoints pass on the integration branch, and Penguin asks
 // each owner whose review counts to review each fix's head. Reviews then count only from those
-// owners or their delegates, and only on the head.
+// owners or their delegates, and only on the head. Jun's request for changes on the shared-device fix
+// opens a thread that reaches Priya's inbox and her running session (#43); the agent sessions are
+// JSON-RPC calls to the real MCP tools over the ProjectAgent's real stores.
 
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
@@ -17,6 +19,7 @@ import { promisify } from "node:util";
 import {
   combinedRunEvent,
   CombinedRunner,
+  hookAnswer,
   localRemote,
   penguinRepoOf,
   TestRunner,
@@ -26,6 +29,9 @@ import {
   type VerificationReply,
 } from "@penguin/local-bridge";
 
+import { serveMcp, type McpProject } from "@penguin/mcp";
+
+import { fixTask } from "../../services/project-agent/src/fix-task.ts";
 import { HuddleProject } from "../../services/project-agent/test/huddle-project.ts";
 
 const run = promisify(execFile);
@@ -133,6 +139,57 @@ async function inReview(name: string) {
   return { project, fixes, publish, verify };
 }
 
+/** A newer commit on top of `parent` with the same tree, as Priya's next checkpoint. */
+async function newerCheckpoint(parent: string, message: string): Promise<string> {
+  const identity = { GIT_AUTHOR_NAME: "Priya", GIT_AUTHOR_EMAIL: "priya@example.com" };
+  const env = { ...process.env, ...identity, GIT_COMMITTER_NAME: "Priya", GIT_COMMITTER_EMAIL: "priya@example.com" };
+  const { stdout } = await run("git", ["-C", fixture, "commit-tree", `${parent}^{tree}`, "-p", parent, "-m", message], { env });
+  return stdout.trim();
+}
+
+/** The MCP tools' view of the ProjectAgent, wired as the agent's RPC methods wire its stores. */
+function mcpProject(project: HuddleProject): McpProject {
+  return {
+    registerSession: (caller, input) => project.sessions.register(caller, input),
+    sessionHeartbeat: (caller, id) => project.sessions.heartbeat(caller, id),
+    sessionWork: (caller, id) => project.sessions.work(caller, id),
+    readIdentity: (id) => project.identities.get(id),
+    readFixTask: (id) => fixTask(project.huddles, project.index.resolve(id), project.index.issue(id)),
+    issueRoutes: (id) => project.sessions.routes(project.index.resolve(id)),
+    readIssue: (id) => project.index.read(id),
+    threadsNeeding: (person) => project.index.threadsNeeding(person),
+    // As the ProjectAgent has it: an operation that changes a fix's threads has its Huddle collect again.
+    sessionUpdate: async (caller, id, update) => {
+      const outcome = await project.sessionUpdate(caller, id, update);
+      await project.collectFor(String(update.issue));
+      return outcome;
+    },
+    reportCheckpoint: () => {
+      throw new Error("not used");
+    },
+  };
+}
+
+let nextId = 0;
+
+/** Calls one MCP tool as `owner` and returns its structured result. */
+async function call(project: HuddleProject, owner: string, name: string, args: unknown): Promise<any> {
+  const request = new Request("https://penguin.test/mcp", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: ++nextId, method: "tools/call", params: { name, arguments: args } }),
+  });
+  const repos = { issues: "issues", base: "base", ownerFork: `owner-${owner}` };
+  const response = await serveMcp(request, owner, () => mcpProject(project), repos);
+  const text = await response.text();
+  const data = response.headers.get("content-type")?.includes("text/event-stream")
+    ? text.split("\n").find((line) => line.startsWith("data: "))?.slice("data: ".length)
+    : text;
+  const { result } = JSON.parse(data as string);
+  assert.equal(result.isError ?? false, false, JSON.stringify(result.structuredContent));
+  return result.structuredContent;
+}
+
 /** The fix sub-issues the person is asked to review, by number. */
 function reviewRequests(project: HuddleProject, person: string): string[] {
   return project.inbox
@@ -202,13 +259,7 @@ test("a review of a commit older than the fix's head does not count, and the own
   for (const item of project.inbox.items("jun")) project.inbox.markRead("jun", item.issueId, item.reason);
 
   // Priya publishes a newer checkpoint on top of her fix; it passes again and becomes the fix's head.
-  const fixed = pins.branches["owner-priya"] as string;
-  const identity = { GIT_AUTHOR_NAME: "Priya", GIT_AUTHOR_EMAIL: "priya@example.com" };
-  const env = { ...process.env, ...identity, GIT_COMMITTER_NAME: "Priya", GIT_COMMITTER_EMAIL: "priya@example.com" };
-  const { stdout } = await run("git", ["-C", fixture, "commit-tree", `${fixed}^{tree}`, "-p", fixed, "-m", "Tidy the merge rules"], {
-    env,
-  });
-  const newer = stdout.trim();
+  const newer = await newerCheckpoint(pins.branches["owner-priya"] as string, "Tidy the merge rules");
   await publish("priya", newer);
   assert.equal(project.index.issue("1")?.state, "verifying");
   await verify();
@@ -226,4 +277,80 @@ test("a review of a commit older than the fix's head does not count, and the own
   assert.deepEqual(standing(project, fixes.shared), ["jun pending", "priya pending"]);
   await project.review("jun", fixes.shared, { verdict: "approve", commit: head });
   assert.deepEqual(standing(project, fixes.shared), ["jun approved", "priya pending"]);
+});
+
+test("Jun's request for changes on the shared-device fix opens a thread that reaches Priya's inbox and session; after a passing rerun and Jun resolving it, the fix is approved again", async () => {
+  const { project, fixes, publish, verify } = await inReview("threads");
+  const firstHead = `owner-priya@${pins.branches["owner-priya"]}`;
+  const reason = "A limit of five still joins the tablet's users.";
+  const priya = (
+    await call(project, "priya", "register_session", {
+      identity: "@priya/merge-rules",
+      vendor: "claude-code",
+      worktreeId: "wt-merge",
+      branch: "main",
+    })
+  ).sessionId;
+  project.sessions.checkpointWorktree("priya", "wt-merge");
+  await project.review("priya", fixes.shared, { verdict: "approve", commit: firstHead });
+
+  // Jun's review counts, so it opens a thread on the shared-device fix that needs Priya.
+  const jun = await project.review("jun", fixes.shared, { verdict: "request_changes", commit: firstHead, reason });
+  assert.equal(jun.status, "applied", JSON.stringify(jun));
+  const [thread, ...others] = project.index.issue(fixes.shared)?.threads.values() ?? [];
+  assert.equal(others.length, 0);
+  assert.deepEqual([thread?.body, thread?.needsPersonIds, thread?.status], [reason, ["priya"], "open"]);
+  const threadId = thread?.id ?? "";
+  assert.deepEqual(standing(project, fixes.shared), ["jun changes_requested", "priya approved"]);
+  assert.equal(project.index.issue("1")?.state, "in_review");
+
+  // The thread lands in Priya's inbox and reaches her running session at its next safe checkpoint.
+  const unread = (person: string) =>
+    project.inbox
+      .items(person)
+      .filter((item) => item.reason === "thread" && !item.read)
+      .map((item) => item.issueId);
+  assert.deepEqual(unread("priya"), [fixes.shared]);
+  assert.deepEqual(unread("jun"), []);
+  const [delivery] = project.sessions.checkpointWorktree("priya", "wt-merge");
+  assert.deepEqual(delivery?.threads, [{ issueId: fixes.shared, threadId }]);
+  const answer = JSON.parse(hookAnswer([{ ...delivery!, identity: delivery!.handle }]) ?? "");
+  assert.match(answer.hookSpecificOutput.additionalContext, new RegExp(`a thread on #${fixes.shared} now needs the developer of @priya/merge-rules`, "u"));
+  const work = await call(project, "priya", "get_work", { sessionId: priya });
+  assert.deepEqual(
+    work.threadsNeedingYou.map((needing: any) => [needing.issueId, needing.id, needing.personWritten.body]),
+    [[fixes.shared, threadId, reason]],
+  );
+
+  // Priya's agent answers in the thread, and Jun hears of the reply.
+  await call(project, "priya", "post_update", {
+    sessionId: priya,
+    issue: Number(fixes.shared),
+    update: { type: "reply_thread", thread: threadId, body: "Lowering the limit to two." },
+  });
+  assert.deepEqual(unread("jun"), [fixes.shared]);
+
+  // Priya's lower limit passes the combined tests again; the earlier approvals are set aside.
+  const newer = await newerCheckpoint(pins.branches["owner-priya"] as string, "Lower the per-device limit");
+  await publish("priya", newer);
+  assert.equal(project.index.issue("1")?.state, "verifying");
+  await verify();
+  assert.equal(project.index.issue("1")?.state, "in_review");
+  const head = `owner-priya@${newer}`;
+  assert.deepEqual(standing(project, fixes.shared), ["jun pending", "priya pending"]);
+  assert.equal(project.index.issue(fixes.shared)?.threads.get(threadId)?.status, "open");
+
+  // Only the thread's people resolve it; Jun does, and the Huddle's tracked threads are all resolved.
+  const sam = await project.thread("sam", fixes.shared, "resolve_thread", { thread: threadId });
+  assert.equal(sam.status === "rejected" && sam.reason, "not_thread_participant");
+  const resolved = await project.thread("jun", fixes.shared, "resolve_thread", { thread: threadId, reason: "Two keeps them apart." });
+  assert.equal(resolved.status, "applied", JSON.stringify(resolved));
+  const [huddle] = project.huddles.open();
+  assert.deepEqual(project.threadsOf(huddle?.triggerCommit ?? "").unresolved(), []);
+  assert.deepEqual((await call(project, "priya", "get_work", { sessionId: priya })).threadsNeedingYou, []);
+
+  await project.review("jun", fixes.shared, { verdict: "approve", commit: head });
+  await project.review("priya", fixes.shared, { verdict: "approve", commit: head });
+  assert.equal(project.approval(fixes.shared)?.approved, true);
+  assert.equal(project.index.issue(fixes.shared)?.threads.size, 1);
 });

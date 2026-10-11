@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import type { IssuePage, IssuePageCheck, IssuePageReview, IssuePageTimelineEntry } from "@penguin/protocol";
+import type {
+  IssuePage,
+  IssuePageCheck,
+  IssuePageReview,
+  IssuePageThread,
+  IssuePageTimelineEntry,
+} from "@penguin/protocol";
 
 import {
   APPROVAL_LABEL,
@@ -14,9 +20,26 @@ import {
   penguinState,
   reasonLabel,
   reviewSuperseded,
+  threadOpener,
   watchedIssues,
 } from "../src/issue-view.ts";
 import { latestChange, recordChange, type LiveChanges } from "../src/live-changes.ts";
+
+/** An issue page thread Jun opened, with `fields` replacing any of its fields. */
+function thread(fields: Partial<IssuePageThread>): IssuePageThread {
+  return {
+    id: "t1",
+    status: "open",
+    needsPersonIds: [],
+    body: "A limit of five still joins the tablet's users.",
+    anchor: null,
+    openedBy: "jun",
+    participants: ["jun"],
+    resolvedBy: null,
+    resolveReason: null,
+    ...fields,
+  };
+}
 
 function entry(fields: Partial<IssuePageTimelineEntry>): IssuePageTimelineEntry {
   return {
@@ -172,7 +195,7 @@ test("the Penguin character follows the issue's state, its checks and its review
   assert.equal(penguinState(page({ state: "in_review" }, [approvedFix, approvedAfterChanges])), "ready to approve");
   const uncounted = sub("33", { reviews: [review({ counts: false, uncountedReason: "no review rights" })] });
   assert.equal(penguinState(page({ state: "in_review" }, [uncounted])), "awaiting review");
-  const openThread = { id: "jun-web-0009", status: "open" as const, needsPersonIds: ["priya"] };
+  const openThread = thread({ id: "jun-web-0009", status: "open", needsPersonIds: ["priya"] });
   assert.equal(penguinState(page({ state: "in_review", threads: [openThread] }, [approvedFix])), "awaiting review");
   assert.equal(penguinState(page({ state: "in_review", reviews: [review({})] })), "ready to approve");
 });
@@ -210,4 +233,11 @@ test("the page reads again when its issue, its temporary ID or a sub-issue chang
   changes = recordChange(changes, ["jun-b3f2-0001"]);
   assert.equal(latestChange(changes, watched), 3);
   assert.deepEqual(watchedIssues(undefined, "31"), ["31"]);
+});
+
+test("a thread Penguin opened for a request for changes speaks for the reviewer", () => {
+  const changes = review({ opId: "jun-web-0007", verdict: "request_changes", reason: "A limit of five is too high." });
+  assert.equal(threadOpener(thread({ openedBy: "penguin", anchor: "review:jun-web-0007" }), [changes]), "jun");
+  assert.equal(threadOpener(thread({ openedBy: "penguin", anchor: "review:sam-web-0001" }), [changes]), "penguin");
+  assert.equal(threadOpener(thread({ openedBy: "priya", anchor: null }), [changes]), "priya");
 });

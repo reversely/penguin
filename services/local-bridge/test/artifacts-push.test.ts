@@ -390,6 +390,17 @@ describe("safe checkpoints for agent sessions", () => {
     await assertNoSecretLeaked();
   });
 
+  test("as a PreToolUse hook it tells the agent about a thread that now needs its developer", async () => {
+    await registered();
+    penguin.deliveries = () => [
+      { sessionId: "ses_2", identity: "@priya/merge-rules", delivered: [], threads: [{ issueId: "3", threadId: "penguin-web-0021" }] },
+    ];
+    assert.equal(await cli(["session-checkpoint", "--hook", "--worktree", repo.worktreeA]), 0);
+    const context = JSON.parse(output.join("")).hookSpecificOutput.additionalContext;
+    assert.match(context, /^Penguin: a thread on #3 now needs the developer of @priya\/merge-rules \(session ses_2\)\. /u);
+    assert.match(context, /Tell your developer about each thread in get_work's threadsNeedingYou\.$/u);
+  });
+
   test("an unreachable Penguin never stops the agent's tool call, and the command says why", async () => {
     await registered();
     offline = "all";

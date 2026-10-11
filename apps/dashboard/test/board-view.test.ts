@@ -9,6 +9,7 @@ import type {
   IssuePageCheck,
   IssuePageReview,
   IssuePageState,
+  IssuePageThread,
 } from "@penguin/protocol";
 
 import {
@@ -26,6 +27,22 @@ import {
 } from "../src/board-view.ts";
 
 const running = { id: "session-1", vendor: "codex", branch: "reports/retention", status: "running" as const };
+
+/** An issue page thread Jun opened, with `fields` replacing any of its fields. */
+function thread(fields: Partial<IssuePageThread>): IssuePageThread {
+  return {
+    id: "t1",
+    status: "open",
+    needsPersonIds: [],
+    body: "A limit of five still joins the tablet's users.",
+    anchor: null,
+    openedBy: "jun",
+    participants: ["jun"],
+    resolvedBy: null,
+    resolveReason: null,
+    ...fields,
+  };
+}
 
 function identity(id: string, session: IssuePageAssignee["session"] = running): IssuePageAssignee {
   return { kind: "identity", id, session, waitingFor: session === null ? "session" : null };
@@ -119,7 +136,7 @@ test("session status comes from the issue's state and routing", () => {
   assert.equal(sessionStatus(issue("1", "fixing", { assignees: [offline] }), offline), "blocked");
   const threaded = issue("1", "fixing", {
     assignees: [routed],
-    threads: [{ id: "t1", status: "open", needsPersonIds: ["priya"] }],
+    threads: [thread({ status: "open", needsPersonIds: ["priya"] })],
   });
   assert.equal(sessionStatus(threaded, routed), "blocked");
   // A person runs no session; an unassigned issue has none.
@@ -134,8 +151,8 @@ test("what the issue waits on follows its routing, its threads and its state", (
   assert.equal(on("closed"), null);
   assert.equal(on("fixing", {}, { ...identity("@sam/campaigns", null), waitingFor: "acceptance" }), "Owner acceptance");
   assert.equal(on("fixing", {}, identity("@jun/reports", null)), "A running session");
-  assert.equal(on("fixing", { threads: [{ id: "t1", status: "open", needsPersonIds: ["priya", "priya"] }] }), "Reply from priya");
-  assert.equal(on("fixing", { threads: [{ id: "t1", status: "resolved", needsPersonIds: ["priya"] }] }), "A fix");
+  assert.equal(on("fixing", { threads: [thread({ status: "open", needsPersonIds: ["priya", "priya"] })] }), "Reply from priya");
+  assert.equal(on("fixing", { threads: [thread({ status: "resolved", needsPersonIds: ["priya"] })] }), "A fix");
   assert.equal(on("open", {}, null), "An assignee");
   assert.equal(on("open", {}, person("jun")), "A fix");
   assert.equal(on("detected", {}, null), "An assignee");

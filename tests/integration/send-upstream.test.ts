@@ -72,6 +72,7 @@ function mcpProject(project: HuddleProject): McpProject {
     readFixTask: (id) => fixTask(project.huddles, project.index.resolve(id), project.index.issue(id)),
     issueRoutes: (id) => project.sessions.routes(project.index.resolve(id)),
     readIssue: (id) => project.index.read(id),
+    threadsNeeding: (person) => project.index.threadsNeeding(person),
     sessionUpdate: (caller, id, update) => project.sessionUpdate(caller, id, update),
     reportCheckpoint: () => {
       throw new Error("not used");

@@ -7,14 +7,16 @@
 // review is its own kind. A failed test is a failure and a test that errored is a warning, and the two
 // look different. Penguin's bookkeeping (labels, assignments, sub-issue links) is not an alert.
 
-import type {
-  IssuePage,
-  IssuePageCheck,
-  IssuePageOwnerApproval,
-  IssuePageReview,
-  IssuePageState,
-  IssuePageSubIssue,
-  IssuePageTimelineEntry,
+import {
+  anchoredReview,
+  type IssuePage,
+  type IssuePageCheck,
+  type IssuePageOwnerApproval,
+  type IssuePageReview,
+  type IssuePageState,
+  type IssuePageSubIssue,
+  type IssuePageThread,
+  type IssuePageTimelineEntry,
 } from "@penguin/protocol";
 
 export type PenguinState =
@@ -241,6 +243,15 @@ function checkVerb(result: unknown): string {
 }
 
 /** A reject reason as a label: "bad_signature" reads "bad signature". */
+/**
+ * Who a thread speaks for: the reviewer, for a thread Penguin opened for a review that requested
+ * changes on the issue, and otherwise whoever opened it. An author segment.
+ */
+export function threadOpener(thread: Pick<IssuePageThread, "anchor" | "openedBy">, reviews: readonly IssuePageReview[]): string {
+  const reviewOpId = anchoredReview(thread.anchor);
+  return reviews.find((review) => review.opId === reviewOpId)?.reviewer ?? thread.openedBy;
+}
+
 export function reasonLabel(reason: string | null): string {
   return (reason ?? "unknown").replaceAll("_", " ");
 }

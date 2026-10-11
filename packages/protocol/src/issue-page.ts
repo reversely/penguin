@@ -87,9 +87,19 @@ export interface IssuePageApproval {
 }
 
 export interface IssuePageThread {
+  /** The op_id of the open_thread operation, which replies and the resolution name. */
   readonly id: string;
   readonly status: "open" | "resolved";
   readonly needsPersonIds: readonly string[];
+  readonly body: string;
+  /** What the thread is about, such as `review:<op_id>` for a request for changes; null when unstated. */
+  readonly anchor: string | null;
+  /** The author segment of whoever opened the thread. */
+  readonly openedBy: string;
+  /** Author segments of everyone who opened, replied to or resolved the thread. */
+  readonly participants: readonly string[];
+  readonly resolvedBy: string | null;
+  readonly resolveReason: string | null;
 }
 
 export interface IssuePageSubIssue {

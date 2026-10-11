@@ -30,7 +30,7 @@ const sessions: CheckpointDeps["sessions"] = {
       : { status: "rejected", reason: "forbidden", message: `${caller} does not own ${sessionId}` },
   checkpoint: (caller, sessionId) =>
     caller === "jun" && sessionId === "ses_1"
-      ? { status: "ok", sessionId, handle: "@jun/reports", delivered: ["32"] }
+      ? { status: "ok", sessionId, handle: "@jun/reports", delivered: ["32"], threads: [] }
       : { status: "rejected", reason: "forbidden", message: `${caller} does not own ${sessionId}` },
 };
 
@@ -67,6 +67,7 @@ describe("OwnerFork checkpoints", () => {
       },
       // A recorded checkpoint is the session's safe checkpoint, so its waiting fix task is delivered.
       delivered: ["32"],
+      threads: [],
     });
   });
 

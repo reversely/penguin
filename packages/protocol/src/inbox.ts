@@ -9,10 +9,10 @@ import { checkSchema, type JsonSchema, type SchemaError } from "./schema-check.t
 
 /**
  * Why an item is in the inbox: an assignment to the person or an identity they answer for, a mention,
- * the issue closing, a request to start a session of an identity for the issue, or a request to
- * review a fix whose combined tests pass.
+ * the issue closing, a request to start a session of an identity for the issue, a request to
+ * review a fix whose combined tests pass, or a thread on the issue that needs the person.
  */
-export type InboxReason = "assigned" | "mentioned" | "closed" | "start_session" | "review_requested";
+export type InboxReason = "assigned" | "mentioned" | "closed" | "start_session" | "review_requested" | "thread";
 
 export interface InboxEntry {
   readonly issueId: string;
@@ -33,7 +33,7 @@ export interface Inbox {
   readonly items: readonly InboxEntry[];
 }
 
-const REASONS: readonly InboxReason[] = ["assigned", "mentioned", "closed", "start_session", "review_requested"];
+const REASONS: readonly InboxReason[] = ["assigned", "mentioned", "closed", "start_session", "review_requested", "thread"];
 const STATES: readonly IssuePageState[] = ["open", "detected", "fixing", "verifying", "in_review", "closed"];
 
 /** JSON Schema (draft 2020-12) for the GET /api/inbox answer. */

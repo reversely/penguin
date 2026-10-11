@@ -3,6 +3,7 @@ import {
   collectReviews,
   durableObjectSql,
   FixReviewStore,
+  HuddleThreadStore,
   pendingVerifications,
   recordVerification,
   runIdBaseOf,
@@ -13,6 +14,8 @@ import {
   type HuddleReviewDeps,
   type HuddleReviewer,
   type HuddleReviewPort,
+  type HuddleThread,
+  type HuddleThreadKeeper,
   type HuddleVerifier,
   type HuddleVerifyDeps,
   type PendingVerification,
@@ -24,16 +27,18 @@ import {
 /**
  * Runs the verification and review loop of one Huddle issue (PRD section 5): it schedules, coalesces
  * and supersedes the Huddle's verification runs and records their results, and once the combined
- * tests pass it collects the reviews of the Huddle's fixes (huddle-reviews.ts), keeping the runs and
- * each fix's review standing in its own SQLite. The ProjectAgent names one instance per Huddle issue
+ * tests pass it collects the reviews of the Huddle's fixes (huddle-reviews.ts), keeping the runs,
+ * each fix's review standing and the Huddle's threads (huddle-threads.ts) in its own SQLite. A
+ * counting review that requests changes opens a thread on its fix. The ProjectAgent names one instance per Huddle issue
  * and passes the Huddle record with each call, with a port back to itself: the HuddleAgent reads the
  * issue, owner forks and scope map there and writes its operations, review requests and approvals
  * there, where the service key signs the operations and the index validates them. A CryptoKey cannot
  * cross Durable Object RPC, so the signing stays on the ProjectAgent's side.
  */
-export class HuddleAgent extends Agent implements HuddleVerifier, HuddleReviewer {
+export class HuddleAgent extends Agent implements HuddleVerifier, HuddleReviewer, HuddleThreadKeeper {
   #runs: VerificationStore | undefined;
   #reviews: FixReviewStore | undefined;
+  #threads: HuddleThreadStore | undefined;
   /** Verification steps run one at a time, so no two interleave their writes. */
   #steps: Promise<unknown> = Promise.resolve();
 
@@ -101,6 +106,15 @@ export class HuddleAgent extends Agent implements HuddleVerifier, HuddleReviewer
     });
   }
 
+  /**
+   * Every thread on the Huddle issue and its fix sub-issues, as of the Huddle's last review
+   * collection, open or resolved; see huddle-threads.ts.
+   */
+  threads(huddle: Huddle): HuddleThread[] {
+    if (huddle.issueId === null) return [];
+    return this.#threadStore().all();
+  }
+
   #step<T>(step: () => Promise<T>): Promise<T> {
     const run = this.#steps.then(step);
     this.#steps = run.catch(() => undefined);
@@ -120,6 +134,7 @@ export class HuddleAgent extends Agent implements HuddleVerifier, HuddleReviewer
     return {
       ...this.#deps(issueId, project),
       reviews: this.#reviewStore(),
+      threads: this.#threadStore(),
       scopeMap: () => project.scopeMap(),
       requestReview: (ownerId, subIssueId) => project.requestReview(ownerId, subIssueId),
       recordApproval: (subIssueId, approval) => project.recordApproval(subIssueId, approval),
@@ -129,6 +144,11 @@ export class HuddleAgent extends Agent implements HuddleVerifier, HuddleReviewer
   #reviewStore(): FixReviewStore {
     this.#reviews ??= new FixReviewStore(durableObjectSql(this.ctx.storage));
     return this.#reviews;
+  }
+
+  #threadStore(): HuddleThreadStore {
+    this.#threads ??= new HuddleThreadStore(durableObjectSql(this.ctx.storage));
+    return this.#threads;
   }
 
   /** The Huddle's runs, numbered in the Huddle issue's own range so run IDs stay unique in the project. */

@@ -4,8 +4,9 @@
 //
 // It runs after the validator, which has already checked form, signature, author, base version and
 // charter. The reducer checks what needs the issue's contents: that the issue exists, and that a
-// referenced comment, thread or sub-issue exists and is in a state that allows the operation, and
-// that a send_upstream comes from an identity assigned to the issue. It also
+// referenced comment, thread or sub-issue exists and is in a state that allows the operation, that a
+// send_upstream comes from an identity assigned to the issue, and that a thread is resolved by one of
+// its people (packages/policies/src/thread-rights.ts). It also
 // records whether a review counts toward approval, which depends on the issue's scope labels and the
 // owners' delegates: a review from someone without review rights is kept as a comment that does not
 // count (PRD sections 5 and 14).
@@ -15,7 +16,7 @@
 // later reference to the alias, as an operation's issue or as a sub-issue, resolves to the number
 // through the context (#48).
 
-import { reviewRight, type Delegates } from "@penguin/policies";
+import { reviewRight, threadResolveRight, type Delegates } from "@penguin/policies";
 import { authorSegment, isTemporaryIssueId, type IssueId, type Operation, type Party } from "@penguin/protocol";
 import type { ScopeMap } from "@penguin/scope-map";
 
@@ -32,6 +33,8 @@ export const REDUCE_REJECT_REASONS = [
   "unknown_thread",
   /** The thread it replies to or resolves is already resolved. */
   "thread_resolved",
+  /** A resolve_thread from someone other than a person who takes part in the thread. */
+  "not_thread_participant",
   /** The sub-issue is the issue itself. */
   "sub_issue_self",
   /** The sub-issue does not exist. */
@@ -380,6 +383,10 @@ function apply(issue: IssueRecord, operation: Operation, context: ReduceContext)
       const thread = issue.threads.get(id);
       if (thread === undefined) return reject("unknown_thread", `no thread ${id} on issue ${issue.id}`);
       if (thread.status === "resolved") return reject("thread_resolved", `thread ${id} is already resolved`);
+      if (operation.type === "resolve_thread") {
+        const right = threadResolveRight(operation.author, thread, (review) => issue.reviews.get(review)?.reviewerOwnerId);
+        if (!right.allowed) return reject("not_thread_participant", right.message);
+      }
       const participants = thread.participants.includes(author)
         ? thread.participants
         : [...thread.participants, author];

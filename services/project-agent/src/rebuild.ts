@@ -84,7 +84,7 @@ export const COMPARED_TABLES: Readonly<Record<string, ComparedTable>> = {
 /**
  * Tables in the agent's database with no counterpart in the repo: PendingOp holds operations not yet
  * pushed, the session router's tables (session-store.ts) hold sessions, acceptances, requests and
- * fix tasks waiting for a session's checkpoint, and InboxItem (inbox-store.ts) holds read flags and
+ * fix tasks waiting for a session's checkpoint and the threads each session was told of, and InboxItem (inbox-store.ts) holds read flags and
  * items for those requests.
  */
 export const LIVE_ONLY_TABLES: readonly string[] = [
@@ -93,6 +93,7 @@ export const LIVE_ONLY_TABLES: readonly string[] = [
   "AssignmentAcceptance",
   "OwnerRequest",
   "PendingDelivery",
+  "ThreadNotice",
   "InboxItem",
 ];
 

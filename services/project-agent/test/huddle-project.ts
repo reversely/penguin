@@ -24,6 +24,7 @@ import { openHuddle, type HuddleOpenDeps, type HuddleOpenOutcome } from "../src/
 import { FixApprovalStore } from "../src/approval-store.ts";
 import { collectReviews, FixReviewStore, type HuddleReviewDeps, type ReviewCollection } from "../src/huddle-reviews.ts";
 import { HuddleStore, type Huddle } from "../src/huddle-store.ts";
+import { HuddleThreadStore } from "../src/huddle-threads.ts";
 import {
   huddlesOf,
   recordVerification,
@@ -46,7 +47,7 @@ import {
 import { OwnerForkStore, recordReportedCheckpoint, type CheckpointOutcome } from "../src/owner-forks.ts";
 import { importServiceKey, type ServiceKey } from "../src/service-key.ts";
 import { postSessionUpdate, type SessionUpdate, type SessionUpdateOutcome } from "../src/session-updates.ts";
-import { SessionStore } from "../src/session-store.ts";
+import { SessionStore, threadRefs } from "../src/session-store.ts";
 import { VerificationStore } from "../src/verification-store.ts";
 import { reassignUpstream } from "../src/upstream.ts";
 import { sqlite } from "./issues-repo.ts";
@@ -103,6 +104,8 @@ export class HuddleProject {
   readonly huddleRuns = new Map<string, VerificationStore>();
   /** Each Huddle's review standing, by trigger commit, each over its own database as its HuddleAgent keeps it. */
   readonly huddleReviews = new Map<string, FixReviewStore>();
+  /** Each Huddle's threads, by trigger commit, each over its own database as its HuddleAgent keeps them. */
+  readonly huddleThreads = new Map<string, HuddleThreadStore>();
   /** Each fix's approval as the ProjectAgent keeps it for the issue page. */
   readonly approvals: FixApprovalStore;
   /** Each owner's delegate, as the base repo's `penguin/owners.json` names them. */
@@ -132,6 +135,7 @@ export class HuddleProject {
       assigningOwner: (issueId, handle) => index.assigningOwner(issueId, handle),
       startRequests: inbox,
       deliverAtCheckpoint: (issueId) => this.huddles.isFix(issueId),
+      threadsNeeding: (person) => threadRefs(index.threadsNeeding(person)),
     });
     [this.index, this.sessions, this.inbox] = [index, sessions, inbox];
     this.forks = new OwnerForkStore(this.sql);
@@ -289,11 +293,22 @@ export class HuddleProject {
     return reviews;
   }
 
+  /** The threads of the Huddle opened by `triggerCommit`, kept as its HuddleAgent keeps them. */
+  threadsOf(triggerCommit: string): HuddleThreadStore {
+    let threads = this.huddleThreads.get(triggerCommit);
+    if (threads === undefined) {
+      threads = new HuddleThreadStore(sqlite().sql);
+      this.huddleThreads.set(triggerCommit, threads);
+    }
+    return threads;
+  }
+
   /** The dependencies a HuddleAgent's review steps have: its runs and reviews, and the ProjectAgent's side. */
   async reviewDeps(huddle: Huddle): Promise<HuddleReviewDeps> {
     return {
       ...(await this.verifyDeps(huddle)),
       reviews: this.reviewsOf(huddle.triggerCommit),
+      threads: this.threadsOf(huddle.triggerCommit),
       scopeMap: () => this.scopeMap,
       requestReview: (ownerId, issueId) => this.inbox.reviewRequested(ownerId, issueId),
       recordApproval: (issueId, approval) => {
@@ -320,9 +335,25 @@ export class HuddleProject {
   ): Promise<SubmitOutcome> {
     const version = this.index.issue(issueId)?.version ?? 0;
     const outcome = await this.submit({ issue: Number(issueId), type: "review", base_version: version, payload }, { person }, "dashboard");
-    const huddle = this.huddles.fixOf(issueId)?.huddle;
-    if (huddle !== undefined) await this.collectReviews(huddle);
+    await this.collectFor(issueId);
     return outcome;
+  }
+
+  /**
+   * `person` writes a thread operation (reply_thread or resolve_thread) from the dashboard; the
+   * issue's Huddle then collects its reviews and threads, as the ProjectAgent has it do.
+   */
+  async thread(person: string, issueId: string, type: "reply_thread" | "resolve_thread", payload: object): Promise<SubmitOutcome> {
+    const version = this.index.issue(issueId)?.version ?? 0;
+    const outcome = await this.submit({ issue: Number(issueId), type, base_version: version, payload }, { person }, "dashboard");
+    await this.collectFor(issueId);
+    return outcome;
+  }
+
+  /** Collects the reviews of the Huddle the issue belongs to, as its Huddle issue or a fix sub-issue. */
+  async collectFor(issueId: string): Promise<void> {
+    const huddle = this.huddles.fixOf(issueId)?.huddle ?? this.huddles.byIssue(issueId);
+    if (huddle !== undefined) await this.collectReviews(huddle);
   }
 
   /** Where approval of the fix sub-issue stands, as the issue page shows it. */

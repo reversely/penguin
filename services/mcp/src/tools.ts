@@ -83,6 +83,8 @@ export interface McpProject {
   readIdentity(id: string): MaybePromise<CharterView | undefined>;
   /** The task view of a fix sub-issue, or undefined for any other issue. */
   readFixTask(issueId: string): MaybePromise<FixTaskView | undefined>;
+  /** Every open thread that needs the person, on any issue. */
+  threadsNeeding(person: string): MaybePromise<readonly { readonly issueId: string; readonly thread: Thread }[]>;
   issueRoutes(issueId: string): MaybePromise<readonly { readonly handle: string }[]>;
   readIssue(
     id: string,
@@ -155,6 +157,8 @@ export type CheckpointResult =
       };
       /** The fix tasks this checkpoint delivered to the session. */
       readonly delivered: readonly string[];
+      /** The threads needing the session's developer that the session hears of for the first time. */
+      readonly threads?: readonly { readonly issueId: string; readonly threadId: string }[];
     }
   | Rejection;
 
@@ -327,9 +331,10 @@ export function createPenguinMcpServer(owner: string, project: McpProject, repos
       title: "Get work",
       description:
         "The issues assigned to this session's identity and routed to the session, each with its pinned " +
-        "base, allowed scopes and paths, failing tests and acceptance criteria, plus the open threads on " +
-        "those issues that need your developer. Tell your developer about those threads. A fix task " +
-        "appears from the session's next safe checkpoint on, so it never interrupts work in progress.",
+        "base, allowed scopes and paths, failing tests and acceptance criteria, plus every open thread, " +
+        "on any issue, that needs your developer, such as a reviewer's request for changes. Tell your " +
+        "developer about each of those threads in your conversation; reply in one with post_update. A " +
+        "fix task appears from the session's next safe checkpoint on, so it never interrupts work in progress.",
       inputSchema: workInput,
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -344,11 +349,12 @@ export function createPenguinMcpServer(owner: string, project: McpProject, repos
         const { issue } = await project.readIssue(issueId);
         if (issue !== undefined) issues.push({ issue, task: await project.readFixTask(issue.id) });
       }
+      const threads = await project.threadsNeeding(owner);
       return result({
         sessionId: id,
         identity: live.session.handle,
         issues: issues.map(({ issue, task }) => workItem(issue, charter, task)),
-        threadsNeedingYou: issues.flatMap(({ issue }) => threadsNeeding(issue, owner)),
+        threadsNeedingYou: threads.map(({ issueId, thread }) => ({ issueId, ...threadFields(thread) })),
       });
     },
   );
@@ -423,7 +429,8 @@ export function createPenguinMcpServer(owner: string, project: McpProject, repos
       description:
         "Tells Penguin that the bridge published a checkpoint to your owner's fork. Penguin records the " +
         "commit as the fork's latest checkpoint once it finds the commit in that fork. A recorded " +
-        "checkpoint is a safe checkpoint: `newWork` lists the fix tasks it delivered; read them with get_work.",
+        "checkpoint is a safe checkpoint: `newWork` lists the fix tasks it delivered and `newThreads` the " +
+        "threads that newly need your developer; read both with get_work.",
       inputSchema: checkpointInput,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
@@ -442,7 +449,8 @@ export function createPenguinMcpServer(owner: string, project: McpProject, repos
       });
       if (outcome.status === "rejected") return rejected(outcome);
       const { ownerId, latestCheckpointSha, reportedAt } = outcome.fork;
-      return result({ fork: own, ownerId, latestCheckpointSha, reportedAt, newWork: [...outcome.delivered] });
+      const newThreads = (outcome.threads ?? []).map(({ issueId, threadId }) => ({ issueId, threadId }));
+      return result({ fork: own, ownerId, latestCheckpointSha, reportedAt, newWork: [...outcome.delivered], newThreads });
     },
   );
 
@@ -473,12 +481,6 @@ function workItem(issue: IssueRecord, charter: CharterView | undefined, task: Fi
     acceptanceCriteria: [...(task?.acceptanceCriteria ?? [])],
     personWritten: { title: issue.title, body: issue.body },
   };
-}
-
-function threadsNeeding(issue: IssueRecord, person: string): Record<string, unknown>[] {
-  return [...issue.threads.values()]
-    .filter((thread) => thread.status === "open" && thread.needsPersonIds.includes(person))
-    .map((thread) => ({ issueId: issue.id, ...threadFields(thread) }));
 }
 
 function threadFields(thread: Thread): Record<string, unknown> {

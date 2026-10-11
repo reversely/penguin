@@ -5,7 +5,7 @@
 // - from the agent product's PreToolUse hook, before the agent's next tool action. Claude Code and
 //   Codex both run a command hook in the session's working directory and add a JSON answer's
 //   `hookSpecificOutput.additionalContext` to the model's context, which is how the agent hears
-//   that a fix task arrived;
+//   that a fix task arrived, or that a thread now needs its developer;
 // - as an explicit bridge checkpoint, by hand or after `penguin-bridge checkpoint` publishes.
 //
 // Penguin knows the session by the worktree id it registered with, which `penguin-bridge
@@ -35,11 +35,21 @@ export const SESSION_CHECKPOINT_USAGE = `       penguin-bridge session-checkpoin
        penguin-bridge worktree-id [--worktree <path>]
 `;
 
-/** One session's part of a safe checkpoint: the fix tasks Penguin delivered to it. */
+/** An open thread, by its issue and the op_id of the operation that opened it. */
+export interface ThreadNotice {
+  readonly issueId: string;
+  readonly threadId: string;
+}
+
+/**
+ * One session's part of a safe checkpoint: the fix tasks Penguin delivered to it, and the threads
+ * needing the session's developer that it hears of for the first time.
+ */
 export interface SessionDelivery {
   readonly sessionId: string;
   readonly identity: string;
   readonly delivered: readonly string[];
+  readonly threads: readonly ThreadNotice[];
 }
 
 /** The worktree that holds `path`, and the id sessions in it register with. */
@@ -72,42 +82,68 @@ export async function sendSessionCheckpoint(
   if (response.status !== 200 || !Array.isArray(body.sessions)) {
     throw new RemoteUnavailableError(`Penguin could not take the safe checkpoint (HTTP ${response.status})`);
   }
-  return body.sessions.filter(isDelivery);
+  return body.sessions.flatMap((value: unknown) => {
+    const delivery = asDelivery(value);
+    return delivery === undefined ? [] : [delivery];
+  });
 }
 
-function isDelivery(value: unknown): value is SessionDelivery {
-  if (typeof value !== "object" || value === null) return false;
-  const { sessionId, identity, delivered } = value as Record<string, unknown>;
-  return (
+/** A session's delivery from Penguin's answer, or undefined when malformed. A server without threads sends none. */
+function asDelivery(value: unknown): SessionDelivery | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const { sessionId, identity, delivered, threads = [] } = value as Record<string, unknown>;
+  const wellFormed =
     typeof sessionId === "string" &&
     typeof identity === "string" &&
     Array.isArray(delivered) &&
-    delivered.every((issue) => typeof issue === "string")
-  );
+    delivered.every((issue) => typeof issue === "string") &&
+    Array.isArray(threads) &&
+    threads.every(isThreadNotice);
+  return wellFormed ? { sessionId, identity, delivered, threads } : undefined;
 }
 
-/** One line per session that received fix tasks, or "" when none did. */
+function isThreadNotice(value: unknown): value is ThreadNotice {
+  if (typeof value !== "object" || value === null) return false;
+  const { issueId, threadId } = value as Record<string, unknown>;
+  return typeof issueId === "string" && typeof threadId === "string";
+}
+
+/** One line per session that received fix tasks and one per session with new threads, or "". */
 export function formatDeliveries(deliveries: readonly SessionDelivery[]): string {
   return deliveries
-    .filter((delivery) => delivery.delivered.length > 0)
-    .map((delivery) => {
-      const issues = delivery.delivered.map((issue) => `#${issue}`).join(", ");
-      const tasks = delivery.delivered.length === 1 ? "fix task" : "fix tasks";
-      return `Penguin delivered ${tasks} ${issues} to ${delivery.identity} (session ${delivery.sessionId}).\n`;
+    .flatMap((delivery) => {
+      const session = `${delivery.identity} (session ${delivery.sessionId})`;
+      const lines: string[] = [];
+      if (delivery.delivered.length > 0) {
+        const issues = delivery.delivered.map((issue) => `#${issue}`).join(", ");
+        const tasks = delivery.delivered.length === 1 ? "fix task" : "fix tasks";
+        lines.push(`Penguin delivered ${tasks} ${issues} to ${session}.\n`);
+      }
+      if (delivery.threads.length > 0) {
+        const issues = [...new Set(delivery.threads.map((thread) => `#${thread.issueId}`))].join(", ");
+        const threads = delivery.threads.length === 1 ? "a thread" : `${delivery.threads.length} threads`;
+        const need = delivery.threads.length === 1 ? "needs" : "need";
+        lines.push(`Penguin: ${threads} on ${issues} now ${need} the developer of ${session}.\n`);
+      }
+      return lines;
     })
     .join("");
 }
 
 /**
- * The PreToolUse hook answer that tells the agent about delivered fix tasks, or undefined when none
- * arrived, so the hook prints nothing and the tool call goes ahead unchanged.
+ * The PreToolUse hook answer that tells the agent about delivered fix tasks and threads that now need
+ * its developer, or undefined when nothing arrived, so the hook prints nothing and the tool call goes
+ * ahead unchanged.
  */
 export function hookAnswer(deliveries: readonly SessionDelivery[]): string | undefined {
   const delivered = formatDeliveries(deliveries);
   if (delivered === "") return undefined;
+  const threads = deliveries.some((delivery) => delivery.threads.length > 0)
+    ? " Tell your developer about each thread in get_work's threadsNeedingYou."
+    : "";
   const additionalContext =
-    `${delivered.trim()} Finish the step you are on, then call the penguin get_work tool with your ` +
-    "sessionId to read each task's pinned base, allowed paths, failing tests and acceptance criteria.";
+    `${delivered.trim().replaceAll("\n", " ")} Finish the step you are on, then call the penguin get_work tool with ` +
+    `your sessionId to read each task's pinned base, allowed paths, failing tests and acceptance criteria.${threads}`;
   return `${JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext } })}\n`;
 }
 

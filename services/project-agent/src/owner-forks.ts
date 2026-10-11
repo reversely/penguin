@@ -8,7 +8,7 @@
 // one project, and `publishing_consent` stays with the owner's bridge, which asks before each publish.
 
 import type { SqlDatabase, SqlValue } from "./issue-index.ts";
-import type { SessionRejection, SessionStore } from "./session-store.ts";
+import type { SessionRejection, SessionStore, ThreadRef } from "./session-store.ts";
 
 type Row = Record<string, SqlValue>;
 
@@ -34,9 +34,17 @@ export interface OwnerFork {
 
 export type CheckpointOutcome = { readonly status: "ok"; readonly fork: OwnerFork } | SessionRejection;
 
-/** A checkpoint a session reported, with the fix tasks it delivered to that session. */
+/**
+ * A checkpoint a session reported, with the fix tasks it delivered to that session and the threads
+ * needing the session's owner that the session hears of for the first time.
+ */
 export type SessionCheckpointOutcome =
-  | { readonly status: "ok"; readonly fork: OwnerFork; readonly delivered: readonly string[] }
+  | {
+      readonly status: "ok";
+      readonly fork: OwnerFork;
+      readonly delivered: readonly string[];
+      readonly threads: readonly ThreadRef[];
+    }
   | SessionRejection;
 
 export class OwnerForkStore {
@@ -101,7 +109,8 @@ export async function reportCheckpoint(
   if (recorded.status === "rejected") return recorded;
   // The session can have gone offline while the commit was looked up; it then receives nothing.
   const delivery = deps.sessions.checkpoint(caller, sessionId);
-  return { ...recorded, delivered: delivery.status === "ok" ? delivery.delivered : [] };
+  if (delivery.status !== "ok") return { ...recorded, delivered: [], threads: [] };
+  return { ...recorded, delivered: delivery.delivered, threads: delivery.threads };
 }
 
 /**

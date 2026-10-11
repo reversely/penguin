@@ -398,6 +398,22 @@ export class IssueIndex {
     return this.#cache.get(number);
   }
 
+  /** Every open thread that needs `person`, on any issue, the most recently written last. */
+  threadsNeeding(person: string): { readonly issueId: string; readonly thread: Thread }[] {
+    return this.#db
+      .exec(
+        `SELECT t.issue_id, t.id FROM Thread t WHERE t.status = 'open'
+           AND EXISTS (SELECT 1 FROM json_each(t.needs_person_ids) n WHERE n.value = ?)
+         ORDER BY t.rowid`,
+        person,
+      )
+      .flatMap((row) => {
+        const issueId = row["issue_id"] as string;
+        const thread = this.issue(issueId)?.threads.get(row["id"] as string);
+        return thread === undefined ? [] : [{ issueId, thread }];
+      });
+  }
+
   /**
    * One issue, by its number or its temporary ID, with every operation recorded against it, applied
    * or rejected, in apply order. Operations rejected under the temporary ID before the create was

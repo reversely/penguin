@@ -74,6 +74,7 @@ class Project {
       // As the ProjectAgent wires them: a temporary ID resolves to the issue's number.
       issueRoutes: (id) => this.sessions.routes(this.index.resolve(id)),
       readIssue: (id) => this.index.read(id),
+      threadsNeeding: (person) => this.index.threadsNeeding(person),
       // As ProjectAgent.sessionUpdate wires it, with the scope map read from the fixture.
       sessionUpdate: (caller, id, update) =>
         postSessionUpdate(
@@ -674,6 +675,7 @@ describe("MCP: report_checkpoint", () => {
       latestCheckpointSha: CHECKPOINT,
       reportedAt: new Date(START).toISOString(),
       newWork: [],
+      newThreads: [],
     });
     assert.deepEqual(project.commitReads, [[`${PREFIX}owner-jun`, CHECKPOINT]]);
     assert.deepEqual(project.forks.get("jun"), {

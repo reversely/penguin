@@ -457,7 +457,7 @@ test("a bridge's session checkpoint reaches only its owner's running sessions in
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), {
     worktreeId: "wt_0123456789abcdef",
-    sessions: [{ sessionId: junHere, identity: "@jun/reports", delivered: [] }],
+    sessions: [{ sessionId: junHere, identity: "@jun/reports", delivered: [], threads: [] }],
   });
   // The checkpoint counts as that session's heartbeat; the other sessions were not touched.
   const seen = sessions.running().map((session) => [session.id === junHere, Date.parse(session.lastSeen) === clock.now]);

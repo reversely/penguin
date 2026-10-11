@@ -25,3 +25,10 @@ export {
   type OwnerApprovalState,
   type ReviewRecord,
 } from "./fix-approval.ts";
+export {
+  segmentPerson,
+  threadPeople,
+  threadResolveRight,
+  type ThreadRecord,
+  type ThreadRight,
+} from "./thread-rights.ts";

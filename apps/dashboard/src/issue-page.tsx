@@ -1,6 +1,7 @@
 // The issue page (PRD section 8): title, body, labels, assignees, the trigger, attached checks,
 // sub-issues with their sessions and reviews, the timeline with rejected operations and their
-// reasons, the comment box, and controls to assign an identity or unassign anyone. Every value from the issue renders as React text, so markup in an
+// reasons, the comment box, the threads with a reply box and Resolve, and controls to assign an
+// identity or unassign anyone. Every value from the issue renders as React text, so markup in an
 // issue body or comment shows as text and runs nothing.
 //
 // The page shows no diff. Another owner's unfinished work appears only as linked commits and checks;
@@ -12,6 +13,7 @@ import type {
   IssuePageCheck,
   IssuePageReview,
   IssuePageSubIssue,
+  IssuePageThread,
   IssuePageTimelineEntry,
 } from "@penguin/protocol";
 import { useEffect, useState, type ChangeEvent, type FormEvent } from "react";
@@ -33,6 +35,7 @@ import {
   shortSha,
   SIGNAL_LABEL,
   STATE_LABEL,
+  threadOpener,
   watchedIssues,
   type PenguinState,
   type Signal,
@@ -190,6 +193,17 @@ function IssueContent({
               </ul>
             )}
           </section>
+
+          {issue.threads.length === 0 ? null : (
+            <section className="panel" aria-labelledby="issue-threads">
+              <h2 id="issue-threads">Threads</h2>
+              <ul className="rows">
+                {issue.threads.map((thread) => (
+                  <ThreadRow key={thread.id} issue={issue} thread={thread} onSignedOut={onSignedOut} onWritten={onWritten} />
+                ))}
+              </ul>
+            </section>
+          )}
 
           <section className="panel" aria-labelledby="issue-timeline">
             <h2 id="issue-timeline">Timeline</h2>
@@ -540,6 +554,93 @@ function AssigneesPanel({
         </p>
       )}
     </section>
+  );
+}
+
+/** One thread: who opened it, its text, whom it needs and, while open, a reply box and Resolve. */
+function ThreadRow({
+  issue,
+  thread,
+  onSignedOut,
+  onWritten,
+}: {
+  issue: IssuePage["issue"];
+  thread: IssuePageThread;
+  onSignedOut: () => void;
+  onWritten: () => void;
+}) {
+  const [body, setBody] = useState("");
+  const [sending, setSending] = useState(false);
+  const [problem, setProblem] = useState<string | undefined>(undefined);
+  const open = thread.status === "open";
+
+  const write = (type: "reply_thread" | "resolve_thread") => {
+    if (sending || (type === "reply_thread" && body.trim() === "")) return;
+    setSending(true);
+    setProblem(undefined);
+    const payload = type === "reply_thread" ? { thread: thread.id, body } : { thread: thread.id };
+    submitOperation({ issue: Number(issue.id), type, base_version: issue.version, payload }).then(
+      (outcome) => {
+        setSending(false);
+        if (outcome.status === "applied") setBody("");
+        else setProblem(`Rejected for ${reasonLabel(outcome.reason)}`);
+        onWritten();
+      },
+      (error: unknown) => {
+        setSending(false);
+        if (error instanceof SignedOut) onSignedOut();
+        else setProblem("Please try again");
+      },
+    );
+  };
+
+  const reply = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    write("reply_thread");
+  };
+
+  const bodyId = `thread-reply-${thread.id}`;
+  return (
+    <li className="sub-issue">
+      <div className="sub-issue-head">
+        <span className="tag">{open ? "Open" : "Resolved"}</span>
+        <span className="row-title">{authorName(threadOpener(thread, issue.reviews))}</span>
+        {thread.needsPersonIds.length === 0 ? null : (
+          <span className="muted">Needs {thread.needsPersonIds.map(authorName).join(", ")}</span>
+        )}
+        {thread.resolvedBy === null ? null : <span className="muted">Resolved by {authorName(thread.resolvedBy)}</span>}
+      </div>
+      <p className="body-text">{thread.body}</p>
+      {open ? (
+        <form className="comment-box" onSubmit={reply}>
+          <label htmlFor={bodyId} className="visually-hidden">
+            Reply
+          </label>
+          <textarea
+            id={bodyId}
+            rows={2}
+            maxLength={32768}
+            placeholder="Reply"
+            value={body}
+            onChange={(event: ChangeEvent<HTMLTextAreaElement>) => setBody(event.target.value)}
+          />
+          <div className="comment-actions">
+            {problem === undefined ? null : (
+              <p className="notice" role="alert">
+                {problem}
+              </p>
+            )}
+            <button type="button" className="button" disabled={sending} onClick={() => write("resolve_thread")}>
+              Resolve
+            </button>
+            <button type="submit" className="button primary icon-end" disabled={sending || body.trim() === ""}>
+              Reply
+              <Icon name="send" />
+            </button>
+          </div>
+        </form>
+      ) : null}
+    </li>
   );
 }
 

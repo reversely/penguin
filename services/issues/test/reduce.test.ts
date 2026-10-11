@@ -124,6 +124,25 @@ describe("reduce", () => {
     rejected(reduce(issue, op(priya, "resolve_thread", { thread: "jun-web-9999" }), noIssues), "unknown_thread");
   });
 
+  test("a thread Penguin opened for a request for changes is resolved by its people only", () => {
+    let issue = ok(reduce(created(), op(priya, "add_label", { label: "scope:analytics" }), noIssues));
+    const review = op(jun, "review", {
+      verdict: "request_changes",
+      commit: "owner-priya@9b2f10",
+      reason: "A limit of five still joins the tablet's users.",
+    });
+    issue = ok(reduce(issue, review, noIssues));
+    const anchor = `review:${review.op_id}`;
+    const open = op({ penguin: true }, "open_thread", { body: "A limit of five", anchor, needs: ["priya"] });
+    issue = ok(reduce(issue, open, noIssues));
+    const resolve = (author: Author) => reduce(issue, op(author, "resolve_thread", { thread: open.op_id }), noIssues);
+    rejected(resolve({ person: "sam" }), "not_thread_participant");
+    rejected(resolve({ identity: "@priya/merge-rules" }), "not_thread_participant");
+    // Jun wrote the review the thread answers; Priya is the person it needs.
+    assert.equal(ok(resolve(jun)).threads.get(open.op_id)?.resolvedBy, "jun");
+    assert.equal(ok(resolve(priya)).threads.get(open.op_id)?.status, "resolved");
+  });
+
   test("open_sub_issue rejects itself, unknown issues, issues with a parent, and cycles", () => {
     const parents = new Map<string, string | null>([
       ["31", null],

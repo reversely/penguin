@@ -11,6 +11,10 @@
 //   identity for the issue. The item goes away once no such request remains.
 // - "review_requested": a Huddle's HuddleAgent asks the person to review a fix sub-issue whose
 //   combined tests pass (huddle-reviews.ts). A request for a newer fix commit marks it unread again.
+// - "thread": a thread on the issue needs the person (PRD section 4, Layer 2: "When a thread needs a
+//   person, ... Add the thread to the person's inbox"). Opening a thread raises it for each person
+//   the thread needs; a reply raises it again for every person of the thread (thread-rights.ts),
+//   which includes the reviewer whose request for changes opened it.
 //
 // The person who did the thing gets no "assigned", "mentioned" or "closed" item for it. An identity's
 // operation counts as its owner half's doing, as in IssueIndex.assigningOwner.
@@ -19,19 +23,17 @@
 // again and moves it to the top. Assigned and mentioned items stay after an unassign or a deleted
 // mention: the inbox records what happened.
 //
-// "Threads that need you" wait for thread routing in Phase 4.
-//
 // InboxItem is live state: read flags and session requests have no counterpart in the issues repo, so
 // a rebuild never derives items (rebuild.ts lists the table as live-only).
 
 import { authorSegment, PENGUIN_AUTHOR_SEGMENT, type Author } from "@penguin/protocol";
-import type { Assignment } from "@penguin/issues";
+import { threadPeople, type Assignment, type IssueRecord } from "@penguin/issues";
 
 import type { IdentityStore } from "./identity-store.ts";
 import type { IssueChange, SqlDatabase } from "./issue-index.ts";
 import { responsibleOwners, type StartRequestListener } from "./session-store.ts";
 
-export const INBOX_REASONS = ["assigned", "mentioned", "closed", "start_session", "review_requested"] as const;
+export const INBOX_REASONS = ["assigned", "mentioned", "closed", "start_session", "review_requested", "thread"] as const;
 export type InboxReason = (typeof INBOX_REASONS)[number];
 
 export interface InboxItem {
@@ -120,6 +122,14 @@ export class InboxStore implements StartRequestListener {
         raise(this.#people({ assigneeKind: mentionedKind, assigneeId: mentionedId }, undefined), "mentioned");
       }
     }
+    if (previous?.threads !== next.threads) {
+      for (const [id, thread] of next.threads) {
+        const before = previous?.threads.get(id);
+        if (before === undefined) raise(thread.needsPersonIds, "thread");
+        // The reducer rewrites a thread only to reply to it or resolve it.
+        else if (before !== thread && thread.status === "open") raise(threadPeople(thread, reviewerOn(next)), "thread");
+      }
+    }
     if (next.state === "closed" && previous?.state !== "closed") {
       const rows = this.#db.exec(`SELECT DISTINCT person_id FROM InboxItem WHERE issue_id = ?`, issueId);
       raise(rows.map((row) => row["person_id"] as string), "closed");
@@ -169,6 +179,11 @@ export class InboxStore implements StartRequestListener {
       this.#now(),
     );
   }
+}
+
+/** The reviewer of a review on the issue, by the review's op_id. */
+function reviewerOn(issue: IssueRecord): (reviewOpId: string) => string | undefined {
+  return (reviewOpId) => issue.reviews.get(reviewOpId)?.reviewerOwnerId;
 }
 
 /** The person behind an operation: a person author, or an identity's owner half; none for Penguin. */

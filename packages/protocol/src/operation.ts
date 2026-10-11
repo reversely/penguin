@@ -50,6 +50,20 @@ export interface OpIdParts {
 /** Number of hexadecimal digits in a bridge's writer tag. */
 const BRIDGE_TAG_LENGTH = 4;
 
+/** The anchor of the thread Penguin opens for a review that requests changes: `review:<review op_id>`. */
+export const REVIEW_THREAD_ANCHOR_PREFIX = "review:";
+
+/** The anchor of the thread opened for the review `reviewOpId`. */
+export function reviewThreadAnchor(reviewOpId: string): string {
+  return `${REVIEW_THREAD_ANCHOR_PREFIX}${reviewOpId}`;
+}
+
+/** The op_id of the review a thread was opened for, or null when its anchor names no review. */
+export function anchoredReview(anchor: string | null): string | null {
+  if (anchor === null || !anchor.startsWith(REVIEW_THREAD_ANCHOR_PREFIX)) return null;
+  return anchor.slice(REVIEW_THREAD_ANCHOR_PREFIX.length);
+}
+
 /**
  * The author's file-name segment: a person's ID, an identity handle "@owner/name" as "owner.name",
  * or "penguin". Person IDs and handle halves contain no dots, so the mapping never collides.

@@ -52,6 +52,7 @@ import { rebuildIndex, type RebuildReport } from "./rebuild.ts";
 import { OWNERS_PATH, parseOwnersFile, parseScopeFile, SCOPE_MAP_PATH } from "./scope-file.ts";
 import { FixApprovalStore } from "./approval-store.ts";
 import type { HuddleReviewer, HuddleReviewPort, ReviewCollection } from "./huddle-reviews.ts";
+import type { HuddleThread, HuddleThreadKeeper } from "./huddle-threads.ts";
 import {
   IdentityStore,
   type Identity,
@@ -65,6 +66,7 @@ import { scheduleSweep } from "./session-sweep.ts";
 import {
   SESSION_OFFLINE_AFTER_MS,
   SessionStore,
+  threadRefs,
   type AcceptOutcome,
   type AssignmentRoute,
   type Delivery,
@@ -74,7 +76,7 @@ import {
   type SessionOutcome,
   type SessionWork,
 } from "./session-store.ts";
-import type { Delegates, FixLookup, IssueRecord, ReduceRejectReason, RejectReason } from "@penguin/issues";
+import type { Delegates, FixLookup, IssueRecord, ReduceRejectReason, RejectReason, Thread } from "@penguin/issues";
 import {
   identitiesChangedMessage,
   inboxChangedMessage,
@@ -211,6 +213,15 @@ export {
   type HuddleReviewPort,
   type ReviewCollection,
 } from "./huddle-reviews.ts";
+export {
+  assigneeOwner,
+  HUDDLE_THREAD_SCHEMA,
+  HuddleThreadStore,
+  reviewThreadsDue,
+  type HuddleThread,
+  type HuddleThreadKeeper,
+  type ReviewThreadDraft,
+} from "./huddle-threads.ts";
 export { FIX_APPROVAL_SCHEMA, FixApprovalStore } from "./approval-store.ts";
 export {
   dropProjectVerificationTable,
@@ -245,6 +256,7 @@ export {
   SESSION_LIMITS,
   SESSION_OFFLINE_AFTER_MS,
   SessionStore,
+  threadRefs,
   type AcceptOutcome,
   type AssignmentRoute,
   type CheckpointDelivery,
@@ -260,6 +272,7 @@ export {
   type SessionStoreOptions,
   type SessionWork,
   type StartRequestListener,
+  type ThreadRef,
 } from "./session-store.ts";
 
 /**
@@ -335,8 +348,9 @@ export class ProjectAgent extends Agent {
   #huddleSteps: Promise<unknown> = Promise.resolve();
   #approvals: FixApprovalStore | undefined;
   /**
-   * Fix sub-issues whose reviews, linked commits or labels an applied operation changed since their
-   * Huddles last collected reviews; see `#collectChangedReviews`.
+   * Fix sub-issues whose reviews, linked commits, labels or threads, and Huddle issues whose threads,
+   * an applied operation changed since their Huddles last collected reviews; see
+   * `#collectChangedReviews`.
    */
   #reviewsChanged = new Set<string>();
 
@@ -474,11 +488,11 @@ export class ProjectAgent extends Agent {
   }
 
   /** The HuddleAgent of the Huddle whose issue has this number: one instance per Huddle in this project. */
-  async #huddleAgent(issueId: string): Promise<HuddleVerifier & HuddleReviewer> {
+  async #huddleAgent(issueId: string): Promise<HuddleVerifier & HuddleReviewer & HuddleThreadKeeper> {
     // The binding's generated stub type refers back to this package, so the stub is typed here by
     // the interfaces HuddleAgent implements.
     const agent = await getAgentByName(this.env.HuddleAgent, `${this.name}-huddle-${issueId}`);
-    return agent as unknown as HuddleVerifier & HuddleReviewer;
+    return agent as unknown as HuddleVerifier & HuddleReviewer & HuddleThreadKeeper;
   }
 
   /**
@@ -518,7 +532,7 @@ export class ProjectAgent extends Agent {
     this.#reviewsChanged.clear();
     const huddles = new Set<string>();
     for (const issueId of changed) {
-      const huddleIssue = this.#huddleStore().fixOf(issueId)?.huddle.issueId;
+      const huddleIssue = this.#huddleOfIssue(issueId)?.issueId;
       if (huddleIssue != null) huddles.add(huddleIssue);
     }
     for (const huddleIssue of huddles) {
@@ -528,6 +542,11 @@ export class ProjectAgent extends Agent {
         console.error(JSON.stringify({ event: "review_collection_failed", issue: huddleIssue, error: String(error) }));
       }
     }
+  }
+
+  /** The Huddle an issue belongs to, as its Huddle issue or one of its fix sub-issues, or undefined. */
+  #huddleOfIssue(issueId: string): Huddle | undefined {
+    return this.#huddleStore().fixOf(issueId)?.huddle ?? this.#huddleStore().byIssue(issueId);
   }
 
   /**
@@ -557,6 +576,16 @@ export class ProjectAgent extends Agent {
     } catch (error) {
       console.error(JSON.stringify({ event: "verification_schedule_failed", owner, error: String(error) }));
     }
+  }
+
+  /**
+   * Every thread on the Huddle issue with this number and on its fix sub-issues, open or resolved, as
+   * that Huddle's HuddleAgent keeps them; empty when no Huddle has this issue.
+   */
+  async huddleThreads(issueId: string): Promise<HuddleThread[]> {
+    const huddle = this.#huddleStore().byIssue(this.#index().resolve(issueId));
+    if (huddle?.issueId == null) return [];
+    return (await this.#huddleAgent(huddle.issueId)).threads(huddle);
   }
 
   /** Records the Huddle repo the Worker forked for the Huddle opened by `triggerCommit`. */
@@ -817,6 +846,14 @@ export class ProjectAgent extends Agent {
    */
   sessionWork(caller: string, sessionId: string): SessionWork {
     return this.#sessionStore().work(caller, sessionId);
+  }
+
+  /**
+   * Every open thread that needs `person`, on any issue, for `get_work`: the agent tells its developer
+   * about each (PRD section 8). `person` is the owner the gateway authenticated.
+   */
+  threadsNeeding(person: string): { readonly issueId: string; readonly thread: Thread }[] {
+    return this.#index().threadsNeeding(person);
   }
 
   /** The task view of a fix sub-issue for `get_work`: pinned base, failing test, acceptance criteria. */
@@ -1197,7 +1234,7 @@ export class ProjectAgent extends Agent {
         issueChanged: (change) => {
           this.#inboxStore().issueChanged(change);
           this.#liveFeed().issueChanged(change.issueId);
-          if (reviewsMayHaveMoved(change) && this.#huddleStore().isFix(change.issueId)) {
+          if (reviewsMayHaveMoved(change) && this.#huddleOfIssue(change.issueId) !== undefined) {
             this.#reviewsChanged.add(change.issueId);
           }
         },
@@ -1224,6 +1261,8 @@ export class ProjectAgent extends Agent {
         startRequests: this.#inboxStore(),
         // A Huddle's fix sub-issue reaches its session at the session's next safe checkpoint.
         deliverAtCheckpoint: (issueId) => this.#huddleStore().isFix(issueId),
+        // A thread that needs a person reaches that person's sessions at their next safe checkpoint.
+        threadsNeeding: (person) => threadRefs(index.threadsNeeding(person)),
         listener: {
           sessionChanged: (handle) => this.#liveFeed().sessionChanged(handle),
           routeChanged: (issueId) => this.#liveFeed().issueChanged(issueId),
@@ -1246,11 +1285,17 @@ export class ProjectAgent extends Agent {
   }
 }
 
-/** True when the operation changed what a fix's approval is read from: its reviews, commits or labels. */
+/**
+ * True when the operation changed what a Huddle's review collection reads: a fix's reviews, commits or
+ * labels, which its approval is read from, or the threads the HuddleAgent tracks.
+ */
 function reviewsMayHaveMoved({ previous, next }: IssueChange): boolean {
   return (
     previous !== undefined &&
-    (previous.reviews !== next.reviews || previous.linkedCommits !== next.linkedCommits || previous.labels !== next.labels)
+    (previous.reviews !== next.reviews ||
+      previous.linkedCommits !== next.linkedCommits ||
+      previous.labels !== next.labels ||
+      previous.threads !== next.threads)
   );
 }
 

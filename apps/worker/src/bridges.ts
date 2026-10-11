@@ -287,7 +287,12 @@ async function sessionCheckpoint(request: Request, handlers: BridgeHandlers): Pr
   return json(
     {
       worktreeId,
-      sessions: deliveries.map(({ sessionId, handle, delivered }) => ({ sessionId, identity: handle, delivered })),
+      sessions: deliveries.map(({ sessionId, handle, delivered, threads }) => ({
+        sessionId,
+        identity: handle,
+        delivered,
+        threads: threads.map(({ issueId, threadId }) => ({ issueId, threadId })),
+      })),
     },
     200,
   );

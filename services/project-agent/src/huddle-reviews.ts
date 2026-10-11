@@ -13,12 +13,16 @@
 // fix's reviews (packages/policies/src/fix-approval.ts). Each Huddle's HuddleAgent keeps that standing
 // per fix and owner in its own SQLite (FixReview), and hands each fix's approval to the ProjectAgent,
 // whose issue page shows it (approval-store.ts).
+//
+// A counting review that requests changes opens a thread on the fix, and the HuddleAgent keeps every
+// thread of the Huddle in its own SQLite (huddle-threads.ts).
 
 import { fixApproval, fixHead, type FixApproval, type IssueRecord, type OwnerApprovalState } from "@penguin/issues";
 import type { ScopeMap } from "@penguin/scope-map";
 
 import type { Huddle } from "./huddle-store.ts";
 import { ownerCommit } from "./huddle-store.ts";
+import { assigneeOwner, reviewThreadsDue, type HuddleThreadStore } from "./huddle-threads.ts";
 import type { HuddleProjectPort } from "./huddle-verify.ts";
 import type { SqlDatabase, SqlValue } from "./issue-index.ts";
 import type { VerificationStore } from "./verification-store.ts";
@@ -38,6 +42,7 @@ export interface HuddleReviewPort extends HuddleProjectPort {
 /** One Huddle's review state and runs, kept by its HuddleAgent, and the ProjectAgent's side. */
 export interface HuddleReviewDeps extends HuddleReviewPort {
   readonly reviews: FixReviewStore;
+  readonly threads: HuddleThreadStore;
   readonly runs: Pick<VerificationStore, "latest">;
 }
 
@@ -52,6 +57,8 @@ export interface ReviewCollection {
   readonly fixes: readonly { readonly issueId: string; readonly approval: FixApproval }[];
   /** The review requests this step sent, as `<owner> #<sub-issue>`. */
   readonly requested: readonly string[];
+  /** The threads this step opened for requests for changes, as `#<sub-issue> <thread op_id>`. */
+  readonly openedThreads: readonly string[];
 }
 
 export const FIX_REVIEW_SCHEMA: readonly string[] = [
@@ -73,8 +80,8 @@ export interface FixReview {
   readonly requestedHead: string | null;
 }
 
-/** How many times Penguin writes a head link when another writer moved the sub-issue first. */
-const LINK_ATTEMPTS = 5;
+/** How many times Penguin writes to a sub-issue when another writer moved it first. */
+const WRITE_ATTEMPTS = 5;
 
 /**
  * Each fix sub-issue's review standing per owner (PRD section 7, HuddleAgent storage). It is live
@@ -149,10 +156,12 @@ function fixReview(row: Row): FixReview {
 }
 
 /**
- * Collects the reviews of the Huddle's fixes: records where each fix's approval stands, and, while the
- * Huddle issue is IN_REVIEW, links each fix's head and asks the owners who still owe a review of it.
+ * Collects the reviews of the Huddle's fixes: records where each fix's approval stands, opens a thread
+ * for each counting request for changes, and, while the Huddle issue is IN_REVIEW, links each fix's
+ * head and asks the owners who still owe a review of it. It then records every thread of the Huddle.
  * Undefined when the Huddle's issue is still opening, missing or closed. Safe to repeat: a head
- * already linked is not linked again, and an owner already asked about a head is not asked again.
+ * already linked is not linked again, a review's thread is not opened twice, and an owner already
+ * asked about a head is not asked again.
  */
 export async function collectReviews(deps: HuddleReviewDeps, huddle: Huddle): Promise<ReviewCollection | undefined> {
   const issueId = huddle.issueId;
@@ -163,11 +172,24 @@ export async function collectReviews(deps: HuddleReviewDeps, huddle: Huddle): Pr
   const scopeMap = await deps.scopeMap();
   const fixes: { issueId: string; approval: FixApproval }[] = [];
   const requested: string[] = [];
+  const openedThreads: string[] = [];
   for (const subId of issue.subIssues.keys()) {
     let sub = await deps.issue(subId);
     if (sub === undefined) continue;
     const head = fixingCheckpoint(sub, heads);
-    if (head !== undefined && fixHead(sub) !== head) sub = await linkHead(deps, subId, head);
+    if (head !== undefined && fixHead(sub) !== head) {
+      sub = await writeUnlessDone(deps, subId, (current) => fixHead(current) === head, () => ({
+        type: "link_commit",
+        payload: { commit: head, kind: "fix" },
+      }));
+    }
+    for (const { reviewOpId, operation } of reviewThreadsDue(sub)) {
+      const opened = (current: IssueRecord) => !reviewThreadsDue(current).some((due) => due.reviewOpId === reviewOpId);
+      sub = await writeUnlessDone(deps, subId, opened, () => operation);
+      const thread = [...sub.threads.values()].find((t) => t.anchor === operation.payload.anchor);
+      if (thread !== undefined) openedThreads.push(`#${subId} ${thread.id}`);
+    }
+    deps.threads.record(subId, sub.threads.values());
     const approval = fixApproval(sub, scopeMap);
     for (const owner of deps.reviews.record(subId, approval, inReview)) {
       await deps.requestReview(owner, subId);
@@ -176,7 +198,8 @@ export async function collectReviews(deps: HuddleReviewDeps, huddle: Huddle): Pr
     await deps.recordApproval(subId, approval);
     fixes.push({ issueId: subId, approval });
   }
-  return { issueId, fixes, requested };
+  deps.threads.record(issueId, issue.threads.values());
+  return { issueId, fixes, requested, openedThreads };
 }
 
 /**
@@ -197,29 +220,32 @@ function passedCheckpoints(deps: Pick<HuddleReviewDeps, "runs">, huddle: Huddle)
  * assignment order, with a checkpoint in `heads`. An identity's owner is its handle's owner half.
  */
 function fixingCheckpoint(sub: IssueRecord, heads: ReadonlyMap<string, string>): string | undefined {
-  for (const { assigneeKind, assigneeId } of sub.assignments.values()) {
-    const owner = assigneeKind === "person" ? assigneeId : assigneeId.slice(1, assigneeId.indexOf("/"));
-    const head = heads.get(owner);
+  for (const assignment of sub.assignments.values()) {
+    const head = heads.get(assigneeOwner(assignment));
     if (head !== undefined) return head;
   }
   return undefined;
 }
 
-/** Links `commit` to the sub-issue as its fix and answers the sub-issue after the link. */
-async function linkHead(deps: HuddleReviewPort, subId: string, commit: string): Promise<IssueRecord> {
+/**
+ * Writes Penguin's operation to the sub-issue unless `done` already holds, and answers the sub-issue
+ * once it does. A write that another writer's newer version superseded is tried again on that version.
+ */
+async function writeUnlessDone(
+  deps: HuddleReviewPort,
+  subId: string,
+  done: (sub: IssueRecord) => boolean,
+  draft: () => { readonly type: string; readonly payload: Readonly<Record<string, unknown>> },
+): Promise<IssueRecord> {
   for (let attempt = 1; ; attempt += 1) {
     const sub = await deps.issue(subId);
     if (sub === undefined) throw new Error(`issue ${subId} is missing from the index`);
-    if (fixHead(sub) === commit) return sub;
-    const outcome = await deps.submit({
-      issue: Number(subId),
-      type: "link_commit",
-      base_version: sub.version,
-      payload: { commit, kind: "fix" },
-    });
+    if (done(sub)) return sub;
+    const { type, payload } = draft();
+    const outcome = await deps.submit({ issue: Number(subId), type, base_version: sub.version, payload });
     // Another writer moved the sub-issue between the read and the write: read it again.
-    if (outcome.status === "rejected" && (outcome.reason !== "superseded_version" || attempt === LINK_ATTEMPTS)) {
-      throw new Error(`link_commit on #${subId} was rejected: ${outcome.reason}: ${outcome.message}`);
+    if (outcome.status === "rejected" && (outcome.reason !== "superseded_version" || attempt === WRITE_ATTEMPTS)) {
+      throw new Error(`${type} on #${subId} was rejected: ${outcome.reason}: ${outcome.message}`);
     }
   }
 }

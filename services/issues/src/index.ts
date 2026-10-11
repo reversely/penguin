@@ -5,6 +5,7 @@ export {
   fixHead,
   reviewOwners,
   SCOPE_LABEL_PREFIX,
+  threadPeople,
   withinCharter,
   type CharterIdentity,
   type Delegates,
