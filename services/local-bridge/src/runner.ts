@@ -80,24 +80,24 @@ export async function runnerPass(options: RunnerPassOptions): Promise<RunnerPass
   };
 }
 
-export interface RunnerLoopOptions {
+export interface RunnerLoopOptions<T = RunnerPassResult> {
   /** One pass, with whatever locking the caller needs. */
-  readonly pass: () => Promise<RunnerPassResult>;
+  readonly pass: () => Promise<T>;
   /** The wait between the end of one pass and the start of the next. */
   readonly intervalMs: number;
-  readonly onPass?: (result: RunnerPassResult) => void;
+  readonly onPass?: (result: T) => void;
   /** A pass that threw, such as Penguin or the issues repo being unreachable. The loop carries on. */
   readonly onError?: (error: Error) => void;
 }
 
 /** Runs a pass now and again after each wait until stopped. Operations wait as pending meanwhile. */
-export class RunnerLoop {
-  readonly #options: RunnerLoopOptions;
+export class RunnerLoop<T = RunnerPassResult> {
+  readonly #options: RunnerLoopOptions<T>;
   #timer: NodeJS.Timeout | undefined;
   #running: Promise<void> | undefined;
   #stopped = true;
 
-  constructor(options: RunnerLoopOptions) {
+  constructor(options: RunnerLoopOptions<T>) {
     this.#options = options;
   }
 

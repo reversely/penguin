@@ -91,7 +91,13 @@ export interface McpProject {
     update: SessionUpdate,
     repos: { readonly issues: string; readonly base: string },
   ): MaybePromise<UpdateResult>;
-  reportCheckpoint(caller: string, sessionId: string, sha: string, fork: string): MaybePromise<CheckpointResult>;
+  reportCheckpoint(
+    caller: string,
+    sessionId: string,
+    sha: string,
+    fork: string,
+    repos: { readonly issues: string; readonly base: string },
+  ): MaybePromise<CheckpointResult>;
 }
 
 /** The project's repos as the Worker names them for one request's owner. */
@@ -397,7 +403,10 @@ export function createPenguinMcpServer(owner: string, project: McpProject, repos
           message: `${owner} reports checkpoints only for ${own}, not ${fork}`,
         });
       }
-      const outcome = await project.reportCheckpoint(owner, id, sha, repos.ownerFork);
+      const outcome = await project.reportCheckpoint(owner, id, sha, repos.ownerFork, {
+        issues: repos.issues,
+        base: repos.base,
+      });
       if (outcome.status === "rejected") return rejected(outcome);
       const { ownerId, latestCheckpointSha, reportedAt } = outcome.fork;
       return result({ fork: own, ownerId, latestCheckpointSha, reportedAt, newWork: [...outcome.delivered] });

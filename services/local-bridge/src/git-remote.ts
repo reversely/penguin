@@ -70,9 +70,9 @@ export interface RepoToken {
   readonly expiresAt: string;
 }
 
-/** Fetches Artifacts tokens. `refresh` skips any cached token. */
+/** Fetches Artifacts tokens. `refresh` skips any cached token; `scope` defaults to write. */
 export interface TokenSource {
-  token(repo: string, options?: { refresh?: boolean }): Promise<RepoToken>;
+  token(repo: string, options?: { refresh?: boolean; scope?: "read" | "write" }): Promise<RepoToken>;
 }
 
 /**
@@ -117,13 +117,18 @@ export function isAuthFailure(error: unknown): boolean {
 }
 
 /**
- * An Artifacts repo. Each command takes a token from `tokens`; a command the server refuses for
- * authentication runs once more with a freshly fetched token, so a token that expired or was
- * revoked between fetch and use is replaced without the owner doing anything.
+ * An Artifacts repo. Each command takes a token of `scope` from `tokens`; a command the server
+ * refuses for authentication runs once more with a freshly fetched token, so a token that expired or
+ * was revoked between fetch and use is replaced without the owner doing anything.
  */
-export function artifactsRemote(name: string, repo: string, tokens: () => Promise<TokenSource>): GitRemote {
+export function artifactsRemote(
+  name: string,
+  repo: string,
+  tokens: () => Promise<TokenSource>,
+  scope: "read" | "write" = "write",
+): GitRemote {
   const attempt = async (cwd: string, args: (url: string) => readonly string[], refresh: boolean) => {
-    const token = await (await tokens()).token(repo, { refresh });
+    const token = await (await tokens()).token(repo, { refresh, scope });
     return runGit(cwd, [...ARTIFACTS_GIT_OPTIONS, ...args(token.remote)], { env: tokenEnvironment(token.token) });
   };
   return {

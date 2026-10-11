@@ -2,6 +2,7 @@
 // wired the way the agent wires them, with `openHuddle` called through the same dependencies.
 
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -9,12 +10,20 @@ import { generateSigningKeyPair } from "@penguin/issues";
 import type { CombinedRunEvent } from "@penguin/protocol";
 import { parseScopeMap, type ScopeMap } from "@penguin/scope-map";
 
+import { parseCombinedRunEvent } from "@penguin/protocol";
+
+import {
+  CombinedRunStore,
+  scheduleCombinedRuns,
+  type RepoHistoryReader,
+  type ScheduleOutcome,
+} from "../src/combined-run-schedule.ts";
 import { openHuddle, type HuddleOpenDeps, type HuddleOpenOutcome } from "../src/huddle-open.ts";
 import { HuddleStore } from "../src/huddle-store.ts";
 import { IdentityStore } from "../src/identity-store.ts";
 import { InboxStore } from "../src/inbox-store.ts";
 import { IssueIndex, type IndexListener, type OperationKeys } from "../src/issue-index.ts";
-import { OwnerForkStore } from "../src/owner-forks.ts";
+import { OwnerForkStore, recordReportedCheckpoint, type CheckpointOutcome } from "../src/owner-forks.ts";
 import { importServiceKey, type ServiceKey } from "../src/service-key.ts";
 import { SessionStore } from "../src/session-store.ts";
 import { sqlite } from "./issues-repo.ts";
@@ -62,6 +71,7 @@ export class HuddleProject {
   readonly inbox: InboxStore;
   readonly forks: OwnerForkStore;
   readonly huddles: HuddleStore;
+  readonly runs: CombinedRunStore;
   /** Commits in each owner's fork, by owner id, as the Artifacts binding's readCommit would find them. */
   readonly published = new Map<string, Set<string>>();
   /** The sessions' clock in epoch milliseconds; the real clock while undefined. */
@@ -91,6 +101,8 @@ export class HuddleProject {
     [this.index, this.sessions, this.inbox] = [index, sessions, inbox];
     this.forks = new OwnerForkStore(this.sql);
     this.huddles = new HuddleStore(this.sql);
+    let nextRun = 0;
+    this.runs = new CombinedRunStore(this.sql, { newId: () => `run-${++nextRun}` });
     if (options.seedIdentities ?? true) {
       for (const seed of seedIdentities()) this.identity(seed.owner, seed.handle, seed.charter_scopes);
     }
@@ -141,8 +153,40 @@ export class HuddleProject {
     };
   }
 
+  /** Opens the Huddle for a combined-run report and completes the runs it answers, as the agent does. */
   async open(event: CombinedRunEvent | unknown, overrides: Partial<HuddleOpenDeps> = {}): Promise<HuddleOpenOutcome> {
-    return openHuddle(await this.deps(overrides), event);
+    const outcome = await openHuddle(await this.deps(overrides), event);
+    const parsed = parseCombinedRunEvent(event);
+    if (outcome.status !== "rejected" && parsed.ok) this.runs.complete(parsed.event);
+    return outcome;
+  }
+
+  /**
+   * Records a checkpoint reported for `owner`'s fork once `repo` holds the commit, then schedules
+   * its combined runs, as ProjectAgent.reportBridgeCheckpoint does. `repo` stands in for both the
+   * owner's fork and the base repo, whose HEAD is the base branch.
+   */
+  async report(
+    owner: string,
+    sha: string,
+    repo: RepoHistoryReader & { has(sha: string): boolean },
+  ): Promise<{ readonly checkpoint: CheckpointOutcome; readonly schedule: ScheduleOutcome | undefined }> {
+    const commitExists = async (_fork: string, commit: string) => repo.has(commit);
+    const checkpoint = await recordReportedCheckpoint({ forks: this.forks, commitExists }, owner, sha, `owner-${owner}`, null);
+    if (checkpoint.status !== "ok") return { checkpoint, schedule: undefined };
+    this.publish(owner, sha);
+    const schedule = await scheduleCombinedRuns(
+      {
+        scopeMap: this.scopeMap,
+        fork: repo,
+        base: repo,
+        latestCheckpoint: (ownerId) => this.forks.get(ownerId)?.latestCheckpointSha ?? undefined,
+        runs: this.runs,
+      },
+      owner,
+      sha,
+    );
+    return { checkpoint, schedule };
   }
 
   /** Issues labelled `huddle`. */
@@ -166,4 +210,50 @@ export class HuddleProject {
       return `${assignee?.assigneeId} ${check?.test} ${check?.fingerprint}`;
     });
   }
+}
+
+/**
+ * A Git repo on disk read through the Artifacts binding's `log` and `readTree`, standing in for an
+ * owner's fork and for the base repo, whose HEAD is the checked-out branch. Counts each call.
+ */
+export function gitHistory(dir: string): RepoHistoryReader & {
+  has(sha: string): boolean;
+  readonly calls: Record<string, number>;
+} {
+  const git = (...args: string[]) =>
+    execFileSync("git", ["-C", dir, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  const calls: Record<string, number> = {};
+  const count = (method: string) => (calls[method] = (calls[method] ?? 0) + 1);
+  return {
+    calls,
+    has: (sha) => {
+      try {
+        git("cat-file", "-e", `${sha}^{commit}`);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    log: async ({ ref, limit, offset }) => {
+      count("log");
+      const out = git("log", "--first-parent", "--format=%H %T", `--skip=${offset}`, `-n${limit}`, ref, "--");
+      return out === ""
+        ? []
+        : out.split("\n").map((line) => {
+            const [hash, treeHash] = line.split(" ") as [string, string];
+            return { hash, treeHash };
+          });
+    },
+    readTree: async (hash) => {
+      count("readTree");
+      const out = git("ls-tree", hash);
+      return out === ""
+        ? []
+        : out.split("\n").map((line) => {
+            const [meta, name] = line.split("\t") as [string, string];
+            const [mode, , object] = meta.split(" ") as [string, string, string];
+            return { name, hash: object, type: mode === "040000" ? "tree" : "blob" };
+          });
+    },
+  };
 }

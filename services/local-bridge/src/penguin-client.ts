@@ -141,8 +141,8 @@ export interface TokenClientOptions {
 }
 
 /**
- * Fetches write tokens from Penguin's token route and caches each until shortly before it
- * expires. The cache is this object's memory; nothing is persisted.
+ * Fetches tokens from Penguin's token route, write unless a read token is asked for, and caches
+ * each until shortly before it expires. The cache is this object's memory; nothing is persisted.
  */
 export class TokenClient implements TokenSource {
   readonly #server: string;
@@ -162,34 +162,36 @@ export class TokenClient implements TokenSource {
     this.#margin = options.refreshMarginMs ?? 30_000;
   }
 
-  async token(repo: string, options: { refresh?: boolean } = {}): Promise<RepoToken> {
-    const cached = this.#cache.get(repo);
+  async token(repo: string, options: { refresh?: boolean; scope?: "read" | "write" } = {}): Promise<RepoToken> {
+    const scope = options.scope ?? "write";
+    const key = `${scope} ${repo}`;
+    const cached = this.#cache.get(key);
     if (cached !== undefined && !options.refresh) {
       const token = await cached.catch(() => null);
       if (token !== null && Date.parse(token.expiresAt) - this.#now() > this.#margin) return token;
     }
-    const pending = this.#mint(repo);
-    this.#cache.set(repo, pending);
+    const pending = this.#mint(repo, scope);
+    this.#cache.set(key, pending);
     pending.catch(() => {
-      if (this.#cache.get(repo) === pending) this.#cache.delete(repo);
+      if (this.#cache.get(key) === pending) this.#cache.delete(key);
     });
     return pending;
   }
 
-  async #mint(repo: string): Promise<RepoToken> {
+  async #mint(repo: string, scope: "read" | "write"): Promise<RepoToken> {
     let response: Response;
     try {
       response = await this.#fetch(`${this.#server}/tokens`, {
         method: "POST",
         headers: { Authorization: `Bearer ${this.#bridgeToken}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ repo, scope: "write" }),
+        body: JSON.stringify({ repo, scope }),
       });
     } catch (error) {
       throw new RemoteUnavailableError(`Penguin at ${this.#server} is unreachable: ${(error as Error).message}`);
     }
     this.fetched += 1;
     if (response.status === 403) {
-      throw new RemoteRefusedError(`Penguin does not let this bridge write to ${repo}`);
+      throw new RemoteRefusedError(`Penguin does not let this bridge ${scope === "write" ? "write to" : "read"} ${repo}`);
     }
     if (response.status === 401) {
       throw new RemoteUnavailableError("Penguin refused the bridge token; register the bridge again");
@@ -203,15 +205,21 @@ export class TokenClient implements TokenSource {
       throw new RemoteUnavailableError(`Penguin answered the token request for ${repo} without a token and remote`);
     }
     checkedOrigin(body.remote, "the Artifacts remote");
-    return { repo, scope: "write", token: body.token, remote: body.remote, expiresAt: body.expiresAt! };
+    return { repo, scope, token: body.token, remote: body.remote, expiresAt: body.expiresAt! };
   }
 }
 
 /**
  * The resolver a bridge command uses: local paths as they are, `penguin:<repo>` names through one
- * token client built from the registration in `stateDir` and the bridge token in `keyStore`.
+ * token client built from the registration in `stateDir` and the bridge token in `keyStore`, with
+ * tokens of `scope`.
  */
-export function bridgeRemotes(stateDir: string, keyStore: KeyStore, fetchImpl?: Fetch): RemoteResolver {
+export function bridgeRemotes(
+  stateDir: string,
+  keyStore: KeyStore,
+  fetchImpl?: Fetch,
+  scope: "read" | "write" = "write",
+): RemoteResolver {
   let client: Promise<TokenClient> | undefined;
   const tokens = () => {
     client ??= openTokenClient(stateDir, keyStore, fetchImpl);
@@ -223,7 +231,7 @@ export function bridgeRemotes(stateDir: string, keyStore: KeyStore, fetchImpl?: 
   };
   return (name) => {
     const repo = penguinRepoOf(name);
-    if (repo !== undefined) return artifactsRemote(name, repo, tokens);
+    if (repo !== undefined) return artifactsRemote(name, repo, tokens, scope);
     if (name.startsWith("penguin:")) throw new Error(`${JSON.stringify(name)} does not name a Penguin repo`);
     return localRemote(name);
   };
@@ -335,4 +343,77 @@ export async function reportCombinedRun(
     throw new RemoteRefusedError(`Penguin refused the combined run (HTTP ${response.status})${message}`);
   }
   throw new RemoteUnavailableError(`Penguin could not take the combined run (HTTP ${response.status})${message}`);
+}
+
+/** The route a runner claims the scheduled combined runs from. */
+export const COMBINED_RUN_CLAIM_ROUTE = "/combined-runs/claim";
+
+/** A combined run Penguin scheduled and this runner claimed. It names commands by ID only. */
+export interface ClaimedCombinedRun {
+  readonly runId: string;
+  /** The published checkpoint that changed a depended-on scope, and the commit it was made from. */
+  readonly trigger: { readonly ownerId: string; readonly sha: string; readonly baselineSha: string };
+  /** The dependent owner and the latest checkpoint of theirs to merge with the trigger. */
+  readonly ownerId: string;
+  readonly ownerCheckpoint: string;
+  /** Allowlisted command IDs, `test:<scope id>`; the runner resolves each from the repository config. */
+  readonly commandIds: readonly string[];
+}
+
+const OWNER_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/u;
+const COMMIT = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
+
+/**
+ * Claims the combined runs Penguin scheduled, which marks them as this runner's until they are
+ * reported or their lease runs out. Penguin answers only a bridge registered with the runner role.
+ */
+export async function claimCombinedRuns(
+  server: string,
+  bridgeToken: string,
+  fetchImpl: Fetch = fetch,
+): Promise<ClaimedCombinedRun[]> {
+  const origin = checkedOrigin(server, "the Penguin server").origin;
+  let response: Response;
+  try {
+    response = await fetchImpl(`${origin}${COMBINED_RUN_CLAIM_ROUTE}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${bridgeToken}` },
+    });
+  } catch (error) {
+    throw new RemoteUnavailableError(`Penguin at ${origin} is unreachable: ${(error as Error).message}`);
+  }
+  if (response.status === 403) throw new RemoteRefusedError("Penguin hands out combined runs only to a runner bridge");
+  if (response.status === 401) throw new RemoteUnavailableError("Penguin refused the bridge token; register the bridge again");
+  if (response.status !== 200) {
+    throw new RemoteUnavailableError(`Penguin could not hand out combined runs (HTTP ${response.status})`);
+  }
+  const body = (await response.json()) as { runs?: unknown };
+  if (!Array.isArray(body.runs)) throw new RemoteUnavailableError("Penguin answered the claim without runs");
+  return body.runs.map(claimedRun);
+}
+
+function claimedRun(entry: unknown): ClaimedCombinedRun {
+  const { runId, trigger, ownerId, ownerCheckpoint, commandIds } = (entry ?? {}) as Record<string, unknown>;
+  const { ownerId: triggerOwner, sha, baselineSha } = (trigger ?? {}) as Record<string, unknown>;
+  const owner = (value: unknown) => typeof value === "string" && OWNER_ID.test(value);
+  const commit = (value: unknown) => typeof value === "string" && COMMIT.test(value);
+  if (
+    typeof runId !== "string" ||
+    !owner(triggerOwner) ||
+    !commit(sha) ||
+    !commit(baselineSha) ||
+    !owner(ownerId) ||
+    !commit(ownerCheckpoint) ||
+    !Array.isArray(commandIds) ||
+    !commandIds.every((id) => typeof id === "string")
+  ) {
+    throw new RemoteUnavailableError("Penguin listed a combined run without its checkpoints and command IDs");
+  }
+  return {
+    runId,
+    trigger: { ownerId: triggerOwner as string, sha: sha as string, baselineSha: baselineSha as string },
+    ownerId: ownerId as string,
+    ownerCheckpoint: ownerCheckpoint as string,
+    commandIds: commandIds as string[],
+  };
 }

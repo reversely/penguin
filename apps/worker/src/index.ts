@@ -102,6 +102,7 @@ export default {
             ownerFork: names.owner(owner),
           }),
         ownerForkRepo: (owner) => names.owner(owner),
+        projectRepos: repos,
         mintToken: (repo, scope, ttl) => {
           const parsed = parseProjectRepo(repo);
           if (parsed === undefined) throw new Error(`not a project repo: ${repo}`);

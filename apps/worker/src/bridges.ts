@@ -12,7 +12,10 @@
  *   dashboard and Penguin that wait for the runner to push them to the issues repo.
  * - POST /checkpoints, bridge token: records a checkpoint the bridge pushed to its owner's fork as
  *   that fork's latest checkpoint. The owner comes from the token; the body carries only the SHA
- *   and the fork, which must be the owner's own.
+ *   and the fork, which must be the owner's own. A checkpoint that changes a scope other scopes
+ *   depend on schedules one combined run per dependent owner.
+ * - POST /combined-runs/claim, bridge token of a runner bridge: claims the scheduled combined runs.
+ *   Each run names its checkpoints and allowlisted command IDs, never a shell command.
  * - POST /combined-runs, bridge token of a runner bridge: reports a combined run. When its tests
  *   failed on a published checkpoint, the ProjectAgent opens a Huddle issue and the Worker forks the
  *   Huddle repo. A second report of the same trigger opens nothing.
@@ -29,10 +32,12 @@ import type {
   BridgeIdentity,
   BridgeRole,
   CheckpointOutcome,
+  ClaimListing,
   Delivery,
   Huddle,
   HuddleOpenOutcome,
   PendingListing,
+  ProjectRepos,
   RegisterOutcome,
   RegistrationCode,
 } from "@penguin/project-agent";
@@ -59,8 +64,13 @@ export interface BridgeDirectory {
   revokeBridge(bridgeId: string): Promise<boolean> | boolean;
   /** The operations waiting for the runner; refused unless `caller` holds the runner role. */
   pendingOperations(caller: BridgeCaller): Promise<PendingListing> | PendingListing;
-  /** Records `sha` as `owner`'s latest checkpoint once the commit is found in `fork`, an Artifacts repo name. */
-  reportBridgeCheckpoint(owner: string, sha: string, fork: string): Promise<CheckpointOutcome>;
+  /**
+   * Records `sha` as `owner`'s latest checkpoint once the commit is found in `fork`, an Artifacts repo
+   * name, and schedules the combined runs it calls for.
+   */
+  reportBridgeCheckpoint(owner: string, sha: string, fork: string, repos: ProjectRepos): Promise<CheckpointOutcome>;
+  /** Claims the scheduled combined runs; refused unless `caller` holds the runner role. */
+  claimCombinedRuns(caller: BridgeCaller): Promise<ClaimListing> | ClaimListing;
   /** A safe checkpoint of `owner`'s running sessions in the worktree `worktreeId`. */
   sessionCheckpoint(owner: string, worktreeId: string): Promise<Delivery[]> | Delivery[];
 }
@@ -84,6 +94,8 @@ export interface BridgeHandlers {
   /** The Artifacts repo name of an owner's fork, with the deployment's repo prefix. */
   readonly ownerForkRepo: (ownerId: string) => string;
   readonly huddles: () => HuddleDirectory | Promise<HuddleDirectory>;
+  /** The project's issues and base repos, with the deployment's repo prefix. */
+  readonly projectRepos: ProjectRepos;
 }
 
 export interface BridgeOptions {
@@ -231,7 +243,8 @@ async function reportCheckpoint(request: Request, handlers: BridgeHandlers): Pro
 
   let outcome: CheckpointOutcome;
   try {
-    outcome = await directory.reportBridgeCheckpoint(bridge.ownerId, sha, handlers.ownerForkRepo(bridge.ownerId));
+    const fork = handlers.ownerForkRepo(bridge.ownerId);
+    outcome = await directory.reportBridgeCheckpoint(bridge.ownerId, sha, fork, handlers.projectRepos);
   } catch (error) {
     return json({ error: "artifacts", code: artifactsErrorCode(error) ?? null }, 502);
   }
@@ -269,6 +282,26 @@ async function sessionCheckpoint(request: Request, handlers: BridgeHandlers): Pr
     },
     200,
   );
+}
+
+/** Hands a runner bridge the scheduled combined runs, each marked claimed by that bridge. */
+async function claimCombinedRuns(request: Request, handlers: BridgeHandlers): Promise<Response> {
+  const token = bearerToken(request);
+  const directory = await handlers.bridges();
+  const bridge = token === undefined ? undefined : await directory.authenticateBridge(token);
+  if (bridge === undefined) return unauthorized();
+  if (request.method !== "POST") return methodNotAllowed("POST");
+  // The role comes from the registry record the token authenticated, never from the request.
+  const listing = await directory.claimCombinedRuns({ bridgeId: bridge.bridgeId, role: bridge.role });
+  if (listing.status === "forbidden") return json({ error: "forbidden", message: listing.message }, 403);
+  const runs = listing.runs.map(({ runId, trigger, ownerId, ownerCheckpoint, commandIds }) => ({
+    runId,
+    trigger,
+    ownerId,
+    ownerCheckpoint,
+    commandIds,
+  }));
+  return json({ runs }, 200, NO_STORE);
 }
 
 /**
@@ -341,6 +374,7 @@ export async function handleBridgeRoute(
   if (url.pathname === "/operations/pending") return listPending(request, handlers);
   if (url.pathname === "/checkpoints") return reportCheckpoint(request, handlers);
   if (url.pathname === "/combined-runs") return reportCombinedRun(request, handlers);
+  if (url.pathname === "/combined-runs/claim") return claimCombinedRuns(request, handlers);
   if (url.pathname === "/sessions/checkpoint") return sessionCheckpoint(request, handlers);
   if (url.pathname === "/bridges/codes") return issueCode(request, options, handlers);
   if (url.pathname === "/bridges") return register(request, handlers);

@@ -32,6 +32,7 @@ import {
 } from "./owner-forks.ts";
 import { postSessionUpdate, type SessionUpdate, type SessionUpdateOutcome } from "./session-updates.ts";
 import { openHuddle, type HuddleOpenOutcome } from "./huddle-open.ts";
+import { CombinedRunStore, scheduleCombinedRuns, type ClaimListing } from "./combined-run-schedule.ts";
 import { HuddleStore, type Huddle } from "./huddle-store.ts";
 import { fixTask, type FixTask } from "./fix-task.ts";
 import { IngestLedger, ingestPush, type IngestReport } from "./push-ingest.ts";
@@ -63,6 +64,7 @@ import type { IssueRecord } from "@penguin/issues";
 import {
   identitiesChangedMessage,
   inboxChangedMessage,
+  parseCombinedRunEvent,
   type Author,
   type Board,
   type IdentitiesPage,
@@ -155,6 +157,18 @@ export {
 } from "./huddle-open.ts";
 export { HuddleStore, ownerCommit, type Huddle, type HuddleStatus } from "./huddle-store.ts";
 export { fixTask, type FailingTest, type FixTask } from "./fix-task.ts";
+export {
+  changedPaths,
+  CombinedRunStore,
+  scheduleCombinedRuns,
+  type ClaimListing,
+  type CombinedRun,
+  type CombinedRunStatus,
+  type CombinedRunStoreOptions,
+  type RepoHistoryReader,
+  type ScheduleDeps,
+  type ScheduleOutcome,
+} from "./combined-run-schedule.ts";
 export {
   INBOX_REASONS,
   InboxStore,
@@ -249,6 +263,7 @@ export class ProjectAgent extends Agent {
   #huddles: HuddleStore | undefined;
   /** Huddle openings run one at a time; see `openHuddle`. */
   #huddleOpenings: Promise<unknown> = Promise.resolve();
+  #combinedRuns: CombinedRunStore | undefined;
 
   override onStart(): void {
     this.sql`CREATE TABLE IF NOT EXISTS counter (id INTEGER PRIMARY KEY CHECK (id = 1), value INTEGER NOT NULL)`;
@@ -292,13 +307,16 @@ export class ProjectAgent extends Agent {
    * or answers `existing` when one is already open for the same trigger. `triggerFork` is the
    * Artifacts repo name of the trigger owner's fork, named by the Worker; the trigger commit must be
    * there. Openings run one at a time, so two reports of one trigger never open two issues.
+   *
+   * A report that is not rejected also completes the scheduled combined runs it answers, so a
+   * passing run is recorded as passed and opens nothing.
    */
   openHuddle(event: unknown, triggerFork: string, repos: ProjectRepos): Promise<HuddleOpenOutcome> {
     const run = this.#huddleOpenings.then(async () => {
       const scopeMap = await this.#scopeMap(repos);
       const index = this.#index();
       const sessions = this.#sessionStore();
-      return openHuddle(
+      const outcome = await openHuddle(
         {
           huddles: this.#huddleStore(),
           scopeMap,
@@ -313,6 +331,9 @@ export class ProjectAgent extends Agent {
         },
         event,
       );
+      const parsed = parseCombinedRunEvent(event);
+      if (outcome.status !== "rejected" && parsed.ok) this.#combinedRunStore().complete(parsed.event);
+      return outcome;
     });
     this.#huddleOpenings = run.catch(() => undefined);
     return run;
@@ -642,18 +663,69 @@ export class ProjectAgent extends Agent {
    * Records a checkpoint the caller's bridge published (MCP `report_checkpoint`) as the latest
    * checkpoint of the caller's fork, once `readCommit` finds the commit in that fork. `fork` is the
    * Artifacts repo name of the caller's fork, which the Worker derives from the authenticated owner.
-   * A recorded checkpoint is the session's safe checkpoint: its waiting fix tasks are delivered.
+   * A recorded checkpoint is the session's safe checkpoint: its waiting fix tasks are delivered. It
+   * then schedules its combined runs; see `#scheduleCombinedRuns`.
    */
-  reportCheckpoint(caller: string, sessionId: string, sha: string, fork: string): Promise<SessionCheckpointOutcome> {
-    return reportCheckpoint({ sessions: this.#sessionStore(), ...this.#checkpointDeps() }, caller, sessionId, sha, fork);
+  async reportCheckpoint(
+    caller: string,
+    sessionId: string,
+    sha: string,
+    fork: string,
+    repos: ProjectRepos,
+  ): Promise<SessionCheckpointOutcome> {
+    const deps = { sessions: this.#sessionStore(), ...this.#checkpointDeps() };
+    const outcome = await reportCheckpoint(deps, caller, sessionId, sha, fork);
+    if (outcome.status === "ok") await this.#scheduleCombinedRuns(caller, sha, fork, repos);
+    return outcome;
   }
 
   /**
    * Records a checkpoint the owner's bridge pushed (the bridge checkpoint route), with no agent
    * session. `owner` comes from the bridge token and `fork` is that owner's fork, named by the Worker.
+   * A recorded checkpoint then schedules its combined runs; see `#scheduleCombinedRuns`.
    */
-  reportBridgeCheckpoint(owner: string, sha: string, fork: string): Promise<CheckpointOutcome> {
-    return recordReportedCheckpoint(this.#checkpointDeps(), owner, sha, fork, null);
+  async reportBridgeCheckpoint(owner: string, sha: string, fork: string, repos: ProjectRepos): Promise<CheckpointOutcome> {
+    const outcome = await recordReportedCheckpoint(this.#checkpointDeps(), owner, sha, fork, null);
+    if (outcome.status === "ok") await this.#scheduleCombinedRuns(owner, sha, fork, repos);
+    return outcome;
+  }
+
+  /**
+   * For the integration runner only: claims the scheduled combined runs (see
+   * combined-run-schedule.ts). Any other role is refused.
+   */
+  claimCombinedRuns(caller: BridgeCaller): ClaimListing {
+    return this.#combinedRunStore().claim(caller);
+  }
+
+  /**
+   * Schedules the combined runs a recorded checkpoint calls for, reading the checkpoint's history
+   * from `fork` and the scope map and baseline from the base repo. The checkpoint stays recorded when
+   * this fails: a later report of the same checkpoint schedules again, and runs already scheduled
+   * are not repeated.
+   */
+  async #scheduleCombinedRuns(owner: string, sha: string, fork: string, repos: ProjectRepos): Promise<void> {
+    try {
+      const scopeMap = await this.#scopeMap(repos);
+      const forks = this.#ownerForks();
+      await withRepo(this.env.ARTIFACTS, fork, (forkRepo) =>
+        withRepo(this.env.ARTIFACTS, repos.base, (baseRepo) =>
+          scheduleCombinedRuns(
+            {
+              scopeMap,
+              fork: forkRepo,
+              base: baseRepo,
+              latestCheckpoint: (ownerId) => forks.get(ownerId)?.latestCheckpointSha ?? undefined,
+              runs: this.#combinedRunStore(),
+            },
+            owner,
+            sha,
+          ),
+        ),
+      );
+    } catch (error) {
+      console.error(JSON.stringify({ event: "combined_run_schedule_failed", owner, sha, error: String(error) }));
+    }
   }
 
   #checkpointDeps(): CheckpointRecordDeps {
@@ -791,6 +863,11 @@ export class ProjectAgent extends Agent {
   #huddleStore(): HuddleStore {
     this.#huddles ??= new HuddleStore(this.#database());
     return this.#huddles;
+  }
+
+  #combinedRunStore(): CombinedRunStore {
+    this.#combinedRuns ??= new CombinedRunStore(this.#database());
+    return this.#combinedRuns;
   }
 
   #ownerForks(): OwnerForkStore {

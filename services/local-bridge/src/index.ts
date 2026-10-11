@@ -42,6 +42,8 @@ export {
   bridgeRemotes,
   bridgeTokenAccount,
   checkedOrigin,
+  claimCombinedRuns,
+  COMBINED_RUN_CLAIM_ROUTE,
   COMBINED_RUN_ROUTE,
   fetchPendingOperations,
   openBridge,
@@ -54,6 +56,7 @@ export {
 } from "./penguin-client.ts";
 export type {
   BridgeRegistration,
+  ClaimedCombinedRun,
   CombinedRunReply,
   Fetch,
   PendingOperation,
@@ -117,6 +120,13 @@ export {
 export type { BridgeSigningKey, KeyStore } from "./key-store.ts";
 export { hashPath, worktreeId, WorktreeRegistry } from "./registry.ts";
 export { combinedRunEvent, CombinedRunner, parseFailingTests } from "./combined-run.ts";
+export { batchRuns, combinedRunPass, forkFetcher, formatCombinedPass } from "./combined-run-pass.ts";
+export type {
+  CombinedBatchResult,
+  CombinedPassOptions,
+  CombinedPassResult,
+  RefusedCommand,
+} from "./combined-run-pass.ts";
 export type {
   CombinedResult,
   CombinedRunnerOptions,

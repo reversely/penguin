@@ -15,6 +15,11 @@ export interface CombinedRunRequest {
   readonly baselineSha: string;
   /** Each owner's latest checkpoint, as a full object ID keyed by owner ID. */
   readonly latestCheckpoints: Readonly<Record<string, string>>;
+  /**
+   * When given, only the dependent scopes whose command ID is listed run, and the report holds only
+   * them. A scheduled run names the commands Penguin asked for this way.
+   */
+  readonly commandIds?: readonly string[];
 }
 
 /** One failed test from the runner's log. */
@@ -140,6 +145,7 @@ export class CombinedRunner {
   async run(request: CombinedRunRequest): Promise<CombinedRunReport> {
     const { repoPath } = this.#options;
     const { checkpointSha, baselineSha, latestCheckpoints } = request;
+    const wanted = request.commandIds === undefined ? undefined : new Set(request.commandIds);
     const scopeMap = await loadScopeMap(repoPath, checkpointSha);
     const changed = await changedPathsBetween(repoPath, baselineSha, checkpointSha);
     const affected = affectedOwners(scopeMap, changed);
@@ -150,6 +156,7 @@ export class CombinedRunner {
     for (const scopeId of affected.dependentScopes) {
       const ownerId = scopeMap.scopes.get(scopeId)?.ownerId as string;
       const target = { ownerId, scopeId, commandId: testCommandId(scopeId) };
+      if (wanted !== undefined && !wanted.has(target.commandId)) continue;
       const ownerCheckpoint = Object.hasOwn(latestCheckpoints, ownerId) ? latestCheckpoints[ownerId] : undefined;
       if (ownerCheckpoint === undefined) {
         results.push({ ...target, status: "no-checkpoint" });

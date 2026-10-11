@@ -8,6 +8,8 @@ import { generateSigningKeyPair } from "@penguin/issues";
 import { parseScopeMap } from "@penguin/scope-map";
 // The registry module directly: the package entry point loads the Agents SDK, which needs workerd.
 import { BridgeRegistry } from "../../../services/project-agent/src/bridge-registry.ts";
+import { CombinedRunStore } from "../../../services/project-agent/src/combined-run-schedule.ts";
+import type { ProjectRepos } from "../../../services/project-agent/src/index.ts";
 import type { Huddle } from "../../../services/project-agent/src/huddle-store.ts";
 import { IssueIndex } from "../../../services/project-agent/src/issue-index.ts";
 import type { SqlDatabase } from "../../../services/project-agent/src/issue-index.ts";
@@ -96,6 +98,9 @@ function gateway(artifacts = fakeArtifacts(PROJECT_REPOS)) {
   const commits = new Map<string, Set<string>>();
   const commitExists = async (repo: string, sha: string) => commits.get(repo)?.has(sha) ?? false;
   const huddles = fakeHuddles();
+  const runs = new CombinedRunStore(db);
+  /** The project repos each checkpoint report handed the ProjectAgent. */
+  const checkpointRepos: ProjectRepos[] = [];
   const handlers: GatewayHandlers = {
     routeAgents: async () => null,
     setUpProject: async () => {
@@ -108,10 +113,15 @@ function gateway(artifacts = fakeArtifacts(PROJECT_REPOS)) {
       authenticateBridge: (token) => registry.authenticate(token),
       revokeBridge: (bridgeId) => registry.revoke(bridgeId),
       pendingOperations: (caller) => issues.pendingFiles(caller),
-      reportBridgeCheckpoint: (owner, sha, fork) => recordReportedCheckpoint({ forks, commitExists }, owner, sha, fork, null),
+      reportBridgeCheckpoint: (owner, sha, fork, repos) => {
+        checkpointRepos.push(repos);
+        return recordReportedCheckpoint({ forks, commitExists }, owner, sha, fork, null);
+      },
+      claimCombinedRuns: (caller) => runs.claim(caller),
       sessionCheckpoint: (owner, worktreeId) => sessions.checkpointWorktree(owner, worktreeId),
     }),
     ownerForkRepo: (owner) => names.owner(owner),
+    projectRepos: { issues: names.issues, base: names.base },
     huddles: () => huddles,
     mintToken: (repo, scope, ttl) => {
       const parsed = parseProjectRepo(repo);
@@ -129,7 +139,7 @@ function gateway(artifacts = fakeArtifacts(PROJECT_REPOS)) {
       options,
       handlers,
     );
-  return { artifacts, call, registry, db, forks, commits, huddles, identities, sessions, clock };
+  return { artifacts, call, registry, db, forks, commits, huddles, identities, sessions, clock, runs, checkpointRepos };
 }
 
 /**
@@ -340,8 +350,37 @@ test("the pending route lists operations to a runner bridge only, by the role it
   assert.equal((await list(runner.bridgeToken)).status, 401);
 });
 
+test("only a runner bridge claims scheduled combined runs, which carry command IDs and no command", async () => {
+  const { call, runs } = gateway();
+  const trigger = { ownerId: "priya", sha: "a".repeat(40), baselineSha: "b".repeat(40) };
+  runs.schedule({ trigger, ownerId: "jun", ownerCheckpoint: "c".repeat(40), commandIds: ["test:analytics"] });
+  const claim = (token?: string, method = "POST") => call("/combined-runs/claim", { method, ...(token ? { token } : {}) });
+
+  // An owner bridge is refused and the run stays scheduled.
+  const jun = await registerBridge(call, "jun");
+  const refused = await claim(jun.bridgeToken);
+  assert.equal(refused.status, 403);
+  assert.match(((await refused.json()) as { message: string }).message, /runner role/);
+  assert.equal((await claim()).status, 401);
+  assert.equal((await claim(DEPLOYER_TOKEN)).status, 401);
+
+  const runner = await registerBridge(call, "sam", "runner");
+  assert.equal((await claim(runner.bridgeToken, "GET")).status, 405);
+  const response = await claim(runner.bridgeToken);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("Cache-Control"), "no-store");
+  const { runs: claimed } = (await response.json()) as { runs: Record<string, unknown>[] };
+  assert.equal(claimed.length, 1);
+  const { runId, ...run } = claimed[0] as Record<string, unknown>;
+  assert.equal(typeof runId, "string");
+  assert.deepEqual(run, { trigger, ownerId: "jun", ownerCheckpoint: "c".repeat(40), commandIds: ["test:analytics"] });
+  assert.equal(runs.get(runId as string)?.claimedBy, runner.bridgeId);
+  // Claimed runs are not handed out twice.
+  assert.deepEqual(await (await claim(runner.bridgeToken)).json(), { runs: [] });
+});
+
 test("a bridge report records its owner's latest checkpoint with no agent session", async () => {
-  const { call, forks, commits } = gateway();
+  const { call, forks, commits, checkpointRepos } = gateway();
   const sha = "4c1d9e0a7b3f2e8d6c5b4a3928170f6e5d4c3b2a"; // pragma: allowlist secret
   commits.set("test-owner-jun", new Set([sha]));
   commits.set("test-owner-priya", new Set([sha]));
@@ -358,6 +397,8 @@ test("a bridge report records its owner's latest checkpoint with no agent sessio
   assert.equal(recorded?.artifactsRepo, "test-owner-jun");
   assert.equal(recorded?.latestCheckpointSha, sha);
   assert.equal(recorded?.reportedBySession, null);
+  // The agent reads the scope map and baseline from the deployment's own repos to schedule combined runs.
+  assert.deepEqual(checkpointRepos, [{ issues: "test-issues", base: "test-base" }]);
 
   // Another owner's fork is refused, whatever owner the body claims.
   const priya = await report(jun.bridgeToken, { sha, fork: "owner-priya", owner: "priya" });
