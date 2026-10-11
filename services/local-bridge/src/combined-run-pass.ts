@@ -10,8 +10,9 @@ import type { CombinedRunEvent } from "@penguin/protocol";
 
 import { resolveCommand } from "./command-allowlist.ts";
 import { combinedRunEvent, CombinedRunner, type CombinedResult } from "./combined-run.ts";
-import { penguinRemote, type RemoteResolver } from "./git-remote.ts";
+import type { RemoteResolver } from "./git-remote.ts";
 import type { ClaimedCombinedRun, CombinedRunReply } from "./penguin-client.ts";
+import { fetchRepoBranches } from "./runner-repo.ts";
 import type { TestRunner } from "./test-runner.ts";
 
 export interface CombinedPassOptions {
@@ -158,15 +159,6 @@ export function formatCombinedPass(result: CombinedPassResult): string {
  */
 export function forkFetcher(remotes: RemoteResolver, repoPath: string): (ownerIds: readonly string[]) => Promise<void> {
   return async (ownerIds) => {
-    for (const ownerId of ownerIds) {
-      const fork = `owner-${ownerId}`;
-      await remotes(penguinRemote(fork)).git(repoPath, (url) => [
-        "fetch",
-        "--quiet",
-        "--no-tags",
-        url,
-        `+refs/heads/*:refs/penguin/${fork}/*`,
-      ]);
-    }
+    for (const ownerId of ownerIds) await fetchRepoBranches(repoPath, remotes, `owner-${ownerId}`);
   };
 }

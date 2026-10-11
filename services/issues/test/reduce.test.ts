@@ -177,4 +177,23 @@ describe("reduce", () => {
     const identityReason = issue.reviews.get(identity.op_id)?.uncountedReason ?? "";
     assert.match(identityReason, /identity @priya\/merge-rules cannot review/u);
   });
+
+  test("a link from Penguin marks the checks it names superseded; nobody else may, and each must exist", () => {
+    const penguin: Author = { penguin: true };
+    const check = op(penguin, "attach_check", { command_id: "test:analytics", commit: "huddle-031@aaaaaa", result: "fail" });
+    let issue = ok(reduce(created(), check, noIssues));
+    assert.equal(issue.checks.get(check.op_id)?.supersededBy, null);
+
+    const fromJun = op(jun, "link_commit", { commit: "owner-jun@bbbbbb", kind: "fix", supersedes: [check.op_id] });
+    rejected(reduce(issue, fromJun, noIssues), "supersede_forbidden");
+    const unknown = op(penguin, "link_commit", { commit: "owner-jun@bbbbbb", supersedes: ["penguin-web-9999"] });
+    rejected(reduce(issue, unknown, noIssues), "unknown_check");
+
+    const link = op(penguin, "link_commit", { commit: "owner-jun@bbbbbb", kind: "fix", supersedes: [check.op_id] });
+    issue = ok(reduce(issue, link, noIssues));
+    assert.equal(issue.checks.get(check.op_id)?.supersededBy, link.op_id);
+    // A later link leaves the first marking in place.
+    const later = op(penguin, "link_commit", { commit: "owner-jun@cccccc", supersedes: [check.op_id] });
+    assert.equal(ok(reduce(issue, later, noIssues)).checks.get(check.op_id)?.supersededBy, link.op_id);
+  });
 });

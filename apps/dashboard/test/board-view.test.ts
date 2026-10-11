@@ -37,7 +37,7 @@ function person(id: string): IssuePageAssignee {
 
 function check(result: IssuePageCheck["result"], test = "test_retention::dau_stable"): IssuePageCheck {
   const opId = `op-${test}-${result}`;
-  return { opId, commandId: "analytics", repo: "huddle-031", sha: "7c41e2a9", test, result, logRef: null, fingerprint: null };
+  return { opId, commandId: "analytics", repo: "huddle-031", sha: "7c41e2a9", test, result, logRef: null, fingerprint: null, supersededBy: null };
 }
 
 function review(reviewer: string, verdict: IssuePageReview["verdict"]): IssuePageReview {

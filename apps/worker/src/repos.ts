@@ -434,7 +434,11 @@ export async function setUpProject(
   };
 }
 
-/** The id of a Huddle issue's repo: the issue number zero-padded to three digits, as in `huddle-031` for #31. */
+/**
+ * The id of a Huddle issue's repo: the issue number zero-padded to three digits, as in `huddle-031`
+ * for #31. `huddleRepoId` in @penguin/protocol, which names the repo to the runner, is the same rule;
+ * the Worker keeps its own copy because importing the protocol package here would add a dependency.
+ */
 export function huddleRepoId(issueId: string): string {
   return issueId.padStart(3, "0");
 }

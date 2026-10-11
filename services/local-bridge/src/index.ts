@@ -46,18 +46,22 @@ export {
   COMBINED_RUN_CLAIM_ROUTE,
   COMBINED_RUN_ROUTE,
   fetchPendingOperations,
+  fetchVerificationRuns,
   openBridge,
   PENDING_ROUTE,
   readRegistration,
   registerBridge,
   registrationFile,
   reportCombinedRun,
+  reportVerification,
   TokenClient,
+  VERIFICATION_ROUTE,
 } from "./penguin-client.ts";
 export type {
   BridgeRegistration,
   ClaimedCombinedRun,
   CombinedRunReply,
+  VerificationReply,
   Fetch,
   PendingOperation,
   RegisterOptions,
@@ -138,6 +142,18 @@ export type {
   TestedResult,
 } from "./combined-run.ts";
 export { fingerprint, LOCKFILE_NAMES, lockfileHash } from "./fingerprint.ts";
+export { fetchedBranch, fetchedRefs, fetchRepoBranches, hasCommit, isRunnerRepo } from "./runner-repo.ts";
+export {
+  formatVerificationPass,
+  INTEGRATION_BRANCH,
+  verificationPass,
+  VerificationRunner,
+} from "./verification-run.ts";
+export type {
+  VerificationPassOptions,
+  VerificationPassResult,
+  VerificationRunnerOptions,
+} from "./verification-run.ts";
 export type { ResultFingerprint } from "./fingerprint.ts";
 export type { WorktreeRecord, WorktreeRegistryOptions } from "./registry.ts";
 export { childEnvironment, ConsentRefusedError, TestRunner } from "./test-runner.ts";

@@ -91,6 +91,8 @@ export default {
             open: (event, triggerFork) => agent.openHuddle(event, triggerFork, repos),
             recordRepo: async (triggerCommit, huddleRepo) => agent.recordHuddleRepo(triggerCommit, huddleRepo),
             forkRepo: (huddleId) => forkHuddleRepo(env.ARTIFACTS, huddleId, names),
+            pendingVerifications: async () => agent.pendingVerifications(),
+            reportVerification: (runId, runnerId, report) => agent.reportVerification(runId, runnerId, report, repos),
           };
         },
         mcpTokens: () => getAgentByName(env.ProjectAgent, projectAgentName(names)),

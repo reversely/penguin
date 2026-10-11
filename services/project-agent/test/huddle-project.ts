@@ -20,12 +20,20 @@ import {
 } from "../src/combined-run-schedule.ts";
 import { openHuddle, type HuddleOpenDeps, type HuddleOpenOutcome } from "../src/huddle-open.ts";
 import { HuddleStore } from "../src/huddle-store.ts";
+import {
+  recordVerification,
+  scheduleVerifications,
+  type HuddleVerifyDeps,
+  type VerificationScheduleOutcome,
+  type VerificationOutcome,
+} from "../src/huddle-verify.ts";
 import { IdentityStore } from "../src/identity-store.ts";
 import { InboxStore } from "../src/inbox-store.ts";
 import { IssueIndex, type IndexListener, type OperationKeys } from "../src/issue-index.ts";
 import { OwnerForkStore, recordReportedCheckpoint, type CheckpointOutcome } from "../src/owner-forks.ts";
 import { importServiceKey, type ServiceKey } from "../src/service-key.ts";
 import { SessionStore } from "../src/session-store.ts";
+import { VerificationStore } from "../src/verification-store.ts";
 import { sqlite } from "./issues-repo.ts";
 
 const FIXTURE = join(import.meta.dirname, "../../../examples/identity-unification/base/penguin");
@@ -72,6 +80,7 @@ export class HuddleProject {
   readonly forks: OwnerForkStore;
   readonly huddles: HuddleStore;
   readonly runs: CombinedRunStore;
+  readonly verificationRuns: VerificationStore;
   /** Commits in each owner's fork, by owner id, as the Artifacts binding's readCommit would find them. */
   readonly published = new Map<string, Set<string>>();
   /** The sessions' clock in epoch milliseconds; the real clock while undefined. */
@@ -103,6 +112,7 @@ export class HuddleProject {
     this.huddles = new HuddleStore(this.sql);
     let nextRun = 0;
     this.runs = new CombinedRunStore(this.sql, { newId: () => `run-${++nextRun}` });
+    this.verificationRuns = new VerificationStore(this.sql);
     if (options.seedIdentities ?? true) {
       for (const seed of seedIdentities()) this.identity(seed.owner, seed.handle, seed.charter_scopes);
     }
@@ -151,6 +161,23 @@ export class HuddleProject {
       triggerPublished: async ({ trigger }) => this.published.get(trigger.ownerId)?.has(trigger.sha) ?? false,
       ...overrides,
     };
+  }
+
+  /** The dependencies ProjectAgent's verification steps pass. */
+  async verifyDeps(): Promise<HuddleVerifyDeps> {
+    const deps = await this.deps();
+    const { issue, submit, ownerFork } = deps;
+    return { huddles: this.huddles, runs: this.verificationRuns, issue, submit, ownerFork };
+  }
+
+  /** Records `sha` as `owner`'s latest checkpoint and schedules verification, as a checkpoint report does. */
+  async checkpoint(owner: string, sha: string): Promise<VerificationScheduleOutcome[]> {
+    this.publish(owner, sha);
+    return scheduleVerifications(await this.verifyDeps(), owner);
+  }
+
+  async reportVerification(runId: string, report: unknown, runnerId = "runner-1"): Promise<VerificationOutcome> {
+    return recordVerification(await this.verifyDeps(), runId, runnerId, report);
   }
 
   /** Opens the Huddle for a combined-run report and completes the runs it answers, as the agent does. */

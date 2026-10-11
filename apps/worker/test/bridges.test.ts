@@ -5,6 +5,7 @@ import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 
 import { generateSigningKeyPair } from "@penguin/issues";
+import { huddleRepoName } from "@penguin/protocol";
 import { parseScopeMap } from "@penguin/scope-map";
 // The registry module directly: the package entry point loads the Agents SDK, which needs workerd.
 import { BridgeRegistry } from "../../../services/project-agent/src/bridge-registry.ts";
@@ -19,7 +20,7 @@ import { SessionStore } from "../../../services/project-agent/src/session-store.
 
 import type { HuddleDirectory } from "../src/bridges.ts";
 import { type GatewayHandlers, handleRequest } from "../src/gateway.ts";
-import { RepoNames } from "../src/repos.ts";
+import { huddleRepoId, RepoNames } from "../src/repos.ts";
 import {
   artifactsRepoName,
   mintRepoToken,
@@ -151,6 +152,7 @@ function fakeHuddles() {
   const opened: { event: unknown; triggerFork: string }[] = [];
   const forked: string[] = [];
   const state = { failForks: 0 };
+  const reports: { runId: string; runnerId: string; report: unknown }[] = [];
   const directory: HuddleDirectory = {
     async open(event, triggerFork) {
       opened.push({ event, triggerFork });
@@ -182,8 +184,18 @@ function fakeHuddles() {
       forked.push(huddleId);
       return { name: names.huddle(huddleId) };
     },
+    async pendingVerifications() {
+      return [{ runId: "7", issueId: "31", huddleRepo: "huddle-031" }];
+    },
+    // Run 7 records, run 6 was superseded, run 8 does not exist.
+    async reportVerification(runId, runnerId, report) {
+      reports.push({ runId, runnerId, report });
+      if (runId === "6") return { status: "superseded", message: "run 6 was superseded" };
+      if (runId === "8") return { status: "rejected", reason: "not_found", message: "no verification run 8" };
+      return { status: "recorded", issueId: "31", state: "in_review", commit: `huddle-031@${"c".repeat(40)}` };
+    },
   };
-  return Object.assign(directory, { opened, forked, state });
+  return Object.assign(directory, { opened, forked, state, reports });
 }
 
 type Call = ReturnType<typeof gateway>["call"];
@@ -509,4 +521,38 @@ test("a runner's combined-run report opens a Huddle and forks its repo once", as
   assert.equal((await report(runner.bridgeToken, { trigger: { ownerId: "../x" } })).status, 400);
   assert.equal((await call("/combined-runs", { method: "GET", token: runner.bridgeToken })).status, 405);
   assert.equal(huddles.opened.length, 3);
+});
+
+test("only a runner lists and reports verification runs; a superseded run answers 409", async () => {
+  const { call, huddles } = gateway();
+  const runner = await registerBridge(call, "sam", "runner");
+  const jun = await registerBridge(call, "jun");
+
+  const listed = await call("/verifications", { method: "GET", token: runner.bridgeToken });
+  assert.equal(listed.status, 200);
+  assert.deepEqual(await listed.json(), { runs: [{ runId: "7", issueId: "31", huddleRepo: "huddle-031" }] });
+  assert.equal((await call("/verifications", { method: "GET", token: jun.bridgeToken })).status, 403);
+  assert.equal((await call("/verifications", { method: "GET" })).status, 401);
+  assert.equal((await call("/verifications", { token: runner.bridgeToken, body: {} })).status, 405);
+
+  const report = (runId: string, token = runner.bridgeToken) =>
+    call(`/verifications/${runId}`, { token, body: { status: "tested" } });
+  const recorded = await report("7");
+  assert.equal(recorded.status, 200);
+  assert.deepEqual(await recorded.json(), {
+    status: "recorded",
+    issueId: "31",
+    state: "in_review",
+    commit: `huddle-031@${"c".repeat(40)}`,
+  });
+  // The runner is named from its token, never from the request.
+  assert.equal(huddles.reports[0]?.runnerId, runner.bridgeId);
+  assert.equal((await report("6")).status, 409);
+  assert.equal((await report("8")).status, 404);
+  assert.equal((await report("7", jun.bridgeToken)).status, 403);
+  assert.equal(huddles.reports.length, 3);
+});
+
+test("the Worker forks the Huddle repo the runner is told to push to", () => {
+  for (const issueId of ["1", "31", "1234"]) assert.equal(`huddle-${huddleRepoId(issueId)}`, huddleRepoName(issueId));
 });

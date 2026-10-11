@@ -238,7 +238,7 @@ export const ISSUE_INDEX_SCHEMA: readonly string[] = [
     op_id TEXT PRIMARY KEY, issue_id TEXT NOT NULL, repo TEXT NOT NULL, sha TEXT NOT NULL, kind TEXT)`,
   `CREATE TABLE IF NOT EXISTS IssueCheck (
     op_id TEXT PRIMARY KEY, issue_id TEXT NOT NULL, command_id TEXT NOT NULL, repo TEXT NOT NULL,
-    sha TEXT NOT NULL, test TEXT, result TEXT NOT NULL, log_ref TEXT, fingerprint TEXT)`,
+    sha TEXT NOT NULL, test TEXT, result TEXT NOT NULL, log_ref TEXT, fingerprint TEXT, superseded_by TEXT)`,
   `CREATE TABLE IF NOT EXISTS SubIssue (
     child_id TEXT PRIMARY KEY, parent_id TEXT NOT NULL, op_id TEXT NOT NULL)`,
   // `counts` is 0 for a review from someone without review rights; `uncounted_reason` says why.
@@ -276,8 +276,14 @@ const REVIEW_COLUMNS: readonly (readonly [string, string])[] = [
   ["uncounted_reason", "uncounted_reason TEXT"],
 ];
 
-/** IssueCheck columns added after the table first shipped. A check stored before #38 has no fingerprint. */
-const ISSUE_CHECK_COLUMNS: readonly (readonly [string, string])[] = [["fingerprint", "fingerprint TEXT"]];
+/**
+ * IssueCheck columns added after the table first shipped. A check stored before #38 has no fingerprint;
+ * one stored before #41 was never superseded, because no link could supersede a check yet.
+ */
+const ISSUE_CHECK_COLUMNS: readonly (readonly [string, string])[] = [
+  ["fingerprint", "fingerprint TEXT"],
+  ["superseded_by", "superseded_by TEXT"],
+];
 
 /** Issue columns added after the table first shipped. An issue stored before #48 has no alias. */
 const ISSUE_COLUMNS: readonly (readonly [string, string])[] = [["alias", "alias TEXT"]];
@@ -751,8 +757,8 @@ export class IssueIndex {
       upsert: (c) =>
         db.exec(
           `INSERT OR REPLACE INTO IssueCheck (op_id, issue_id, command_id, repo, sha, test, result, log_ref,
-             fingerprint)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             fingerprint, superseded_by)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           c.opId,
           id,
           c.commandId,
@@ -762,6 +768,7 @@ export class IssueIndex {
           c.result,
           c.logRef,
           c.fingerprint,
+          c.supersededBy,
         ),
     });
     diff(prev?.subIssues, next.subIssues, {
@@ -888,6 +895,7 @@ export class IssueIndex {
           result: text(r, "result") as "pass" | "fail" | "error",
           logRef: nullable(r, "log_ref"),
           fingerprint: nullable(r, "fingerprint"),
+          supersededBy: nullable(r, "superseded_by"),
         }),
       ),
       subIssues: keyed(

@@ -43,6 +43,11 @@ export interface IssuePageCheck {
   readonly logRef: string | null;
   /** What the result applies to: the SHA-256 of the tested commit, its lockfiles and the command ID. */
   readonly fingerprint: string | null;
+  /**
+   * The op_id of the `link_commit` whose newer checkpoint made this result out of date, or null while
+   * it is current. A superseded check never counts.
+   */
+  readonly supersededBy: string | null;
 }
 
 export interface IssuePageReview {

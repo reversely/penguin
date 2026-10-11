@@ -1,5 +1,6 @@
 // The `penguin-bridge runner` command: runner mode, one pass or a pass on every interval. With
-// --combined it also claims and runs the combined runs Penguin scheduled (combined-run-pass.ts).
+// --combined or --repo it also runs the test jobs Penguin schedules in one repository: the combined
+// runs it claims (combined-run-pass.ts) and the Huddle verification runs it lists (verification-run.ts).
 
 import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
@@ -18,20 +19,39 @@ import {
   bridgeRemotes,
   claimCombinedRuns,
   fetchPendingOperations,
+  fetchVerificationRuns,
   openBridge,
   reportCombinedRun,
+  reportVerification,
   type BridgeRegistration,
   type Fetch,
 } from "./penguin-client.ts";
 import { formatPass, runnerPass, RunnerLoop } from "./runner.ts";
 import { bridgeSpool } from "./spool-cli.ts";
 import { TestRunner } from "./test-runner.ts";
+import {
+  formatVerificationPass,
+  verificationPass,
+  VerificationRunner,
+  type VerificationPassResult,
+} from "./verification-run.ts";
 
 export const RUNNER_USAGE = `       penguin-bridge runner [--once] [--interval <ms>] [--branch <name>] [--state-dir <dir>]
-                      [--combined [--repo <path>]]
+                      [--combined] [--repo <path>]
+         --combined or --repo also runs Penguin's test jobs in the repository at <path> (default
+         <state-dir>/combined): the combined runs it schedules on checkpoints and the Huddle
+         verification runs. Each fetches checkpoints there and runs the allowlisted tests in
+         throwaway worktrees; verification pushes the Huddle repo's integration branch. Passing
+         either option is the runner operator's consent to those runs.
 `;
 
 const DEFAULT_INTERVAL_MS = 10_000;
+
+/** One pass of the test jobs: each job's result, or why it did not run. */
+interface TestJobsResult {
+  readonly combined: CombinedPassResult | Error;
+  readonly verification: VerificationPassResult | Error;
+}
 
 /**
  * Runs `runner`: with --once a single pass, otherwise a pass on every interval until interrupted.
@@ -84,9 +104,10 @@ export async function runRunnerCommand(
       runnerPass({ list: () => fetchPendingOperations(registration.server, bridgeToken, fetchImpl), clone }),
     );
 
-  const combined = values.combined
-    ? await combinedPass(registration, bridgeToken, values.repo ?? join(stateDir, "combined"), stateDir, keyStore, fetchImpl)
-    : undefined;
+  const testJobs =
+    values.combined || values.repo !== undefined
+      ? await testJobsPass(registration, bridgeToken, values.repo ?? join(stateDir, "combined"), stateDir, keyStore, fetchImpl)
+      : undefined;
 
   if (values.once) {
     let code = 0;
@@ -98,15 +119,10 @@ export async function runRunnerCommand(
       io.write(`The pass did not run; the operations stay pending: ${(error as Error).message}\n`);
       code = 1;
     }
-    if (combined !== undefined) {
-      try {
-        const result = await combined();
-        io.write(formatCombinedPass(result));
-        if (result.batches.some((batch) => batch.error !== null || batch.refused.length > 0)) code = 1;
-      } catch (error) {
-        io.write(`No combined runs were claimed: ${(error as Error).message}\n`);
-        code = 1;
-      }
+    if (testJobs !== undefined) {
+      const result = await testJobs();
+      io.write(formatTestJobs(result, true));
+      if (!testJobsClean(result)) code = 1;
     }
     return code;
   }
@@ -119,54 +135,91 @@ export async function runRunnerCommand(
     },
     onError: (error) => io.write(`The pass did not run; the operations stay pending: ${error.message}\n`),
   });
-  // Combined runs run tests for minutes, so they loop on their own and never hold the spool lock.
-  const combinedLoop =
-    combined === undefined
+  // Test jobs run for minutes, so they loop on their own and never hold the spool lock. One loop runs
+  // both kinds in turn, so they never share the repository at the same time.
+  const testLoop =
+    testJobs === undefined
       ? undefined
-      : new RunnerLoop<CombinedPassResult>({
-          pass: combined,
+      : new RunnerLoop<TestJobsResult>({
+          pass: testJobs,
           intervalMs: interval,
           onPass: (result) => {
-            if (result.claimed > 0) io.write(formatCombinedPass(result));
+            const text = formatTestJobs(result, false);
+            if (text !== "") io.write(text);
           },
-          onError: (error) => io.write(`No combined runs were claimed: ${error.message}\n`),
         });
   loop.start();
-  combinedLoop?.start();
+  testLoop?.start();
   await new Promise<void>((done) => {
     process.once("SIGINT", done);
     process.once("SIGTERM", done);
   });
-  await Promise.all([loop.stop(), combinedLoop?.stop()]);
+  await Promise.all([loop.stop(), testLoop?.stop()]);
   return 0;
 }
 
 /**
- * One combined-run pass bound to this runner: claims and reports through Penguin, fetches owner
- * forks with read tokens into `repoPath` (created as an empty repository when missing), and runs
- * each allowlisted test command in a throwaway worktree there. Passing --combined is the operator's
- * consent to run the repository's allowlisted test commands unattended.
+ * One pass of the test jobs bound to this runner: claims and reports combined runs, then lists,
+ * runs and reports verification runs. Owner forks are fetched with read tokens into `repoPath`
+ * (created as an empty repository when missing); the Huddle repo is pushed with the runner's write
+ * token. One job failing never stops the other.
  */
-async function combinedPass(
+async function testJobsPass(
   registration: BridgeRegistration,
   bridgeToken: string,
   repoPath: string,
   stateDir: string,
   keyStore: KeyStore,
   fetchImpl: Fetch | undefined,
-): Promise<() => Promise<CombinedPassResult>> {
+): Promise<() => Promise<TestJobsResult>> {
   const repo = resolve(repoPath);
   if (!existsSync(repo)) {
     await mkdir(repo, { recursive: true, mode: 0o700 });
     await runGit(repo, ["init", "--quiet"]);
   }
+  const { server } = registration;
   const runner = new TestRunner({ repoPath: repo, consent: () => true });
-  return () =>
-    combinedRunPass({
-      claim: () => claimCombinedRuns(registration.server, bridgeToken, fetchImpl),
-      report: (event) => reportCombinedRun(registration.server, bridgeToken, event, fetchImpl),
-      fetchForks: forkFetcher(bridgeRemotes(stateDir, keyStore, fetchImpl, "read"), repo),
-      repoPath: repo,
-      runner,
-    });
+  const readRemotes = bridgeRemotes(stateDir, keyStore, fetchImpl, "read");
+  const verifier = new VerificationRunner({
+    repoPath: repo,
+    runner,
+    readRemotes,
+    writeRemotes: bridgeRemotes(stateDir, keyStore, fetchImpl, "write"),
+  });
+  const settle = <T>(job: () => Promise<T>): Promise<T | Error> => job().catch((error: unknown) => error as Error);
+  return async () => ({
+    combined: await settle(() =>
+      combinedRunPass({
+        claim: () => claimCombinedRuns(server, bridgeToken, fetchImpl),
+        report: (event) => reportCombinedRun(server, bridgeToken, event, fetchImpl),
+        fetchForks: forkFetcher(readRemotes, repo),
+        repoPath: repo,
+        runner,
+      }),
+    ),
+    verification: await settle(() =>
+      verificationPass({
+        list: () => fetchVerificationRuns(server, bridgeToken, fetchImpl),
+        run: (spec) => verifier.run(spec),
+        report: (runId, report) => reportVerification(server, bridgeToken, runId, report, fetchImpl),
+      }),
+    ),
+  });
+}
+
+/** True when both jobs ran and nothing in them was refused or stopped. */
+function testJobsClean({ combined, verification }: TestJobsResult): boolean {
+  if (combined instanceof Error || verification instanceof Error) return false;
+  const combinedClean = combined.batches.every((batch) => batch.error === null && batch.refused.length === 0);
+  return combinedClean && verification.failed.length === 0;
+}
+
+/** The pass's lines; `always` writes a job's summary even when it found no work. */
+function formatTestJobs({ combined, verification }: TestJobsResult, always: boolean): string {
+  let text = "";
+  if (combined instanceof Error) text += `No combined runs were claimed: ${combined.message}\n`;
+  else if (always || combined.claimed > 0) text += formatCombinedPass(combined);
+  if (verification instanceof Error) text += `The verification pass did not run; the runs stay pending: ${verification.message}\n`;
+  else if (always || verification.listed > 0) text += formatVerificationPass(verification);
+  return text;
 }

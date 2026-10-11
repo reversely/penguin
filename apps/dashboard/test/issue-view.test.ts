@@ -9,6 +9,7 @@ import {
   describeEntry,
   entrySignal,
   fixedIn,
+  latestChecks,
   penguinState,
   reasonLabel,
   watchedIssues,
@@ -41,6 +42,7 @@ function check(fields: Partial<IssuePageCheck>): IssuePageCheck {
     result: "fail",
     logRef: null,
     fingerprint: null,
+    supersededBy: null,
     ...fields,
   };
 }
@@ -137,6 +139,13 @@ test("a failing check is fixed in the sub-issue whose latest check of the same t
   assert.equal(fixedIn(failing, subs), "32");
   assert.equal(fixedIn(failing, [sub("32", { checks: [check({ result: "pass" }), check({ result: "fail" })] })]), undefined);
   assert.equal(fixedIn(check({ result: "pass" }), subs), undefined);
+});
+
+test("a superseded check never counts as the latest result", () => {
+  const old = check({ opId: "penguin-web-0003", result: "fail", supersededBy: "penguin-web-0009" });
+  const current = check({ opId: "penguin-web-0010", result: "pass", test: null });
+  assert.deepEqual(latestChecks([old, current]), [current]);
+  assert.deepEqual(latestChecks([old]), []);
 });
 
 test("the Penguin character follows the issue's state, its checks and its reviews", () => {

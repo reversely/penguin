@@ -69,6 +69,11 @@ export class HuddleStore {
     return row === undefined ? undefined : huddle(row);
   }
 
+  /** Every Huddle whose opening finished, oldest first. */
+  open(): Huddle[] {
+    return this.#db.exec(`SELECT * FROM Huddle WHERE status = 'open' ORDER BY opened_at, trigger_commit`).map(huddle);
+  }
+
   /** The Huddle whose issue has this number, or undefined. */
   byIssue(issueId: string): Huddle | undefined {
     const [row] = this.#db.exec(`SELECT * FROM Huddle WHERE issue_id = ?`, issueId);

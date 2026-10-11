@@ -35,6 +35,15 @@ import { openHuddle, type HuddleOpenOutcome } from "./huddle-open.ts";
 import { CombinedRunStore, scheduleCombinedRuns, type ClaimListing } from "./combined-run-schedule.ts";
 import { HuddleStore, type Huddle } from "./huddle-store.ts";
 import { fixTask, type FixTask } from "./fix-task.ts";
+import {
+  recordVerification,
+  scheduleVerifications,
+  verificationSpecs,
+  type HuddleVerifyDeps,
+  type VerificationScheduleOutcome,
+  type VerificationOutcome,
+} from "./huddle-verify.ts";
+import { VerificationStore } from "./verification-store.ts";
 import { IngestLedger, ingestPush, type IngestReport } from "./push-ingest.ts";
 import { rebuildIndex, type RebuildReport } from "./rebuild.ts";
 import { parseScopeFile, SCOPE_MAP_PATH } from "./scope-file.ts";
@@ -71,6 +80,7 @@ import {
   type IdentityWriteOutcome,
   type Inbox,
   type IssuePage,
+  type VerificationRunSpec,
 } from "@penguin/protocol";
 import type { ScopeMap } from "@penguin/scope-map";
 
@@ -170,6 +180,24 @@ export {
   type ScheduleOutcome,
 } from "./combined-run-schedule.ts";
 export {
+  initialCheckpoints,
+  recordVerification,
+  scheduleVerification,
+  scheduleVerifications,
+  verificationPlan,
+  verificationSpecs,
+  type HuddleVerifyDeps,
+  type VerificationScheduleOutcome,
+  type VerificationOutcome,
+  type VerificationPlan,
+} from "./huddle-verify.ts";
+export {
+  sameCheckpoints,
+  VerificationStore,
+  type VerificationRun,
+  type VerificationStatus,
+} from "./verification-store.ts";
+export {
   INBOX_REASONS,
   InboxStore,
   type InboxItem,
@@ -261,9 +289,10 @@ export class ProjectAgent extends Agent {
   /** Ingests run one at a time, so two pushes never interleave their walks and applies. */
   #ingests: Promise<unknown> = Promise.resolve();
   #huddles: HuddleStore | undefined;
-  /** Huddle openings run one at a time; see `openHuddle`. */
-  #huddleOpenings: Promise<unknown> = Promise.resolve();
   #combinedRuns: CombinedRunStore | undefined;
+  #verificationRuns: VerificationStore | undefined;
+  /** Huddle openings and verification steps run one at a time, so no two interleave their writes. */
+  #huddleSteps: Promise<unknown> = Promise.resolve();
 
   override onStart(): void {
     this.sql`CREATE TABLE IF NOT EXISTS counter (id INTEGER PRIMARY KEY CHECK (id = 1), value INTEGER NOT NULL)`;
@@ -312,7 +341,7 @@ export class ProjectAgent extends Agent {
    * passing run is recorded as passed and opens nothing.
    */
   openHuddle(event: unknown, triggerFork: string, repos: ProjectRepos): Promise<HuddleOpenOutcome> {
-    const run = this.#huddleOpenings.then(async () => {
+    return this.#huddleStep(async () => {
       const scopeMap = await this.#scopeMap(repos);
       const index = this.#index();
       const sessions = this.#sessionStore();
@@ -335,8 +364,65 @@ export class ProjectAgent extends Agent {
       if (outcome.status !== "rejected" && parsed.ok) this.#combinedRunStore().complete(parsed.event);
       return outcome;
     });
-    this.#huddleOpenings = run.catch(() => undefined);
+  }
+
+  /** Runs one Huddle step after the ones before it; see `#huddleSteps`. */
+  #huddleStep<T>(step: () => Promise<T>): Promise<T> {
+    const run = this.#huddleSteps.then(step);
+    this.#huddleSteps = run.catch(() => undefined);
     return run;
+  }
+
+  /**
+   * The verification runs waiting for the runner, with what each merges and runs. The Worker lists
+   * them only to a runner bridge.
+   */
+  pendingVerifications(): VerificationRunSpec[] {
+    return verificationSpecs({ huddles: this.#huddleStore(), runs: this.#verificationStore() });
+  }
+
+  /**
+   * Records a runner's report of a verification run (see huddle-verify.ts). `runnerId` is the reporting
+   * runner bridge, which the Worker takes from its token.
+   */
+  reportVerification(runId: string, runnerId: string, report: unknown, repos: ProjectRepos): Promise<VerificationOutcome> {
+    return this.#huddleStep(async () => recordVerification(await this.#verifyDeps(repos), runId, runnerId, report));
+  }
+
+  /**
+   * Schedules a verification run for each open Huddle `ownerId` takes part in, after a newer
+   * checkpoint of that owner was recorded.
+   */
+  scheduleVerifications(ownerId: string, repos: ProjectRepos): Promise<VerificationScheduleOutcome[]> {
+    return this.#huddleStep(async () => scheduleVerifications(await this.#verifyDeps(repos), ownerId));
+  }
+
+  async #verifyDeps(repos: ProjectRepos): Promise<HuddleVerifyDeps> {
+    const scopeMap = await this.#scopeMap(repos);
+    const index = this.#index();
+    return {
+      huddles: this.#huddleStore(),
+      runs: this.#verificationStore(),
+      issue: (issueId) => index.issue(issueId),
+      submit: (operation) => this.submit(operation, { penguin: true }, "penguin", scopeMap),
+      ownerFork: (ownerId) => this.#ownerForks().get(ownerId),
+    };
+  }
+
+  /**
+   * After `owner`'s checkpoint is recorded, schedules verification of the Huddles the owner takes
+   * part in. A failure there never fails the report: the checkpoint stays recorded, and the next
+   * report schedules again.
+   */
+  async #scheduleVerificationsFor(owner: string, repos: ProjectRepos): Promise<void> {
+    try {
+      const scheduled = await this.scheduleVerifications(owner, repos);
+      for (const rejected of scheduled.filter((outcome) => outcome.status === "rejected")) {
+        console.error(JSON.stringify({ event: "verification_schedule_failed", owner, ...rejected }));
+      }
+    } catch (error) {
+      console.error(JSON.stringify({ event: "verification_schedule_failed", owner, error: String(error) }));
+    }
   }
 
   /** Records the Huddle repo the Worker forked for the Huddle opened by `triggerCommit`. */
@@ -675,7 +761,10 @@ export class ProjectAgent extends Agent {
   ): Promise<SessionCheckpointOutcome> {
     const deps = { sessions: this.#sessionStore(), ...this.#checkpointDeps() };
     const outcome = await reportCheckpoint(deps, caller, sessionId, sha, fork);
-    if (outcome.status === "ok") await this.#scheduleCombinedRuns(caller, sha, fork, repos);
+    if (outcome.status === "ok") {
+      await this.#scheduleCombinedRuns(caller, sha, fork, repos);
+      await this.#scheduleVerificationsFor(caller, repos);
+    }
     return outcome;
   }
 
@@ -686,7 +775,10 @@ export class ProjectAgent extends Agent {
    */
   async reportBridgeCheckpoint(owner: string, sha: string, fork: string, repos: ProjectRepos): Promise<CheckpointOutcome> {
     const outcome = await recordReportedCheckpoint(this.#checkpointDeps(), owner, sha, fork, null);
-    if (outcome.status === "ok") await this.#scheduleCombinedRuns(owner, sha, fork, repos);
+    if (outcome.status === "ok") {
+      await this.#scheduleCombinedRuns(owner, sha, fork, repos);
+      await this.#scheduleVerificationsFor(owner, repos);
+    }
     return outcome;
   }
 
@@ -868,6 +960,11 @@ export class ProjectAgent extends Agent {
   #combinedRunStore(): CombinedRunStore {
     this.#combinedRuns ??= new CombinedRunStore(this.#database());
     return this.#combinedRuns;
+}
+
+  #verificationStore(): VerificationStore {
+    this.#verificationRuns ??= new VerificationStore(this.#database());
+    return this.#verificationRuns;
   }
 
   #ownerForks(): OwnerForkStore {

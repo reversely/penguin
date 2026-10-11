@@ -125,7 +125,9 @@ export function parseCombinedRunEvent(value: unknown): CombinedRunParse {
   };
 }
 
-type Report = (field: string, message: string) => void;
+/** Records one problem with a field of a value from the network. */
+export type FieldReport = (field: string, message: string) => void;
+type Report = FieldReport;
 
 function result(raw: unknown, at: string, report: Report): CombinedRunResult | undefined {
   if (!isRecord(raw)) {
@@ -149,24 +151,12 @@ function result(raw: unknown, at: string, report: Report): CombinedRunResult | u
     : commit(raw.ownerCheckpoint, `${at}.ownerCheckpoint`, fail);
   const fingerprint = raw.fingerprint === null || raw.fingerprint === undefined
     ? null
-    : fingerprintOf(raw.fingerprint, `${at}.fingerprint`, fail);
+    : parseFingerprintField(raw.fingerprint, `${at}.fingerprint`, fail);
   const tested = status === "passed" || status === "failed";
   if (tested && (fingerprint === null || ownerCheckpoint === null)) {
     fail(at, "a passed or failed result must carry its ownerCheckpoint and fingerprint");
   }
-  const failingTests: CombinedRunFailingTest[] = [];
-  const rawTests = raw.failingTests ?? [];
-  if (!Array.isArray(rawTests) || rawTests.length > COMBINED_RUN_LIMITS.failingTestsPerResult) {
-    fail(`${at}.failingTests`, `must be an array of at most ${COMBINED_RUN_LIMITS.failingTestsPerResult} tests`);
-  } else {
-    rawTests.forEach((test: unknown, index) => {
-      const field = `${at}.failingTests[${index}]`;
-      const nodeId = isRecord(test) ? test.nodeId : undefined;
-      const testId = isRecord(test) ? test.testId : undefined;
-      if (!testText(nodeId) || !testText(testId)) fail(field, "must hold a nodeId and a testId");
-      else failingTests.push({ nodeId, testId });
-    });
-  }
+  const failingTests = parseFailingTestList(raw.failingTests, `${at}.failingTests`, fail);
   if (status !== "failed" && failingTests.length > 0) fail(`${at}.failingTests`, "only a failed result lists failing tests");
   if (!valid) return undefined;
   return {
@@ -178,6 +168,23 @@ function result(raw: unknown, at: string, report: Report): CombinedRunResult | u
     fingerprint: fingerprint ?? null,
     failingTests,
   };
+}
+
+/** Checks a result's `failingTests`: absent, or an array of `{ nodeId, testId }`. */
+export function parseFailingTestList(raw: unknown, field: string, report: FieldReport): CombinedRunFailingTest[] {
+  const failingTests: CombinedRunFailingTest[] = [];
+  const rawTests = raw ?? [];
+  if (!Array.isArray(rawTests) || rawTests.length > COMBINED_RUN_LIMITS.failingTestsPerResult) {
+    report(field, `must be an array of at most ${COMBINED_RUN_LIMITS.failingTestsPerResult} tests`);
+    return failingTests;
+  }
+  rawTests.forEach((test: unknown, index) => {
+    const nodeId = isRecord(test) ? test.nodeId : undefined;
+    const testId = isRecord(test) ? test.testId : undefined;
+    if (!testText(nodeId) || !testText(testId)) report(`${field}[${index}]`, "must hold a nodeId and a testId");
+    else failingTests.push({ nodeId, testId });
+  });
+  return failingTests;
 }
 
 function testText(value: unknown): value is string {
@@ -200,7 +207,12 @@ function commit(value: unknown, field: string, report: Report): string | undefin
   return undefined;
 }
 
-function fingerprintOf(value: unknown, field: string, report: Report): CombinedRunFingerprint | undefined {
+/** Checks a result's fingerprint: its id, tested commit, lockfile hash and command ID. */
+export function parseFingerprintField(
+  value: unknown,
+  field: string,
+  report: FieldReport,
+): CombinedRunFingerprint | undefined {
   if (!isRecord(value)) {
     report(field, "must be an object with id, commit, lockfileHash and commandId");
     return undefined;
@@ -236,3 +248,6 @@ function strings(
   });
   return items;
 }
+
+/** Field checks other events from the runner share: a full commit SHA and an owner id. */
+export { commit as parseCommitField, person as parseOwnerField };

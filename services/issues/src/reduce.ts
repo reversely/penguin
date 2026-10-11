@@ -38,6 +38,10 @@ export const REDUCE_REJECT_REASONS = [
   "sub_issue_has_parent",
   /** The sub-issue is this issue's parent or an ancestor of it. */
   "sub_issue_cycle",
+  /** A link marks a check superseded that is not a check on this issue. */
+  "unknown_check",
+  /** A link from someone other than Penguin marks checks superseded. */
+  "supersede_forbidden",
 ] as const;
 
 export type ReduceRejectReason = (typeof REDUCE_REJECT_REASONS)[number];
@@ -89,6 +93,8 @@ export interface Check {
   readonly logRef: string | null;
   /** The result's fingerprint (tested commit, lockfiles and command ID), or null when none was given. */
   readonly fingerprint: string | null;
+  /** The op_id of the `link_commit` that marked the check out of date, or null while it is current. */
+  readonly supersededBy: string | null;
 }
 
 export interface SubIssue {
@@ -294,9 +300,11 @@ function apply(issue: IssueRecord, operation: Operation, context: ReduceContext)
       return { ...issue, mentions: withEntry(issue.mentions, opId, mention) };
     }
     case "link_commit": {
-      const { commit, kind } = p as { commit: string; kind?: LinkedCommit["kind"] };
+      const { commit, kind, supersedes = [] } = p as { commit: string; kind?: LinkedCommit["kind"]; supersedes?: string[] };
+      const checks = supersede(issue, operation, supersedes);
+      if ("reason" in checks) return checks;
       const link: LinkedCommit = { opId, ...splitCommit(commit), kind: kind ?? null };
-      return { ...issue, linkedCommits: withEntry(issue.linkedCommits, opId, link) };
+      return { ...issue, checks, linkedCommits: withEntry(issue.linkedCommits, opId, link) };
     }
     case "attach_check": {
       const { command_id, commit, test, result, log_ref, fingerprint } = p as {
@@ -315,6 +323,7 @@ function apply(issue: IssueRecord, operation: Operation, context: ReduceContext)
         result,
         logRef: log_ref ?? null,
         fingerprint: fingerprint ?? null,
+        supersededBy: null,
       };
       return { ...issue, checks: withEntry(issue.checks, opId, check) };
     }
@@ -400,6 +409,30 @@ function partyAssignment(party: Party): Assignment {
 function splitCommit(commit: string): { repo: string; sha: string } {
   const at = commit.indexOf("@");
   return { repo: commit.slice(0, at), sha: commit.slice(at + 1) };
+}
+
+/**
+ * The issue's checks with each one in `opIds` marked superseded by `operation`, a `link_commit`. Only
+ * Penguin, which runs verification, may supersede a check, and each must be a check on this issue. A
+ * check superseded before keeps the link that superseded it first; the same checks come back
+ * unchanged when there is nothing to mark.
+ */
+function supersede(
+  issue: IssueRecord,
+  operation: Operation,
+  opIds: readonly string[],
+): ReadonlyMap<string, Check> | Rejection {
+  if (opIds.length === 0) return issue.checks;
+  if (!("penguin" in operation.author)) {
+    return reject("supersede_forbidden", "only Penguin marks checks superseded");
+  }
+  const next = new Map(issue.checks);
+  for (const id of opIds) {
+    const check = next.get(id);
+    if (check === undefined) return reject("unknown_check", `no check ${id} on issue ${issue.id}`);
+    if (check.supersededBy === null) next.set(id, { ...check, supersededBy: operation.op_id });
+  }
+  return next;
 }
 
 function withEntry<V>(map: ReadonlyMap<string, V>, key: string, value: V): ReadonlyMap<string, V> {

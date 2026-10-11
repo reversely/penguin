@@ -59,10 +59,12 @@ export function checkSignal(check: Pick<IssuePageCheck, "result">): Signal {
   return check.result === "pass" ? "verified" : check.result === "fail" ? "failure" : "warning";
 }
 
-/** The newest result for each command and test, in first-seen order. */
+/** The newest current result for each command and test, in first-seen order. A superseded check never counts. */
 export function latestChecks(checks: readonly IssuePageCheck[]): IssuePageCheck[] {
   const latest = new Map<string, IssuePageCheck>();
-  for (const check of checks) latest.set(`${check.commandId}\u0000${check.test ?? ""}`, check);
+  for (const check of checks) {
+    if (check.supersededBy === null) latest.set(`${check.commandId}\u0000${check.test ?? ""}`, check);
+  }
   return [...latest.values()];
 }
 

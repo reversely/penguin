@@ -92,6 +92,9 @@ export type OperationType = (typeof OPERATION_TYPES)[number];
 
 const TEXT_MAX = 32_768;
 
+/** Most checks one `link_commit` may mark superseded; it keeps the operation under the file size cap. */
+export const MAX_SUPERSEDED_CHECKS = 256;
+
 const title = { type: "string", minLength: 1, maxLength: 256 };
 const body = { type: "string", maxLength: TEXT_MAX };
 const nonEmptyBody = { type: "string", minLength: 1, maxLength: TEXT_MAX };
@@ -122,8 +125,18 @@ export const PAYLOAD_SCHEMAS: Readonly<Record<OperationType, JsonSchema>> = {
     description: "`comment`, when present, is the op_id of the comment that carries the mention.",
   }),
   link_commit: payload(
-    { commit: { $ref: "#/$defs/commit" }, kind: { type: "string", enum: ["trigger", "fix", "related"] } },
+    {
+      commit: { $ref: "#/$defs/commit" },
+      kind: { type: "string", enum: ["trigger", "fix", "related"] },
+      supersedes: { type: "array", items: opRef, minItems: 1, maxItems: MAX_SUPERSEDED_CHECKS, uniqueItems: true },
+    },
     ["commit"],
+    {
+      description:
+        "`supersedes` lists the op_ids of checks on this issue that the linked commit makes out of date: a " +
+        "newer checkpoint changes the code those results ran against, so they no longer count. Only Penguin " +
+        "writes it.",
+    },
   ),
   attach_check: payload(
     {

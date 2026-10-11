@@ -5,7 +5,7 @@
 import { mkdir, open, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
-import type { CombinedRunEvent } from "@penguin/protocol";
+import type { CombinedRunEvent, VerificationReport, VerificationRunSpec } from "@penguin/protocol";
 
 import {
   artifactsRemote,
@@ -416,4 +416,77 @@ function claimedRun(entry: unknown): ClaimedCombinedRun {
     ownerCheckpoint: ownerCheckpoint as string,
     commandIds: commandIds as string[],
   };
+}
+
+/** The route a runner lists verification runs from, and reports each one to under `/<run id>`. */
+export const VERIFICATION_ROUTE = "/verifications";
+
+/** Penguin's answer to a verification report. */
+export type VerificationReply =
+  | { readonly status: "recorded"; readonly issueId: string; readonly state: string; readonly commit: string }
+  | { readonly status: "existing"; readonly issueId: string }
+  /** A newer checkpoint superseded the run; its results do not count and need no retry. */
+  | { readonly status: "superseded"; readonly message: string };
+
+/**
+ * Lists the verification runs waiting for the runner. Penguin answers only a bridge registered with
+ * the runner role. Each listing is checked again by the runner before it fetches or runs anything.
+ */
+export async function fetchVerificationRuns(
+  server: string,
+  bridgeToken: string,
+  fetchImpl: Fetch = fetch,
+): Promise<VerificationRunSpec[]> {
+  const { status, body } = await runnerRequest(server, bridgeToken, VERIFICATION_ROUTE, undefined, fetchImpl);
+  if (status !== 200 || !Array.isArray(body["runs"])) {
+    throw new RemoteUnavailableError(`Penguin could not list verification runs (HTTP ${status})`);
+  }
+  return body["runs"] as VerificationRunSpec[];
+}
+
+/** Reports a verification run to Penguin, which attaches its checks to the Huddle issue. */
+export async function reportVerification(
+  server: string,
+  bridgeToken: string,
+  runId: string,
+  report: VerificationReport,
+  fetchImpl: Fetch = fetch,
+): Promise<VerificationReply> {
+  const route = `${VERIFICATION_ROUTE}/${encodeURIComponent(runId)}`;
+  const { status, body } = await runnerRequest(server, bridgeToken, route, report, fetchImpl);
+  if (status === 200) return body as unknown as VerificationReply;
+  const message = typeof body["message"] === "string" ? `: ${body["message"]}` : "";
+  if (status === 409 && body["error"] === "superseded") return { status: "superseded", message: String(body["message"]) };
+  if ([400, 404, 409].includes(status)) {
+    throw new RemoteRefusedError(`Penguin refused verification run ${runId} (HTTP ${status})${message}`);
+  }
+  throw new RemoteUnavailableError(`Penguin could not take verification run ${runId} (HTTP ${status})${message}`);
+}
+
+/** One runner request: GET without a body, else POST of `body` as JSON. Answers 401 and 403 throw. */
+async function runnerRequest(
+  server: string,
+  bridgeToken: string,
+  route: string,
+  body: unknown,
+  fetchImpl: Fetch,
+): Promise<{ readonly status: number; readonly body: Record<string, unknown> }> {
+  const origin = checkedOrigin(server, "the Penguin server").origin;
+  const headers: Record<string, string> = { Authorization: `Bearer ${bridgeToken}` };
+  let response: Response;
+  try {
+    response = await fetchImpl(
+      `${origin}${route}`,
+      body === undefined
+        ? { headers }
+        : { method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify(body) },
+    );
+  } catch (error) {
+    throw new RemoteUnavailableError(`Penguin at ${origin} is unreachable: ${(error as Error).message}`);
+  }
+  if (response.status === 401) throw new RemoteUnavailableError("Penguin refused the bridge token; register the bridge again");
+  if (response.status === 403) throw new RemoteRefusedError(`Penguin answers ${route} only to a runner bridge`);
+  const parsed = (await response.json().catch(() => ({}))) as unknown;
+  const record = typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed : {};
+  return { status: response.status, body: record as Record<string, unknown> };
 }

@@ -23,6 +23,10 @@
  *   by the bridge's hook before an agent's next tool action or as an explicit bridge checkpoint. The
  *   owner's running sessions in that worktree receive their waiting fix tasks. The body carries only
  *   the worktree id.
+ * - GET /verifications, bridge token of a runner bridge: lists the verification runs waiting for the
+ *   runner: the checkpoints to merge onto a Huddle repo's `integration` branch and the commands to run.
+ * - POST /verifications/<run id>, bridge token of a runner bridge: reports a verification run. Penguin
+ *   attaches its checks to the Huddle issue; a run a newer checkpoint superseded answers 409.
  *
  * Responses that carry a code or token are marked `Cache-Control: no-store`.
  */
@@ -40,6 +44,7 @@ import type {
   ProjectRepos,
   RegisterOutcome,
   RegistrationCode,
+  VerificationOutcome,
 } from "@penguin/project-agent";
 
 import { bearerToken, isDeployer } from "./auth.ts";
@@ -66,7 +71,7 @@ export interface BridgeDirectory {
   pendingOperations(caller: BridgeCaller): Promise<PendingListing> | PendingListing;
   /**
    * Records `sha` as `owner`'s latest checkpoint once the commit is found in `fork`, an Artifacts repo
-   * name, and schedules the combined runs it calls for.
+   * name, and schedules the combined runs it calls for and the verification of its owner's open Huddles.
    */
   reportBridgeCheckpoint(owner: string, sha: string, fork: string, repos: ProjectRepos): Promise<CheckpointOutcome>;
   /** Claims the scheduled combined runs; refused unless `caller` holds the runner role. */
@@ -83,6 +88,10 @@ export interface HuddleDirectory {
   recordRepo(triggerCommit: string, huddleRepo: string): Promise<Huddle | undefined>;
   /** Forks `huddle-<id>` from the base repo (`forkHuddleRepo` in repos.ts); an existing repo is kept. */
   forkRepo(huddleId: string): Promise<{ readonly name: string }>;
+  /** The verification runs waiting for the runner. */
+  pendingVerifications(): Promise<readonly unknown[]>;
+  /** Records a runner's report of run `runId`; `runnerId` is the reporting bridge. */
+  reportVerification(runId: string, runnerId: string, report: unknown): Promise<VerificationOutcome>;
 }
 
 /** Mints a token on a repo named without the deployment's prefix, such as `owner-jun`. */
@@ -358,6 +367,51 @@ async function reportCombinedRun(request: Request, handlers: BridgeHandlers): Pr
   }
 }
 
+/** Authenticates a runner bridge, or answers 401 or 403. */
+async function runnerBridge(request: Request, handlers: BridgeHandlers): Promise<BridgeIdentity | Response> {
+  const token = bearerToken(request);
+  const bridge = token === undefined ? undefined : await (await handlers.bridges()).authenticateBridge(token);
+  if (bridge === undefined) return unauthorized();
+  if (bridge.role !== "runner") {
+    return json({ error: "forbidden", message: `bridge ${bridge.bridgeId} does not hold the runner role` }, 403);
+  }
+  return bridge;
+}
+
+async function listVerifications(request: Request, handlers: BridgeHandlers): Promise<Response> {
+  const bridge = await runnerBridge(request, handlers);
+  if (bridge instanceof Response) return bridge;
+  if (request.method !== "GET") return methodNotAllowed("GET");
+  const runs = await (await handlers.huddles()).pendingVerifications();
+  return json({ runs }, 200, NO_STORE);
+}
+
+async function reportVerification(request: Request, runId: string, handlers: BridgeHandlers): Promise<Response> {
+  const bridge = await runnerBridge(request, handlers);
+  if (bridge instanceof Response) return bridge;
+  if (request.method !== "POST") return methodNotAllowed("POST");
+  const body = await readObject(request);
+  if (body === undefined) return invalid("", "must be a JSON object");
+  let outcome: VerificationOutcome;
+  try {
+    outcome = await (await handlers.huddles()).reportVerification(runId, bridge.bridgeId, body);
+  } catch (error) {
+    return json({ error: "artifacts", code: artifactsErrorCode(error) ?? null }, 502);
+  }
+  switch (outcome.status) {
+    case "rejected": {
+      const status = outcome.reason === "invalid" ? 400 : outcome.reason === "not_found" ? 404 : 409;
+      return json({ error: outcome.reason, message: outcome.message }, status);
+    }
+    case "superseded":
+      return json({ error: "superseded", message: outcome.message }, 409);
+    case "existing":
+      return json({ status: outcome.status, issueId: outcome.issueId }, 200);
+    case "recorded":
+      return json({ status: outcome.status, issueId: outcome.issueId, state: outcome.state, commit: outcome.commit }, 200);
+  }
+}
+
 function huddleBody(status: "opened" | "existing", huddle: Huddle): Record<string, unknown> {
   const { issueId, triggerCommit, baselineSha, huddleRepo, openedAt } = huddle;
   return { status, issueId, triggerCommit, baselineSha, huddleRepo, openedAt };
@@ -376,6 +430,9 @@ export async function handleBridgeRoute(
   if (url.pathname === "/combined-runs") return reportCombinedRun(request, handlers);
   if (url.pathname === "/combined-runs/claim") return claimCombinedRuns(request, handlers);
   if (url.pathname === "/sessions/checkpoint") return sessionCheckpoint(request, handlers);
+  if (url.pathname === "/verifications") return listVerifications(request, handlers);
+  const runId = /^\/verifications\/([0-9]{1,15})$/.exec(url.pathname)?.[1];
+  if (runId !== undefined) return reportVerification(request, runId, handlers);
   if (url.pathname === "/bridges/codes") return issueCode(request, options, handlers);
   if (url.pathname === "/bridges") return register(request, handlers);
   const bridgeId = /^\/bridges\/([A-Za-z0-9_-]+)$/.exec(url.pathname)?.[1];
