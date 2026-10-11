@@ -13,10 +13,9 @@ import {
   formatSideBySide,
   REVIEW_SCHEMA_VERSION,
   type InvariantView,
-  type ReviewException,
   type ReviewForm,
+  type ReviewRecord,
   type ReviewRefusal,
-  type SideBySideRecord,
   type StoredShapeChange,
 } from "@penguin/protocol";
 
@@ -39,22 +38,8 @@ export interface ReviewOptions extends SideBySideOptions {
   readonly analyzer?: ImpactAnalyzer;
 }
 
-export interface ReviewResult {
-  readonly schemaVersion: typeof REVIEW_SCHEMA_VERSION;
-  readonly base: string;
-  readonly fork: string;
-  readonly scope: string;
-  readonly state: "accepted" | "refused";
-  readonly refusals: readonly ReviewRefusal[];
-  /** The scope's invariants the form was checked against. */
-  readonly invariants: readonly InvariantView[];
-  /** The stored data shapes the contract diff shows changed; null when no diff was made. */
-  readonly storedShapes: readonly StoredShapeChange[] | null;
-  readonly sideBySide: SideBySideRecord;
-  /** What goes to the scope's owner in person; empty when the agent's review stands. */
-  readonly exceptions: readonly ReviewException[];
-  readonly timings: { readonly impactMs: number; readonly sideBySideMs: number; readonly totalMs: number };
-}
+/** The record of one review, as runner mode reports it (`ReviewRecord` in `@penguin/protocol`). */
+export type ReviewResult = ReviewRecord;
 
 /** Reads each evidence file from the fork; a missing, unreadable or oversized file counts as missing. */
 async function forkFiles(repoPath: string, fork: string, form: ReviewForm): Promise<Map<string, string | null>> {

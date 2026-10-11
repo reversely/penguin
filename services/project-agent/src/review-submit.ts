@@ -3,8 +3,9 @@
 // scope's invariants in `penguin/invariants.json` on main and against the feature's fork at its
 // latest checkpoint: a missing row, evidence that does not exist in the fork and "unknown" without a
 // test are refused with the reason. The stored data rule needs the contract diff and the side-by-side
-// run needs the scope's code run, so both are left to the check runner (`penguin-bridge review`);
-// the review is kept with both waiting.
+// run needs the scope's code run, so both are left to the check runner: a form that passes is kept
+// `pending` with the checkpoint's baseline on main, until a runner claims it, runs the review harness
+// and reports the record (review-record.ts).
 //
 // Until merge plans exist (#89), a review is keyed by the feature under review and the reviewing
 // scope, not by a plan part. Every form string is length-limited and stored as data, never run.
@@ -14,14 +15,16 @@ import {
   parseReviewForm,
   validateReviewForm,
   type InvariantView,
+  type ReviewException,
   type ReviewForm,
+  type ReviewRecord,
   type ReviewRefusal,
 } from "@penguin/protocol";
 import { InvariantsFileError, parseInvariantsBytes, type ScopeMap } from "@penguin/scope-map";
 
 import { parseFeatureId, type FeatureStore } from "./feature-store.ts";
 import type { FeatureRejection } from "./feature-open.ts";
-import type { SqlDatabase, SqlValue } from "./issue-index.ts";
+import type { BridgeCaller, SqlDatabase, SqlValue } from "./issue-index.ts";
 import type { SessionOutcome } from "./session-store.ts";
 
 type Row = Record<string, SqlValue>;
@@ -37,62 +40,139 @@ export const REVIEW_TABLE_SCHEMA: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS FeatureReview_feature ON FeatureReview (feature_id, scope_id, id)`,
 ];
 
+/**
+ * Columns added for the check runner's claim and record (#101). A table an earlier deploy created
+ * lacks them, so the store adds each one that is missing.
+ */
+const RUNNER_COLUMNS: readonly (readonly [string, string])[] = [
+  ["owner_id", "owner_id TEXT"],
+  ["base_sha", "base_sha TEXT"],
+  ["invariants", "invariants TEXT"],
+  ["claimed_by", "claimed_by TEXT"],
+  ["claimed_at", "claimed_at INTEGER"],
+  ["completed_at", "completed_at INTEGER"],
+  ["record", "record TEXT"],
+  ["exceptions", "exceptions TEXT"],
+];
+
 /** The most bytes of one evidence file read from the fork; a larger file counts as missing. */
 const MAX_EVIDENCE_FILE_BYTES = 1024 * 1024;
 
-export type ReviewState = "accepted" | "refused";
+/** How long a claimed review stays with its runner before another claim may take it again. */
+export const REVIEW_LEASE_MS = 30 * 60_000;
+
+/** The most reviews one claim hands out. */
+export const REVIEW_CLAIM_LIMIT = 8;
+
+/**
+ * `pending` from a form that passed the check at submission until the runner reports its record,
+ * then the runner's verdict. A form refused at submission is `refused` at once and never runs.
+ */
+export type ReviewState = "pending" | "accepted" | "refused";
 
 export interface StoredReview {
   readonly id: number;
   readonly featureId: string;
   readonly scopeId: string;
+  /** The scope's owner, who submitted the review through their agent; null on a row from before #101. */
+  readonly ownerId: string | null;
   /** The reviewing session's identity handle. */
   readonly reviewer: string;
   /** The fork commit the evidence was checked against. */
   readonly forkSha: string;
+  /** The checkpoint's baseline on main, the runner's base; null for a form refused at submission. */
+  readonly baseSha: string | null;
   readonly form: ReviewForm;
+  /** The scope's invariants on main the form was checked against at submission. */
+  readonly invariants: readonly InvariantView[];
   readonly state: ReviewState;
   readonly refusals: readonly ReviewRefusal[];
-  /** The side-by-side run's record, once the check runner attaches it. */
+  /** `sha256:<hex>` of the runner's review record, once attached. */
   readonly sideBySideRef: string | null;
+  /** The runner's review record, once attached. */
+  readonly record: ReviewRecord | null;
+  /** What goes to the scope's owner in person, derived from the record; empty until it is attached. */
+  readonly exceptions: readonly ReviewException[];
+  readonly claimedBy: string | null;
+  readonly claimedAt: string | null;
+  readonly completedAt: string | null;
   readonly createdAt: string;
 }
+
+const json = <T>(value: SqlValue | undefined, empty: T): T => (typeof value === "string" ? (JSON.parse(value) as T) : empty);
+const text = (value: SqlValue | undefined): string | null => (value === null || value === undefined ? null : String(value));
+const time = (value: SqlValue | undefined): string | null =>
+  value === null || value === undefined ? null : new Date(Number(value)).toISOString();
 
 function review(row: Row): StoredReview {
   return {
     id: Number(row.id),
     featureId: String(row.feature_id),
     scopeId: String(row.scope_id),
+    ownerId: text(row.owner_id),
     reviewer: String(row.reviewer),
     forkSha: String(row.fork_sha),
+    baseSha: text(row.base_sha),
     form: JSON.parse(String(row.form)) as ReviewForm,
+    invariants: json<InvariantView[]>(row.invariants, []),
     state: row.validation_state as ReviewState,
     refusals: JSON.parse(String(row.refusals)) as ReviewRefusal[],
-    sideBySideRef: row.side_by_side_ref === null ? null : String(row.side_by_side_ref),
-    createdAt: new Date(Number(row.created_at)).toISOString(),
+    sideBySideRef: text(row.side_by_side_ref),
+    record: json<ReviewRecord | null>(row.record, null),
+    exceptions: json<ReviewException[]>(row.exceptions, []),
+    claimedBy: text(row.claimed_by),
+    claimedAt: time(row.claimed_at),
+    completedAt: time(row.completed_at),
+    createdAt: time(row.created_at) as string,
   };
 }
+
+/** What the runner's report sets on a pending review. */
+export interface ReviewCompletion {
+  readonly state: Exclude<ReviewState, "pending">;
+  readonly refusals: readonly ReviewRefusal[];
+  readonly record: ReviewRecord;
+  readonly sideBySideRef: string;
+  readonly exceptions: readonly ReviewException[];
+}
+
+export type ReviewClaimListing =
+  | { readonly status: "ok"; readonly reviews: readonly StoredReview[] }
+  | { readonly status: "forbidden"; readonly message: string };
 
 /** Every submitted form, accepted or refused, so the record shows each attempt. */
 export class ReviewStore {
   readonly #db: SqlDatabase;
   readonly #now: () => number;
+  readonly #leaseMs: number;
 
-  constructor(db: SqlDatabase, now: () => number = Date.now) {
+  constructor(db: SqlDatabase, now: () => number = Date.now, leaseMs: number = REVIEW_LEASE_MS) {
     this.#db = db;
     this.#now = now;
+    this.#leaseMs = leaseMs;
     for (const statement of REVIEW_TABLE_SCHEMA) db.exec(statement);
+    // Column names and definitions come from the constant above, never from input.
+    const present = new Set(db.exec(`PRAGMA table_info(FeatureReview)`).map((row) => row["name"]));
+    for (const [name, definition] of RUNNER_COLUMNS) {
+      if (!present.has(name)) db.exec(`ALTER TABLE FeatureReview ADD COLUMN ${definition}`);
+    }
   }
 
-  insert(entry: Omit<StoredReview, "id" | "createdAt" | "sideBySideRef">): StoredReview {
+  insert(
+    entry: Pick<StoredReview, "featureId" | "scopeId" | "ownerId" | "reviewer" | "forkSha" | "baseSha" | "form" | "invariants" | "state" | "refusals">,
+  ): StoredReview {
     const [row] = this.#db.exec(
-      `INSERT INTO FeatureReview (feature_id, scope_id, reviewer, fork_sha, form, validation_state, refusals, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
+      `INSERT INTO FeatureReview (feature_id, scope_id, owner_id, reviewer, fork_sha, base_sha, form, invariants,
+         validation_state, refusals, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
       entry.featureId,
       entry.scopeId,
+      entry.ownerId,
       entry.reviewer,
       entry.forkSha,
+      entry.baseSha,
       JSON.stringify(entry.form),
+      JSON.stringify(entry.invariants),
       entry.state,
       JSON.stringify(entry.refusals),
       this.#now(),
@@ -100,9 +180,61 @@ export class ReviewStore {
     return review(row as Row);
   }
 
+  get(id: number): StoredReview | undefined {
+    const [row] = this.#db.exec(`SELECT * FROM FeatureReview WHERE id = ?`, id);
+    return row === undefined ? undefined : review(row);
+  }
+
   /** The reviews of one feature, oldest first. */
   list(featureId: string): StoredReview[] {
     return this.#db.exec(`SELECT * FROM FeatureReview WHERE feature_id = ? ORDER BY id`, featureId).map(review);
+  }
+
+  /**
+   * Hands the runner up to REVIEW_CLAIM_LIMIT pending reviews, oldest first, and marks them claimed
+   * by `caller`. A review is claimable while pending and unclaimed, or when its claim's lease ran out
+   * without a report. Only a bridge with the runner role may claim.
+   */
+  claim(caller: BridgeCaller): ReviewClaimListing {
+    if (caller.role !== "runner") {
+      return { status: "forbidden", message: `bridge ${caller.bridgeId} does not hold the runner role` };
+    }
+    const now = this.#now();
+    return this.#db.transaction((): ReviewClaimListing => {
+      const rows = this.#db.exec(
+        `SELECT id FROM FeatureReview WHERE validation_state = 'pending' AND base_sha IS NOT NULL
+           AND (claimed_at IS NULL OR claimed_at <= ?) ORDER BY id LIMIT ?`,
+        now - this.#leaseMs,
+        REVIEW_CLAIM_LIMIT,
+      );
+      const reviews: StoredReview[] = [];
+      for (const row of rows) {
+        const id = Number(row["id"]);
+        this.#db.exec(`UPDATE FeatureReview SET claimed_by = ?, claimed_at = ? WHERE id = ?`, caller.bridgeId, now, id);
+        reviews.push(this.get(id) as StoredReview);
+      }
+      return { status: "ok", reviews };
+    });
+  }
+
+  /**
+   * Attaches the runner's record to review `id` while it is pending. Returns the completed review,
+   * or undefined when it was not pending: a second report of the same review changes nothing.
+   */
+  complete(id: number, completion: ReviewCompletion): StoredReview | undefined {
+    const [row] = this.#db.exec(
+      `UPDATE FeatureReview SET validation_state = ?, refusals = ?, record = ?, side_by_side_ref = ?, exceptions = ?,
+         completed_at = ?
+       WHERE id = ? AND validation_state = 'pending' RETURNING *`,
+      completion.state,
+      JSON.stringify(completion.refusals),
+      JSON.stringify(completion.record),
+      completion.sideBySideRef,
+      JSON.stringify(completion.exceptions),
+      this.#now(),
+      id,
+    );
+    return row === undefined ? undefined : review(row);
   }
 }
 
@@ -115,6 +247,8 @@ export interface ReviewDeps {
   readonly invariantsFile: () => Promise<Uint8Array | null>;
   /** A file in a feature's fork at a commit, or null when there is none. */
   readonly readForkFile: (repo: string, sha: string, path: string) => Promise<Blob | null>;
+  /** The checkpoint `sha` of fork `repo`'s baseline on main (`checkpointBaseline`). */
+  readonly baseline: (repo: string, sha: string) => Promise<string>;
   readonly heartbeat: (caller: string, sessionId: string) => SessionOutcome;
 }
 
@@ -153,7 +287,8 @@ async function forkText(deps: ReviewDeps, repo: string, sha: string, path: strin
 /**
  * Checks and keeps a review form from `caller`'s session for scope `input.scope` on feature
  * `input.feature`. A form that breaks a rule is kept as refused and answered with every reason; the
- * agent fixes it and submits again. Rejected without a record: an invalid feature or scope, a scope
+ * agent fixes it and submits again. A form that passes is kept pending for the check runner.
+ * Rejected without a record: an invalid feature or scope, a scope
  * the caller does not own, a feature with no checkpoint to review, or an unreadable invariants file.
  */
 export async function submitReview(deps: ReviewDeps, caller: string, sessionId: string, input: ReviewInput): Promise<ReviewOutcome> {
@@ -190,13 +325,18 @@ export async function submitReview(deps: ReviewDeps, caller: string, sessionId: 
     files.set(path, await forkText(deps, feature.repo, feature.latestCheckpointSha, path));
   }
   const validation = validateReviewForm({ form: parsed.form, invariants, files, storedShapes: null });
+  // Only a form that passed waits for the runner, which compares the checkpoint with its baseline.
+  const baseSha = validation.accepted ? await deps.baseline(feature.repo, feature.latestCheckpointSha) : null;
   const stored = deps.reviews.insert({
     featureId: feature.id,
     scopeId: scope.id,
+    ownerId: caller,
     reviewer: live.session.handle,
     forkSha: feature.latestCheckpointSha,
+    baseSha,
     form: parsed.form,
-    state: validation.accepted ? "accepted" : "refused",
+    invariants: invariants.map(({ id, scopeId, statement, protected: isProtected }) => ({ id, scopeId, statement, protected: isProtected })),
+    state: validation.accepted ? "pending" : "refused",
     refusals: validation.refusals,
   });
   return { status: "ok", reviewId: stored.id, state: stored.state, refusals: stored.refusals, ...checked };

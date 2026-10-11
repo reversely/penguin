@@ -2,7 +2,8 @@
  * Short-lived per-repo Artifacts tokens for registered bridges.
  *
  * A bridge may hold `write` on its owner's fork and on the issues repo, and `read` on every other
- * project repo. A runner bridge also holds `write` on Huddle repos. Artifacts tokens only separate
+ * project repo, a feature's fork included. A runner bridge also holds `write` on Huddle repos. A
+ * feature's write token comes only from its own agent sessions (features.ts). Artifacts tokens only separate
  * read from write per repo, so the repo boundary is the push permission boundary.
  *
  * Token plaintext passes through this module into the response body only; it is never logged.
@@ -23,15 +24,18 @@ export const DEFAULT_TOKEN_TTL_SECONDS = 3600;
 export type ProjectRepo =
   | { readonly role: "base" | "issues" }
   | { readonly role: "owner"; readonly ownerId: string }
-  | { readonly role: "huddle"; readonly huddleId: string };
+  | { readonly role: "huddle"; readonly huddleId: string }
+  | { readonly role: "feature"; readonly featureId: string };
 
-/** Parses `base`, `issues`, `owner-<id>` or `huddle-<id>`; anything else is undefined. */
+/** Parses `base`, `issues`, `owner-<id>`, `huddle-<id>` or `feature-<id>`; anything else is undefined. */
 export function parseProjectRepo(name: string): ProjectRepo | undefined {
   if (name === "base" || name === "issues") return { role: name };
   const owner = /^owner-(.+)$/.exec(name)?.[1];
   if (owner !== undefined && isValidRepoName(owner)) return { role: "owner", ownerId: owner };
   const huddle = /^huddle-(.+)$/.exec(name)?.[1];
   if (huddle !== undefined && isValidRepoName(huddle)) return { role: "huddle", huddleId: huddle };
+  const feature = /^feature-(.+)$/.exec(name)?.[1];
+  if (feature !== undefined && isValidRepoName(feature)) return { role: "feature", featureId: feature };
   return undefined;
 }
 
@@ -45,6 +49,7 @@ export function allowedScope(bridge: BridgeIdentity, repo: ProjectRepo): TokenSc
     case "huddle":
       return bridge.role === "runner" ? "write" : "read";
     case "base":
+    case "feature":
       return "read";
   }
 }
@@ -64,6 +69,8 @@ export function artifactsRepoName(repo: ProjectRepo, names: RepoNames): string {
       return names.owner(repo.ownerId);
     case "huddle":
       return names.huddle(repo.huddleId);
+    case "feature":
+      return names.feature(repo.featureId);
   }
 }
 

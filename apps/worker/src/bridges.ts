@@ -36,6 +36,11 @@
  * - POST /approvals/<issue id>, bridge token of a runner bridge: reports the Huddle repo's `approved`
  *   branch at the requested commit. Penguin links it on the Huddle issue and closes the issue as
  *   approved; a report of a commit no longer requested answers 409.
+ * - POST /reviews/claim, bridge token of a runner bridge: claims the pending reviews (submit_review).
+ *   Each names its feature's fork, the checkpoint, its baseline on main, the scope and the form.
+ * - POST /reviews/<review id>, bridge token of a runner bridge: reports a claimed review's record from
+ *   the review harness. The review becomes accepted or refused with the record attached; an exception
+ *   goes to the scope's owner. A review already completed answers 409.
  *
  * Responses that carry a code or token are marked `Cache-Control: no-store`.
  */
@@ -56,8 +61,12 @@ import type {
   ProjectRepos,
   RegisterOutcome,
   RegistrationCode,
+  ReviewClaim,
+  ReviewReportOutcome,
   VerificationOutcome,
 } from "@penguin/project-agent";
+
+import { REVIEW_LIMITS } from "@penguin/protocol";
 
 import { bearerToken, isDeployer } from "./auth.ts";
 import { checkpointFields, FEATURE_FORK, settledFields } from "./features.ts";
@@ -99,6 +108,10 @@ export interface BridgeDirectory {
   claimCombinedRuns(caller: BridgeCaller): Promise<ClaimListing> | ClaimListing;
   /** A safe checkpoint of `owner`'s running sessions in the worktree `worktreeId`. */
   sessionCheckpoint(owner: string, worktreeId: string): Promise<Delivery[]> | Delivery[];
+  /** Claims the pending reviews; refused unless `caller` holds the runner role. */
+  claimReviews(caller: BridgeCaller): Promise<ReviewClaim> | ReviewClaim;
+  /** Attaches the runner's record to review `reviewId`; refused unless `caller` holds the runner role. */
+  reportReview(caller: BridgeCaller, reviewId: number, record: unknown): Promise<ReviewReportOutcome>;
 }
 
 /** Opening Huddle issues: the ProjectAgent's side over Durable Object RPC, and the Huddle repo fork. */
@@ -222,7 +235,7 @@ async function issueToken(request: Request, options: BridgeOptions, handlers: Br
   if (scope !== "read" && scope !== "write") return invalid("scope", "must be read or write");
   const repo = typeof repoName === "string" ? parseProjectRepo(repoName) : undefined;
   if (repo === undefined || typeof repoName !== "string") {
-    return invalid("repo", "must be base, issues, owner-<id> or huddle-<id>");
+    return invalid("repo", "must be base, issues, owner-<id>, huddle-<id> or feature-<id>");
   }
   if (!isPermitted(scope, allowedScope(bridge, repo))) {
     return json({ error: "forbidden", message: `this bridge may not hold ${scope} on ${repoName}` }, 403);
@@ -495,6 +508,58 @@ async function reportApproval(request: Request, issueId: string, handlers: Bridg
   return json({ error: outcome.reason, message: outcome.message }, status);
 }
 
+/** Hands a runner bridge the pending reviews, each marked claimed by that bridge. */
+async function claimReviews(request: Request, handlers: BridgeHandlers): Promise<Response> {
+  const bridge = await runnerBridge(request, handlers);
+  if (bridge instanceof Response) return bridge;
+  if (request.method !== "POST") return methodNotAllowed("POST");
+  // The role comes from the registry record the token authenticated, never from the request.
+  const listing = await (await handlers.bridges()).claimReviews({ bridgeId: bridge.bridgeId, role: bridge.role });
+  if (listing.status === "forbidden") return json({ error: "forbidden", message: listing.message }, 403);
+  const reviews = listing.reviews.map(({ reviewId, feature, fork, scope, base, forkSha, form }) => ({
+    reviewId,
+    feature,
+    fork,
+    scope,
+    base,
+    forkSha,
+    form,
+  }));
+  return json({ reviews }, 200, NO_STORE);
+}
+
+/** A review record body over twice the record cap is refused before it is parsed. */
+const MAX_REVIEW_BODY_BYTES = 2 * REVIEW_LIMITS.recordBytes;
+
+const REVIEW_REJECTION_STATUS: Readonly<Record<string, number>> = { invalid: 400, forbidden: 403, not_found: 404, conflict: 409 };
+
+async function reportReview(request: Request, reviewId: number, handlers: BridgeHandlers): Promise<Response> {
+  const bridge = await runnerBridge(request, handlers);
+  if (bridge instanceof Response) return bridge;
+  if (request.method !== "POST") return methodNotAllowed("POST");
+  if (Number(request.headers.get("Content-Length") ?? 0) > MAX_REVIEW_BODY_BYTES) {
+    return json({ error: "too large", message: `the record is over ${REVIEW_LIMITS.recordBytes} bytes` }, 413);
+  }
+  const body = await readObject(request);
+  if (body === undefined) return invalid("", "must be a JSON object");
+  const outcome = await (await handlers.bridges()).reportReview({ bridgeId: bridge.bridgeId, role: bridge.role }, reviewId, body);
+  if (outcome.status === "rejected") {
+    return json({ error: outcome.reason, message: outcome.message }, REVIEW_REJECTION_STATUS[outcome.reason] ?? 409);
+  }
+  const { review, routedTo } = outcome;
+  return json(
+    {
+      status: outcome.status,
+      reviewId: review.id,
+      state: review.state,
+      sideBySideRef: review.sideBySideRef,
+      exceptions: review.exceptions,
+      routedTo,
+    },
+    200,
+  );
+}
+
 function huddleBody(status: "opened" | "existing", huddle: Huddle): Record<string, unknown> {
   const { issueId, triggerCommit, baselineSha, huddleRepo, openedAt } = huddle;
   return { status, issueId, triggerCommit, baselineSha, huddleRepo, openedAt };
@@ -519,6 +584,9 @@ export async function handleBridgeRoute(
   if (url.pathname === "/approvals") return listApprovals(request, handlers);
   const approvalIssue = /^\/approvals\/([1-9][0-9]{0,8})$/.exec(url.pathname)?.[1];
   if (approvalIssue !== undefined) return reportApproval(request, approvalIssue, handlers);
+  if (url.pathname === "/reviews/claim") return claimReviews(request, handlers);
+  const reviewId = /^\/reviews\/([1-9][0-9]{0,14})$/.exec(url.pathname)?.[1];
+  if (reviewId !== undefined) return reportReview(request, Number(reviewId), handlers);
   if (url.pathname === "/bridges/codes") return issueCode(request, options, handlers);
   if (url.pathname === "/bridges") return register(request, handlers);
   const bridgeId = /^\/bridges\/([A-Za-z0-9_-]+)$/.exec(url.pathname)?.[1];

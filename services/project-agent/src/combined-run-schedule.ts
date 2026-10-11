@@ -400,8 +400,19 @@ export async function checkpointChange(
   return { baselineSha, paths: await changedPaths(fork, baselineTree, checkpointTree) };
 }
 
+/**
+ * The baseline of checkpoint `sha` in `fork`: the newest commit on its first-parent chain that is
+ * also on main's. A review's side-by-side run compares the checkpoint with it (review-record.ts).
+ *
+ * Raises:
+ *   Error: when the checkpoint is not in the fork or no baseline is found.
+ */
+export async function checkpointBaseline(fork: Pick<IssuesRepoReader, "log">, base: Pick<IssuesRepoReader, "log">, sha: string): Promise<string> {
+  return (await findBaseline({ fork, base }, sha)).baselineSha;
+}
+
 async function findBaseline(
-  deps: Pick<ScheduleDeps, "fork" | "base">,
+  deps: { readonly fork: Pick<IssuesRepoReader, "log">; readonly base: Pick<IssuesRepoReader, "log"> },
   sha: string,
 ): Promise<{ baselineSha: string; baselineTree: string; checkpointTree: string }> {
   const chain = await deps.fork.log({ ref: sha, limit: BASELINE_SEARCH_LIMIT, offset: 0 });

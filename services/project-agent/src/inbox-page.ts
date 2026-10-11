@@ -18,7 +18,8 @@ export function buildInbox(sources: InboxPageSources, person: string): Inbox {
   return {
     items: sources.items(person).flatMap(({ issueId, reason, read, raisedAt }) => {
       // An overlapping start names no issue; GET /api/overlaps lists it.
-      if (reason === "overlap") return [];
+      // A review exception names a feature's scope, not an issue; the feature's reviews hold it.
+      if (reason === "overlap" || reason === "review_exception") return [];
       const issue = sources.issue(issueId);
       if (issue === undefined) return [];
       return [{ issueId, reason, read, raisedAt, title: issue.title, state: issue.state, assigneeHandles: assigneeHandles(issue) }];

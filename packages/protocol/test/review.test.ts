@@ -2,16 +2,22 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  boundReviewRecord,
   evidencePaths,
   evidenceProblem,
   parseEvidence,
   parseExampleFile,
   parseReviewForm,
+  parseReviewRecord,
   REVIEW_LIMITS,
+  REVIEW_SCHEMA_VERSION,
   reviewExceptions,
+  SIDE_BY_SIDE_COMMAND_ID,
+  SIDE_BY_SIDE_TOOL,
   validateReviewForm,
   type InvariantView,
   type ReviewForm,
+  type ReviewRecord,
   type SideBySideRecord,
 } from "@penguin/protocol";
 
@@ -179,6 +185,48 @@ test("a broken invariant and a difference on a protected invariant route to the 
   ]);
   // A refused form goes back to its agent; the protected difference still reaches the owner.
   assert.deepEqual(reviewExceptions(null, INVARIANTS, record).map((exception) => exception.kind), ["protected_difference"]);
+});
+
+test("a record over the size cap keeps the first differing inputs of each set and still parses", () => {
+  const commit = "c".repeat(40);
+  const differing = Array.from({ length: 400 }, (_, index) => ({
+    name: `order ${index}`,
+    args: { lines: "x".repeat(4_000) },
+    main: { status: "returned" as const, value: index },
+    fork: { status: "returned" as const, value: index + 1 },
+  }));
+  const sideBySide: SideBySideRecord = {
+    schemaVersion: REVIEW_SCHEMA_VERSION,
+    tool: SIDE_BY_SIDE_TOOL,
+    commandId: SIDE_BY_SIDE_COMMAND_ID,
+    base: commit,
+    fork: commit,
+    scope: "tax",
+    sets: [{ source: "examples", file: "tax/orders.json", contract: "tax/invoice.py::invoice_tax", invariants: ["tax-per-line"], inputs: differing.map((entry) => entry.name), differing, invalid: [], mainMs: 1, forkMs: 1 }],
+    totals: { inputs: 400, differing: 400, invalid: 0 },
+    timings: { mainMs: 1, forkMs: 1, totalMs: 2 },
+  };
+  const record: ReviewRecord = {
+    schemaVersion: REVIEW_SCHEMA_VERSION,
+    base: commit,
+    fork: commit,
+    scope: "tax",
+    state: "accepted",
+    refusals: [],
+    invariants: INVARIANTS,
+    storedShapes: null,
+    sideBySide,
+    exceptions: [],
+    timings: { impactMs: 0, sideBySideMs: 2, totalMs: 2 },
+  };
+  assert.match((parseReviewRecord(record) as { problems: string[] }).problems[0] ?? "", /over 1048576 bytes/);
+  const bounded = boundReviewRecord(record);
+  assert.equal(bounded.sideBySide.sets[0]?.differing.length, REVIEW_LIMITS.recordedPerSet);
+  assert.equal(bounded.sideBySide.totals.differing, 400);
+  assert.equal(parseReviewRecord(bounded).ok, true);
+  // A record that fits is reported as it is.
+  const small = { ...record, sideBySide: { ...sideBySide, sets: [{ ...sideBySide.sets[0]!, differing: differing.slice(0, 3) }] } };
+  assert.equal(boundReviewRecord(small), small);
 });
 
 test("an examples file is a contract and named cases of keyword arguments", () => {

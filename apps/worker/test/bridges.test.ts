@@ -289,6 +289,14 @@ test("a runner bridge gets write on a Huddle repo", async () => {
   assert.equal((await requestToken(call, runner.bridgeToken, "owner-jun", "write")).status, 403);
 });
 
+test("a runner bridge reads a feature's fork for its reviews and never writes it", async () => {
+  const { call, artifacts } = gateway(fakeArtifacts([...PROJECT_REPOS, "test-feature-person-id"]));
+  const runner = await registerBridge(call, "sam", "runner");
+  assert.equal((await requestToken(call, runner.bridgeToken, "feature-person-id", "read")).status, 200);
+  assert.equal((await requestToken(call, runner.bridgeToken, "feature-person-id", "write")).status, 403);
+  assert.deepEqual(artifacts.minted.map((token) => [token.repo, token.scope]), [["test-feature-person-id", "read"]]);
+});
+
 test("an unregistered or revoked bridge gets 401", async () => {
   const { call, artifacts } = gateway();
   assert.equal((await requestToken(call, undefined, "issues", "read")).status, 401);
@@ -351,7 +359,8 @@ test("project repo names parse by role", () => {
   assert.deepEqual(parseProjectRepo("issues"), { role: "issues" });
   assert.deepEqual(parseProjectRepo("owner-jun-2"), { role: "owner", ownerId: "jun-2" });
   assert.deepEqual(parseProjectRepo("huddle-031"), { role: "huddle", huddleId: "031" });
-  for (const name of ["owner-", "owner-.x", "huddles", "other", ""]) assert.equal(parseProjectRepo(name), undefined, name);
+  assert.deepEqual(parseProjectRepo("feature-person-id"), { role: "feature", featureId: "person-id" });
+  for (const name of ["owner-", "owner-.x", "huddles", "feature-", "other", ""]) assert.equal(parseProjectRepo(name), undefined, name);
 });
 
 test("the pending route lists operations to a runner bridge only, by the role its token holds", async () => {

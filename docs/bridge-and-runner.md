@@ -212,14 +212,18 @@ penguin-bridge runner --combined
      (such as an Anaconda install) formats differently;
    - lists and runs verification runs, pushing each merge to the Huddle repo's `integration` branch
      (`verification-run.ts`);
-   - lists approved branches and pushes the Huddle repo's `approved` branch (`approval-run.ts`).
+   - lists approved branches and pushes the Huddle repo's `approved` branch (`approval-run.ts`);
+   - claims the reviews agents submitted with `submit_review`. It fetches each feature's fork,
+     runs the [review harness](#side-by-side-runs) on the checkpoint's baseline and the checkpoint,
+     then reports the record (`review-run.ts`, [design.md](design.md#reviews-on-the-runner)).
 
 Passing `--combined` or `--repo` is the runner operator's consent to those runs and pushes. The test
 jobs loop on their own, so a long test run never holds up the operation pushes. `--once` runs a
 single pass of each and exits 1 when anything was refused or failed.
 
-The runner fetches owner forks with read tokens and pushes Huddle repos with write tokens; the Worker
-grants a runner bridge `write` on `huddle-<id>` repos and an owner bridge only `read`.
+The runner fetches owner forks and feature forks with read tokens. It pushes Huddle repos with write
+tokens. The Worker grants a runner bridge `write` on `huddle-<id>` repos and an owner bridge only
+`read`. No bridge gets `write` on a `feature-<id>` repo.
 
 ## Allowlisted commands
 
@@ -325,7 +329,8 @@ penguin-bridge review --repo <path> --base main --fork <commit> --scope analytic
 The text form prints the verdict with each refusal, the stored shapes the diff found, the
 exceptions for the scope's owner and each input that differs, with both outcomes. `--out` writes the
 full record as JSON. `--no-diff` leaves out the contract diff. The command exits 0 when the form is
-accepted and 1 when it is refused.
+accepted and 1 when it is refused. Runner mode runs the same harness on every submitted review
+without this command. It reports the record the `--out` file would hold.
 
 On the identity-unification fixture one side of a run of two recorded examples takes about 110 ms
 of wall time on an Apple silicon laptop, worktree included. The two calls take under 1.5 ms together.

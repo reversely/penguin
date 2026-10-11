@@ -712,8 +712,9 @@ function registerFeatureTools(server: McpServer, features: McpFeatures): void {
         "invariant of the scope in penguin/invariants.json, each with holds, breaks or unknown, evidence in the " +
         "feature's fork and the effect on data stored before the change. Penguin refuses a form with a missing " +
         "row, evidence that does not exist in the fork at its latest checkpoint, or \"unknown\" without a test, " +
-        "and answers every reason; fix the form and submit again. The check runner then runs your scope's " +
-        "public functions on main and on the fork, with your risky inputs, and checks the stored data rule. " +
+        "and answers every reason; fix the form and submit again. A form that passes is pending: the check " +
+        "runner then runs your scope's public functions on main and on the fork, with your risky inputs, " +
+        "checks the stored data rule and attaches its record, which makes the review accepted or refused. " +
         "A broken invariant, or a difference on a protected invariant, goes to your scope's owner.",
       inputSchema: submitReviewInput,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },

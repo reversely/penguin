@@ -395,7 +395,28 @@ marked as a tool error so the agent fixes the form. The ProjectAgent keeps every
 the reviewer's invariant names and the owner's statements come back inside `personWritten`.
 
 The stored data rule needs the contract diff. The side-by-side run needs the scope's code run. Both
-therefore happen on the check runner. The answer says both are waiting for it.
+therefore happen on the check runner. A form that passes is kept `pending` with the checkpoint's
+baseline on main. The answer says both checks are waiting for the runner. A form refused at
+submission never reaches the runner.
+
+#### Reviews on the runner
+
+Runner mode claims pending reviews with `POST /reviews/claim`, as it claims combined runs. A claim
+hands out up to 8 reviews and holds them for 30 minutes. An unreported review is handed out again
+after that. Each claimed review names the feature's fork `feature-<id>`, the checkpoint, its
+baseline, the scope and the form. The runner fetches the fork with a read token and runs the review
+harness below on the baseline and the checkpoint. It reports the record to `POST /reviews/<id>`
+(`review-run.ts`).
+
+The ProjectAgent checks that the record names the review's own baseline, checkpoint and scope. It
+then makes the review `accepted` or `refused` with the runner's refusals. It keeps the record in
+`FeatureReview` with its `sha256:` reference (`review-record.ts`). The first report wins. A later
+report of the same review answers 409. A record over 1 MiB of JSON keeps the first 100 differing
+inputs and the first 100 inputs not run of each set. Its totals still count every input.
+
+Routing (PRD 4.3 step 4) uses the stored form and the invariants checked at submission, never the
+runner's own list of exceptions. When `reviewExceptions` raises one, the scope's owner gets a
+`review_exception` inbox item for `<feature>/<scope>`.
 
 #### Side-by-side runs on the runner
 
@@ -421,6 +442,8 @@ On identity unification, with "patrons who log in on one library tablet stay sep
 analytics' protected invariant, the run on Priya's checkpoint shows `daily_active_users` returning
 3 people on main and 1 on the fork for three patrons on one tablet. A risky input of six patrons on
 one tablet still differs on Priya's limit of five and matches main on Priya's limit of one.
+In runner mode, Jun's review submitted on Priya's feature gets this record with no manual run. The
+tablet difference then reaches Jun's inbox (`apps/worker/test/review-runner.test.ts`).
 
 ## Exceptions
 

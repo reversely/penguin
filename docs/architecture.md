@@ -101,8 +101,8 @@ run's repos apart from production's; the prefix leads every name.
 | `feature-<id>` | The Worker, when a person or an agent session opens the feature (`apps/worker/src/features.ts`) | The feature's agent sessions, with tokens the Worker mints for them | The feature's work, forked from main's branch |
 
 The Worker mints short-lived Artifacts tokens per repo (`apps/worker/src/tokens.ts`). A bridge may
-hold `write` on its own fork and on `issues`. It holds `read` on every other repo. A runner bridge also
-holds `write` on Huddle repos. An agent session holds `write` on the fork of the feature it joined,
+hold `write` on its own fork and on `issues`. It holds `read` on every other repo, so the runner reads
+a feature's fork to run its submitted reviews. A runner bridge also holds `write` on Huddle repos. An agent session holds `write` on the fork of the feature it joined,
 for `PENGUIN_FEATURE_TOKEN_TTL_MINUTES`. It gets the token from `open_feature` or `feature_token`.
 The Worker mints it only after the ProjectAgent confirms that the session is running and has joined
 that feature. Artifacts tokens separate only read from write per repo, so the repo
@@ -127,6 +127,9 @@ until the record repo takes them. `OverlapLock` and `FeatureDependent`
 features that read its area. `OwnOverlap` holds overlaps with the same person's running
 features, which make no lock. `OverlapSettled` records each lock that was approved or withdrawn.
 `OverlapNotice` and `SettledNotice` record which sessions heard of each lock and each settlement.
+`FeatureReview` (`services/project-agent/src/review-submit.ts`) holds each submitted review form. A
+form that passed waits as `pending` until the check runner claims it and attaches its record
+(`review-record.ts`).
 
 Each HuddleAgent keeps the state of one Huddle in its own SQLite store: `VerificationRun`,
 `FixReview`, `HuddleThread` and `ApprovedBranch`. The ProjectAgent names the instance

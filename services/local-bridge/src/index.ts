@@ -21,6 +21,8 @@ export { loadReviewConfig, readCommittedFile, runSideBySide, SideBySideError } f
 export type { SideBySideOptions, SideBySideRequest } from "./side-by-side.ts";
 export { formatReviewResult, runReview } from "./review-harness.ts";
 export type { ReviewOptions, ReviewRequest, ReviewResult } from "./review-harness.ts";
+export { formatReviewPass, reviewPass } from "./review-run.ts";
+export type { ReviewPassOptions, ReviewPassResult, ReviewRunResult } from "./review-run.ts";
 
 export {
   AGENT_TRAILER_KEY,
@@ -57,6 +59,7 @@ export {
   bridgeTokenAccount,
   checkedOrigin,
   claimCombinedRuns,
+  claimReviews,
   COMBINED_RUN_CLAIM_ROUTE,
   COMBINED_RUN_ROUTE,
   fetchApprovals,
@@ -69,7 +72,9 @@ export {
   registrationFile,
   reportApproval,
   reportCombinedRun,
+  reportReview,
   reportVerification,
+  REVIEW_ROUTE,
   TokenClient,
   VERIFICATION_ROUTE,
 } from "./penguin-client.ts";
@@ -77,7 +82,9 @@ export type {
   ApprovalReply,
   BridgeRegistration,
   ClaimedCombinedRun,
+  ClaimedReview,
   CombinedRunReply,
+  ReviewReply,
   VerificationReply,
   Fetch,
   PendingOperation,

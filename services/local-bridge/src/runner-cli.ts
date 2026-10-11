@@ -1,7 +1,8 @@
 // The `penguin-bridge runner` command: runner mode, one pass or a pass on every interval. With
 // --combined or --repo it also runs the test jobs Penguin schedules in one repository: the combined
-// runs it claims (combined-run-pass.ts), the Huddle verification runs it lists (verification-run.ts)
-// and the approved branches it records in Huddle repos (approval-run.ts).
+// runs it claims (combined-run-pass.ts), the Huddle verification runs it lists (verification-run.ts),
+// the approved branches it records in Huddle repos (approval-run.ts) and the submitted reviews it
+// claims and runs the review harness on (review-run.ts).
 
 import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
@@ -24,16 +25,21 @@ import type { KeyStore } from "./key-store.ts";
 import {
   bridgeRemotes,
   claimCombinedRuns,
+  claimReviews,
   fetchApprovals,
   fetchPendingOperations,
   fetchVerificationRuns,
   openBridge,
   reportApproval,
   reportCombinedRun,
+  reportReview,
   reportVerification,
   type BridgeRegistration,
   type Fetch,
 } from "./penguin-client.ts";
+import { runReview } from "./review-harness.ts";
+import { formatReviewPass, reviewPass, type ReviewPassResult } from "./review-run.ts";
+import { fetchRepoBranches } from "./runner-repo.ts";
 import { formatPass, runnerPass, RunnerLoop } from "./runner.ts";
 import { bridgeSpool } from "./spool-cli.ts";
 import { TestRunner } from "./test-runner.ts";
@@ -54,7 +60,9 @@ export const RUNNER_USAGE = `       penguin-bridge runner [--once] [--interval <
          runner operator's consent to those runs and pushes. Each combined run also runs the
          section 5.1 checks on every merged tree: the impact graph and dependency diff with
          <python> (default python3), lint and format with <ruff> (default ruff on PATH) and the
-         type check with the pyright package installed beside the bridge.
+         type check with the pyright package installed beside the bridge. Each review submitted with
+         submit_review is claimed too: the feature's fork is fetched and the review harness runs
+         the scope's public functions on the checkpoint's baseline and on the checkpoint.
 `;
 
 /** One pass of the test jobs: each job's result, or why it did not run. */
@@ -62,6 +70,7 @@ interface TestJobsResult {
   readonly combined: CombinedPassResult | Error;
   readonly verification: VerificationPassResult | Error;
   readonly approval: ApprovalPassResult | Error;
+  readonly review: ReviewPassResult | Error;
 }
 
 /**
@@ -233,18 +242,28 @@ async function testJobsPass(
         report: (issueId, report) => reportApproval(server, bridgeToken, issueId, report, fetchImpl),
       }),
     ),
+    review: await settle(() =>
+      reviewPass({
+        claim: () => claimReviews(server, bridgeToken, fetchImpl),
+        report: (reviewId, record) => reportReview(server, bridgeToken, reviewId, record, fetchImpl),
+        fetchFork: (fork) => fetchRepoBranches(repo, readRemotes, fork),
+        review: (request) => runReview({ repoPath: repo, python: programs.python, analyzer: impact }, request),
+        repoPath: repo,
+      }),
+    ),
   });
 }
 
 /** True when every job ran and nothing in them was refused or stopped. */
-function testJobsClean({ combined, verification, approval }: TestJobsResult): boolean {
-  if (combined instanceof Error || verification instanceof Error || approval instanceof Error) return false;
+function testJobsClean({ combined, verification, approval, review }: TestJobsResult): boolean {
+  if (combined instanceof Error || verification instanceof Error || approval instanceof Error || review instanceof Error) return false;
   const combinedClean = combined.batches.every((batch) => batch.error === null && batch.refused.length === 0);
-  return combinedClean && verification.failed.length === 0 && approval.failed.length === 0;
+  const reviewClean = review.reviews.every((entry) => entry.error === null);
+  return combinedClean && reviewClean && verification.failed.length === 0 && approval.failed.length === 0;
 }
 
 /** The pass's lines; `always` writes a job's summary even when it found no work. */
-function formatTestJobs({ combined, verification, approval }: TestJobsResult, always: boolean): string {
+function formatTestJobs({ combined, verification, approval, review }: TestJobsResult, always: boolean): string {
   let text = "";
   if (combined instanceof Error) text += `No combined runs were claimed: ${combined.message}\n`;
   else if (always || combined.claimed > 0) text += formatCombinedPass(combined);
@@ -252,5 +271,7 @@ function formatTestJobs({ combined, verification, approval }: TestJobsResult, al
   else if (always || verification.listed > 0) text += formatVerificationPass(verification);
   if (approval instanceof Error) text += `The approval pass did not run; the approved branches stay listed: ${approval.message}\n`;
   else if (always || approval.listed > 0) text += formatApprovalPass(approval);
+  if (review instanceof Error) text += `No reviews were claimed: ${review.message}\n`;
+  else if (always || review.claimed > 0) text += formatReviewPass(review);
   return text;
 }

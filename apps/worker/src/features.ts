@@ -352,8 +352,10 @@ function reviewFields(outcome: Extract<ReviewOutcome, { status: "ok" }>): Record
       protected: isProtected,
       personWritten: { statement },
     })),
-    // Both need the check runner: the contract diff, and running the scope's code.
-    storedDataRule: "waiting for the contract diff on the check runner",
-    sideBySide: "waiting for the check runner",
+    // Both need the check runner: the contract diff, and running the scope's code. A pending review
+    // waits for it; a refused form never reaches it.
+    ...(outcome.state === "pending"
+      ? { storedDataRule: "waiting for the contract diff on the check runner", sideBySide: "waiting for the check runner" }
+      : { storedDataRule: "not checked: the form was refused", sideBySide: "not run: the form was refused" }),
   };
 }

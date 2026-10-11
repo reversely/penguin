@@ -19,6 +19,10 @@
 //   (overlap-lock.ts, PRD 4.1 step 3). The item names no issue: its `issue_id` holds the lock as
 //   `<covering feature>/<blocked feature>`, which no issue id can be. It goes once the lock is
 //   approved or withdrawn.
+// - "review_exception": the check runner's record of a review of the person's scope raised an
+//   exception (review-record.ts, PRD 4.3 step 4): the form reports a broken invariant, or the
+//   side-by-side run differs on a protected invariant. Its `issue_id` holds `<feature>/<scope>`. A
+//   later review of the same scope with an exception marks it unread again.
 //
 // The person who did the thing gets no "assigned", "mentioned" or "closed" item for it. An identity's
 // operation counts as its owner half's doing, as in IssueIndex.assigningOwner.
@@ -37,7 +41,16 @@ import type { IdentityStore } from "./identity-store.ts";
 import type { IssueChange, SqlDatabase } from "./issue-index.ts";
 import { responsibleOwners, type StartRequestListener } from "./session-store.ts";
 
-export const INBOX_REASONS = ["assigned", "mentioned", "closed", "start_session", "review_requested", "thread", "overlap"] as const;
+export const INBOX_REASONS = [
+  "assigned",
+  "mentioned",
+  "closed",
+  "start_session",
+  "review_requested",
+  "thread",
+  "overlap",
+  "review_exception",
+] as const;
 export type InboxReason = (typeof INBOX_REASONS)[number];
 
 export interface InboxItem {
@@ -165,6 +178,11 @@ export class InboxStore implements StartRequestListener {
   /** Asks `personId` to approve the start of `blockedFeatureId` beside their feature `featureId`. */
   overlapRequested(personId: string, featureId: string, blockedFeatureId: string): void {
     this.#raise(personId, overlapRef(featureId, blockedFeatureId), "overlap");
+  }
+
+  /** Puts a review of `personId`'s scope `scopeId` on feature `featureId` before them in person. */
+  reviewException(personId: string, featureId: string, scopeId: string): void {
+    this.#raise(personId, `${featureId}/${scopeId}`, "review_exception");
   }
 
   /** The lock was approved or withdrawn, so the request goes. */

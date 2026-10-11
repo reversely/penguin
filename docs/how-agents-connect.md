@@ -36,7 +36,7 @@ eight tools:
 | `open_feature` | Opens a feature, or joins one its person already opened, with a declared area; the answer carries a short-lived write token on the feature's fork, or lists the running features whose people must approve first |
 | `feature_token` | Gets a fresh write token on its feature's fork once no overlap lock holds its start |
 | `declare_area` | Replaces its feature's declared scopes, paths and contracts |
-| `submit_review` | Submits the review form for its own scope on another feature's change; the answer accepts it or lists every reason it is refused |
+| `submit_review` | Submits the review form for its own scope on another feature's change; the answer keeps it pending for the check runner or lists every reason it is refused |
 
 Penguin answers only when the agent calls a tool. The token decides whose identities the session may
 use: Sam's token cannot register as `@jun/reports`.

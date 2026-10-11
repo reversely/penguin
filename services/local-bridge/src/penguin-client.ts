@@ -9,6 +9,8 @@ import type {
   ApprovalReport,
   ApprovalSpec,
   CombinedRunEvent,
+  ReviewException,
+  ReviewRecord,
   VerificationReport,
   VerificationRunSpec,
 } from "@penguin/protocol";
@@ -508,6 +510,81 @@ export async function reportApproval(
     throw new RemoteRefusedError(`Penguin refused the approved branch of #${issueId} (HTTP ${status})${message}`);
   }
   throw new RemoteUnavailableError(`Penguin could not take the approved branch of #${issueId} (HTTP ${status})${message}`);
+}
+
+/** The route a runner claims pending reviews from, and reports each one's record to under `/<review id>`. */
+export const REVIEW_ROUTE = "/reviews";
+
+/** A review Penguin kept pending and this runner claimed. */
+export interface ClaimedReview {
+  readonly reviewId: number;
+  readonly feature: string;
+  /** The feature's fork, `feature-<id>`. */
+  readonly fork: string;
+  readonly scope: string;
+  /** The checkpoint's baseline on main. */
+  readonly base: string;
+  /** The checkpoint under review. */
+  readonly forkSha: string;
+  /** The form as the agent submitted it; the harness checks it again. */
+  readonly form: unknown;
+}
+
+/** Penguin's answer to a review record: the review's state and who it goes to in person. */
+export interface ReviewReply {
+  readonly status: "recorded";
+  readonly reviewId: number;
+  readonly state: "accepted" | "refused";
+  readonly sideBySideRef: string;
+  readonly exceptions: readonly ReviewException[];
+  readonly routedTo: string | null;
+}
+
+const FEATURE_FORK = /^feature-[a-z0-9]+(?:[.-][a-z0-9]+)*$/u;
+
+/**
+ * Claims the reviews Penguin keeps pending, which marks them as this runner's until they are reported
+ * or their lease runs out. Penguin answers only a bridge registered with the runner role.
+ */
+export async function claimReviews(server: string, bridgeToken: string, fetchImpl: Fetch = fetch): Promise<ClaimedReview[]> {
+  const { status, body } = await runnerRequest(server, bridgeToken, `${REVIEW_ROUTE}/claim`, {}, fetchImpl);
+  if (status !== 200 || !Array.isArray(body["reviews"])) {
+    throw new RemoteUnavailableError(`Penguin could not hand out reviews (HTTP ${status})`);
+  }
+  return body["reviews"].map((entry: unknown): ClaimedReview => {
+    const { reviewId, feature, fork, scope, base, forkSha, form } = (entry ?? {}) as Record<string, unknown>;
+    const commit = (value: unknown) => typeof value === "string" && COMMIT.test(value);
+    if (
+      !Number.isSafeInteger(reviewId) ||
+      typeof feature !== "string" ||
+      typeof fork !== "string" ||
+      fork !== `feature-${feature}` ||
+      !FEATURE_FORK.test(fork) ||
+      typeof scope !== "string" ||
+      !commit(base) ||
+      !commit(forkSha)
+    ) {
+      throw new RemoteUnavailableError("Penguin listed a review without its feature fork, scope and commits");
+    }
+    return { reviewId: reviewId as number, feature, fork, scope, base: base as string, forkSha: forkSha as string, form };
+  });
+}
+
+/** Reports a claimed review's record, which makes the review accepted or refused with it attached. */
+export async function reportReview(
+  server: string,
+  bridgeToken: string,
+  reviewId: number,
+  record: ReviewRecord,
+  fetchImpl: Fetch = fetch,
+): Promise<ReviewReply> {
+  const { status, body } = await runnerRequest(server, bridgeToken, `${REVIEW_ROUTE}/${reviewId}`, record, fetchImpl);
+  if (status === 200) return body as unknown as ReviewReply;
+  const message = typeof body["message"] === "string" ? `: ${body["message"]}` : "";
+  if ([400, 404, 409, 413].includes(status)) {
+    throw new RemoteRefusedError(`Penguin refused the record of review ${reviewId} (HTTP ${status})${message}`);
+  }
+  throw new RemoteUnavailableError(`Penguin could not take the record of review ${reviewId} (HTTP ${status})${message}`);
 }
 
 /** One runner request: GET without a body, else POST of `body` as JSON. Answers 401 and 403 throw. */

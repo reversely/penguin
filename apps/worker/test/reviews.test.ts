@@ -112,6 +112,8 @@ class Project {
         assert.equal(repo, `${PREFIX}feature-person-id`);
         return this.read(sha, path);
       },
+      // The checkpoint's parent is main in this test's one repo.
+      baseline: async (_repo, sha) => execFileSync("git", ["-C", this.git.dir, "rev-parse", `${sha}^`], { encoding: "utf8" }).trim(),
       heartbeat: (caller, sessionId) => this.sessions.heartbeat(caller, sessionId),
     };
   }
@@ -156,11 +158,12 @@ const row = (evidence: string[], verdict = "holds") => ({ invariant: TABLET, ver
 describe("submit_review", () => {
   let project: Project;
   let session: string;
+  let main: string;
   let fork: string;
 
   beforeEach(async () => {
     project = new Project();
-    project.git.commit({
+    main = project.git.commit({
       "penguin/scopes.json": scopesFile,
       "analytics/tests/test_dau.py": readFileSync(join(FIXTURE, "analytics/tests/test_dau.py"), "utf8"),
     });
@@ -181,12 +184,16 @@ describe("submit_review", () => {
     assert.deepEqual(project.reviews.list("person-id").map((stored) => [stored.state, stored.reviewer]), [["refused", `@${JUN}/agent`]]);
   });
 
-  test("a form whose evidence exists in the fork is accepted; the runner's checks wait", async () => {
+  test("a form whose evidence exists in the fork is kept pending for the runner, with the checkpoint's baseline", async () => {
     const answer = await call(project, JUN, { sessionId: session, feature: "person-id", scope: "analytics", form: { rows: [row([EXISTING_TEST])] } });
     assert.equal(answer.isError, false, JSON.stringify(answer.value));
-    assert.equal(answer.value.state, "accepted");
+    assert.equal(answer.value.state, "pending");
     assert.equal(answer.value.sideBySide, "waiting for the check runner");
-    assert.equal(project.reviews.list("person-id")[0]?.forkSha, fork);
+    const [stored] = project.reviews.list("person-id");
+    assert.equal(stored?.forkSha, fork);
+    assert.equal(stored?.baseSha, main);
+    assert.equal(stored?.ownerId, JUN);
+    assert.deepEqual(stored?.invariants.map((invariant) => invariant.id), [TABLET]);
   });
 
   test('evidence missing from the fork, a missing row and "unknown" without a test are refused', async () => {
@@ -244,7 +251,7 @@ describe("submit_review", () => {
       scope: "analytics",
       form: { rows: [{ ...row([EXISTING_TEST]), storedData: hostile }] },
     });
-    assert.equal(kept.value.state, "accepted");
+    assert.equal(kept.value.state, "pending");
     assert.equal(project.reviews.list("person-id")[0]?.form.rows[0]?.storedData, hostile);
   });
 });

@@ -40,7 +40,13 @@ import {
 } from "./owner-forks.ts";
 import { postSessionUpdate, type SessionUpdate, type SessionUpdateOutcome } from "./session-updates.ts";
 import { openHuddle, type HuddleOpenOutcome } from "./huddle-open.ts";
-import { checkpointChange, CombinedRunStore, scheduleCombinedRuns, type ClaimListing } from "./combined-run-schedule.ts";
+import {
+  checkpointBaseline,
+  checkpointChange,
+  CombinedRunStore,
+  scheduleCombinedRuns,
+  type ClaimListing,
+} from "./combined-run-schedule.ts";
 import {
   declareArea,
   featureTokenGrant,
@@ -81,7 +87,8 @@ import { reassignUpstream } from "./upstream.ts";
 import { IngestLedger, ingestPush, type IngestReport } from "./push-ingest.ts";
 import { rebuildIndex, type RebuildReport } from "./rebuild.ts";
 import { OWNERS_PATH, parseOwnersFile, parseScopeFile, SCOPE_MAP_PATH } from "./scope-file.ts";
-import { ReviewStore, submitReview, type ReviewInput, type ReviewOutcome } from "./review-submit.ts";
+import { ReviewStore, submitReview, type ReviewInput, type ReviewOutcome, type StoredReview } from "./review-submit.ts";
+import { claimReviews, recordReview, type ReviewClaim, type ReviewReportOutcome } from "./review-record.ts";
 import { CloseOutStore, FixApprovalStore } from "./approval-store.ts";
 import type { HuddleReviewer, ReviewCollection } from "./huddle-reviews.ts";
 import type { HuddleThread, HuddleThreadKeeper } from "./huddle-threads.ts";
@@ -254,15 +261,27 @@ export {
   type UnsignedFeatureRecord,
 } from "./feature-store.ts";
 export {
+  REVIEW_CLAIM_LIMIT,
+  REVIEW_LEASE_MS,
   REVIEW_TABLE_SCHEMA,
   ReviewStore,
   submitReview,
+  type ReviewClaimListing,
+  type ReviewCompletion,
   type ReviewDeps,
   type ReviewInput,
   type ReviewOutcome,
   type ReviewState,
   type StoredReview,
 } from "./review-submit.ts";
+export {
+  claimReviews,
+  recordReview,
+  type ClaimedReview,
+  type ReviewClaim,
+  type ReviewRecordDeps,
+  type ReviewReportOutcome,
+} from "./review-record.ts";
 export {
   approveOverlap,
   checkOverlap,
@@ -291,6 +310,7 @@ export {
 export { fixTask, type FailingTest, type FixTask } from "./fix-task.ts";
 export {
   changedPaths,
+  checkpointBaseline,
   checkpointChange,
   CombinedRunStore,
   scheduleCombinedRuns,
@@ -1407,20 +1427,58 @@ export class ProjectAgent extends Agent {
    * on main and the evidence in the feature's fork at its latest checkpoint.
    */
   submitReview(owner: string, sessionId: string, input: ReviewInput, repos: ProjectRepos): Promise<ReviewOutcome> {
-    this.#reviewRows ??= new ReviewStore(this.#database());
     return submitReview(
       {
         features: this.#featureStore(),
-        reviews: this.#reviewRows,
+        reviews: this.#reviewStore(),
         scopeMap: () => this.#scopeMap(repos),
         invariantsFile: () => this.#baseFile(repos, INVARIANTS_PATH),
         readForkFile: (repo, sha, path) => withRepo(this.env.ARTIFACTS, repo, (fork) => fork.readFile({ ref: sha, path })),
+        baseline: (repo, sha) =>
+          withRepo(this.env.ARTIFACTS, repo, (fork) => withRepo(this.env.ARTIFACTS, repos.base, (base) => checkpointBaseline(fork, base, sha))),
         heartbeat: (caller, session) => this.sessionHeartbeat(caller, session),
       },
       owner,
       sessionId,
       input,
     );
+  }
+
+  /**
+   * For the integration runner only: claims the pending reviews, each with its form, baseline and
+   * checkpoint (review-record.ts). Any other role is refused.
+   */
+  claimReviews(caller: BridgeCaller): ReviewClaim {
+    return claimReviews(this.#reviewStore(), caller);
+  }
+
+  /**
+   * Attaches the runner's record to pending review `reviewId`. When the record raises an exception,
+   * the scope's owner gets a `review_exception` inbox item.
+   */
+  reportReview(caller: BridgeCaller, reviewId: number, record: unknown): Promise<ReviewReportOutcome> {
+    return recordReview(
+      {
+        reviews: this.#reviewStore(),
+        routeToOwner: (ownerId, review) => {
+          this.#inboxStore().reviewException(ownerId, review.featureId, review.scopeId);
+          sendToOwner(this.getConnections<{ owner?: string }>(), ownerId, inboxChangedMessage());
+        },
+      },
+      caller,
+      reviewId,
+      record,
+    );
+  }
+
+  /** The reviews of one feature, oldest first, each with its record once the runner attached it. */
+  featureReviews(featureId: string): StoredReview[] {
+    return this.#reviewStore().list(featureId);
+  }
+
+  #reviewStore(): ReviewStore {
+    this.#reviewRows ??= new ReviewStore(this.#database());
+    return this.#reviewRows;
   }
 
   /** An owner's fork record with its latest reported checkpoint, or undefined before the first report. */

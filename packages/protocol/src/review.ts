@@ -25,6 +25,10 @@ export const REVIEW_LIMITS = {
   argsBytes: 65_536,
   argsDepth: 16,
   examplesPerFile: 5_000,
+  /** The differing and the not-run inputs each set keeps in a record over `recordBytes`. */
+  recordedPerSet: 100,
+  /** The JSON text of one review record the runner reports. A Durable Object row holds 2 MB. */
+  recordBytes: 1_048_576,
 } as const;
 
 export const REVIEW_VERDICTS = ["holds", "breaks", "unknown"] as const;
@@ -73,16 +77,18 @@ export interface InvariantView {
   readonly protected: boolean;
 }
 
-export type ReviewRefusalCode =
-  | "invalid_form"
-  | "missing_row"
-  | "unknown_invariant"
-  | "duplicate_row"
-  | "no_evidence"
-  | "invalid_evidence"
-  | "evidence_not_found"
-  | "unknown_without_test"
-  | "stored_data_without_marker";
+export const REVIEW_REFUSAL_CODES = [
+  "invalid_form",
+  "missing_row",
+  "unknown_invariant",
+  "duplicate_row",
+  "no_evidence",
+  "invalid_evidence",
+  "evidence_not_found",
+  "unknown_without_test",
+  "stored_data_without_marker",
+] as const;
+export type ReviewRefusalCode = (typeof REVIEW_REFUSAL_CODES)[number];
 
 /** One reason a form is refused. `invariant` and `evidence` are the reviewer's data, echoed back. */
 export interface ReviewRefusal {
@@ -527,6 +533,129 @@ export function reviewExceptions(
     exceptions.push({ kind: "protected_difference", invariant: id, scope: (byId.get(id) as InvariantView).scopeId, contract, differing });
   }
   return exceptions;
+}
+
+// The review record: what the check runner reports for one submitted review (`penguin-bridge review`
+// and runner mode). The ProjectAgent keeps it with the review and derives the routing from it.
+
+/** One review on the check runner: the form checked again, the stored data rule and the side-by-side run. */
+export interface ReviewRecord {
+  readonly schemaVersion: typeof REVIEW_SCHEMA_VERSION;
+  readonly base: string;
+  readonly fork: string;
+  readonly scope: string;
+  readonly state: "accepted" | "refused";
+  readonly refusals: readonly ReviewRefusal[];
+  /** The scope's invariants the form was checked against. */
+  readonly invariants: readonly InvariantView[];
+  /** The stored data shapes the contract diff shows changed; null when no diff was made. */
+  readonly storedShapes: readonly StoredShapeChange[] | null;
+  readonly sideBySide: SideBySideRecord;
+  /** What goes to the scope's owner in person; empty when the agent's review stands. */
+  readonly exceptions: readonly ReviewException[];
+  readonly timings: { readonly impactMs: number; readonly sideBySideMs: number; readonly totalMs: number };
+}
+
+const COMMIT = { type: "string", pattern: "^[0-9a-f]{40}(?:[0-9a-f]{24})?$" };
+const LINE = text(4_096);
+const ID = text(128, 1);
+const MS = { type: "number", minimum: 0 };
+const COUNT = { type: "integer", minimum: 0 };
+const object = (properties: Record<string, JsonSchema>, optional: readonly string[] = []): JsonSchema => ({
+  type: "object",
+  additionalProperties: false,
+  required: Object.keys(properties).filter((key) => !optional.includes(key)),
+  properties,
+});
+const array = (items: JsonSchema, maxItems: number): JsonSchema => ({ type: "array", maxItems, items });
+const OUTCOME: JsonSchema = {
+  oneOf: [
+    object({ status: { const: "returned" }, value: {} }),
+    object({ status: { const: "raised" }, error: object({ type: LINE, message: LINE }) }),
+  ],
+};
+const NAME = text(REVIEW_LIMITS.nameLength, 1);
+const INPUTS_PER_SET = REVIEW_LIMITS.examplesPerFile + REVIEW_LIMITS.riskyInputs;
+
+/** JSON Schema (draft 2020-12) of a review record as the runner reports it. */
+export const REVIEW_RECORD_SCHEMA: JsonSchema = {
+  $schema: "https://json-schema.org/draft/2020-12/schema",
+  title: "Penguin review record",
+  ...object({
+    schemaVersion: { const: REVIEW_SCHEMA_VERSION },
+    base: COMMIT,
+    fork: COMMIT,
+    scope: ID,
+    state: { type: "string", enum: ["accepted", "refused"] },
+    refusals: array(
+      object({ code: { type: "string", enum: [...REVIEW_REFUSAL_CODES] }, message: LINE, invariant: LINE, evidence: LINE }, ["invariant", "evidence"]),
+      REVIEW_LIMITS.rows * (REVIEW_LIMITS.evidencePerRow + 1) + 20,
+    ),
+    invariants: array(object({ id: ID, scopeId: ID, statement: text(500), protected: { type: "boolean" } }), 1_000),
+    storedShapes: { anyOf: [{ type: "null" }, array(object({ symbol: LINE, path: LINE }), 2_000)] },
+    sideBySide: object({
+      schemaVersion: { const: REVIEW_SCHEMA_VERSION },
+      tool: { const: SIDE_BY_SIDE_TOOL },
+      commandId: { const: SIDE_BY_SIDE_COMMAND_ID },
+      base: COMMIT,
+      fork: COMMIT,
+      scope: ID,
+      sets: array(
+        object({
+          source: { type: "string", enum: ["examples", "risky-inputs"] },
+          file: { anyOf: [{ type: "null" }, text(1_024, 1)] },
+          contract: text(512, 1),
+          invariants: array(ID, 1_000),
+          inputs: array(NAME, INPUTS_PER_SET),
+          differing: array(object({ name: NAME, args: { type: "object" }, main: OUTCOME, fork: OUTCOME }), INPUTS_PER_SET),
+          invalid: array(object({ name: NAME, side: { type: "string", enum: ["request", "main", "fork", "both"] }, reason: LINE }), INPUTS_PER_SET),
+          mainMs: MS,
+          forkMs: MS,
+        }),
+        1_000,
+      ),
+      totals: object({ inputs: COUNT, differing: COUNT, invalid: COUNT }),
+      timings: object({ mainMs: MS, forkMs: MS, totalMs: MS }),
+    }),
+    exceptions: array(
+      {
+        oneOf: [
+          object({ kind: { const: "broken_invariant" }, invariant: ID, scope: ID }),
+          object({ kind: { const: "protected_difference" }, invariant: ID, scope: ID, contract: text(512, 1), differing: COUNT }),
+        ],
+      },
+      2_000,
+    ),
+    timings: object({ impactMs: MS, sideBySideMs: MS, totalMs: MS }),
+  }),
+};
+
+export type ParsedReviewRecord = { readonly ok: true; readonly record: ReviewRecord } | { readonly ok: false; readonly problems: string[] };
+
+/** Checks a reported review record's size and shape. The ProjectAgent checks it belongs to the review. */
+export function parseReviewRecord(value: unknown): ParsedReviewRecord {
+  const bytes = new TextEncoder().encode(JSON.stringify(value) ?? "").length;
+  if (bytes > REVIEW_LIMITS.recordBytes) return { ok: false, problems: [`the record is over ${REVIEW_LIMITS.recordBytes} bytes of JSON`] };
+  const errors = checkSchema(REVIEW_RECORD_SCHEMA, value);
+  if (errors.length > 0) return { ok: false, problems: errors.slice(0, 5).map((error) => `${error.path || "/"} ${error.message}`) };
+  const record = value as ReviewRecord;
+  const { sideBySide } = record;
+  if (sideBySide.base !== record.base || sideBySide.fork !== record.fork || sideBySide.scope !== record.scope) {
+    return { ok: false, problems: ["/sideBySide names other commits or another scope than the record"] };
+  }
+  return { ok: true, record };
+}
+
+/**
+ * The record as the runner reports it. One over REVIEW_LIMITS.recordBytes keeps the first
+ * REVIEW_LIMITS.recordedPerSet differing and not-run inputs of each set, so it fits one stored row;
+ * `inputs` and `totals` still count every input.
+ */
+export function boundReviewRecord(record: ReviewRecord): ReviewRecord {
+  if (new TextEncoder().encode(JSON.stringify(record)).length <= REVIEW_LIMITS.recordBytes) return record;
+  const limit = REVIEW_LIMITS.recordedPerSet;
+  const sets = record.sideBySide.sets.map((set) => ({ ...set, differing: set.differing.slice(0, limit), invalid: set.invalid.slice(0, limit) }));
+  return { ...record, sideBySide: { ...record.sideBySide, sets } };
 }
 
 const outcomeText = (outcome: SideBySideOutcome): string =>
