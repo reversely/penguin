@@ -15,6 +15,12 @@ tracker (`HuddleAgent`, one per Huddle) follows one conflict to the end: it runs
 together, collects each owner's review, keeps the conversation and decides when the Huddle can close.
 Each conflict has its own tracker, so several run at once.
 
+The conflict tracker takes in the runner's test results for its Huddle and every review and reply
+about it. It sends out requests to the runner (test these fixes together, record the approved branch,
+both landing in the Huddle's repo in Artifacts) and facts for the team record to validate, sign and
+write to the `issues` repo. Today the runner's results reach it through the team record; PRD section 5
+has them go to it directly, and #86 changes the code to match.
+
 ```mermaid
 flowchart TB
   subgraph Owner["Each owner's machine"]
@@ -49,8 +55,10 @@ flowchart TB
   Issues -- "pushed event" --> Queue
   Queue --> Worker
   Worker --> PA
-  PA -- "hands over a new Huddle" --> HA
-  HA -- "results to record" --> PA
+  PA -- "opens a Huddle: the breaks, the fixes, who is in it" --> HA
+  Worker -- "test results from the runner;<br/>reviews and replies from people and agents" --> HA
+  HA -- "asks the runner: test these fixes together;<br/>record the approved branch" --> Worker
+  HA -- "facts to record: tests passed, changes requested,<br/>closed as approved" --> PA
   PA -- "Artifacts binding: read" --> Art
   Worker -- "create, import, fork" --> Art
 ```
