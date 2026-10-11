@@ -13,7 +13,9 @@
  * - POST /checkpoints, bridge token: records a checkpoint the bridge pushed to its owner's fork as
  *   that fork's latest checkpoint. The owner comes from the token; the body carries only the SHA
  *   and the fork, which must be the owner's own. A checkpoint that changes a scope other scopes
- *   depend on schedules one combined run per dependent owner.
+ *   depend on schedules one combined run per dependent owner. A checkpoint on `feature-<id>`, a
+ *   feature the bridge's owner opened, instead updates that feature's declared area with the paths
+ *   the checkpoint changed (features.ts).
  * - POST /combined-runs/claim, bridge token of a runner bridge: claims the scheduled combined runs.
  *   Each run names its checkpoints and allowlisted command IDs, never a shell command.
  * - POST /combined-runs, bridge token of a runner bridge: reports a combined run. When its tests
@@ -46,6 +48,7 @@ import type {
   CheckpointOutcome,
   ClaimListing,
   Delivery,
+  FeatureCheckpointOutcome,
   Huddle,
   HuddleOpenOutcome,
   PendingListing,
@@ -56,6 +59,7 @@ import type {
 } from "@penguin/project-agent";
 
 import { bearerToken, isDeployer } from "./auth.ts";
+import { checkpointFields, FEATURE_FORK } from "./features.ts";
 import { artifactsErrorCode, huddleRepoId, isValidRepoName } from "./repos.ts";
 import {
   allowedScope,
@@ -82,6 +86,14 @@ export interface BridgeDirectory {
    * name, and schedules the combined runs it calls for and the verification of its owner's open Huddles.
    */
   reportBridgeCheckpoint(owner: string, sha: string, fork: string, repos: ProjectRepos): Promise<CheckpointOutcome>;
+  /** Records `sha` on feature `featureId`'s fork for `owner`, who must own the feature; see features.ts. */
+  reportFeatureCheckpoint(
+    owner: string,
+    sessionId: null,
+    featureId: string,
+    sha: string,
+    repos: ProjectRepos,
+  ): Promise<FeatureCheckpointOutcome>;
   /** Claims the scheduled combined runs; refused unless `caller` holds the runner role. */
   claimCombinedRuns(caller: BridgeCaller): Promise<ClaimListing> | ClaimListing;
   /** A safe checkpoint of `owner`'s running sessions in the worktree `worktreeId`. */
@@ -254,8 +266,10 @@ async function reportCheckpoint(request: Request, handlers: BridgeHandlers): Pro
   if (body === undefined) return invalid("", "must be a JSON object");
   const { sha, fork } = body;
   if (typeof sha !== "string") return invalid("sha", "must be the checkpoint commit's full SHA");
+  const feature = typeof fork === "string" ? FEATURE_FORK.exec(fork)?.[1] : undefined;
+  if (feature !== undefined) return reportFeatureCheckpoint(directory, bridge, feature, sha, handlers);
   const forkRepo = typeof fork === "string" ? CHECKPOINT_FORK.exec(fork)?.[1] : undefined;
-  if (forkRepo === undefined) return invalid("fork", "must be owner-<id> or penguin:owner-<id>");
+  if (forkRepo === undefined) return invalid("fork", "must be owner-<id>, feature-<id> or either with the penguin: prefix");
   // The owner comes from the registry record the token authenticated, never from the request.
   const own = `owner-${bridge.ownerId}`;
   if (forkRepo !== own) {
@@ -276,6 +290,33 @@ async function reportCheckpoint(request: Request, handlers: BridgeHandlers): Pro
   }
   const { ownerId, latestCheckpointSha, reportedAt } = outcome.fork;
   return json({ fork: own, ownerId, latestCheckpointSha, reportedAt }, 200);
+}
+
+const FEATURE_REJECTION_STATUS: Readonly<Record<string, number>> = { invalid: 400, forbidden: 403, not_found: 422 };
+
+/**
+ * Records a checkpoint the bridge pushed to a feature's fork. The feature must be the bridge owner's;
+ * the ProjectAgent checks that, confirms the commit is in the fork and updates the declared area.
+ */
+async function reportFeatureCheckpoint(
+  directory: BridgeDirectory,
+  bridge: BridgeIdentity,
+  feature: string,
+  sha: string,
+  handlers: BridgeHandlers,
+): Promise<Response> {
+  let outcome: FeatureCheckpointOutcome;
+  try {
+    // The owner comes from the registry record the token authenticated, never from the request.
+    outcome = await directory.reportFeatureCheckpoint(bridge.ownerId, null, feature, sha, handlers.projectRepos);
+  } catch (error) {
+    return json({ error: "artifacts", code: artifactsErrorCode(error) ?? null }, 502);
+  }
+  if (outcome.status === "rejected") {
+    return json({ error: outcome.reason, message: outcome.message }, FEATURE_REJECTION_STATUS[outcome.reason] ?? 409);
+  }
+  const { newWork: _work, newThreads: _threads, ...fields } = checkpointFields(outcome);
+  return json(fields, 200);
 }
 
 /** A worktree id as sessions register it (SESSION_LIMITS.worktreeIdLength in the ProjectAgent). */

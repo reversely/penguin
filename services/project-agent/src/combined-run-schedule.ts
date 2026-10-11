@@ -324,8 +324,24 @@ function testCommandId(scopeId: string): string | undefined {
   return COMMAND_ID.test(id) && id.length <= 64 ? id : undefined;
 }
 
+/**
+ * The files checkpoint `sha` in `fork` changes against its baseline, and that baseline. A feature's
+ * checkpoint updates the feature's declared area from these paths (feature-open.ts).
+ *
+ * Raises:
+ *   Error: when the checkpoint is not in the fork, no baseline is found, or the diff is too large.
+ */
+export async function checkpointChange(
+  fork: RepoHistoryReader,
+  base: Pick<IssuesRepoReader, "log">,
+  sha: string,
+): Promise<{ readonly baselineSha: string; readonly paths: string[] }> {
+  const { baselineSha, baselineTree, checkpointTree } = await findBaseline({ fork, base }, sha);
+  return { baselineSha, paths: await changedPaths(fork, baselineTree, checkpointTree) };
+}
+
 async function findBaseline(
-  deps: ScheduleDeps,
+  deps: Pick<ScheduleDeps, "fork" | "base">,
   sha: string,
 ): Promise<{ baselineSha: string; baselineTree: string; checkpointTree: string }> {
   const chain = await deps.fork.log({ ref: sha, limit: BASELINE_SEARCH_LIMIT, offset: 0 });

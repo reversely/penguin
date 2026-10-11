@@ -6,9 +6,11 @@ import {
   type DashboardBackend,
   type DashboardOptions,
   type DashboardWriteOutcome,
+  type FeatureAreaResult,
   type IdentityWriteOutcome,
   type InboxReadOutcome,
 } from "../src/dashboard.ts";
+import type { FeatureOpenResult } from "../src/features.ts";
 import { type GatewayHandlers, handleRequest } from "../src/gateway.ts";
 import { parseOwnerMap } from "../src/github-oauth.ts";
 import { encodeSession, SESSION_COOKIE, sessionKey } from "../src/session.ts";
@@ -89,6 +91,29 @@ class Backend implements DashboardBackend {
   async connectLive(request: Request, owner: string) {
     this.live.push({ owner, upgrade: request.headers.get("Upgrade") });
     return new Response("upgraded");
+  }
+  readonly featureCalls: { action: string; owner: string; input: unknown }[] = [];
+  readonly opened = new Set<string>();
+
+  async features() {
+    return [...this.opened].map((id) => this.view(id, "jun"));
+  }
+  async openFeature(owner: string, input: { feature: unknown; area?: unknown }): Promise<FeatureOpenResult> {
+    this.featureCalls.push({ action: "open", owner, input });
+    const id = String(input.feature);
+    if (id === "unconfigured") return { status: "misconfigured", message: "PENGUIN_FEATURE_FORK_DEFAULT_BRANCH_ONLY must be true or false" };
+    if (id === "../main") return { status: "rejected", reason: "invalid", message: "bad id" };
+    const status = this.opened.has(id) ? "existing" : "opened";
+    this.opened.add(id);
+    return { status, feature: this.view(id, owner), token: null, timings: { totalMs: 5, forkMs: status === "opened" ? 4 : null, tokenMs: null } };
+  }
+  async declareFeatureArea(owner: string, featureId: string, area: unknown): Promise<FeatureAreaResult> {
+    this.featureCalls.push({ action: "declare", owner, input: { featureId, area } });
+    if (owner !== "jun") return { status: "rejected", reason: "forbidden", message: "not yours" };
+    return { status: "ok", feature: this.view(featureId, owner) };
+  }
+  private view(id: string, person: string) {
+    return { id, person, fork: `feature-${id}`, state: "building", area: { scopes: [], paths: [], contracts: [] }, openedAt: "2026-10-11T00:00:00.000Z", latestCheckpointSha: null };
   }
 }
 
@@ -496,6 +521,51 @@ describe("a signed-in person", () => {
     const upgrade = await browser.request("/api/live", { headers: { Upgrade: "websocket", "X-Penguin-Owner": "priya" } });
     assert.equal(upgrade.status, 200);
     assert.deepEqual(browser.backend.live, [{ owner: "jun", upgrade: "websocket" }]);
+  });
+});
+
+describe("a signed-in person's features", () => {
+  test("opens a feature as themselves: 201 the first time, 200 existing the second, no token either time", async () => {
+    const browser = new Browser();
+    await browser.signIn("jun-gh");
+    const first = await browser.post("/api/features", { feature: "tax-rounding", area: { paths: ["billing/"] }, person: "priya" });
+    assert.equal(first.status, 201);
+    const body = await first.json();
+    assert.equal(body.status, "opened");
+    assert.equal("token" in body, false);
+    const second = await browser.post("/api/features", { feature: "tax-rounding" });
+    assert.equal(second.status, 200);
+    assert.equal((await second.json()).status, "existing");
+    // The person comes from the session; a `person` in the body is never passed on.
+    assert.deepEqual(browser.backend.featureCalls[0], { action: "open", owner: "jun", input: { feature: "tax-rounding", area: { paths: ["billing/"] } } });
+    const listed = await (await browser.request("/api/features")).json();
+    assert.deepEqual(listed.map((feature: { fork: string }) => feature.fork), ["feature-tax-rounding"]);
+  });
+
+  test("an invalid id answers 400, missing configuration 500, and a cross-origin open 403", async () => {
+    const browser = new Browser();
+    await browser.signIn("jun-gh");
+    assert.equal((await browser.post("/api/features", { feature: "../main" })).status, 400);
+    assert.equal((await browser.post("/api/features", { feature: "unconfigured" })).status, 500);
+    assert.equal((await browser.post("/api/features", { feature: "x" }, "https://evil.test")).status, 403);
+    assert.equal((await browser.post("/api/features", [])).status, 400);
+  });
+
+  test("edits the declared area of their own feature; another person's edit is refused", async () => {
+    const browser = new Browser();
+    await browser.signIn("jun-gh");
+    assert.equal((await browser.post("/api/features/tax-rounding/area", { area: { paths: ["billing/"] } })).status, 200);
+    const priya = new Browser(browser.backend);
+    await priya.signIn("Priya-GH");
+    assert.equal((await priya.post("/api/features/tax-rounding/area", { area: {} })).status, 403);
+    assert.equal((await browser.post("/api/features/..%2Fmain/area", { area: {} })).status, 404);
+  });
+
+  test("without a session the feature routes answer 401", async () => {
+    const browser = new Browser();
+    assert.equal((await browser.request("/api/features")).status, 401);
+    assert.equal((await browser.post("/api/features", { feature: "x" })).status, 401);
+    assert.deepEqual(browser.backend.featureCalls, []);
   });
 });
 

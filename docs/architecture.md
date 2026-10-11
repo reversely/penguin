@@ -2,7 +2,8 @@
 
 > **Design change.** This page describes the current build. The design in
 > [design.md](design.md#pieces) changes the repos and the per-unit Durable Object. Each feature gets
-> its own fork `feature-*` in place of the per-owner forks `owner-<id>`. A FeatureAgent per merge plan
+> its own fork `feature-*` in place of the per-owner forks `owner-<id>`. The build opens feature forks
+> already ([Opening a feature](#opening-a-feature)); the owner forks still carry the Huddle flow. A FeatureAgent per merge plan
 > takes over from the HuddleAgent. The `record` repo takes over from `issues`. Penguin promotes each
 > approved block to `main`.
 
@@ -79,7 +80,7 @@ flowchart TB
 | `penguin-bridge` | `services/local-bridge/src/` | One owner on one machine | Checkpoint publishing with consent, the issue command line, the safe-checkpoint hook, the outbound spool |
 | Integration runner | `penguin-bridge runner` on a designated machine | The project | Pushing queued operations, combined runs, verification runs, the `approved` branch |
 | Dashboard | `apps/dashboard/src/` | People in a browser | The team map, the inbox, the issue page, the identities page |
-| MCP tools | `services/mcp/src/tools.ts` | Agent sessions | `register_session`, `get_work`, `get_issue`, `post_update`, `report_checkpoint` |
+| MCP tools | `services/mcp/src/tools.ts` | Agent sessions | `register_session`, `get_work`, `get_issue`, `post_update`, `report_checkpoint`, `open_feature`, `feature_token`, `declare_area` |
 
 Shared rules live in packages that both the Worker and the bridge import: the operation schema and
 wire formats in `packages/protocol`, the scope map in `packages/scope-map`, charters, review rights,
@@ -97,10 +98,14 @@ run's repos apart from production's; the prefix leads every name.
 | `owner-<id>` | `POST /setup`, one fork of `base` per owner | That owner's bridge only | The owner's published checkpoints, one branch per worktree branch |
 | `issues` | `POST /setup` | Every bridge and the runner | One signed file per issue operation, `issues/<issue>/ops/<op_id>.json` |
 | `huddle-<id>` | The Worker, when a Huddle issue opens; `<id>` is the issue number padded to three digits, as in `huddle-031` | The runner only | The `integration` branch of each verification run and the `approved` branch at close |
+| `feature-<id>` | The Worker, when a person or an agent session opens the feature (`apps/worker/src/features.ts`) | The feature's agent sessions, with tokens the Worker mints for them | The feature's work, forked from main's branch |
 
 The Worker mints short-lived Artifacts tokens per repo (`apps/worker/src/tokens.ts`). A bridge may
 hold `write` on its own fork and on `issues`. It holds `read` on every other repo. A runner bridge also
-holds `write` on Huddle repos. Artifacts tokens separate only read from write per repo, so the repo
+holds `write` on Huddle repos. An agent session holds `write` on the fork of the feature it joined,
+for `PENGUIN_FEATURE_TOKEN_TTL_MINUTES`. It gets the token from `open_feature` or `feature_token`.
+The Worker mints it only after the ProjectAgent confirms that the session is running and has joined
+that feature. Artifacts tokens separate only read from write per repo, so the repo
 boundary is the push boundary. The validator then decides what each operation in `issues` may do.
 
 ## Who keeps which state
@@ -113,7 +118,11 @@ issues repo: `Issue`, `Assignment`, `Comment`, `CommentRevision`, `Mention`, `Li
 The rest is live coordination state with no copy in Git: `PendingOp` (operations applied but not yet
 pushed), identities and avatars, sessions and their routes, inbox items with read flags, registered
 bridges and MCP tokens as hashes, `OwnerFork` latest checkpoints, `CombinedRun`, the Huddle records,
-fix approvals and close-out blockers for the issue page.
+fix approvals and close-out blockers for the issue page. The feature tables are live state too
+(`services/project-agent/src/feature-store.ts`): `Feature` holds each feature's person, fork, state
+and declared area. `FeatureSession` names the agent sessions of each feature. `FeatureRecord` holds
+the signed records of each opening, declaration and checkpoint update until the record repo takes
+them.
 
 Each HuddleAgent keeps the state of one Huddle in its own SQLite store: `VerificationRun`,
 `FixReview`, `HuddleThread` and `ApprovedBranch`. The ProjectAgent names the instance
@@ -139,6 +148,20 @@ sends a `cf.artifacts.repo.pushed` event for every push to `issues` to the Queue
 handler (`apps/worker/src/push-events.ts`) passes the push to the ProjectAgent, which reads the new
 files through the Artifacts binding and applies them in coordination order. A pushed file that
 matches a pending operation clears its `PendingOp` row.
+
+### Opening a feature
+
+1. An agent session calls `open_feature`, or a person posts to `POST /api/features`. The Worker
+   passes the request to the ProjectAgent. The ProjectAgent checks the feature id and the paths. It
+   checks the scopes and contracts against `penguin/scopes.json` on main. It stores the feature with a
+   signed `open_feature` record and makes the session an agent of the feature.
+2. While the feature has no fork, the Worker forks the `base` repo into `feature-<id>` and records
+   the fork. An existing repo counts as forked, so a second open makes no second fork.
+3. For a session, the Worker asks the ProjectAgent for a grant and mints a `write` token on
+   `feature-<id>`. The token goes back in the tool's answer and nowhere else.
+4. Each checkpoint on the fork, from `report_checkpoint` or the bridge's `POST /checkpoints`, must be
+   in the fork. The ProjectAgent diffs it against its baseline on main and adds the changed paths
+   and their scopes to the declared area.
 
 ### Checkpoints to Huddles
 

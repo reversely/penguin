@@ -68,6 +68,35 @@ The procedure moves conflict handling to the start of the work. Each step below 
 4. If a merge plan touching this area is already announced, Penguin hands it to the new feature at
    open.
 
+#### Steps 1 and 2 in the build
+
+- **Opening.** An agent session calls `open_feature` with a feature id and its area. A person posts
+  the same to `POST /api/features` on the dashboard. The ProjectAgent stores the `Feature` row and a
+  signed `open_feature` record. The Worker then forks main into `feature-<id>` with `fork()`. A
+  second open of the same id makes no fork: it answers `existing`. A session of the same person
+  joins the feature. Anyone else is refused. Each session works on one feature.
+- **Tokens.** The Worker mints a `write` token on `feature-<id>` for each agent session of the
+  feature: one with `open_feature`, a fresh one with `feature_token`. A session that has not joined
+  the feature is refused. The tools name a feature id, never a repo. A request therefore cannot
+  reach main, another feature's fork or the record repo. The token's plaintext goes to the session
+  once. Penguin keeps no copy and logs none. A person who opens a feature on the dashboard gets no
+  token.
+- **Area.** Scope ids and contracts must be named in `penguin/scopes.json`. Each scope there may
+  list `contracts`, its public symbols as `path::symbol`. Paths are relative and hold only letters,
+  digits, `_`, `.`, `-` and `/`. No segment may start with `-` and none may be `..`. The agent
+  replaces the area with `declare_area`. The person replaces it with
+  `POST /api/features/<id>/area`. A checkpoint reported on the fork, through `report_checkpoint`
+  or the bridge's `POST /checkpoints`, adds each path it changed against its baseline on main and
+  the scope that path falls in. Contracts change only by declaration until the contract diff
+  exists ([Checks](#checks)).
+- **Records.** Each opening, declaration and checkpoint update is a record signed with Penguin's
+  service key. Each record carries its path in the record repo,
+  `records/<feature>/<author>-<writer>-<seq>.json`. The ProjectAgent keeps the records until the
+  record repo exists.
+- **Configuration.** `PENGUIN_FEATURE_FORK_DEFAULT_BRANCH_ONLY` sets `fork()`'s
+  `defaultBranchOnly`. `PENGUIN_FEATURE_TOKEN_TTL_MINUTES` sets the token lifetime.
+  `PENGUIN_REPO_PREFIX` leads every repo name. Opening refuses without valid values.
+
 ### Plan
 
 1. A feature that changes a contract, a stored data shape or an invariant that other features or

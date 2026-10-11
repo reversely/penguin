@@ -14,9 +14,16 @@
   // GITHUB_OAUTH_CLIENT_SECRET secret (`wrangler secret put`), and PENGUIN_DASHBOARD_OWNERS, which
   // maps GitHub logins to owner ids as `<login>:<owner>,<login>:<owner>`. Without the map nobody can
   // sign in. `wrangler dev` and `wrangler deploy` build the dashboard first.
+  //
+  // Opening a feature forks main into `feature-<id>` with `fork()`'s `defaultBranchOnly` set from
+  // PENGUIN_FEATURE_FORK_DEFAULT_BRANCH_ONLY, and gives each of the feature's agent sessions a write
+  // token on that fork for PENGUIN_FEATURE_TOKEN_TTL_MINUTES (src/features.ts). Opening refuses
+  // without either.
   "vars": {
     "GITHUB_OAUTH_CLIENT_ID": "Ov23liQdtDavAZ3IhIVQ",
-    "PENGUIN_DASHBOARD_OWNERS": "reversely:priya"
+    "PENGUIN_DASHBOARD_OWNERS": "reversely:priya",
+    "PENGUIN_FEATURE_FORK_DEFAULT_BRANCH_ONLY": "true",
+    "PENGUIN_FEATURE_TOKEN_TTL_MINUTES": "30"
   },
   "build": {
     "command": "npm run build -w @penguin/dashboard",

@@ -102,6 +102,7 @@ function gateway(artifacts = fakeArtifacts(PROJECT_REPOS)) {
   const runs = new CombinedRunStore(db);
   /** The project repos each checkpoint report handed the ProjectAgent. */
   const checkpointRepos: ProjectRepos[] = [];
+  const featureReports: { owner: string; sessionId: string | null; featureId: string; sha: string }[] = [];
   const handlers: GatewayHandlers = {
     routeAgents: async () => null,
     setUpProject: async () => {
@@ -120,6 +121,17 @@ function gateway(artifacts = fakeArtifacts(PROJECT_REPOS)) {
       },
       claimCombinedRuns: (caller) => runs.claim(caller),
       sessionCheckpoint: (owner, worktreeId) => sessions.checkpointWorktree(owner, worktreeId),
+      // Feature checkpoints are covered end to end in features.test.ts; here
+      // the route's handling of the owner and the answer.
+      reportFeatureCheckpoint: async (owner, sessionId, featureId, sha) => {
+        featureReports.push({ owner, sessionId, featureId, sha });
+        if (featureId !== "tax-rounding" || owner !== "jun") {
+          return { status: "rejected", reason: "forbidden", message: `feature ${featureId} belongs to another person` };
+        }
+        const area = { scopes: ["analytics"], paths: ["analytics/report.py"], contracts: [] };
+        const feature = { id: featureId, personId: owner, repo: "test-feature-tax-rounding", area, state: "building" as const, openedAt: "", latestCheckpointSha: sha, updatedAt: "" };
+        return { status: "ok", feature, baselineSha: "b".repeat(40), changedPaths: 1, omittedPaths: 0, delivered: [], threads: [], durationMs: 3 };
+      },
     }),
     ownerForkRepo: (owner) => names.owner(owner),
     projectRepos: { issues: names.issues, base: names.base },
@@ -140,7 +152,7 @@ function gateway(artifacts = fakeArtifacts(PROJECT_REPOS)) {
       options,
       handlers,
     );
-  return { artifacts, call, registry, db, forks, commits, huddles, identities, sessions, clock, runs, checkpointRepos };
+  return { artifacts, call, registry, db, forks, commits, huddles, identities, sessions, clock, runs, checkpointRepos, featureReports };
 }
 
 /**
@@ -437,6 +449,27 @@ test("a bridge report records its owner's latest checkpoint with no agent sessio
   assert.equal((await report(DEPLOYER_TOKEN, { sha, fork: "owner-jun" })).status, 401);
   assert.equal((await call("/checkpoints", { method: "GET", token: jun.bridgeToken })).status, 405);
   assert.equal(forks.get("jun")?.latestCheckpointSha, sha);
+});
+
+test("a bridge report on a feature's fork updates the feature as the bridge's owner, never the body's", async () => {
+  const { call, featureReports, forks } = gateway();
+  const sha = "4c1d9e0a7b3f2e8d6c5b4a3928170f6e5d4c3b2a"; // pragma: allowlist secret
+  const jun = await registerBridge(call, "jun");
+  const response = await call("/checkpoints", { token: jun.bridgeToken, body: { sha, fork: "penguin:feature-tax-rounding", owner: "priya" } });
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as Record<string, unknown>;
+  assert.equal(body["fork"], "feature-tax-rounding");
+  assert.equal(body["latestCheckpointSha"], sha);
+  assert.deepEqual(body["area"], { scopes: ["analytics"], paths: ["analytics/report.py"], contracts: [] });
+  assert.deepEqual(featureReports, [{ owner: "jun", sessionId: null, featureId: "tax-rounding", sha }]);
+
+  const priya = await registerBridge(call, "priya");
+  assert.equal((await call("/checkpoints", { token: priya.bridgeToken, body: { sha, fork: "feature-tax-rounding" } })).status, 403);
+  for (const fork of ["feature-../base", "feature--rf", "feature-<b>x</b>", "feature-Tax"]) {
+    assert.equal((await call("/checkpoints", { token: jun.bridgeToken, body: { sha, fork } })).status, 400, fork);
+  }
+  assert.equal(featureReports.length, 2);
+  assert.equal(forks.get("jun"), undefined);
 });
 
 test("a bridge's session checkpoint reaches only its owner's running sessions in that worktree", async () => {

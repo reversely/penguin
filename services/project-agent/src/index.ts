@@ -40,7 +40,21 @@ import {
 } from "./owner-forks.ts";
 import { postSessionUpdate, type SessionUpdate, type SessionUpdateOutcome } from "./session-updates.ts";
 import { openHuddle, type HuddleOpenOutcome } from "./huddle-open.ts";
-import { CombinedRunStore, scheduleCombinedRuns, type ClaimListing } from "./combined-run-schedule.ts";
+import { checkpointChange, CombinedRunStore, scheduleCombinedRuns, type ClaimListing } from "./combined-run-schedule.ts";
+import {
+  declareArea,
+  featureTokenGrant,
+  openFeature,
+  recordFeatureRepo,
+  reportFeatureCheckpoint,
+  type FeatureCheckpointOutcome,
+  type FeatureDeps,
+  type FeatureOpenInput,
+  type FeatureOpenOutcome,
+  type FeatureOutcome,
+  type TokenGrant,
+} from "./feature-open.ts";
+import { FeatureStore, signFeatureRecord, type Feature } from "./feature-store.ts";
 import { HuddleStore, type Huddle } from "./huddle-store.ts";
 import { fixTask, type FixTask } from "./fix-task.ts";
 import {
@@ -188,9 +202,48 @@ export {
   type HuddleOpenOutcome,
 } from "./huddle-open.ts";
 export { HuddleStore, ownerCommit, type Huddle, type HuddleStatus } from "./huddle-store.ts";
+export {
+  declareArea,
+  FEATURE_REPO_PATTERN,
+  featureTokenGrant,
+  openFeature,
+  recordCheckpointArea,
+  recordFeatureRepo,
+  reportFeatureCheckpoint,
+  type CheckpointAreaOutcome,
+  type CheckpointReader,
+  type FeatureCheckpointDeps,
+  type FeatureCheckpointOutcome,
+  type FeatureDeps,
+  type FeatureOpenInput,
+  type FeatureOpenOutcome,
+  type FeatureOutcome,
+  type FeatureRejection,
+  type FeatureRejectReason,
+  type TokenGrant,
+} from "./feature-open.ts";
+export {
+  EMPTY_AREA,
+  extendArea,
+  FEATURE_LIMITS,
+  featureRecordPath,
+  FeatureStore,
+  parseArea,
+  parseAreaPath,
+  parseFeatureId,
+  signFeatureRecord,
+  type Feature,
+  type FeatureArea,
+  type FeatureRecord,
+  type FeatureRecordType,
+  type FeatureState,
+  type StoredFeatureRecord,
+  type UnsignedFeatureRecord,
+} from "./feature-store.ts";
 export { fixTask, type FailingTest, type FixTask } from "./fix-task.ts";
 export {
   changedPaths,
+  checkpointChange,
   CombinedRunStore,
   scheduleCombinedRuns,
   type ClaimListing,
@@ -368,6 +421,7 @@ export class ProjectAgent extends Agent {
   #bridges: BridgeRegistry | undefined;
   #mcpTokens: McpTokenStore | undefined;
   #forks: OwnerForkStore | undefined;
+  #featureRows: FeatureStore | undefined;
   #ledger: IngestLedger | undefined;
   #live: LiveFeed | undefined;
   /** Ingests run one at a time, so two pushes never interleave their walks and applies. */
@@ -1106,6 +1160,90 @@ export class ProjectAgent extends Agent {
       commitExists: (repoName, commit) =>
         withRepo(this.env.ARTIFACTS, repoName, async (repo) => (await repo.readCommit(commit)) !== null),
     };
+  }
+
+  /**
+   * Opens a feature for `owner`, the person the gateway authenticated, with its declared area and a
+   * signed `open_feature` record (feature-open.ts). With `sessionId`, the owner's session opens it and
+   * joins it. The Worker then forks main and calls `recordFeatureRepo`.
+   */
+  openFeature(owner: string, input: FeatureOpenInput, sessionId: string | null, repos: ProjectRepos): Promise<FeatureOpenOutcome> {
+    return openFeature(this.#featureDeps(repos), owner, input, sessionId);
+  }
+
+  /** Records the fork the Worker made for a feature, which turns the feature to `building`. */
+  recordFeatureRepo(featureId: string, repo: string): Feature | undefined {
+    return recordFeatureRepo(this.#featureStore(), featureId, repo);
+  }
+
+  /**
+   * Whether `owner`'s session may hold a write token on feature `featureId`'s fork, and that fork's
+   * repo name. The Worker mints the token only on a grant, so its plaintext never reaches this agent.
+   */
+  featureTokenGrant(owner: string, sessionId: string, featureId: string, repos: ProjectRepos): TokenGrant {
+    return featureTokenGrant(this.#featureDeps(repos), owner, sessionId, featureId);
+  }
+
+  /** Replaces a feature's declared area: by one of its agent sessions, or by its person with no session. */
+  declareFeatureArea(
+    owner: string,
+    featureId: string,
+    area: unknown,
+    sessionId: string | null,
+    repos: ProjectRepos,
+  ): Promise<FeatureOutcome> {
+    return declareArea(this.#featureDeps(repos), owner, featureId, area, sessionId);
+  }
+
+  /**
+   * Records checkpoint `sha` of feature `featureId`: from one of its agent sessions, which then gets
+   * its safe-checkpoint deliveries, or from the feature person's bridge with no session. The commit
+   * must be in the feature's fork. The declared area grows by what the checkpoint changed against its
+   * baseline on main; `durationMs` is how long that update took.
+   */
+  reportFeatureCheckpoint(
+    owner: string,
+    sessionId: string | null,
+    featureId: string,
+    sha: string,
+    repos: ProjectRepos,
+  ): Promise<FeatureCheckpointOutcome> {
+    const deps = {
+      ...this.#featureDeps(repos),
+      commitExists: this.#checkpointDeps().commitExists,
+      readChange: (repo: string, commit: string) =>
+        withRepo(this.env.ARTIFACTS, repo, (fork) =>
+          withRepo(this.env.ARTIFACTS, repos.base, (base) => checkpointChange(fork, base, commit)),
+        ),
+      deliver: (caller: string, session: string) => {
+        const delivery = this.#sessionStore().checkpoint(caller, session);
+        return delivery.status === "ok" ? delivery : undefined;
+      },
+    };
+    return reportFeatureCheckpoint(deps, owner, sessionId, featureId, sha);
+  }
+
+  /** Every feature, newest first, for the dashboard. */
+  features(): Feature[] {
+    return this.#featureStore().list();
+  }
+
+  readFeature(featureId: string): Feature | undefined {
+    return this.#featureStore().get(featureId);
+  }
+
+  #featureDeps(repos: ProjectRepos): FeatureDeps {
+    return {
+      features: this.#featureStore(),
+      scopeMap: () => this.#scopeMap(repos),
+      heartbeat: (caller, sessionId) => this.sessionHeartbeat(caller, sessionId),
+      sign: async (record) => signFeatureRecord(record, (await this.#loadServiceKey()).privateKey),
+    };
+  }
+
+  #featureStore(): FeatureStore {
+    this.#featureRows ??= new FeatureStore(this.#database());
+    return this.#featureRows;
   }
 
   /** An owner's fork record with its latest reported checkpoint, or undefined before the first report. */

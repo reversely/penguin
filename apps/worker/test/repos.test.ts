@@ -5,14 +5,17 @@ import {
   type ArtifactsNamespace,
   artifactsErrorCode,
   type CreatedRepo,
+  forkFeatureRepo,
   forkHuddleRepo,
   InvalidRepoNameError,
+  parseFeatureForkOptions,
   isValidRepoName,
   parseSetupRequest,
   type RepoHandle,
   RepoNames,
   setUpProject,
 } from "../src/repos.ts";
+import { parseFeatureTokenTtl } from "../src/tokens.ts";
 
 // The fixture's base commit SHA from examples/identity-unification/build.py.
 const BASE_COMMIT = { hash: "6a3601267ba92c70f137ce401ee53dedf1cbec05" }; // pragma: allowlist secret
@@ -263,6 +266,27 @@ test("forkHuddleRepo rejects an invalid id before any Artifacts call", async () 
   const artifacts = new FakeArtifacts();
   await assert.rejects(forkHuddleRepo(artifacts, "../031", names), InvalidRepoNameError);
   assert.deepEqual(artifacts.calls, []);
+});
+
+test("forkFeatureRepo forks feature-<id> from main once; a second call finds it existing", async () => {
+  const artifacts = new FakeArtifacts();
+  await setUpProject(artifacts, { ...OWNERS, source: { url: "https://x/r" } }, names);
+  const prefixed = new RepoNames("t-");
+  await setUpProject(artifacts, { ...OWNERS, source: { url: "https://x/r" } }, prefixed);
+
+  const report = await forkFeatureRepo(artifacts, "tax-rounding", prefixed, { defaultBranchOnly: true });
+  assert.deepEqual([report.name, report.role, report.status], ["t-feature-tax-rounding", "feature", "created"]);
+  assert.equal(artifacts.repos.get("t-feature-tax-rounding")?.forkedFrom, "t-base");
+  assert.equal((await forkFeatureRepo(artifacts, "tax-rounding", prefixed, { defaultBranchOnly: true })).status, "existing");
+  await assert.rejects(forkFeatureRepo(artifacts, "-rf", prefixed, { defaultBranchOnly: true }), InvalidRepoNameError);
+});
+
+test("the fork options and the feature token lifetime come only from configuration", () => {
+  assert.deepEqual(parseFeatureForkOptions("true"), { defaultBranchOnly: true });
+  assert.deepEqual(parseFeatureForkOptions("false"), { defaultBranchOnly: false });
+  for (const value of [undefined, "", "yes", "TRUE"]) assert.equal(parseFeatureForkOptions(value), undefined, String(value));
+  assert.equal(parseFeatureTokenTtl("30"), 1800);
+  for (const value of [undefined, "", "0", "-5", "1.5", "30m", "9999999"]) assert.equal(parseFeatureTokenTtl(value), undefined, String(value));
 });
 
 test("artifactsErrorCode reads the code, or the message when the code is lost over RPC", () => {

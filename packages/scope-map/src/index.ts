@@ -20,6 +20,11 @@ export interface Scope {
   readonly paths: readonly string[];
   readonly testCommand: string;
   readonly dependsOn: readonly ScopeDependency[];
+  /**
+   * The scope's public symbols that other scopes call, each `path::symbol` with the path normalized
+   * and inside the scope. Empty when the scope file lists none.
+   */
+  readonly contracts: readonly string[];
 }
 
 /** A validated scope map with lookup indexes. Build one with `parseScopeMap`. */
@@ -29,6 +34,41 @@ export interface ScopeMap {
   readonly pathIndex: ReadonlyMap<string, string>;
   /** Each provider scope id mapped to the ids of the scopes that declare a dependency on it. */
   readonly dependents: ReadonlyMap<string, readonly string[]>;
+  /** Each contract, as `path::symbol`, mapped to the id of the scope that declares it. */
+  readonly contracts: ReadonlyMap<string, string>;
+}
+
+/** The separator between a contract's path and its symbol. */
+export const CONTRACT_SEPARATOR = "::";
+export const CONTRACT_MAX_LENGTH = 512;
+/** A dotted identifier, such as `money.Money.add`. */
+const CONTRACT_SYMBOL = /^[A-Za-z_][A-Za-z0-9_]{0,127}(?:\.[A-Za-z_][A-Za-z0-9_]{0,127})*$/u;
+
+export type ParsedContract =
+  | { readonly ok: true; readonly contract: string; readonly path: string }
+  | { readonly ok: false; readonly message: string };
+
+/**
+ * Splits a contract name `path::symbol` and normalizes its path. Returns the canonical form, or a
+ * message saying what is wrong.
+ */
+export function parseContract(value: unknown): ParsedContract {
+  if (typeof value !== "string" || value.length === 0 || value.length > CONTRACT_MAX_LENGTH) {
+    return { ok: false, message: `must be "path::symbol", at most ${CONTRACT_MAX_LENGTH} characters` };
+  }
+  const at = value.lastIndexOf(CONTRACT_SEPARATOR);
+  const symbol = at < 0 ? "" : value.slice(at + CONTRACT_SEPARATOR.length);
+  if (at <= 0 || !CONTRACT_SYMBOL.test(symbol)) {
+    return { ok: false, message: 'must be "path::symbol" with a dotted identifier as the symbol' };
+  }
+  let path: string;
+  try {
+    path = normalizeRepoPath(value.slice(0, at));
+  } catch (error) {
+    if (error instanceof InvalidPathError) return { ok: false, message: error.message };
+    throw error;
+  }
+  return { ok: true, contract: `${path}${CONTRACT_SEPARATOR}${symbol}`, path };
 }
 
 /** One problem found in a scope file, with the JSON field it concerns. */
@@ -116,6 +156,7 @@ export function parseScopeMap(json: unknown, options: ParseScopeMapOptions = {})
   const pathIndex = new Map<string, string>();
   const pathField = new Map<string, string>();
   const enclosedBy = new Map<string, string>();
+  const declaredContracts: { contract: string; path: string; scopeId: string; field: string }[] = [];
 
   rawScopes.forEach((raw, index) => {
     const at = `scopes[${index}]`;
@@ -123,7 +164,7 @@ export function parseScopeMap(json: unknown, options: ParseScopeMapOptions = {})
       report(at, "must be an object");
       return;
     }
-    const { id, name, owner, paths, test_command, depends_on } = raw;
+    const { id, name, owner, paths, test_command, depends_on, contracts } = raw;
     if (!isNonEmptyString(id)) report(`${at}.id`, "is missing or empty");
     if (!isNonEmptyString(name)) report(`${at}.name`, "is missing or empty");
     if (!isNonEmptyString(owner)) {
@@ -190,6 +231,25 @@ export function parseScopeMap(json: unknown, options: ParseScopeMapOptions = {})
       });
     }
 
+    // Whether each contract's path falls inside this scope is checked once every path is claimed.
+    const scopeContracts: string[] = [];
+    if (contracts !== undefined && !Array.isArray(contracts)) {
+      report(`${at}.contracts`, 'must be an array of "path::symbol" names when present');
+    } else {
+      (contracts ?? []).forEach((rawContract: unknown, contractIndex: number) => {
+        const field = `${at}.contracts[${contractIndex}]`;
+        const parsed = parseContract(rawContract);
+        if (!parsed.ok) {
+          report(field, parsed.message);
+        } else if (scopeContracts.includes(parsed.contract)) {
+          report(field, `repeats "${parsed.contract}"`);
+        } else {
+          scopeContracts.push(parsed.contract);
+          if (isNonEmptyString(id)) declaredContracts.push({ ...parsed, scopeId: id, field });
+        }
+      });
+    }
+
     // Any issue reported above makes the whole file fail, so only complete scopes are kept.
     const isComplete =
       isNonEmptyString(id) &&
@@ -204,6 +264,7 @@ export function parseScopeMap(json: unknown, options: ParseScopeMapOptions = {})
         paths: scopePaths,
         testCommand: test_command,
         dependsOn,
+        contracts: scopeContracts,
       });
     }
   });
@@ -227,6 +288,15 @@ export function parseScopeMap(json: unknown, options: ParseScopeMapOptions = {})
     }
   }
 
+  const contractIndex = new Map<string, string>();
+  for (const { contract, path, scopeId, field } of declaredContracts) {
+    const owning = enclosingPaths(path)
+      .map((enclosing) => pathIndex.get(enclosing))
+      .find((found) => found !== undefined);
+    if (owning !== scopeId) report(field, `"${path}" is not inside the paths of scope "${scopeId}"`);
+    else contractIndex.set(contract, scopeId);
+  }
+
   if (issues.length > 0) throw new ScopeMapError(issues);
 
   const dependents = new Map<string, string[]>();
@@ -237,7 +307,7 @@ export function parseScopeMap(json: unknown, options: ParseScopeMapOptions = {})
       dependents.set(dependency.providerScopeId, list);
     }
   }
-  return { scopes, pathIndex, dependents };
+  return { scopes, pathIndex, dependents, contracts: contractIndex };
 }
 
 /**

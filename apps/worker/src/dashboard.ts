@@ -22,6 +22,12 @@
  *   - POST /api/identities, /api/identities/<id> and /api/identities/<id>/duplicate: create, edit
  *     and duplicate an identity as the signed-in person. The ProjectAgent refuses an edit or a
  *     duplicate of an identity that person does not own. The body is capped at 256 KiB.
+ *   - GET /api/features: every feature with its fork, state and declared area.
+ *   - POST /api/features: opens a feature, `{ feature, area }`, as the signed-in person: Penguin
+ *     forks main into `feature-<id>`. Opening an id already open answers 200 `existing` and forks
+ *     nothing. No token is returned: write tokens go to the feature's agent sessions only.
+ *   - POST /api/features/<id>/area: replaces the declared area, `{ area }`, of one of the signed-in
+ *     person's features.
  *   - POST /api/operations: one issue operation, applied with the signed-in person as author. An
  *     operation that carries `author` is refused: only the session names the author.
  *   - GET /api/live: the WebSocket to the ProjectAgent, which sends a message on each index change.
@@ -33,6 +39,7 @@
 
 import { checkInbox } from "@penguin/protocol";
 
+import type { FeatureOpenResult, FeatureView } from "./features.ts";
 import {
   authorizeUrl,
   endpointsAt,
@@ -89,7 +96,17 @@ export interface DashboardBackend {
   duplicateIdentity(owner: string, id: string, copy: unknown): Promise<IdentityWriteOutcome>;
   /** Forwards the WebSocket upgrade to the ProjectAgent with `owner` as the connection's person. */
   connectLive(request: Request, owner: string): Promise<Response>;
+  /** Every feature, newest first. */
+  features(): Promise<readonly FeatureView[]>;
+  /** Opens a feature as `owner` and forks main for it (features.ts); a person gets no token. */
+  openFeature(owner: string, input: { readonly feature: unknown; readonly area?: unknown }): Promise<FeatureOpenResult>;
+  /** Replaces the declared area of one of `owner`'s features. */
+  declareFeatureArea(owner: string, featureId: string, area: unknown): Promise<FeatureAreaResult>;
 }
+
+export type FeatureAreaResult =
+  | { readonly status: "ok"; readonly feature: FeatureView }
+  | { readonly status: "rejected"; readonly reason: string; readonly message: string };
 
 export interface DashboardHandlers {
   /** Serves a file of the built dashboard (the Workers static assets binding). */
@@ -351,6 +368,59 @@ async function identityRoute(
   return identityAnswer(await backend.editIdentity(session.owner, id, body));
 }
 
+const FEATURE_REJECTION_STATUS: Readonly<Record<string, number>> = {
+  invalid: 400,
+  forbidden: 403,
+  not_found: 404,
+  conflict: 409,
+  offline: 409,
+};
+
+/**
+ * The feature routes. GET /api/features lists every feature; POST /api/features opens one as the
+ * session's person, forking main for it; POST /api/features/<id>/area replaces the declared area of
+ * one of that person's features. The body is capped like an identity's.
+ */
+async function featureRoute(
+  request: Request,
+  url: URL,
+  session: DashboardSession,
+  handlers: DashboardHandlers,
+): Promise<Response | undefined> {
+  const match = /^\/api\/features(?:\/([a-z0-9.-]{1,63})\/area)?$/.exec(url.pathname);
+  if (match === null) return undefined;
+  const [, featureId] = match;
+  if (featureId === undefined && request.method === "GET") return json(await (await handlers.dashboard()).features());
+  if (request.method !== "POST") return methodNotAllowed(featureId === undefined ? "GET, POST" : "POST");
+  if (!isSameOrigin(request, url)) return json({ error: "cross-origin request" }, 403);
+  if (Number(request.headers.get("Content-Length") ?? 0) > MAX_IDENTITY_BODY_BYTES) {
+    return json({ error: "invalid request", message: "the request is too large" }, 413);
+  }
+  const body = await readJsonObject(request);
+  if (body === undefined) return json({ error: "invalid request", message: "the body must be a JSON object" }, 400);
+  const backend = await handlers.dashboard();
+  if (featureId !== undefined) {
+    const declared = await backend.declareFeatureArea(session.owner, featureId, body["area"]);
+    return json(declared, declared.status === "ok" ? 200 : (FEATURE_REJECTION_STATUS[declared.reason] ?? 422));
+  }
+  let opened: FeatureOpenResult;
+  try {
+    opened = await backend.openFeature(session.owner, { feature: body["feature"], area: body["area"] });
+  } catch {
+    // The feature stays recorded; opening it again resumes the fork.
+    return json({ error: "artifacts", message: "Artifacts did not make the fork; open the feature again" }, 502);
+  }
+  switch (opened.status) {
+    case "opened":
+    case "existing":
+      return json({ status: opened.status, feature: opened.feature, timings: opened.timings }, opened.status === "opened" ? 201 : 200);
+    case "misconfigured":
+      return json({ error: "misconfigured", message: opened.message }, 500);
+    case "rejected":
+      return json(opened, FEATURE_REJECTION_STATUS[opened.reason] ?? 422);
+  }
+}
+
 async function handleApi(
   request: Request,
   url: URL,
@@ -373,6 +443,10 @@ async function handleApi(
   if (url.pathname === "/api/inbox/read") return markInboxRead(request, url, session, handlers);
   if (url.pathname === "/api/identities" || url.pathname.startsWith("/api/identities/")) {
     const answer = await identityRoute(request, url, session, handlers);
+    if (answer !== undefined) return answer;
+  }
+  if (url.pathname === "/api/features" || url.pathname.startsWith("/api/features/")) {
+    const answer = await featureRoute(request, url, session, handlers);
     if (answer !== undefined) return answer;
   }
   if (url.pathname === "/api/board") {

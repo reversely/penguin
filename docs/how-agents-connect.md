@@ -24,7 +24,7 @@ flowchart LR
 
 Each person adds Penguin to their agent as an MCP server: one server address and that person's own
 MCP token. Configuration for both products is in [mcp-setup.md](mcp-setup.md). The agent then has
-five tools:
+eight tools:
 
 | Tool | What the agent uses it for |
 |---|---|
@@ -32,7 +32,10 @@ five tools:
 | `get_work` | Reads the issues and fix tasks assigned to that identity; also the threads that need its person |
 | `get_issue` | Reads one issue in full |
 | `post_update` | Comments, links a commit, changes state, replies in a thread, sends a fix upstream |
-| `report_checkpoint` | Reports a checkpoint; the answer lists any task or thread that arrived |
+| `report_checkpoint` | Reports a checkpoint on its person's owner fork or on its feature's fork; the answer lists any task or thread that arrived |
+| `open_feature` | Opens a feature, or joins one its person already opened, with a declared area; the answer carries a short-lived write token on the feature's fork |
+| `feature_token` | Gets a fresh write token on its feature's fork |
+| `declare_area` | Replaces its feature's declared scopes, paths and contracts |
 
 Penguin answers only when the agent calls a tool. The token decides whose identities the session may
 use: Sam's token cannot register as `@jun/reports`.

@@ -166,6 +166,31 @@ test("normalizeRepoPath collapses separators and dot segments", () => {
   assert.equal(normalizeRepoPath("ingestion/"), "ingestion");
 });
 
+test("a scope lists its contracts as path::symbol, normalized and indexed by scope", () => {
+  const withContracts = parseScopeMap(
+    scopeFile([
+      { ...scope("money", "ines", ["money/"]), contracts: ["./money/core.py::Money.add", "money/core.py::round_half_even"] },
+      scope("billing", "rahul", ["billing/"], [{ scope: "money", kind: "imports" }]),
+    ]),
+  );
+  assert.deepEqual(withContracts.scopes.get("money")?.contracts, ["money/core.py::Money.add", "money/core.py::round_half_even"]);
+  assert.deepEqual(withContracts.scopes.get("billing")?.contracts, []);
+  assert.equal(withContracts.contracts.get("money/core.py::Money.add"), "money");
+  // A scope file without contracts still parses, as every existing fixture's does.
+  assert.equal(map.contracts.size, 0);
+});
+
+test("a contract outside its scope's paths, malformed or repeated is refused", () => {
+  const file = (contracts: unknown) =>
+    scopeFile([{ ...scope("money", "ines", ["money/"]), contracts }, scope("billing", "rahul", ["billing/"])]);
+  assertRejected(file(["billing/x.py::f"]), "scopes[0].contracts[0]");
+  assertRejected(file(["money/core.py"]), "scopes[0].contracts[0]");
+  assertRejected(file(["../money/core.py::f"]), "scopes[0].contracts[0]");
+  assertRejected(file(["money/core.py::<script>"]), "scopes[0].contracts[0]");
+  assertRejected(file(["money/core.py::f", "money//core.py::f"]), "scopes[0].contracts[1]");
+  assertRejected(file("money/core.py::f"), "scopes[0].contracts");
+});
+
 test("lookup time for one thousand changed paths", (t) => {
   const paths = Array.from({ length: 1000 }, (_, index) => {
     const root = ["ingestion", "analytics", "messaging", "docs"][index % 4];

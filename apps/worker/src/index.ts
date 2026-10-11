@@ -5,8 +5,9 @@ import { LIVE_OWNER_HEADER, type InboxReason } from "@penguin/project-agent";
 import { handleRequest } from "./gateway.ts";
 import { parseOwnerMap } from "./github-oauth.ts";
 import { consumePushEvents } from "./push-events.ts";
-import { forkHuddleRepo, RepoNames, setUpProject } from "./repos.ts";
-import { artifactsRepoName, mintRepoToken, parseProjectRepo, parseTokenTtl } from "./tokens.ts";
+import { featureView, mcpFeatures, openFeatureWithFork, type FeaturePorts } from "./features.ts";
+import { forkFeatureRepo, forkHuddleRepo, parseFeatureForkOptions, RepoNames, setUpProject } from "./repos.ts";
+import { artifactsRepoName, mintRepoToken, parseFeatureTokenTtl, parseProjectRepo, parseTokenTtl } from "./tokens.ts";
 
 export { HuddleAgent } from "@penguin/huddle-agent";
 export { ProjectAgent } from "@penguin/project-agent";
@@ -30,7 +31,25 @@ type WorkerEnv = Env & {
   PENGUIN_DASHBOARD_OWNERS?: string;
   /** A local GitHub test double's base URL; honoured on loopback hostnames only. */
   PENGUIN_GITHUB_BASE_URL?: string;
+  /** "true" or "false": whether a feature's fork copies only main (`fork()`'s `defaultBranchOnly`). */
+  PENGUIN_FEATURE_FORK_DEFAULT_BRANCH_ONLY?: string;
+  /** Lifetime in minutes of a feature agent's write token on the feature's fork. */
+  PENGUIN_FEATURE_TOKEN_TTL_MINUTES?: string;
 };
+
+/** Opening features: the ProjectAgent's records, the fork through the binding and token minting. */
+function featurePorts(env: WorkerEnv, names: RepoNames): FeaturePorts {
+  return {
+    directory: () => getAgentByName(env.ProjectAgent, projectAgentName(names)),
+    fork: (featureId, options) => forkFeatureRepo(env.ARTIFACTS, featureId, names, options),
+    mintWrite: (repo, ttl) => mintRepoToken(env.ARTIFACTS, repo, "write", ttl),
+    repos: { issues: names.issues, base: names.base },
+    config: {
+      forkOptions: parseFeatureForkOptions(env.PENGUIN_FEATURE_FORK_DEFAULT_BRANCH_ONLY),
+      tokenTtlSeconds: parseFeatureTokenTtl(env.PENGUIN_FEATURE_TOKEN_TTL_MINUTES),
+    },
+  };
+}
 
 /** The project's one ProjectAgent instance. The repo prefix keeps test projects apart. */
 function projectAgentName(names: RepoNames): string {
@@ -41,6 +60,7 @@ export default {
   fetch(request: Request, env: WorkerEnv): Promise<Response> {
     const names = new RepoNames(env.PENGUIN_REPO_PREFIX);
     const repos = { issues: names.issues, base: names.base };
+    const features = featurePorts(env, names);
     return handleRequest(
       request,
       {
@@ -69,6 +89,13 @@ export default {
             createIdentity: async (owner, input) => agent.createIdentityFromDashboard(owner, input, repos),
             editIdentity: async (owner, id, changes) => agent.editIdentityFromDashboard(owner, id, changes, repos),
             duplicateIdentity: async (owner, id, copy) => agent.duplicateIdentityFromDashboard(owner, id, copy),
+            features: async () => (await agent.features()).map(featureView),
+            // A person opens a feature with no session, so no token is minted.
+            openFeature: (owner, input) => openFeatureWithFork(features, owner, input, null),
+            declareFeatureArea: async (owner, featureId, area) => {
+              const declared = await agent.declareFeatureArea(owner, featureId, area, null, repos);
+              return declared.status === "ok" ? { status: "ok", feature: featureView(declared.feature) } : declared;
+            },
             connectLive: (liveRequest, owner) => {
               // The browser cannot name the owner: the header is replaced with the session's.
               const headers = new Headers(liveRequest.headers);
@@ -100,11 +127,13 @@ export default {
         mcpTokens: () => getAgentByName(env.ProjectAgent, projectAgentName(names)),
         // The owner's fork is named from the authenticated owner, never from the request.
         serveMcp: (mcpRequest, owner) =>
-          serveMcp(mcpRequest, owner, () => getAgentByName(env.ProjectAgent, projectAgentName(names)), {
-            issues: names.issues,
-            base: names.base,
-            ownerFork: names.owner(owner),
-          }),
+          serveMcp(
+            mcpRequest,
+            owner,
+            () => getAgentByName(env.ProjectAgent, projectAgentName(names)),
+            { issues: names.issues, base: names.base, ownerFork: names.owner(owner) },
+            mcpFeatures(features, owner),
+          ),
         ownerForkRepo: (owner) => names.owner(owner),
         projectRepos: repos,
         mintToken: (repo, scope, ttl) => {

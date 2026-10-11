@@ -78,6 +78,16 @@ export function parseTokenTtl(value: string | undefined): number | undefined {
   return ttl >= MIN_TOKEN_TTL_SECONDS && ttl <= MAX_TOKEN_TTL_SECONDS ? ttl : undefined;
 }
 
+/**
+ * Parses PENGUIN_FEATURE_TOKEN_TTL_MINUTES, the lifetime of a feature agent's write token, into
+ * seconds. Unset or outside the range Artifacts accepts is undefined, so no feature token is minted.
+ */
+export function parseFeatureTokenTtl(minutes: string | undefined): number | undefined {
+  if (minutes === undefined || !/^\d{1,6}$/.test(minutes)) return undefined;
+  const ttl = Number(minutes) * 60;
+  return ttl >= MIN_TOKEN_TTL_SECONDS && ttl <= MAX_TOKEN_TTL_SECONDS ? ttl : undefined;
+}
+
 /** The subset of the binding's `ArtifactsRepo` capability that minting calls. */
 export interface TokenRepoHandle extends Disposable {
   createToken(scope: TokenScope, ttl: number): Promise<{ plaintext: string; expiresAt: string; scope: TokenScope }>;

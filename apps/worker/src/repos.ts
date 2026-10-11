@@ -1,6 +1,6 @@
 /**
  * The project's repos in its Artifacts namespace: the base repo, the issues repo, one fork of the
- * base per owner and one fork of the base per Huddle issue.
+ * base per owner, one fork of the base per Huddle issue and one fork of the base per feature.
  *
  * This module takes the Artifacts binding as a parameter and never imports the Agents SDK, so
  * node:test can run it against a fake binding.
@@ -75,6 +75,10 @@ export class RepoNames {
 
   huddle(huddleId: string): string {
     return `${this.prefix}huddle-${huddleId}`;
+  }
+
+  feature(featureId: string): string {
+    return `${this.prefix}feature-${featureId}`;
   }
 }
 
@@ -185,7 +189,7 @@ async function listRepoNames(artifacts: ArtifactsNamespace): Promise<Set<string>
   return names;
 }
 
-export type RepoRole = "base" | "issues" | "owner" | "huddle";
+export type RepoRole = "base" | "issues" | "owner" | "huddle" | "feature";
 
 /**
  * `created` and `imported` repos were made by this call; `existing` ones were there before it.
@@ -432,6 +436,44 @@ export async function setUpProject(
     durationMs: now() - started,
     artifactsOperations: { total: counter.total, byMethod: { ...counter.byMethod } },
   };
+}
+
+/** The `fork()` options a feature's fork is made with, from the Worker's configuration. */
+export interface FeatureForkOptions {
+  readonly defaultBranchOnly: boolean;
+}
+
+/**
+ * Parses PENGUIN_FEATURE_FORK_DEFAULT_BRANCH_ONLY, "true" or "false". Anything else, unset included,
+ * is undefined, so opening a feature refuses rather than guess how to fork.
+ */
+export function parseFeatureForkOptions(defaultBranchOnly: string | undefined): FeatureForkOptions | undefined {
+  if (defaultBranchOnly !== "true" && defaultBranchOnly !== "false") return undefined;
+  return { defaultBranchOnly: defaultBranchOnly === "true" };
+}
+
+/**
+ * Forks main, the base repo, into `feature-<id>`, as setup forks each owner's repo. Returns
+ * `existing` when the fork is already there, so opening a feature again makes no second fork.
+ *
+ * Throws `InvalidRepoNameError` before any Artifacts call when `featureId` fails the repo-name rule.
+ */
+export async function forkFeatureRepo(
+  artifacts: ArtifactsNamespace,
+  featureId: string,
+  names: RepoNames,
+  options: FeatureForkOptions,
+): Promise<RepoReport> {
+  if (!isValidRepoName(featureId)) throw new InvalidRepoNameError("feature id", featureId);
+  const report = { name: names.feature(featureId), role: "feature" as const };
+  return ensureRepo(new Set(), report, "created", () =>
+    withRepo(artifacts, names.base, (base) =>
+      base.fork(report.name, {
+        description: `Penguin feature ${featureId}`,
+        defaultBranchOnly: options.defaultBranchOnly,
+      }),
+    ),
+  );
 }
 
 /**
