@@ -37,8 +37,14 @@ The feature replaces every float price with `Money(amount_minor, currency)`.
 
 ### 1. Open: Penguin checks the area
 
-Ines's agent opens the feature and declares its area: `shared/money`, and the `price()` and
-`total()` contracts, which return floats today.
+Every feature is its own fork of main in Artifacts. The binding's `fork(name, { readOnly,
+defaultBranchOnly })` makes it server-side, and `createToken(scope, ttl)` gives each of the feature's
+agents a write token for that one fork that expires. Opening a feature mints its fork; nobody clones
+the whole project.
+
+Ines's agent opens the feature, and Penguin mints its fork, `feature-money-minor-units`. The agent
+declares the feature's area: `shared/money`, and the `price()` and `total()` contracts, which return
+floats today.
 
 Penguin checks that against the forty running features:
 
@@ -77,40 +83,35 @@ approves the part that touches their code:
 
 ### 4. Build: everyone keeps working
 
-Ines's agent writes the change and all nine fixes on its branch in Ines's Artifacts fork. The other
-23 agents carry on with their own features, knowing the plan.
+Ines's agent writes the change and all nine agreed fixes into the feature's fork, including the fixes
+to code in other people's scopes. Penguin's tools push the seven codemod fixes into the same fork. The
+other 23 agents carry on in their own features' forks, knowing the plan.
 
 Midway through, Noor's pagination feature starts returning prices. Penguin sees this at Noor's next
 checkpoint, not at merge. Ines's agent adds a mechanical fix for it to the plan, and Noor approves.
 
 ### 5. Land as a block
 
-A block is a short-lived fork in Artifacts. The binding's `fork(name, { readOnly, defaultBranchOnly })`
-makes a repo server-side, and `createToken(scope, ttl)` mints a token for one repo that expires.
+The feature's fork is the block: the change and every agreed fix, together in one repo.
 
-1. **Mint the block.** When Ines's code is ready, Penguin forks main into `block-<id>` with
-   `defaultBranchOnly`. Nobody clones the whole project.
-2. **Write into it.** Penguin mints write tokens scoped to the block repo, valid for a few minutes,
-   for Ines's agent and for Penguin's own fixing tools. They push the change, the seven codemod fixes
-   and the three agent-written fixes. When the tokens expire, nothing else can write to the block.
-3. **Check it.** Penguin merges the block onto each of the now 24 affected running branches and runs
-   the deterministic checks on each result:
+1. **Check it.** Penguin merges the feature's fork onto main and onto each of the now 24 affected
+   running features' forks, and runs the deterministic checks on each result:
    - the merge itself
    - ruff
    - the type checker
    - the contract diff
    - each affected scope's tests
-4. **Owners try it.** Jun gets a read-only fork of the block to clone and checks the protected file
+2. **Owners try it.** Jun gets a read-only fork of the feature to clone and checks the protected file
    before confirming. There is no branch to check out or rebuild.
-5. **Promote.** When everything is green, Penguin moves main to the block's commit in one push, with a
+3. **Promote.** When everything is green, Penguin moves main to the feature's commit in one push, with a
    write token on main that only Penguin holds, for minutes. Main changes once, never in pieces.
-6. **Keep the record.** The block stays as a read-only fork showing exactly what landed.
+4. **Keep the record.** The feature's fork turns read-only and shows exactly what landed.
 
 | Result | Count | What happens |
 |---|---|---|
 | Clean | 21 branches | Nothing |
 | Routine merge conflicts: imports and formatting | 2 branches | Resolved by Penguin's tools |
-| A failing test in `promotions` | 1 | Lena's promotion stacking, which landed first, still adds floats. Penguin classifies this as mechanical, writes the codemod into the block and checks again. The checks pass |
+| A failing test in `promotions` | 1 | Lena's promotion stacking, which landed first, still adds floats. Penguin classifies this as mechanical, writes the codemod into the feature's fork and checks again. The checks pass |
 | Protected file | `analytics/revenue_report` | Jun confirms after trying the read-only fork |
 
 Main is never red.
@@ -136,7 +137,7 @@ to resolve.
 | Times main was broken | 0 |
 
 Every step lives as a signed record in the `issues` repo in Artifacts: the plan, each approval and
-its reason, Rahul's revision, the block's checks and the promotion. The read-only block fork holds the
+its reason, Rahul's revision, the block's checks and the promotion. The feature's read-only fork holds the
 exact code that landed. That record answers why each line
 changed.
 
