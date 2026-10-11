@@ -38,6 +38,21 @@ export interface PublishOutcome {
   readonly failed: readonly { readonly id: string; readonly reason: string }[];
 }
 
+/** A file the runner writes at `path` in the issues repo. */
+export interface BatchFile {
+  readonly path: string;
+  readonly text: string;
+}
+
+export interface BatchOutcome {
+  /** The pushed commit that carries every written file, or null when nothing was written. */
+  readonly commit: string | null;
+  readonly written: readonly string[];
+  /** Paths the branch already held with the same bytes. */
+  readonly skipped: readonly string[];
+  readonly refused: readonly { readonly path: string; readonly reason: string }[];
+}
+
 // Hooks off and signing off: the bridge's clone runs no code from the repo or the owner's Git setup.
 // Automatic maintenance stays in the foreground. Git detaches it by default, and a background repack
 // that packs or deletes objects while the drain's next commit reads them fails that commit.
@@ -183,6 +198,55 @@ export class IssuesClone {
     const commits = await this.#commitsOf(landed.map((entry) => entry.path));
     const pushed = new Map(landed.map((entry) => [entry.id, commits.get(entry.path) ?? ""]));
     return { pushed, failed };
+  }
+
+  /**
+   * Writes `files` and pushes them as one commit, for the integration runner. A file the branch
+   * already holds with the same bytes is skipped; one it holds with other bytes is refused and left
+   * alone. With nothing new to write, nothing is committed or pushed. Callers check each file first;
+   * this method writes only operation file paths. `message` gets the number of files written.
+   * Fetches first unless just synced online.
+   */
+  async publishBatch(files: readonly BatchFile[], message: (written: number) => string): Promise<BatchOutcome> {
+    if (!this.#fresh) {
+      const sync = await this.sync();
+      if (!sync.online) throw new RemoteUnavailableError(`the issues remote is unreachable: ${sync.reason}`);
+    }
+    this.#fresh = false;
+
+    const tracked = new Set(await this.trackedFiles("issues"));
+    const skipped: string[] = [];
+    const refused: { path: string; reason: string }[] = [];
+    const fresh = new Map<string, string>();
+    for (const { path, text } of files) {
+      if (!isOperationPath(path)) {
+        refused.push({ path, reason: "not an operation file path" });
+      } else if (fresh.has(path)) {
+        if (fresh.get(path) !== text) refused.push({ path, reason: "listed twice with different contents" });
+      } else if (!tracked.has(path)) {
+        fresh.set(path, text);
+      } else if ((await this.#git("cat-file", "blob", `HEAD:${path}`)) === text) {
+        skipped.push(path);
+      } else {
+        refused.push({ path, reason: `${path} already holds a different operation` });
+      }
+    }
+    if (fresh.size === 0) return { commit: null, written: [], skipped, refused };
+
+    for (const [path, text] of fresh) {
+      const file = join(this.#options.clonePath, path);
+      await mkdir(dirname(file), { recursive: true });
+      await writeFile(file, text);
+    }
+    const written = [...fresh.keys()];
+    await this.#git("add", "--", ...written);
+    await this.#git("commit", "--quiet", "-m", message(written.length), "--", ...written);
+    this.#born = true;
+    this.#tracked = null;
+    await this.#push();
+    // Read after the push: a rebase during a retry gives the commit a new ID.
+    const commit = (await this.#git("rev-parse", "HEAD")).trim();
+    return { commit, written, skipped, refused };
   }
 
   /** Tracked files under `folder` (a folder inside issues/) at HEAD; none on an unborn branch. */

@@ -12,8 +12,8 @@
  * POST /index/rebuild, deployer only, rebuilds the issue index from the issues repo into shadow
  * tables and returns their comparison with the live tables.
  *
- * The bridge routes (/bridges, /bridges/codes, /bridges/<id> and /tokens) carry their own
- * credentials; see bridges.ts.
+ * The bridge routes (/bridges, /bridges/codes, /bridges/<id>, /tokens and /operations/pending)
+ * carry their own credentials; see bridges.ts.
  */
 
 import type { RebuildReport } from "@penguin/project-agent";

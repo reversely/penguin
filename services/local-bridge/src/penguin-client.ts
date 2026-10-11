@@ -228,6 +228,15 @@ export function bridgeRemotes(stateDir: string, keyStore: KeyStore, fetchImpl?: 
 }
 
 async function openTokenClient(stateDir: string, keyStore: KeyStore, fetchImpl?: Fetch): Promise<TokenClient> {
+  const { registration, bridgeToken } = await openBridge(stateDir, keyStore);
+  return new TokenClient({ server: registration.server, bridgeToken, fetch: fetchImpl });
+}
+
+/** The registration in `stateDir` and its bridge token from `keyStore`. */
+export async function openBridge(
+  stateDir: string,
+  keyStore: KeyStore,
+): Promise<{ readonly registration: BridgeRegistration; readonly bridgeToken: string }> {
   const registration = await readRegistration(stateDir);
   if (registration === null) {
     throw new RemoteUnavailableError("this bridge is not registered; run `penguin-bridge register`");
@@ -236,5 +245,49 @@ async function openTokenClient(stateDir: string, keyStore: KeyStore, fetchImpl?:
   if (bridgeToken === null) {
     throw new RemoteUnavailableError(`the key store holds no bridge token for ${registration.owner}; register again`);
   }
-  return new TokenClient({ server: registration.server, bridgeToken, fetch: fetchImpl });
+  return { registration, bridgeToken };
+}
+
+/** One operation waiting for the runner, as Penguin's pending route lists it. */
+export interface PendingOperation {
+  readonly opId: string;
+  /** Where Penguin says the file goes. The runner checks it before writing. */
+  readonly path: string;
+  /** The signed operation file's text. */
+  readonly file: string;
+}
+
+/** The route that lists the operations waiting for the runner. */
+export const PENDING_ROUTE = "/operations/pending";
+
+/**
+ * Lists the operations waiting for the runner. Penguin answers only a bridge registered with the
+ * runner role, which it reads from the bridge token, never from the request.
+ */
+export async function fetchPendingOperations(
+  server: string,
+  bridgeToken: string,
+  fetchImpl: Fetch = fetch,
+): Promise<PendingOperation[]> {
+  const origin = checkedOrigin(server, "the Penguin server").origin;
+  let response: Response;
+  try {
+    response = await fetchImpl(`${origin}${PENDING_ROUTE}`, { headers: { Authorization: `Bearer ${bridgeToken}` } });
+  } catch (error) {
+    throw new RemoteUnavailableError(`Penguin at ${origin} is unreachable: ${(error as Error).message}`);
+  }
+  if (response.status === 403) throw new RemoteRefusedError("Penguin lists pending operations only to a runner bridge");
+  if (response.status === 401) throw new RemoteUnavailableError("Penguin refused the bridge token; register the bridge again");
+  if (response.status !== 200) {
+    throw new RemoteUnavailableError(`Penguin could not list pending operations (HTTP ${response.status})`);
+  }
+  const body = (await response.json()) as { files?: unknown };
+  if (!Array.isArray(body.files)) throw new RemoteUnavailableError("Penguin answered the pending list without files");
+  return body.files.map((entry: unknown): PendingOperation => {
+    const { opId, path, file } = (entry ?? {}) as Record<string, unknown>;
+    if (typeof opId !== "string" || typeof path !== "string" || typeof file !== "string") {
+      throw new RemoteUnavailableError("Penguin listed a pending operation without its op_id, path and file");
+    }
+    return { opId, path, file };
+  });
 }

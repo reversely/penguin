@@ -29,14 +29,25 @@ export {
   bridgeRemotes,
   bridgeTokenAccount,
   checkedOrigin,
+  fetchPendingOperations,
+  openBridge,
+  PENDING_ROUTE,
   readRegistration,
   registerBridge,
   registrationFile,
   TokenClient,
 } from "./penguin-client.ts";
-export type { BridgeRegistration, Fetch, RegisterOptions, TokenClientOptions } from "./penguin-client.ts";
+export type {
+  BridgeRegistration,
+  Fetch,
+  PendingOperation,
+  RegisterOptions,
+  TokenClientOptions,
+} from "./penguin-client.ts";
 export { IssuesClone, operationText, RemoteUnavailableError } from "./issues-clone.ts";
-export type { IssuesCloneOptions, PublishOutcome, SyncResult } from "./issues-clone.ts";
+export type { BatchFile, BatchOutcome, IssuesCloneOptions, PublishOutcome, SyncResult } from "./issues-clone.ts";
+export { formatPass, pendingProblem, runnerPass, RunnerLoop } from "./runner.ts";
+export type { RunnerLoopOptions, RunnerPassOptions, RunnerPassResult } from "./runner.ts";
 export { pendingOf, Spool, SPOOL_VERSION } from "./spool.ts";
 export type {
   CheckpointEntry,

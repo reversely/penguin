@@ -11,6 +11,7 @@ import { ISSUE_USAGE, runIssueCommand, runKeyCommand } from "./issue-cli.ts";
 import { KeychainStore, type KeyStore } from "./key-store.ts";
 import { bridgeRemotes, registerBridge, type Fetch } from "./penguin-client.ts";
 import { WorktreeRegistry, worktreeId } from "./registry.ts";
+import { RUNNER_USAGE, runRunnerCommand } from "./runner-cli.ts";
 import { bridgeSpool, defaultStateDir, runSpoolCommand, SPOOL_USAGE } from "./spool-cli.ts";
 
 export interface CliIo {
@@ -49,8 +50,9 @@ export async function runCli(argv: readonly string[], io: CliIo, deps: CliDepend
   if (command === "issue") return runIssueCommand(rest, io, keyStore, stateDir, remotesFor);
   if (command === "key") return runKeyCommand(rest, io, keyStore);
   if (command === "spool") return runSpoolCommand(rest, io, stateDir, remotesFor);
+  if (command === "runner") return runRunnerCommand(rest, io, keyStore, stateDir, deps.fetch);
   if (command !== "checkpoint") {
-    io.write(USAGE + ISSUE_USAGE + SPOOL_USAGE);
+    io.write(USAGE + ISSUE_USAGE + SPOOL_USAGE + RUNNER_USAGE);
     return 2;
   }
   const { values } = parseArgs({

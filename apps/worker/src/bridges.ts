@@ -8,11 +8,20 @@
  * - DELETE /bridges/<id>, deployer only: revokes a bridge.
  * - POST /tokens, bridge token: returns a short-lived Artifacts token on one project repo, with the
  *   repo's Git remote.
+ * - GET /operations/pending, bridge token of a runner bridge: lists the operations from MCP, the
+ *   dashboard and Penguin that wait for the runner to push them to the issues repo.
  *
  * Responses that carry a code or token are marked `Cache-Control: no-store`.
  */
 
-import type { BridgeIdentity, BridgeRole, RegisterOutcome, RegistrationCode } from "@penguin/project-agent";
+import type {
+  BridgeCaller,
+  BridgeIdentity,
+  BridgeRole,
+  PendingListing,
+  RegisterOutcome,
+  RegistrationCode,
+} from "@penguin/project-agent";
 
 import { bearerToken, isDeployer } from "./auth.ts";
 import { artifactsErrorCode, isValidRepoName } from "./repos.ts";
@@ -34,6 +43,8 @@ export interface BridgeDirectory {
   registerBridge(code: string, publicKey: unknown): Promise<RegisterOutcome>;
   authenticateBridge(bridgeToken: string): Promise<BridgeIdentity | undefined>;
   revokeBridge(bridgeId: string): Promise<boolean> | boolean;
+  /** The operations waiting for the runner; refused unless `caller` holds the runner role. */
+  pendingOperations(caller: BridgeCaller): Promise<PendingListing> | PendingListing;
 }
 
 /** Mints a token on a repo named without the deployment's prefix, such as `owner-jun`. */
@@ -153,6 +164,19 @@ async function issueToken(request: Request, options: BridgeOptions, handlers: Br
   }
 }
 
+async function listPending(request: Request, handlers: BridgeHandlers): Promise<Response> {
+  const token = bearerToken(request);
+  const directory = await handlers.bridges();
+  const bridge = token === undefined ? undefined : await directory.authenticateBridge(token);
+  if (bridge === undefined) return unauthorized();
+  if (request.method !== "GET") return methodNotAllowed("GET");
+  // The role comes from the registry record the token authenticated, never from the request.
+  const listing = await directory.pendingOperations({ bridgeId: bridge.bridgeId, role: bridge.role });
+  if (listing.status === "forbidden") return json({ error: "forbidden", message: listing.message }, 403);
+  const files = listing.files.map(({ opId, path, file, source, createdAt }) => ({ opId, path, file, source, createdAt }));
+  return json({ files }, 200, NO_STORE);
+}
+
 /** Answers a bridge route, or returns null when the path is not one. */
 export async function handleBridgeRoute(
   request: Request,
@@ -161,6 +185,7 @@ export async function handleBridgeRoute(
   handlers: BridgeHandlers,
 ): Promise<Response | null> {
   if (url.pathname === "/tokens") return issueToken(request, options, handlers);
+  if (url.pathname === "/operations/pending") return listPending(request, handlers);
   if (url.pathname === "/bridges/codes") return issueCode(request, options, handlers);
   if (url.pathname === "/bridges") return register(request, handlers);
   const bridgeId = /^\/bridges\/([A-Za-z0-9_-]+)$/.exec(url.pathname)?.[1];

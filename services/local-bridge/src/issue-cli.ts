@@ -169,6 +169,6 @@ function parseCount(text: string): number {
 }
 
 /** The bridge's clone of an issues repo, under <state dir>/issues/, one folder per remote. */
-function defaultClonePath(stateDir: string, remote: string): string {
+export function defaultClonePath(stateDir: string, remote: string): string {
   return join(stateDir, "issues", createHash("sha256").update(remote).digest("hex").slice(0, 16));
 }

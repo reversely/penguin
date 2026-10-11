@@ -14,6 +14,8 @@ import { runGit } from "@penguin/git-analysis";
 export interface GitRequest {
   readonly repo: string;
   readonly service: string;
+  /** GET for a ref advertisement, POST for an upload or a push. */
+  readonly method: string;
   /** The Git-Protocol header, or "" when the client sent none. */
   readonly protocol: string;
   /** The scheme of the Authorization header ("Bearer", "Basic") or "" when absent. */
@@ -31,6 +33,10 @@ export class FakePenguin {
   readonly minted: { repo: string; token: string }[] = [];
   readonly gitRequests: GitRequest[] = [];
   ttlSeconds = 3600;
+  /** The role the registration answers with. */
+  role: "owner" | "runner" = "owner";
+  /** Answers GET /operations/pending for the registered bridge; unset answers 404. */
+  pendingOperations: ((caller: { bridgeId: string; role: string }) => unknown) | undefined;
   #codeUsed = false;
   readonly #valid = new Map<string, { repo: string; expires: number }>();
   #server: Server | undefined;
@@ -70,6 +76,7 @@ export class FakePenguin {
     const url = new URL(request.url ?? "/", this.origin);
     if (request.method === "POST" && url.pathname === "/bridges") return this.#register(request, response);
     if (request.method === "POST" && url.pathname === "/tokens") return this.#token(request, response);
+    if (request.method === "GET" && url.pathname === "/operations/pending") return this.#pending(request, response);
     const git = /^\/git\/penguin\/([A-Za-z0-9._-]+)\.git(\/.*)$/.exec(url.pathname);
     if (git) return this.#git(request, response, git[1]!, git[2]!, url);
     response.writeHead(404).end();
@@ -81,7 +88,7 @@ export class FakePenguin {
       return json(response, 401, { error: "the registration code is unknown, used or expired" });
     }
     this.#codeUsed = true;
-    json(response, 201, { bridgeId: "bridge-1", owner: this.owner, role: "owner", bridgeToken: this.bridgeToken });
+    json(response, 201, { bridgeId: "bridge-1", owner: this.owner, role: this.role, bridgeToken: this.bridgeToken });
   }
 
   async #token(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -98,6 +105,19 @@ export class FakePenguin {
     json(response, 200, { repo, scope, token, remote, expiresAt: new Date(expires).toISOString() });
   }
 
+  /** Mirrors the Worker's route: the caller's role comes from its registration, not the request. */
+  async #pending(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    if (request.headers.authorization !== `Bearer ${this.bridgeToken}`) return json(response, 401, { error: "unauthorized" });
+    if (this.pendingOperations === undefined) return json(response, 404, { error: "not found" });
+    const listing = this.pendingOperations({ bridgeId: "bridge-1", role: this.role }) as {
+      status: string;
+      files?: unknown;
+      message?: string;
+    };
+    if (listing.status === "forbidden") return json(response, 403, { error: "forbidden", message: listing.message });
+    json(response, 200, { files: listing.files });
+  }
+
   async #git(request: IncomingMessage, response: ServerResponse, repo: string, rest: string, url: URL): Promise<void> {
     const authorization = request.headers.authorization ?? "";
     const grant = this.#valid.get(authorization.replace(/^Bearer /, ""));
@@ -105,6 +125,7 @@ export class FakePenguin {
     this.gitRequests.push({
       repo,
       service: url.searchParams.get("service") ?? rest.slice(1),
+      method: request.method ?? "GET",
       protocol: String(request.headers["git-protocol"] ?? ""),
       scheme: authorization.split(" ")[0] ?? "",
       accepted,

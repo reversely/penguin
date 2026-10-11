@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 
 import { generateSigningKeyPair } from "@penguin/issues";
 // The registry module directly: the package entry point loads the Agents SDK, which needs workerd.
 import { BridgeRegistry } from "../../../services/project-agent/src/bridge-registry.ts";
+import { IssueIndex } from "../../../services/project-agent/src/issue-index.ts";
 import type { SqlDatabase } from "../../../services/project-agent/src/issue-index.ts";
 
 import { type GatewayHandlers, handleRequest } from "../src/gateway.ts";
@@ -76,7 +79,9 @@ function sqlite(): SqlDatabase {
 const PROJECT_REPOS = ["base", "issues", "owner-jun", "owner-priya", "huddle-031"].map((repo) => `test-${repo}`);
 
 function gateway(artifacts = fakeArtifacts(PROJECT_REPOS)) {
-  const registry = new BridgeRegistry(sqlite());
+  const db = sqlite();
+  const registry = new BridgeRegistry(db);
+  const issues = new IssueIndex(db);
   const handlers: GatewayHandlers = {
     routeAgents: async () => null,
     setUpProject: async () => {
@@ -88,6 +93,7 @@ function gateway(artifacts = fakeArtifacts(PROJECT_REPOS)) {
       registerBridge: (code, publicKey) => registry.register(code, publicKey),
       authenticateBridge: (token) => registry.authenticate(token),
       revokeBridge: (bridgeId) => registry.revoke(bridgeId),
+      pendingOperations: (caller) => issues.pendingFiles(caller),
     }),
     mintToken: (repo, scope, ttl) => {
       const parsed = parseProjectRepo(repo);
@@ -105,7 +111,7 @@ function gateway(artifacts = fakeArtifacts(PROJECT_REPOS)) {
       options,
       handlers,
     );
-  return { artifacts, call, registry };
+  return { artifacts, call, registry, db };
 }
 
 type Call = ReturnType<typeof gateway>["call"];
@@ -239,4 +245,35 @@ test("project repo names parse by role", () => {
   assert.deepEqual(parseProjectRepo("owner-jun-2"), { role: "owner", ownerId: "jun-2" });
   assert.deepEqual(parseProjectRepo("huddle-031"), { role: "huddle", huddleId: "031" });
   for (const name of ["owner-", "owner-.x", "huddles", "other", ""]) assert.equal(parseProjectRepo(name), undefined, name);
+});
+
+test("the pending route lists operations to a runner bridge only, by the role its token holds", async () => {
+  const { call, db } = gateway();
+  // A signed operation file as the ProjectAgent holds it in PendingOp after a submission.
+  const file = readFileSync(
+    join(import.meta.dirname, "../../../tests/contracts/issue-ops/examples/issues/31/ops/penguin-0002.json"),
+    "utf8",
+  );
+  db.exec(`INSERT INTO PendingOp (op_id, source, created_at, file) VALUES (?, ?, ?, ?)`, "penguin-0002", "penguin", 1, file);
+  const list = (token?: string, method = "GET") => call("/operations/pending", { method, ...(token ? { token } : {}) });
+
+  const runner = await registerBridge(call, "sam", "runner");
+  const response = await list(runner.bridgeToken);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("Cache-Control"), "no-store");
+  assert.deepEqual(await response.json(), {
+    files: [{ opId: "penguin-0002", path: "issues/31/ops/penguin-0002.json", file, source: "penguin", createdAt: 1 }],
+  });
+
+  // An owner bridge is refused, whatever it claims in the request.
+  const jun = await registerBridge(call, "jun");
+  assert.equal((await list(jun.bridgeToken)).status, 403);
+  assert.equal((await call("/operations/pending?role=runner", { method: "GET", token: jun.bridgeToken })).status, 403);
+  assert.equal((await list()).status, 401);
+  assert.equal((await list(DEPLOYER_TOKEN)).status, 401);
+  assert.equal((await list(runner.bridgeToken, "POST")).status, 405);
+
+  // A revoked runner loses the listing.
+  assert.equal((await call(`/bridges/${runner.bridgeId}`, { method: "DELETE", token: DEPLOYER_TOKEN })).status, 204);
+  assert.equal((await list(runner.bridgeToken)).status, 401);
 });
