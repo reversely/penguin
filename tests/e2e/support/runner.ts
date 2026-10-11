@@ -38,10 +38,13 @@ export class Runner {
     return new Runner(registration.bridgeId, stateDir, keyStore, output);
   }
 
-  /** One `penguin-bridge runner --once` pass; returns its printed summary. */
-  async pass(): Promise<string> {
+  /**
+   * One `penguin-bridge runner --once` pass, with `options` such as `--combined` for the test jobs;
+   * returns its printed summary.
+   */
+  async pass(options: readonly string[] = []): Promise<string> {
     const output: string[] = [];
-    const exit = await runCli(["runner", "--once"], io(output), { keyStore: this.#keyStore, stateDir: this.#stateDir });
+    const exit = await runCli(["runner", "--once", ...options], io(output), { keyStore: this.#keyStore, stateDir: this.#stateDir });
     this.#output.push(...output);
     if (exit !== 0) throw new Error(`runner pass failed: ${output.join("")}`);
     return output.join("");

@@ -35,3 +35,7 @@ worker-configuration.d.ts
 
 # third-party docs and patents read during research; local only
 docs/research/
+
+# Playwright walkthrough output: screenshots, videos and traces (npm run walkthrough)
+test-results/
+playwright-report/

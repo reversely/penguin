@@ -13,9 +13,11 @@
   ],
   "scripts": {
     "test": "node --test \"{apps,services,packages}/*/{src,test}/**/*.test.ts\" \"tests/**/*.test.ts\"",
-    "typecheck": "tsc --noEmit && npm run typecheck -w @penguin/worker && npm run typecheck -w @penguin/dashboard"
+    "typecheck": "tsc --noEmit && npm run typecheck -w @penguin/worker && npm run typecheck -w @penguin/dashboard",
+    "walkthrough": "playwright test -c tests/walkthrough/playwright.config.ts"
   },
   "devDependencies": {
+    "@playwright/test": "1.63.0",
     "@types/node": "22.20.5",
     "typescript": "7.0.2"
   }
