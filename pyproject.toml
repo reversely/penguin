@@ -14,7 +14,21 @@ dev = [
 
 [tool.pytest.ini_options]
 # The fixture under examples/ is a separate repository with its own pytest root; the repo's suite
-# builds it and runs its tests from there, never collects it directly.
+# builds it and runs its tests from there. Its checkpoint tests fail on purpose once merged, so the
+# repo's suite never collects them, even when a run names a path above the fixture. The list keeps
+# pytest's default norecursedirs; --ignore would resolve against the caller's working directory.
 testpaths = ["tests"]
+norecursedirs = [
+    "*.egg",
+    ".*",
+    "_darcs",
+    "build",
+    "CVS",
+    "dist",
+    "node_modules",
+    "venv",
+    "{arch}",
+    "identity-unification",
+]
 addopts = ["--strict-markers"]
 markers = ["slow: long-running fixture reproductions; excluded from the fast suite"]

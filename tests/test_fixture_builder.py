@@ -54,6 +54,23 @@ def test_two_builds_pin_main_to_the_same_sha(tmp_path: Path):
     assert main_sha(first) == main_sha(second)
 
 
+def test_build_reproduces_the_pinned_shas(built_repo: Path):
+    pins = json.loads((BUILDER.parent / "pins.json").read_text())["branches"]
+    refs = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(built_repo),
+            "for-each-ref",
+            "--format=%(refname:short) %(objectname)",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert dict(line.split() for line in refs.splitlines()) == pins
+
+
 def test_scopes_are_owned_by_priya_jun_and_sam(scopes: list[dict]):
     assert {scope["id"]: scope["owner"] for scope in scopes} == {
         "identity-map": "priya",

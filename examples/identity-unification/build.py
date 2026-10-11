@@ -3,9 +3,13 @@
 Usage: python build.py TARGET
 
 TARGET must be an empty directory or a path that does not exist yet. The builder creates a Git
-repository there and commits each entry of ``COMMITS`` in order. Each commit's tree is the files
-under its ``source`` directory next to this script. Every value Git hashes is fixed here (author,
-committer, dates, message, file bytes and modes), so every machine gets the same commit SHAs.
+repository there and commits each entry of ``COMMITS`` in order. The first commit's tree is the files
+under its ``source`` directory next to this script. Each later commit resets its branch to its
+``start`` commit and lays the files under its ``source`` directory over that tree, so a source
+directory holds only the files the commit adds or changes. Every value Git hashes is fixed here
+(author, committer, dates, message, file bytes and modes), so every machine gets the same commit
+SHAs. ``pins.json`` records the SHAs a build produces. When the build finishes, the first commit's
+branch is checked out.
 
 The builder runs only local Git commands, makes no network request and writes only inside TARGET.
 """
@@ -33,9 +37,10 @@ class Commit:
     message: str
     author: tuple[str, str]
     date: str
+    # The branch or commit this commit's branch starts from; None for the root commit.
+    start: str | None = None
 
 
-# Later fixture commits (owner checkpoints and fixes) append entries here.
 COMMITS = (
     Commit(
         branch="main",
@@ -46,6 +51,41 @@ COMMITS = (
         ),
         author=FIXTURE_AUTHOR,
         date="2026-01-05T09:00:00+00:00",
+    ),
+    Commit(
+        branch="owner-priya",
+        source="owner-priya",
+        message=(
+            "Add person_id with merge rules\n\n"
+            "Link identities on login events and on a shared verified email. A merged profile\n"
+            "keeps the latest value of each attribute.\n"
+        ),
+        author=("Priya", "priya@penguin.invalid"),
+        date="2026-01-12T10:00:00+00:00",
+        start="main",
+    ),
+    Commit(
+        branch="owner-jun",
+        source="owner-jun",
+        message=(
+            "Add the retention dashboard\n\n"
+            "Daily active users and day-N retention by first-active-day cohort.\n"
+        ),
+        author=("Jun", "jun@penguin.invalid"),
+        date="2026-01-12T11:00:00+00:00",
+        start="main",
+    ),
+    Commit(
+        branch="owner-sam",
+        source="owner-sam",
+        message=(
+            "Add the re-engagement email audience\n\n"
+            "Subscribed people inactive since a cutoff day, with unsubscribed addresses\n"
+            "suppressed.\n"
+        ),
+        author=("Sam", "sam@penguin.invalid"),
+        date="2026-01-12T12:00:00+00:00",
+        start="main",
     ),
 )
 
@@ -133,6 +173,8 @@ def build(target: Path) -> dict[str, str]:
     )
     heads = {}
     for commit in COMMITS:
+        if commit.start is not None:
+            git(target, "checkout", "--quiet", "-B", commit.branch, commit.start)
         copy_tree(HERE / commit.source, target)
         git(target, "add", "--all")
         git(
@@ -145,6 +187,7 @@ def build(target: Path) -> dict[str, str]:
             commit=commit,
         )
         heads[commit.branch] = git(target, "rev-parse", "HEAD")
+    git(target, "checkout", "--quiet", COMMITS[0].branch)
     return heads
 
 

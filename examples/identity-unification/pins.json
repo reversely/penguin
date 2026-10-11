@@ -1,0 +1,9 @@
+{
+  "$comment": "Commit SHAs a build of this fixture produces. Format: a JSON object whose 'branches' object maps each branch build.py creates to its head commit SHA. 'main' holds the base commit; 'owner-priya', 'owner-jun' and 'owner-sam' each hold one owner's checkpoint on top of the base. tests/test_fixture_builder.py checks that a fresh build reproduces every SHA.",
+  "branches": {
+    "main": "6a3601267ba92c70f137ce401ee53dedf1cbec05",
+    "owner-priya": "ee70f092b82b3ab28ddb5ee0348f0bcb7a85c2fb",
+    "owner-jun": "b925bf08c6df94eebf6f955288c6bcbe2afc4cef",
+    "owner-sam": "34de9fe7ebd842ca1c28886636e4599346332968"
+  }
+}
