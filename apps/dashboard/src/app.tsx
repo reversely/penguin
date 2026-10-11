@@ -7,6 +7,7 @@ import { InboxPage, useInbox } from "./inbox-page.tsx";
 import { unreadCount } from "./inbox-view.ts";
 import { IssuePageView } from "./issue-page.tsx";
 import { linkHandler } from "./links.ts";
+import { NewIssuePage } from "./new-issue-page.tsx";
 import { NAVIGATION, parseRoute, signInProblem, type Route, type SignInProblem } from "./routes.ts";
 import { useLive, type LiveStatus } from "./use-live.ts";
 
@@ -117,6 +118,8 @@ function Shell({ session, onSignedOut }: { session: Session; onSignedOut: () => 
           <BoardPage viewer={session.owner} live={live} navigate={navigate} onSignedOut={onSignedOut} />
         ) : route?.page === "inbox" ? (
           <InboxPage inbox={inbox} navigate={navigate} />
+        ) : route?.page === "new-issue" ? (
+          <NewIssuePage live={live} navigate={navigate} onSignedOut={onSignedOut} />
         ) : route?.page === "identities" ? (
           <IdentitiesPageView viewer={session.owner} live={live} navigate={navigate} onSignedOut={onSignedOut} />
         ) : (

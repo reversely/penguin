@@ -76,6 +76,9 @@ export function BoardPage({ viewer, live, navigate, onSignedOut }: Props) {
       <header className="board-header">
         <h1>Board</h1>
         <PenguinIndicator state={boardPenguinState(board)} />
+        <a className="button primary board-new" href="/issues/new" onClick={linkHandler(navigate, "/issues/new")}>
+          New issue
+        </a>
       </header>
       {lanes.length === 0 ? <p className="muted">No issues yet</p> : null}
       {lanes.length === 0 ? null : (

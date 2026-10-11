@@ -5,6 +5,7 @@ export type Route =
   | { readonly page: "inbox" }
   | { readonly page: "board" }
   | { readonly page: "identities" }
+  | { readonly page: "new-issue" }
   | { readonly page: "issue"; readonly issueId: string };
 
 export type Page = Route["page"];
@@ -14,6 +15,8 @@ export function parseRoute(pathname: string): Route | undefined {
   if (pathname === "/" || pathname === "/inbox") return { page: "inbox" };
   if (pathname === "/board") return { page: "board" };
   if (pathname === "/identities") return { page: "identities" };
+  // No issue takes this id: a number is digits and a temporary ID is an op_id, which has hyphens.
+  if (pathname === "/issues/new") return { page: "new-issue" };
   const issueId = /^\/issues\/([A-Za-z0-9_-]+)$/.exec(pathname)?.[1];
   return issueId === undefined ? undefined : { page: "issue", issueId };
 }

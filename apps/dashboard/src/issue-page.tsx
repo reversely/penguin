@@ -1,6 +1,6 @@
 // The issue page (PRD section 8): title, body, labels, assignees, the trigger, attached checks,
 // sub-issues with their sessions and reviews, the timeline with rejected operations and their
-// reasons, and the comment box. Every value from the issue renders as React text, so markup in an
+// reasons, the comment box, and controls to assign an identity or unassign anyone. Every value from the issue renders as React text, so markup in an
 // issue body or comment shows as text and runs nothing.
 //
 // The page shows no diff. Another owner's unfinished work appears only as linked commits and checks;
@@ -34,6 +34,8 @@ import {
 } from "./issue-view.ts";
 import { latestChange } from "./live-changes.ts";
 import { linkHandler } from "./links.ts";
+import { assignChoices, assignOperation } from "./new-issue-view.ts";
+import { useIdentityHandles, type IdentityHandles } from "./use-identity-handles.ts";
 import type { Live } from "./use-live.ts";
 
 type Load =
@@ -55,6 +57,7 @@ export function IssuePageView({ issueId, live, navigate, onSignedOut }: Props) {
   const page = load.kind === "ready" && routeMatches(load.page, issueId) ? load.page : undefined;
   const change = latestChange(live, watchedIssues(page, issueId));
   const connected = live.status === "live";
+  const identities = useIdentityHandles(live, onSignedOut);
 
   useEffect(() => {
     let current = true;
@@ -95,6 +98,7 @@ export function IssuePageView({ issueId, live, navigate, onSignedOut }: Props) {
   return (
     <IssueContent
       page={page}
+      identities={identities}
       navigate={navigate}
       onSignedOut={onSignedOut}
       onWritten={() => setReload((value: number) => value + 1)}
@@ -108,11 +112,13 @@ function routeMatches(page: IssuePage, issueId: string): boolean {
 
 function IssueContent({
   page,
+  identities,
   navigate,
   onSignedOut,
   onWritten,
 }: {
   page: IssuePage;
+  identities: IdentityHandles;
   navigate: (path: string) => void;
   onSignedOut: () => void;
   onWritten: () => void;
@@ -199,20 +205,7 @@ function IssueContent({
             )}
           </section>
 
-          <section className="panel" aria-labelledby="issue-assignees">
-            <h2 id="issue-assignees">Assignees</h2>
-            {issue.assignees.length === 0 ? (
-              <p className="muted">No assignees</p>
-            ) : (
-              <ul className="rows">
-                {issue.assignees.map((assignee) => (
-                  <li key={`${assignee.kind}:${assignee.id}`} className="row">
-                    <Assignee assignee={assignee} />
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
+          <AssigneesPanel issue={issue} identities={identities} onSignedOut={onSignedOut} onWritten={onWritten} />
 
           <section className="panel" aria-labelledby="issue-trigger">
             <h2 id="issue-trigger">Trigger</h2>
@@ -338,10 +331,12 @@ function SubIssueRow({ sub, navigate }: { sub: IssuePageSubIssue; navigate: (pat
   );
 }
 
-function Assignee({ assignee }: { assignee: IssuePageAssignee }) {
+function Assignee({ assignee, nameId }: { assignee: IssuePageAssignee; nameId?: string }) {
   return (
     <>
-      <span className="row-title">{assignee.id}</span>
+      <span className="row-title" id={nameId}>
+        {assignee.id}
+      </span>
       {assignee.session === null ? null : (
         <>
           <span className={`tag session-${assignee.session.status}`}>{assignee.session.status}</span>
@@ -399,6 +394,107 @@ function TimelineRow({ entry }: { entry: IssuePageTimelineEntry }) {
         </p>
       ) : null}
     </li>
+  );
+}
+
+/** The assignees, each with Unassign, and a choice of identity to assign. */
+function AssigneesPanel({
+  issue,
+  identities,
+  onSignedOut,
+  onWritten,
+}: {
+  issue: IssuePage["issue"];
+  identities: IdentityHandles;
+  onSignedOut: () => void;
+  onWritten: () => void;
+}) {
+  const [chosen, setChosen] = useState("");
+  const [sending, setSending] = useState(false);
+  const [problem, setProblem] = useState<string | undefined>(undefined);
+  const choices = identities.kind === "ready" ? assignChoices(identities.handles, issue.assignees) : [];
+
+  const write = (type: "assign" | "unassign", assignee: Pick<IssuePageAssignee, "kind" | "id">) => {
+    if (sending) return;
+    setSending(true);
+    setProblem(undefined);
+    submitOperation(assignOperation(issue.id, issue.version, type, assignee)).then(
+      (outcome) => {
+        setSending(false);
+        if (outcome.status === "applied") {
+          if (type === "assign") setChosen("");
+        } else {
+          setProblem(`Rejected for ${reasonLabel(outcome.reason)}`);
+        }
+        onWritten();
+      },
+      (error: unknown) => {
+        setSending(false);
+        if (error instanceof SignedOut) onSignedOut();
+        else setProblem("Please try again");
+      },
+    );
+  };
+
+  const assign = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (chosen !== "") write("assign", { kind: "identity", id: chosen });
+  };
+
+  return (
+    <section className="panel" aria-labelledby="issue-assignees">
+      <h2 id="issue-assignees">Assignees</h2>
+      {issue.assignees.length === 0 ? (
+        <p className="muted">No assignees</p>
+      ) : (
+        <ul className="rows">
+          {issue.assignees.map((assignee) => {
+            const key = `${assignee.kind}:${assignee.id}`;
+            return (
+              <li key={key} className="row assignee">
+                <Assignee assignee={assignee} nameId={`assignee-${key}`} />
+                <button
+                  type="button"
+                  className="button assignee-remove"
+                  disabled={sending}
+                  aria-describedby={`assignee-${key}`}
+                  onClick={() => write("unassign", assignee)}
+                >
+                  Unassign
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {choices.length === 0 ? null : (
+        <form className="assign-form" onSubmit={assign}>
+          <label htmlFor="assign-identity" className="visually-hidden">
+            Identity
+          </label>
+          <select
+            id="assign-identity"
+            value={chosen}
+            onChange={(event: ChangeEvent<HTMLSelectElement>) => setChosen(event.target.value)}
+          >
+            <option value="">Choose an identity</option>
+            {choices.map((handle) => (
+              <option key={handle} value={handle}>
+                {handle}
+              </option>
+            ))}
+          </select>
+          <button type="submit" className="button primary" disabled={sending || chosen === ""}>
+            Assign
+          </button>
+        </form>
+      )}
+      {problem === undefined ? null : (
+        <p className="notice" role="alert">
+          {problem}
+        </p>
+      )}
+    </section>
   );
 }
 

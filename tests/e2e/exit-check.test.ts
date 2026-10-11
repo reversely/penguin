@@ -3,7 +3,7 @@
  * agent session. Skipped unless PENGUIN_E2E_URL names a Worker; docs/mcp-setup.md says how to run it.
  *
  * 1. Jun's session registers as @jun/reports with Jun's MCP token; Sam's token cannot.
- * 2. Priya opens an issue through the dashboard API and assigns @jun/reports.
+ * 2. Priya opens an issue and assigns @jun/reports with the operations the New issue form sends.
  * 3. Jun's session receives it through get_work, comments and links a commit through post_update.
  * 4. The integration runner pushes those operations to the issues repo.
  * 5. Priya's board and Jun's inbox hear each change over /api/live and show it.

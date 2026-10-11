@@ -670,6 +670,10 @@ a.row-title {
   gap: 0.5rem 1rem;
 }
 
+.board-new {
+  margin-left: auto;
+}
+
 .board-columns,
 .lane-grid {
   display: grid;
@@ -1190,7 +1194,8 @@ a.row-title {
 
 /* Form */
 
-.identity-form {
+.identity-form,
+.issue-form {
   display: grid;
   gap: 1rem;
 }
@@ -1215,7 +1220,10 @@ a.row-title {
 }
 
 .identity-form input:not([type]),
-.identity-form textarea {
+.identity-form textarea,
+.issue-form input:not([type]),
+.issue-form textarea,
+.assign-form select {
   width: 100%;
   min-height: 2.5rem;
   padding: 0.5rem 0.75rem;
@@ -1226,7 +1234,8 @@ a.row-title {
   font: inherit;
 }
 
-.identity-form textarea {
+.identity-form textarea,
+.issue-form textarea {
   resize: vertical;
 }
 
@@ -1297,4 +1306,33 @@ a.row-title {
 label.button:has(input:focus-visible) {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+/* New issue */
+
+.new-issue {
+  display: grid;
+  gap: 1.25rem;
+}
+
+/* Assign and unassign on the issue page */
+
+.assignee-remove {
+  margin-left: auto;
+}
+
+.assign-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+/* The side column is narrow, so the choice takes a full row and Assign sits under it on the right. */
+.assign-form select {
+  flex: 1 1 100%;
+  min-width: 0;
+}
+
+.assign-form .button {
+  margin-left: auto;
 }

@@ -9,6 +9,7 @@ test("each page path maps to its route and other paths to none", () => {
   assert.deepEqual(parseRoute("/board"), { page: "board" });
   assert.deepEqual(parseRoute("/identities"), { page: "identities" });
   assert.deepEqual(parseRoute("/issues/40"), { page: "issue", issueId: "40" });
+  assert.deepEqual(parseRoute("/issues/new"), { page: "new-issue" });
   for (const path of ["/issues/", "/issues/40/ops", "/board/", "/api/session", "/nowhere"]) {
     assert.equal(parseRoute(path), undefined, path);
   }

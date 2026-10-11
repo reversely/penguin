@@ -136,17 +136,12 @@ need Priya and Jun signed in to the dashboard in two browsers, plus an integrati
    under `@jun/reports` in Jun's lane without a reload.
 5. Security: a Codex session started with Sam's token in `PENGUIN_TOKEN` asks to register as
    `@jun/reports`. The tool answers `forbidden`. No new session appears on the board.
-6. Priya opens an issue and assigns `@jun/reports`. The dashboard has no form for these two operations
-   yet, so Priya sends them from the browser console on the dashboard tab, which carries the session
-   cookie:
-
-   ```js
-   const send = (op) => fetch("/api/operations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(op) }).then((r) => r.json());
-   const created = await send({ issue: <next number>, type: "create", base_version: 0, payload: { title: "Retention dashboard counts merged users twice" } });
-   await send({ issue: <next number>, type: "assign", base_version: created.version, payload: { assignee: { identity: "@jun/reports" } } });
-   ```
-
-   Jun's inbox lists the issue under Assignments without a reload.
+6. Priya opens an issue and assigns `@jun/reports`. On the Board, Priya selects New issue, enters the
+   title "Retention dashboard counts merged users twice", checks `@jun/reports` under Assignees and
+   selects Create. The dashboard opens the new issue's page with `@jun/reports` under Assignees.
+   Priya's board shows the card in Jun's lane without a reload. Jun's inbox lists the issue under
+   Assignments without a reload. The issue page's Assignees panel also assigns an identity to an
+   existing issue with Assign and removes an assignee with Unassign.
 7. Jun asks either session to call `get_work`. The issue is in the result.
 8. Jun asks the session to comment on the issue with `post_update` and to link a commit, such as
    `owner-jun@4acb1bf94cf8753569e0af7bb26955812e3aa4c6` with kind `fix`. The issue page and the board
@@ -158,7 +153,8 @@ need Priya and Jun signed in to the dashboard in two browsers, plus an integrati
 ## Scripted exit check
 
 `tests/e2e/exit-check.test.ts` runs the same steps with JSON-RPC calls to `/mcp` in place of a live
-agent. It signs in as Priya and Jun, listens on both people's `/api/live` sockets, registers the runner
+agent. In place of the New issue form, it sends the create and assign operations the form sends to
+`/api/operations`. It signs in as Priya and Jun, listens on both people's `/api/live` sockets, registers the runner
 bridge with an in-memory key store and runs `penguin-bridge runner --once` passes until the operations
 appear on a fresh fetch of the issues repo. It closes the issue at the end and revokes the MCP tokens
 and the runner bridge it made. `npm test` skips it unless `PENGUIN_E2E_URL` is set.
