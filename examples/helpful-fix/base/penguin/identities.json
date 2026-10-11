@@ -1,0 +1,26 @@
+{
+  "$comment": "Seed agent identities for the demo. In the product an owner creates identities on the dashboard; this file seeds them. Format: a JSON object whose 'identities' array holds one entry per identity with 'handle' ('@<owner>/<name>'), 'owner' (an id from penguin/owners.json), 'vendor' (the agent product the identity runs in: 'claude-code' or 'codex'), 'job' (the work the identity does) and 'charter_scopes' (ids from penguin/scopes.json that the identity may change).",
+  "identities": [
+    {
+      "handle": "@priya/batches",
+      "owner": "priya",
+      "vendor": "claude-code",
+      "job": "Fix the daily ingestion batches so that events at one instant share a batch",
+      "charter_scopes": ["ingestion"]
+    },
+    {
+      "handle": "@jun/reports",
+      "owner": "jun",
+      "vendor": "codex",
+      "job": "Build a weekly activity report bucketed by each user's local day",
+      "charter_scopes": ["analytics"]
+    },
+    {
+      "handle": "@sam/reminders",
+      "owner": "sam",
+      "vendor": "claude-code",
+      "job": "Build reminder scheduling at each user's local hour",
+      "charter_scopes": ["messaging"]
+    }
+  ]
+}
