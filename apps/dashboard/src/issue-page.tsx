@@ -18,6 +18,7 @@ import { useEffect, useState, type ChangeEvent, type FormEvent } from "react";
 
 import { fetchIssue, SignedOut, submitOperation } from "./api.ts";
 import { EYE } from "./character.ts";
+import { Icon } from "./icon.tsx";
 import {
   authorName,
   checkSignal,
@@ -138,6 +139,7 @@ function IssueContent({
           <PenguinIndicator state={penguinState(page)} />
           {issue.parentId === null ? null : (
             <a className="tag" href={`/issues/${issue.parentId}`} onClick={linkHandler(navigate, `/issues/${issue.parentId}`)}>
+              <Icon name="back" />
               Sub-issue of #{issue.parentId}
             </a>
           )}
@@ -565,8 +567,9 @@ function CommentBox({
             {problem}
           </p>
         )}
-        <button type="submit" className="button primary" disabled={sending || body.trim() === ""}>
+        <button type="submit" className="button primary icon-end" disabled={sending || body.trim() === ""}>
           Comment
+          <Icon name="send" />
         </button>
       </div>
     </form>

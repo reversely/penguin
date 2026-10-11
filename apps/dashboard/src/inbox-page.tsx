@@ -8,6 +8,7 @@ import type { InboxEntry } from "@penguin/protocol";
 import { useCallback, useEffect, useState } from "react";
 
 import { fetchInbox, markInboxRead, SignedOut } from "./api.ts";
+import { Icon } from "./icon.tsx";
 import { CLOSED_WINDOW, INBOX_GROUPS, groupInbox, itemKey, markedRead, newest, REASON_TAG } from "./inbox-view.ts";
 import { STATE_LABEL } from "./issue-view.ts";
 import { linkHandler } from "./links.ts";
@@ -149,6 +150,7 @@ export function InboxPage({ inbox, showAll, navigate }: Props) {
             {shown.length < items.length ? (
               <a className="show-all" href={INBOX_ALL_PATH} aria-describedby={headingId} onClick={linkHandler(navigate, INBOX_ALL_PATH)}>
                 Show all
+                <Icon name="chevron" />
               </a>
             ) : null}
           </section>
@@ -185,11 +187,12 @@ function InboxRow({ item, marking, onMarkRead, navigate }: RowProps) {
       {item.read ? null : (
         <button
           type="button"
-          className="button inbox-mark"
+          className="button inbox-mark icon-start"
           disabled={marking}
           aria-describedby={titleId}
           onClick={() => onMarkRead(item)}
         >
+          <Icon name="check" />
           Mark read
         </button>
       )}

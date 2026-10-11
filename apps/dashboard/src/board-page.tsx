@@ -20,6 +20,7 @@ import {
   type Card,
   type Lane,
 } from "./board-view.ts";
+import { Icon } from "./icon.tsx";
 import { PenguinIndicator, SignalTag } from "./issue-page.tsx";
 import { authorName } from "./issue-view.ts";
 import { linkHandler } from "./links.ts";
@@ -141,6 +142,7 @@ function LaneView({ lane, showAll, navigate }: { lane: Lane; showAll: boolean; n
                   onClick={linkHandler(navigate, BOARD_ALL_PATH)}
                 >
                   Show all
+                  <Icon name="chevron" />
                 </a>
               ) : null}
             </section>

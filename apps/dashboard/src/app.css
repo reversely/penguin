@@ -250,6 +250,24 @@ time {
   font-weight: 500;
   text-decoration: none;
   cursor: pointer;
+  gap: 0.375rem;
+}
+
+/* A button's icon sits 2px nearer its edge than the label does, so the two sides look even. */
+.button.icon-end {
+  padding-right: 0.75rem;
+}
+
+.button.icon-start {
+  padding-left: 0.75rem;
+}
+
+/* The icon set (icons.ts): 16px, the size its 1.5-unit stroke is drawn for, in the text's colour. */
+.icon {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  pointer-events: none;
 }
 
 .button.primary {
@@ -431,8 +449,15 @@ code {
 a.tag {
   display: inline-flex;
   align-items: center;
+  gap: 0.375rem;
   min-height: 1.5rem;
   text-decoration: none;
+}
+
+/* A tag's 13px text takes the icon at 14px. */
+a.tag .icon {
+  width: 14px;
+  height: 14px;
 }
 
 .state {
@@ -843,6 +868,7 @@ a.row-title {
   display: inline-flex;
   align-items: center;
   justify-self: start;
+  gap: 0.375rem;
   min-height: 1.5rem;
   font-size: 0.875rem;
 }
