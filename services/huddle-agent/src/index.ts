@@ -1,19 +1,27 @@
 import { Agent } from "agents";
 import {
+  ApprovedBranchStore,
+  closeOut,
   collectReviews,
   durableObjectSql,
   FixReviewStore,
   HuddleThreadStore,
+  pendingApprovals,
   pendingVerifications,
+  recordApprovedBranch,
   recordVerification,
   runIdBaseOf,
   scheduleVerification,
   VerificationStore,
+  type ApprovalOutcome,
+  type ApprovalSpec,
+  type CloseOutcome,
   type Huddle,
-  type HuddleProjectPort,
+  type HuddleCloseDeps,
+  type HuddleClosePort,
+  type HuddleCloser,
   type HuddleReviewDeps,
   type HuddleReviewer,
-  type HuddleReviewPort,
   type HuddleThread,
   type HuddleThreadKeeper,
   type HuddleVerifier,
@@ -26,20 +34,25 @@ import {
 
 /**
  * Runs the verification and review loop of one Huddle issue (PRD section 5): it schedules, coalesces
- * and supersedes the Huddle's verification runs and records their results, and once the combined
- * tests pass it collects the reviews of the Huddle's fixes (huddle-reviews.ts), keeping the runs,
- * each fix's review standing and the Huddle's threads (huddle-threads.ts) in its own SQLite. A
- * counting review that requests changes opens a thread on its fix. The ProjectAgent names one instance per Huddle issue
- * and passes the Huddle record with each call, with a port back to itself: the HuddleAgent reads the
- * issue, owner forks and scope map there and writes its operations, review requests and approvals
- * there, where the service key signs the operations and the index validates them. A CryptoKey cannot
- * cross Durable Object RPC, so the signing stays on the ProjectAgent's side.
+ * and supersedes the Huddle's verification runs and records their results, once the combined tests
+ * pass it collects the reviews of the Huddle's fixes (huddle-reviews.ts), where a counting review
+ * that requests changes opens a thread on its fix (huddle-threads.ts). After each step it evaluates
+ * the close (huddle-close.ts): once every fix is approved, the tests pass and every thread is
+ * resolved, it has the runner record the Huddle repo's `approved` branch and closes the issue. It
+ * keeps the runs, each fix's review standing, the Huddle's threads and the approved-branch request
+ * in its own SQLite. The
+ * ProjectAgent names one instance per Huddle issue and passes the Huddle record with each call, with
+ * a port back to itself: the HuddleAgent reads the issue, owner forks and scope map there and writes
+ * its operations, review requests, approvals and close-out there, where the service key signs the
+ * operations and the index validates them. A CryptoKey cannot cross Durable Object RPC, so the
+ * signing stays on the ProjectAgent's side.
  */
-export class HuddleAgent extends Agent implements HuddleVerifier, HuddleReviewer, HuddleThreadKeeper {
+export class HuddleAgent extends Agent implements HuddleVerifier, HuddleReviewer, HuddleThreadKeeper, HuddleCloser {
   #runs: VerificationStore | undefined;
   #reviews: FixReviewStore | undefined;
   #threads: HuddleThreadStore | undefined;
-  /** Verification steps run one at a time, so no two interleave their writes. */
+  #approvals: ApprovedBranchStore | undefined;
+  /** Steps run one at a time, so no two interleave their writes. */
   #steps: Promise<unknown> = Promise.resolve();
 
   override onStart(): void {
@@ -56,11 +69,16 @@ export class HuddleAgent extends Agent implements HuddleVerifier, HuddleReviewer
     return Response.json({ agent: "HuddleAgent", name: this.name, counter: row?.value ?? 0 });
   }
 
-  /** Schedules a run when an owner in the Huddle has a newer checkpoint; see huddle-verify.ts. */
-  scheduleVerification(huddle: Huddle, project: HuddleProjectPort): Promise<VerificationScheduleOutcome | undefined> {
+  /**
+   * Schedules a run when an owner in the Huddle has a newer checkpoint; see huddle-verify.ts. A
+   * scheduled run supersedes the checks, so the close is evaluated again.
+   */
+  scheduleVerification(huddle: Huddle, project: HuddleClosePort): Promise<VerificationScheduleOutcome | undefined> {
     return this.#step(async () => {
       if (huddle.issueId === null) return undefined;
-      return scheduleVerification(this.#deps(huddle.issueId, project), huddle);
+      const outcome = await scheduleVerification(this.#deps(huddle.issueId, project), huddle);
+      if (outcome?.status === "scheduled") await this.#closeOut(huddle, project);
+      return outcome;
     });
   }
 
@@ -72,15 +90,16 @@ export class HuddleAgent extends Agent implements HuddleVerifier, HuddleReviewer
 
   /**
    * Records a runner's report of the Huddle's run `runId` (see huddle-verify.ts). A report that moves
-   * the Huddle to IN_REVIEW then collects its fixes' reviews; a failure there is logged and leaves
-   * the report recorded, and the next review or report collects again.
+   * the Huddle to IN_REVIEW then collects its fixes' reviews, and any recorded report evaluates the
+   * close; a failure there is logged and leaves the report recorded, and the next review or report
+   * collects again.
    */
   reportVerification(
     huddle: Huddle,
     runId: string,
     runnerId: string,
     report: unknown,
-    project: HuddleReviewPort,
+    project: HuddleClosePort,
   ): Promise<VerificationOutcome> {
     return this.#step(async () => {
       if (huddle.issueId === null) {
@@ -94,25 +113,61 @@ export class HuddleAgent extends Agent implements HuddleVerifier, HuddleReviewer
           console.error(JSON.stringify({ event: "review_collection_failed", issue: huddle.issueId, error: String(error) }));
         }
       }
+      if (outcome.status === "recorded") await this.#closeOut(huddle, project);
       return outcome;
     });
   }
 
-  /** Collects the reviews of the Huddle's fixes; see huddle-reviews.ts. */
-  collectReviews(huddle: Huddle, project: HuddleReviewPort): Promise<ReviewCollection | undefined> {
+  /** Collects the reviews of the Huddle's fixes (huddle-reviews.ts), then evaluates the close. */
+  collectReviews(huddle: Huddle, project: HuddleClosePort): Promise<ReviewCollection | undefined> {
     return this.#step(async () => {
       if (huddle.issueId === null) return undefined;
-      return collectReviews(this.#reviewDeps(huddle.issueId, project), huddle);
+      const collection = await collectReviews(this.#reviewDeps(huddle.issueId, project), huddle);
+      await this.#closeOut(huddle, project);
+      return collection;
     });
   }
 
   /**
    * Every thread on the Huddle issue and its fix sub-issues, as of the Huddle's last review
-   * collection, open or resolved; see huddle-threads.ts.
+   * collection or close evaluation, open or resolved; see huddle-threads.ts.
    */
   threads(huddle: Huddle): HuddleThread[] {
     if (huddle.issueId === null) return [];
     return this.#threadStore().all();
+  }
+
+  /** Evaluates the Huddle's close; see huddle-close.ts. */
+  closeOut(huddle: Huddle, project: HuddleClosePort): Promise<CloseOutcome | undefined> {
+    return this.#step(async () => {
+      if (huddle.issueId === null) return undefined;
+      return closeOut(this.#closeDeps(huddle.issueId, project), huddle);
+    });
+  }
+
+  /** The Huddle's approved-branch request waiting for the runner, if any. */
+  pendingApprovals(huddle: Huddle): ApprovalSpec[] {
+    return pendingApprovals(this.#approvalStore(), huddle);
+  }
+
+  /** Records the runner's report of the Huddle's approved branch, then evaluates the close. */
+  reportApprovedBranch(huddle: Huddle, runnerId: string, report: unknown, project: HuddleClosePort): Promise<ApprovalOutcome> {
+    return this.#step(async () => {
+      if (huddle.issueId === null) {
+        return { status: "rejected", reason: "not_found", message: `no approved branch is requested for ${huddle.triggerCommit}` };
+      }
+      return recordApprovedBranch(this.#closeDeps(huddle.issueId, project), huddle, runnerId, report);
+    });
+  }
+
+  /** Evaluates the close after another step; a failure is logged, and the next step evaluates again. */
+  async #closeOut(huddle: Huddle, project: HuddleClosePort): Promise<void> {
+    if (huddle.issueId === null) return;
+    try {
+      await closeOut(this.#closeDeps(huddle.issueId, project), huddle);
+    } catch (error) {
+      console.error(JSON.stringify({ event: "close_out_failed", issue: huddle.issueId, error: String(error) }));
+    }
   }
 
   #step<T>(step: () => Promise<T>): Promise<T> {
@@ -121,7 +176,7 @@ export class HuddleAgent extends Agent implements HuddleVerifier, HuddleReviewer
     return run;
   }
 
-  #deps(issueId: string, project: HuddleProjectPort): HuddleVerifyDeps {
+  #deps(issueId: string, project: HuddleClosePort): HuddleVerifyDeps {
     return {
       runs: this.#runStore(issueId),
       issue: (id) => project.issue(id),
@@ -130,7 +185,7 @@ export class HuddleAgent extends Agent implements HuddleVerifier, HuddleReviewer
     };
   }
 
-  #reviewDeps(issueId: string, project: HuddleReviewPort): HuddleReviewDeps {
+  #reviewDeps(issueId: string, project: HuddleClosePort): HuddleReviewDeps {
     return {
       ...this.#deps(issueId, project),
       reviews: this.#reviewStore(),
@@ -138,6 +193,14 @@ export class HuddleAgent extends Agent implements HuddleVerifier, HuddleReviewer
       scopeMap: () => project.scopeMap(),
       requestReview: (ownerId, subIssueId) => project.requestReview(ownerId, subIssueId),
       recordApproval: (subIssueId, approval) => project.recordApproval(subIssueId, approval),
+    };
+  }
+
+  #closeDeps(issueId: string, project: HuddleClosePort): HuddleCloseDeps {
+    return {
+      ...this.#reviewDeps(issueId, project),
+      approvals: this.#approvalStore(),
+      recordCloseOut: (id, waitingOn) => project.recordCloseOut(id, waitingOn),
     };
   }
 
@@ -149,6 +212,11 @@ export class HuddleAgent extends Agent implements HuddleVerifier, HuddleReviewer
   #threadStore(): HuddleThreadStore {
     this.#threads ??= new HuddleThreadStore(durableObjectSql(this.ctx.storage));
     return this.#threads;
+  }
+
+  #approvalStore(): ApprovedBranchStore {
+    this.#approvals ??= new ApprovedBranchStore(durableObjectSql(this.ctx.storage));
+    return this.#approvals;
   }
 
   /** The Huddle's runs, numbered in the Huddle issue's own range so run IDs stay unique in the project. */

@@ -29,7 +29,7 @@ import {
 } from "@penguin/protocol";
 
 import type { HuddleDraft } from "./huddle-open.ts";
-import type { HuddleReviewPort } from "./huddle-reviews.ts";
+import type { HuddleClosePort } from "./huddle-close.ts";
 import { ownerCommit, type Huddle } from "./huddle-store.ts";
 import type { SubmitOutcome } from "./issue-index.ts";
 import type { OwnerFork } from "./owner-forks.ts";
@@ -53,18 +53,18 @@ export interface HuddleVerifyDeps extends HuddleProjectPort {
 
 /**
  * The verification steps a HuddleAgent answers over RPC for its one Huddle. The ProjectAgent passes
- * the Huddle record and, for steps that write, the port back to itself. A report that moves the
- * Huddle to IN_REVIEW goes on to collect reviews (huddle-reviews.ts), so its port is the review port.
+ * the Huddle record and, for steps that write, the port back to itself. A step goes on to collect
+ * reviews (huddle-reviews.ts) or evaluate the close (huddle-close.ts), so its port is the close port.
  */
 export interface HuddleVerifier {
-  scheduleVerification(huddle: Huddle, project: HuddleProjectPort): Promise<VerificationScheduleOutcome | undefined>;
+  scheduleVerification(huddle: Huddle, project: HuddleClosePort): Promise<VerificationScheduleOutcome | undefined>;
   pendingVerifications(huddle: Huddle): PendingVerification[] | Promise<PendingVerification[]>;
   reportVerification(
     huddle: Huddle,
     runId: string,
     runnerId: string,
     report: unknown,
-    project: HuddleReviewPort,
+    project: HuddleClosePort,
   ): Promise<VerificationOutcome>;
 }
 

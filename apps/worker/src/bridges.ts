@@ -27,11 +27,19 @@
  *   runner: the checkpoints to merge onto a Huddle repo's `integration` branch and the commands to run.
  * - POST /verifications/<run id>, bridge token of a runner bridge: reports a verification run. Penguin
  *   attaches its checks to the Huddle issue; a run a newer checkpoint superseded answers 409.
+ * - GET /approvals, bridge token of a runner bridge: lists the approved branches to record: for each
+ *   Huddle whose fixes are approved, whose combined tests pass and whose threads are resolved, the
+ *   verified `integration` commit to point the Huddle repo's `approved` branch at.
+ * - POST /approvals/<issue id>, bridge token of a runner bridge: reports the Huddle repo's `approved`
+ *   branch at the requested commit. Penguin links it on the Huddle issue and closes the issue as
+ *   approved; a report of a commit no longer requested answers 409.
  *
  * Responses that carry a code or token are marked `Cache-Control: no-store`.
  */
 
 import type {
+  ApprovalOutcome,
+  ApprovalSpec,
   BridgeCaller,
   BridgeIdentity,
   BridgeRole,
@@ -92,6 +100,10 @@ export interface HuddleDirectory {
   pendingVerifications(): Promise<readonly unknown[]>;
   /** Records a runner's report of run `runId`; `runnerId` is the reporting bridge. */
   reportVerification(runId: string, runnerId: string, report: unknown): Promise<VerificationOutcome>;
+  /** The approved branches waiting for the runner. */
+  pendingApprovals(): Promise<readonly ApprovalSpec[]>;
+  /** Records a runner's report of Huddle issue `issueId`'s approved branch; `runnerId` is the reporting bridge. */
+  reportApproval(issueId: string, runnerId: string, report: unknown): Promise<ApprovalOutcome>;
 }
 
 /** Mints a token on a repo named without the deployment's prefix, such as `owner-jun`. */
@@ -417,6 +429,28 @@ async function reportVerification(request: Request, runId: string, handlers: Bri
   }
 }
 
+async function listApprovals(request: Request, handlers: BridgeHandlers): Promise<Response> {
+  const bridge = await runnerBridge(request, handlers);
+  if (bridge instanceof Response) return bridge;
+  if (request.method !== "GET") return methodNotAllowed("GET");
+  const approvals = await (await handlers.huddles()).pendingApprovals();
+  return json({ approvals }, 200, NO_STORE);
+}
+
+async function reportApproval(request: Request, issueId: string, handlers: BridgeHandlers): Promise<Response> {
+  const bridge = await runnerBridge(request, handlers);
+  if (bridge instanceof Response) return bridge;
+  if (request.method !== "POST") return methodNotAllowed("POST");
+  const body = await readObject(request);
+  if (body === undefined) return invalid("", "must be a JSON object");
+  const outcome = await (await handlers.huddles()).reportApproval(issueId, bridge.bridgeId, body);
+  if (outcome.status === "recorded") {
+    return json({ status: outcome.status, issueId: outcome.issueId, state: outcome.state, commit: outcome.commit }, 200);
+  }
+  const status = outcome.reason === "invalid" ? 400 : outcome.reason === "not_found" ? 404 : 409;
+  return json({ error: outcome.reason, message: outcome.message }, status);
+}
+
 function huddleBody(status: "opened" | "existing", huddle: Huddle): Record<string, unknown> {
   const { issueId, triggerCommit, baselineSha, huddleRepo, openedAt } = huddle;
   return { status, issueId, triggerCommit, baselineSha, huddleRepo, openedAt };
@@ -438,6 +472,9 @@ export async function handleBridgeRoute(
   if (url.pathname === "/verifications") return listVerifications(request, handlers);
   const runId = /^\/verifications\/([0-9]{1,15})$/.exec(url.pathname)?.[1];
   if (runId !== undefined) return reportVerification(request, runId, handlers);
+  if (url.pathname === "/approvals") return listApprovals(request, handlers);
+  const approvalIssue = /^\/approvals\/([1-9][0-9]{0,8})$/.exec(url.pathname)?.[1];
+  if (approvalIssue !== undefined) return reportApproval(request, approvalIssue, handlers);
   if (url.pathname === "/bridges/codes") return issueCode(request, options, handlers);
   if (url.pathname === "/bridges") return register(request, handlers);
   const bridgeId = /^\/bridges\/([A-Za-z0-9_-]+)$/.exec(url.pathname)?.[1];

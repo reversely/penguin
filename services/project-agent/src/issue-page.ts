@@ -2,9 +2,11 @@
 // issue, each sub-issue with its sessions, reviews and checks, and the timeline of applied and rejected
 // operations. The result is plain JSON, so the Worker can send it as it comes from Durable Object RPC.
 
-import type { Assignment, Check, FixApproval, IssueRecord, Review } from "@penguin/issues";
+import { approvedCommit, type Assignment, type Check, type FixApproval, type IssueRecord, type Review } from "@penguin/issues";
 import type {
+  CloseResolution,
   IssuePage,
+  IssuePageCloseOut,
   IssuePageAssignee,
   IssuePageCheck,
   IssuePageReview,
@@ -22,6 +24,8 @@ export interface IssuePageSources {
   session(id: string): Session | undefined;
   /** Where approval of a Huddle fix stands (approval-store.ts), or undefined for any other issue. */
   approval?(issueId: string): FixApproval | undefined;
+  /** What a Huddle issue waits on before it may close (approval-store.ts), or undefined for any other issue. */
+  waitingOn?(issueId: string): readonly string[] | undefined;
 }
 
 /** The issue page for an issue number or temporary ID, or undefined when no such issue exists. */
@@ -29,7 +33,24 @@ export function buildIssuePage(sources: IssuePageSources, id: string): IssuePage
   const { issue, timeline } = sources.read(id);
   if (issue === undefined) return undefined;
   const linkedBy = new Map(timeline.map((entry) => [entry.opId, entry.author]));
-  return { ...issueView(sources, issue, (opId) => linkedBy.get(opId) ?? null), timeline: timeline.map(timelineEntry) };
+  const view = issueView(sources, issue, (opId) => linkedBy.get(opId) ?? null);
+  const closeOut = closeOutOf(issue, timeline, sources.waitingOn?.(issue.id));
+  return { ...view, issue: { ...view.issue, closeOut }, timeline: timeline.map(timelineEntry) };
+}
+
+/** The close-out of a Huddle issue (one with `waitingOn` recorded) or of a closed issue; null otherwise. */
+function closeOutOf(
+  issue: IssueRecord,
+  timeline: readonly TimelineEntry[],
+  waitingOn: readonly string[] | undefined,
+): IssuePageCloseOut | null {
+  const closed = issue.state === "closed";
+  if (waitingOn === undefined && !closed) return null;
+  return {
+    waitingOn: closed ? [] : [...(waitingOn ?? [])],
+    approvedCommit: approvedCommit(issue),
+    resolution: closeResolution(issue, timeline),
+  };
 }
 
 /**
@@ -114,6 +135,19 @@ function review(value: Review): IssuePageReview {
     counts: value.counts,
     uncountedReason: value.uncountedReason,
   };
+}
+
+/**
+ * How a closed issue ended: the resolution its applied close named, else `approved` when the approved
+ * branch is linked; null for an issue that is not closed or whose close named neither.
+ */
+function closeResolution(issue: IssueRecord, timeline: readonly TimelineEntry[]): CloseResolution | null {
+  if (issue.state !== "closed") return null;
+  const close = timeline.findLast(
+    (entry) => entry.status === "applied" && entry.type === "change_state" && (entry.payload as { state?: unknown }).state === "closed",
+  );
+  const resolution = (close?.payload as { resolution?: CloseResolution } | undefined)?.resolution;
+  return resolution ?? (approvedCommit(issue) === null ? null : "approved");
 }
 
 function timelineEntry(entry: TimelineEntry): IssuePageTimelineEntry {

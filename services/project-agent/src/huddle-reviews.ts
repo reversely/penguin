@@ -20,6 +20,7 @@
 import { fixApproval, fixHead, type FixApproval, type IssueRecord, type OwnerApprovalState } from "@penguin/issues";
 import type { ScopeMap } from "@penguin/scope-map";
 
+import type { HuddleClosePort } from "./huddle-close.ts";
 import type { Huddle } from "./huddle-store.ts";
 import { ownerCommit } from "./huddle-store.ts";
 import { assigneeOwner, reviewThreadsDue, type HuddleThreadStore } from "./huddle-threads.ts";
@@ -46,9 +47,9 @@ export interface HuddleReviewDeps extends HuddleReviewPort {
   readonly runs: Pick<VerificationStore, "latest">;
 }
 
-/** The review step a HuddleAgent answers over RPC for its one Huddle. */
+/** The review step a HuddleAgent answers over RPC for its one Huddle; it goes on to evaluate the close. */
 export interface HuddleReviewer {
-  collectReviews(huddle: Huddle, project: HuddleReviewPort): Promise<ReviewCollection | undefined>;
+  collectReviews(huddle: Huddle, project: HuddleClosePort): Promise<ReviewCollection | undefined>;
 }
 
 export interface ReviewCollection {

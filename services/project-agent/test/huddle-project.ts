@@ -1,7 +1,7 @@
 // Test support for opening Huddle issues: one ProjectAgent's stores over one in-memory database,
 // wired the way the agent wires them, with `openHuddle` called through the same dependencies. Each
-// Huddle's verification runs and review standing are kept apart, as each Huddle's HuddleAgent keeps
-// them in its own SQLite.
+// Huddle's verification runs, review standing and approved-branch request are kept apart, as each
+// Huddle's HuddleAgent keeps them in its own SQLite.
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { generateSigningKeyPair, type FixApproval, type ReduceRejectReason, type RejectReason } from "@penguin/issues";
-import type { Author, CombinedRunEvent, VerificationRunSpec } from "@penguin/protocol";
+import type { ApprovalSpec, Author, CombinedRunEvent, VerificationRunSpec } from "@penguin/protocol";
 import { parseScopeMap, type ScopeMap } from "@penguin/scope-map";
 
 import { parseCombinedRunEvent } from "@penguin/protocol";
@@ -21,7 +21,17 @@ import {
   type ScheduleOutcome,
 } from "../src/combined-run-schedule.ts";
 import { openHuddle, type HuddleOpenDeps, type HuddleOpenOutcome } from "../src/huddle-open.ts";
-import { FixApprovalStore } from "../src/approval-store.ts";
+import { CloseOutStore, FixApprovalStore } from "../src/approval-store.ts";
+import {
+  ApprovedBranchStore,
+  CLOSE_RECORDED_REJECTIONS,
+  closeOut,
+  pendingApprovals,
+  recordApprovedBranch,
+  type ApprovalOutcome,
+  type CloseOutcome,
+  type HuddleCloseDeps,
+} from "../src/huddle-close.ts";
 import { collectReviews, FixReviewStore, type HuddleReviewDeps, type ReviewCollection } from "../src/huddle-reviews.ts";
 import { HuddleStore, type Huddle } from "../src/huddle-store.ts";
 import { HuddleThreadStore } from "../src/huddle-threads.ts";
@@ -108,6 +118,10 @@ export class HuddleProject {
   readonly huddleThreads = new Map<string, HuddleThreadStore>();
   /** Each fix's approval as the ProjectAgent keeps it for the issue page. */
   readonly approvals: FixApprovalStore;
+  /** Each Huddle's approved-branch request, by trigger commit, each over its own database as its HuddleAgent keeps it. */
+  readonly huddleApprovals = new Map<string, ApprovedBranchStore>();
+  /** What each Huddle issue waits on before it closes, as the ProjectAgent keeps it for the issue page. */
+  readonly closeOuts: CloseOutStore;
   /** Each owner's delegate, as the base repo's `penguin/owners.json` names them. */
   delegates = new Map<string, string>();
   /** Commits in each owner's fork, by owner id, as the Artifacts binding's readCommit would find them. */
@@ -141,6 +155,7 @@ export class HuddleProject {
     this.forks = new OwnerForkStore(this.sql);
     this.huddles = new HuddleStore(this.sql);
     this.approvals = new FixApprovalStore(this.sql);
+    this.closeOuts = new CloseOutStore(this.sql);
     let nextRun = 0;
     this.runs = new CombinedRunStore(this.sql, { newId: () => `run-${++nextRun}` });
     if (options.seedIdentities ?? true) {
@@ -178,6 +193,7 @@ export class HuddleProject {
       delegates: this.delegates,
       identities: this.identities,
       fixes: { upstreamScopes: (issueId) => this.huddles.fixOf(this.index.resolve(issueId))?.huddle.triggerScopes },
+      huddles: { startedBy: (issueId) => this.huddles.byIssue(issueId)?.triggerOwner },
     };
     const record = recordRejections === undefined ? {} : { recordRejections };
     return this.index.submit({ operation, author, source, signingKey: key.privateKey, keys, ...record });
@@ -262,6 +278,7 @@ export class HuddleProject {
     for (const huddle of huddlesOf(this.huddles.open(), owner)) {
       const outcome = await scheduleVerification(await this.verifyDeps(huddle), huddle);
       if (outcome !== undefined) outcomes.push(outcome);
+      if (outcome?.status === "scheduled") await this.closeOut(huddle);
     }
     return outcomes;
   }
@@ -273,13 +290,14 @@ export class HuddleProject {
 
   /**
    * Records a report with the Huddle whose HuddleAgent holds run `runId`, then collects the Huddle's
-   * reviews when the report moved it to IN_REVIEW, as the HuddleAgent does.
+   * reviews when the report moved it to IN_REVIEW and evaluates its close, as the HuddleAgent does.
    */
   async reportVerification(runId: string, report: unknown, runnerId = "runner-1"): Promise<VerificationOutcome> {
     const huddle = this.huddles.open().find((open) => this.runsOf(open.triggerCommit).get(runId) !== undefined);
     if (huddle === undefined) return unknownVerification(runId, report);
     const outcome = await recordVerification(await this.verifyDeps(huddle), huddle, runId, runnerId, report);
     if (outcome.status === "recorded" && outcome.state === "in_review") await this.collectReviews(huddle);
+    else if (outcome.status === "recorded") await this.closeOut(huddle);
     return outcome;
   }
 
@@ -317,11 +335,73 @@ export class HuddleProject {
     };
   }
 
-  /** Collects the reviews of a Huddle's fixes, by default the one open Huddle's, as its HuddleAgent does. */
+  /**
+   * Collects the reviews of a Huddle's fixes, by default the one open Huddle's, then evaluates its
+   * close, as its HuddleAgent does.
+   */
   async collectReviews(huddle?: Huddle): Promise<ReviewCollection | undefined> {
     const target = huddle ?? this.huddles.open()[0];
     assert.ok(target !== undefined, "an open Huddle");
-    return collectReviews(await this.reviewDeps(target), target);
+    const collection = await collectReviews(await this.reviewDeps(target), target);
+    await this.closeOut(target);
+    return collection;
+  }
+
+  /** The approved-branch request of the Huddle opened by `triggerCommit`, kept as its HuddleAgent keeps it. */
+  approvalsOf(triggerCommit: string): ApprovedBranchStore {
+    let approvals = this.huddleApprovals.get(triggerCommit);
+    if (approvals === undefined) {
+      approvals = new ApprovedBranchStore(sqlite().sql);
+      this.huddleApprovals.set(triggerCommit, approvals);
+    }
+    return approvals;
+  }
+
+  /** The dependencies a HuddleAgent's close-out steps have: its review deps and approved-branch request. */
+  async closeDeps(huddle: Huddle): Promise<HuddleCloseDeps> {
+    return {
+      ...(await this.reviewDeps(huddle)),
+      approvals: this.approvalsOf(huddle.triggerCommit),
+      recordCloseOut: (issueId, waitingOn) => {
+        this.closeOuts.set(issueId, waitingOn);
+      },
+    };
+  }
+
+  /** Evaluates the close of a Huddle, by default the one open Huddle's, as its HuddleAgent does. */
+  async closeOut(huddle?: Huddle): Promise<CloseOutcome | undefined> {
+    const target = huddle ?? this.huddles.open()[0];
+    assert.ok(target !== undefined, "an open Huddle");
+    return closeOut(await this.closeDeps(target), target);
+  }
+
+  /** The approved branches waiting for the runner across the open Huddles, as the ProjectAgent lists them. */
+  approvalSpecs(): ApprovalSpec[] {
+    return this.huddles
+      .open()
+      .filter((huddle) => huddle.issueId !== null && this.index.issue(huddle.issueId)?.state !== "closed")
+      .flatMap((huddle) => pendingApprovals(this.approvalsOf(huddle.triggerCommit), huddle));
+  }
+
+  /** Records the runner's report of a Huddle issue's approved branch with its HuddleAgent, as the ProjectAgent does. */
+  async reportApprovedBranch(issueId: string, report: unknown, runnerId = "runner-1"): Promise<ApprovalOutcome> {
+    const huddle = this.huddles.byIssue(issueId);
+    if (huddle === undefined) return { status: "rejected", reason: "not_found", message: `no Huddle has issue ${issueId}` };
+    return recordApprovedBranch(await this.closeDeps(huddle), huddle, runnerId, report);
+  }
+
+  /**
+   * `person` writes an operation on the dashboard, with a refused close recorded on the timeline; the
+   * Huddle of the issue, or of the fix, then collects its reviews and evaluates its close, as the
+   * ProjectAgent has it do after an operation changes a fix or a Huddle issue.
+   */
+  async dashboard(person: string, issueId: string, type: string, payload: Record<string, unknown>): Promise<SubmitOutcome> {
+    const version = this.index.issue(issueId)?.version ?? 0;
+    const operation = { issue: Number(issueId), type, base_version: version, payload };
+    const outcome = await this.submit(operation, { person }, "dashboard", CLOSE_RECORDED_REJECTIONS);
+    const huddle = this.huddles.fixOf(issueId)?.huddle ?? this.huddles.byIssue(issueId);
+    if (huddle !== undefined) await this.collectReviews(huddle);
+    return outcome;
   }
 
   /**

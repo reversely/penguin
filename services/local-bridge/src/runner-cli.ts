@@ -1,6 +1,7 @@
 // The `penguin-bridge runner` command: runner mode, one pass or a pass on every interval. With
 // --combined or --repo it also runs the test jobs Penguin schedules in one repository: the combined
-// runs it claims (combined-run-pass.ts) and the Huddle verification runs it lists (verification-run.ts).
+// runs it claims (combined-run-pass.ts), the Huddle verification runs it lists (verification-run.ts)
+// and the approved branches it records in Huddle repos (approval-run.ts).
 
 import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
@@ -9,6 +10,7 @@ import { parseArgs } from "node:util";
 
 import { runGit } from "@penguin/git-analysis";
 
+import { approvalPass, ApprovedBranchWriter, formatApprovalPass, type ApprovalPassResult } from "./approval-run.ts";
 import type { CliIo } from "./cli.ts";
 import { combinedRunPass, forkFetcher, formatCombinedPass, type CombinedPassResult } from "./combined-run-pass.ts";
 import { penguinRemote } from "./git-remote.ts";
@@ -18,9 +20,11 @@ import type { KeyStore } from "./key-store.ts";
 import {
   bridgeRemotes,
   claimCombinedRuns,
+  fetchApprovals,
   fetchPendingOperations,
   fetchVerificationRuns,
   openBridge,
+  reportApproval,
   reportCombinedRun,
   reportVerification,
   type BridgeRegistration,
@@ -41,8 +45,9 @@ export const RUNNER_USAGE = `       penguin-bridge runner [--once] [--interval <
          --combined or --repo also runs Penguin's test jobs in the repository at <path> (default
          <state-dir>/combined): the combined runs it schedules on checkpoints and the Huddle
          verification runs. Each fetches checkpoints there and runs the allowlisted tests in
-         throwaway worktrees; verification pushes the Huddle repo's integration branch. Passing
-         either option is the runner operator's consent to those runs.
+         throwaway worktrees; verification pushes the Huddle repo's integration branch, and an
+         approved Huddle has its approved branch pushed there too. Passing either option is the
+         runner operator's consent to those runs and pushes.
 `;
 
 const DEFAULT_INTERVAL_MS = 10_000;
@@ -51,6 +56,7 @@ const DEFAULT_INTERVAL_MS = 10_000;
 interface TestJobsResult {
   readonly combined: CombinedPassResult | Error;
   readonly verification: VerificationPassResult | Error;
+  readonly approval: ApprovalPassResult | Error;
 }
 
 /**
@@ -160,9 +166,9 @@ export async function runRunnerCommand(
 
 /**
  * One pass of the test jobs bound to this runner: claims and reports combined runs, then lists,
- * runs and reports verification runs. Owner forks are fetched with read tokens into `repoPath`
- * (created as an empty repository when missing); the Huddle repo is pushed with the runner's write
- * token. One job failing never stops the other.
+ * runs and reports verification runs, then records approved branches. Owner forks are fetched with
+ * read tokens into `repoPath` (created as an empty repository when missing); the Huddle repo is
+ * pushed with the runner's write token. One job failing never stops another.
  */
 async function testJobsPass(
   registration: BridgeRegistration,
@@ -180,12 +186,9 @@ async function testJobsPass(
   const { server } = registration;
   const runner = new TestRunner({ repoPath: repo, consent: () => true });
   const readRemotes = bridgeRemotes(stateDir, keyStore, fetchImpl, "read");
-  const verifier = new VerificationRunner({
-    repoPath: repo,
-    runner,
-    readRemotes,
-    writeRemotes: bridgeRemotes(stateDir, keyStore, fetchImpl, "write"),
-  });
+  const writeRemotes = bridgeRemotes(stateDir, keyStore, fetchImpl, "write");
+  const verifier = new VerificationRunner({ repoPath: repo, runner, readRemotes, writeRemotes });
+  const approver = new ApprovedBranchWriter({ repoPath: repo, writeRemotes });
   const settle = <T>(job: () => Promise<T>): Promise<T | Error> => job().catch((error: unknown) => error as Error);
   return async () => ({
     combined: await settle(() =>
@@ -204,22 +207,31 @@ async function testJobsPass(
         report: (runId, report) => reportVerification(server, bridgeToken, runId, report, fetchImpl),
       }),
     ),
+    approval: await settle(() =>
+      approvalPass({
+        list: () => fetchApprovals(server, bridgeToken, fetchImpl),
+        write: (spec) => approver.write(spec),
+        report: (issueId, report) => reportApproval(server, bridgeToken, issueId, report, fetchImpl),
+      }),
+    ),
   });
 }
 
-/** True when both jobs ran and nothing in them was refused or stopped. */
-function testJobsClean({ combined, verification }: TestJobsResult): boolean {
-  if (combined instanceof Error || verification instanceof Error) return false;
+/** True when every job ran and nothing in them was refused or stopped. */
+function testJobsClean({ combined, verification, approval }: TestJobsResult): boolean {
+  if (combined instanceof Error || verification instanceof Error || approval instanceof Error) return false;
   const combinedClean = combined.batches.every((batch) => batch.error === null && batch.refused.length === 0);
-  return combinedClean && verification.failed.length === 0;
+  return combinedClean && verification.failed.length === 0 && approval.failed.length === 0;
 }
 
 /** The pass's lines; `always` writes a job's summary even when it found no work. */
-function formatTestJobs({ combined, verification }: TestJobsResult, always: boolean): string {
+function formatTestJobs({ combined, verification, approval }: TestJobsResult, always: boolean): string {
   let text = "";
   if (combined instanceof Error) text += `No combined runs were claimed: ${combined.message}\n`;
   else if (always || combined.claimed > 0) text += formatCombinedPass(combined);
   if (verification instanceof Error) text += `The verification pass did not run; the runs stay pending: ${verification.message}\n`;
   else if (always || verification.listed > 0) text += formatVerificationPass(verification);
+  if (approval instanceof Error) text += `The approval pass did not run; the approved branches stay listed: ${approval.message}\n`;
+  else if (always || approval.listed > 0) text += formatApprovalPass(approval);
   return text;
 }

@@ -11,6 +11,7 @@ import {
   anchoredReview,
   type IssuePage,
   type IssuePageCheck,
+  type IssuePageCloseOut,
   type IssuePageOwnerApproval,
   type IssuePageReview,
   type IssuePageState,
@@ -53,6 +54,17 @@ export const APPROVAL_LABEL: Readonly<Record<IssuePageOwnerApproval["state"], st
   changes_requested: "Changes requested",
   pending: "Awaiting review",
 };
+
+/** How a closed issue ended, as one sentence. */
+export const RESOLUTION_LABEL: Readonly<Record<NonNullable<IssuePageCloseOut["resolution"]>, string>> = {
+  approved: "Closed as approved. Merging the approved branch is a separate step.",
+  cancelled: "Cancelled by the owner who started the work.",
+};
+
+/** True when the close-out has something to show: a resolution, the approved branch or what it waits on. */
+export function showsCloseOut(closeOut: IssuePageCloseOut | null | undefined): closeOut is IssuePageCloseOut {
+  return closeOut != null && (closeOut.resolution !== null || closeOut.approvedCommit !== null || closeOut.waitingOn.length > 0);
+}
 
 /**
  * True when a counting review is of a commit other than the fix's head, so it no longer counts. A
@@ -224,6 +236,9 @@ export function describeEntry(entry: IssuePageTimelineEntry): EntryText {
       return withText("resolved a thread", text(p["reason"]));
     case "change_state": {
       const state = text(p["state"]);
+      const resolution = text(p["resolution"]);
+      if (state === "closed" && resolution === "cancelled") return withText("cancelled the issue", text(p["reason"]));
+      if (state === "closed" && resolution === "approved") return withText("closed the issue as approved", text(p["reason"]));
       const label = state !== undefined && state in STATE_LABEL ? STATE_LABEL[state as IssuePageState] : state;
       return withText(`moved the issue to ${label ?? "a new state"}`, text(p["reason"]));
     }

@@ -86,6 +86,17 @@ describe("operation schema", () => {
     );
   });
 
+  test("a close may name its resolution; no other state change may", () => {
+    const stateChange = (payload: Record<string, unknown>) => ({ ...withField("type", "change_state"), payload });
+    for (const resolution of ["approved", "cancelled"]) {
+      assert.equal(validateOperation(stateChange({ state: "closed", reason: "Done.", resolution })).ok, true);
+    }
+    rejects(stateChange({ state: "closed", reason: "Done.", resolution: "merged" }), "/payload/resolution");
+    rejects(stateChange({ state: "fixing", reason: "Back to work.", resolution: "cancelled" }), "/payload/state");
+    const link = { ...withField("type", "link_commit"), payload: { commit: "huddle-031@9b2f10", kind: "approved" } };
+    assert.equal(validateOperation(link).ok, true);
+  });
+
   test("op_id and author segments outside [a-z0-9.-] are rejected", () => {
     const badOpIds = [
       "../jun-web-0007",

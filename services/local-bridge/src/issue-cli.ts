@@ -22,7 +22,7 @@ export const ISSUE_USAGE = `Usage: penguin-bridge issue <command> --owner <id> [
   label   --issue <id> --label <label>
   assign  --issue <id> --to <person|@owner/name>
   review  --issue <id> --verdict approve|request_changes --commit <repo@sha> [--reason <text>]
-  state   --issue <id> --state <state> --reason <text>
+  state   --issue <id> --state <state> --reason <text> [--resolution approved|cancelled]
        penguin-bridge key --owner <id>
 `;
 
@@ -42,6 +42,7 @@ const OPTIONS = {
   commit: { type: "string" },
   reason: { type: "string" },
   state: { type: "string" },
+  resolution: { type: "string" },
   "state-dir": { type: "string" },
 } as const;
 
@@ -147,7 +148,12 @@ function buildChange(command: string | undefined, values: Values): IssueChange {
       return {
         type: "change_state",
         issue: issue(),
-        payload: { state: required(values.state, "--state"), reason: required(values.reason, "--reason") },
+        payload: {
+          state: required(values.state, "--state"),
+          reason: required(values.reason, "--reason"),
+          // Closing a Huddle issue as cancelled is its starting owner's alone.
+          ...(values.resolution === undefined ? {} : { resolution: values.resolution }),
+        },
       };
     default:
       throw new UsageError(`unknown issue command ${JSON.stringify(command ?? "")}`);

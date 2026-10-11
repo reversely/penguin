@@ -12,7 +12,7 @@ import { reviewOwners } from "./review-rights.ts";
 export interface LinkedCommitRecord {
   readonly repo: string;
   readonly sha: string;
-  readonly kind: "trigger" | "fix" | "related" | null;
+  readonly kind: "trigger" | "fix" | "related" | "approved" | null;
 }
 
 /** A review on an issue, as the issue index holds it. */

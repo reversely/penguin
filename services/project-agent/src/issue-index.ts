@@ -37,8 +37,10 @@ import {
   type Comment,
   type Delegates,
   type FixLookup,
+  type HuddleContext,
   type IssueRecord,
   type IssueStateName,
+  type LinkedCommit,
   type RejectReason,
   type ReduceRejectReason,
   type Thread,
@@ -77,6 +79,14 @@ export interface OperationKeys {
   readonly identities: IdentitySource;
   /** The Huddle fix sub-issues a send_upstream may name (the Huddle store). Without it, none is a fix. */
   readonly fixes?: FixLookup;
+  /** The Huddle issues whose close the close rule judges (the Huddle store). Without it, none is. */
+  readonly huddles?: HuddleLookup;
+}
+
+/** Which issues are Huddle issues, and who started each Huddle's work. */
+export interface HuddleLookup {
+  /** The owner whose checkpoint triggered the Huddle whose issue has this number, or undefined. */
+  startedBy(issueId: string): string | undefined;
 }
 
 export interface ApplyInput {
@@ -612,6 +622,7 @@ export class IssueIndex {
       nextIssueNumber: () => this.#highestIssueNumber() + 1,
       scopeMap: keys.scopeMap,
       ...(keys.delegates === undefined ? {} : { delegates: keys.delegates }),
+      huddle: (other) => this.#huddleContext(keys.huddles, other),
     });
     if (!result.ok) {
       const rejectedId = issueId ?? this.resolve(issueKey(operation.issue));
@@ -642,6 +653,18 @@ export class IssueIndex {
       throw error;
     }
     return { status: "applied", opId: operation.op_id, issueId: id, version: result.issue.version };
+  }
+
+  /**
+   * The Huddle whose issue has this number, with its fix sub-issues as this index holds them, so a
+   * rebuild judges a close by the shadow tables' state; undefined for any other issue.
+   */
+  #huddleContext(huddles: HuddleLookup | undefined, issueId: string): HuddleContext | undefined {
+    const startedBy = huddles?.startedBy(issueId);
+    const issue = startedBy === undefined ? undefined : this.issue(issueId);
+    if (startedBy === undefined || issue === undefined) return undefined;
+    const fixes = [...issue.subIssues.keys()].flatMap((childId) => this.issue(childId) ?? []);
+    return { startedBy, fixes };
   }
 
   #notifyAssignments(id: string, prev: IssueRecord | undefined, next: IssueRecord): void {
@@ -965,7 +988,7 @@ export class IssueIndex {
           opId: text(r, "op_id"),
           repo: text(r, "repo"),
           sha: text(r, "sha"),
-          kind: nullable(r, "kind") as "trigger" | "fix" | "related" | null,
+          kind: nullable(r, "kind") as LinkedCommit["kind"],
         }),
       ),
       checks: keyed(

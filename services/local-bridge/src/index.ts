@@ -39,12 +39,14 @@ export {
 } from "./git-remote.ts";
 export type { GitRemote, RemoteResolver, RepoToken, TokenSource } from "./git-remote.ts";
 export {
+  APPROVAL_ROUTE,
   bridgeRemotes,
   bridgeTokenAccount,
   checkedOrigin,
   claimCombinedRuns,
   COMBINED_RUN_CLAIM_ROUTE,
   COMBINED_RUN_ROUTE,
+  fetchApprovals,
   fetchPendingOperations,
   fetchVerificationRuns,
   openBridge,
@@ -52,12 +54,14 @@ export {
   readRegistration,
   registerBridge,
   registrationFile,
+  reportApproval,
   reportCombinedRun,
   reportVerification,
   TokenClient,
   VERIFICATION_ROUTE,
 } from "./penguin-client.ts";
 export type {
+  ApprovalReply,
   BridgeRegistration,
   ClaimedCombinedRun,
   CombinedRunReply,
@@ -149,6 +153,8 @@ export {
   verificationPass,
   VerificationRunner,
 } from "./verification-run.ts";
+export { ApprovedBranchWriter, approvalPass, formatApprovalPass } from "./approval-run.ts";
+export type { ApprovalPassOptions, ApprovalPassResult, ApprovedBranchWriterOptions } from "./approval-run.ts";
 export type {
   VerificationPassOptions,
   VerificationPassResult,

@@ -10,6 +10,7 @@
 import type { ReduceRejectReason, RejectReason } from "@penguin/issues";
 import type { Author } from "@penguin/protocol";
 
+import { CLOSE_RECORDED_REJECTIONS } from "./huddle-close.ts";
 import type { SubmitOutcome } from "./issue-index.ts";
 import type { SessionRejection, SessionStore } from "./session-store.ts";
 import { UPSTREAM_RECORDED_REJECTIONS, type Reassignment } from "./upstream.ts";
@@ -86,7 +87,8 @@ export async function postSessionUpdate(
     base_version: update.baseVersion ?? deps.issueVersion(issueId) ?? 0,
     payload: update.payload,
   };
-  if (!upstream) return deps.submit(operation, { identity: handle });
+  // A refused close of a Huddle issue is recorded, so the timeline says what the Huddle waits on.
+  if (!upstream) return deps.submit(operation, { identity: handle }, update.type === "change_state" ? CLOSE_RECORDED_REJECTIONS : undefined);
   const outcome = await deps.submit(operation, { identity: handle }, UPSTREAM_RECORDED_REJECTIONS);
   if (outcome.status !== "applied") return outcome;
   return { ...outcome, reassignment: await deps.reassignUpstream(outcome.issueId, handle) };

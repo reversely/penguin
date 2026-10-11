@@ -32,3 +32,17 @@ export {
   type ThreadRecord,
   type ThreadRight,
 } from "./thread-rights.ts";
+export {
+  approvedCommit,
+  closeBlockers,
+  closeRefusal,
+  openThreadsOf,
+  verifiedIntegration,
+  type CloseCheckRecord,
+  type CloseInput,
+  type CloseRefusal,
+  type CloseThreadRecord,
+  type FixCloseRecord,
+  type HuddleCloseRecord,
+  type OpenThread,
+} from "./huddle-close.ts";

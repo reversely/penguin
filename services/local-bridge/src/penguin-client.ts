@@ -5,7 +5,13 @@
 import { mkdir, open, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
-import type { CombinedRunEvent, VerificationReport, VerificationRunSpec } from "@penguin/protocol";
+import type {
+  ApprovalReport,
+  ApprovalSpec,
+  CombinedRunEvent,
+  VerificationReport,
+  VerificationRunSpec,
+} from "@penguin/protocol";
 
 import {
   artifactsRemote,
@@ -461,6 +467,47 @@ export async function reportVerification(
     throw new RemoteRefusedError(`Penguin refused verification run ${runId} (HTTP ${status})${message}`);
   }
   throw new RemoteUnavailableError(`Penguin could not take verification run ${runId} (HTTP ${status})${message}`);
+}
+
+/** The route a runner lists approved branches from, and reports each one to under `/<issue id>`. */
+export const APPROVAL_ROUTE = "/approvals";
+
+/** Penguin's answer to an approved-branch report: the Huddle issue's state after it. */
+export interface ApprovalReply {
+  readonly status: "recorded";
+  readonly issueId: string;
+  readonly state: string;
+  readonly commit: string;
+}
+
+/**
+ * Lists the approved branches waiting for the runner. Penguin answers only a bridge registered with
+ * the runner role. Each listing is checked again by the runner before it fetches or pushes anything.
+ */
+export async function fetchApprovals(server: string, bridgeToken: string, fetchImpl: Fetch = fetch): Promise<ApprovalSpec[]> {
+  const { status, body } = await runnerRequest(server, bridgeToken, APPROVAL_ROUTE, undefined, fetchImpl);
+  if (status !== 200 || !Array.isArray(body["approvals"])) {
+    throw new RemoteUnavailableError(`Penguin could not list approved branches (HTTP ${status})`);
+  }
+  return body["approvals"] as ApprovalSpec[];
+}
+
+/** Reports the Huddle repo's approved branch to Penguin, which links it and closes the Huddle issue. */
+export async function reportApproval(
+  server: string,
+  bridgeToken: string,
+  issueId: string,
+  report: ApprovalReport,
+  fetchImpl: Fetch = fetch,
+): Promise<ApprovalReply> {
+  const route = `${APPROVAL_ROUTE}/${encodeURIComponent(issueId)}`;
+  const { status, body } = await runnerRequest(server, bridgeToken, route, report, fetchImpl);
+  if (status === 200) return body as unknown as ApprovalReply;
+  const message = typeof body["message"] === "string" ? `: ${body["message"]}` : "";
+  if ([400, 404, 409].includes(status)) {
+    throw new RemoteRefusedError(`Penguin refused the approved branch of #${issueId} (HTTP ${status})${message}`);
+  }
+  throw new RemoteUnavailableError(`Penguin could not take the approved branch of #${issueId} (HTTP ${status})${message}`);
 }
 
 /** One runner request: GET without a body, else POST of `body` as JSON. Answers 401 and 403 throw. */

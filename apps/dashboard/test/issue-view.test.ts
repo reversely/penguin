@@ -19,8 +19,10 @@ import {
   latestChecks,
   penguinState,
   reasonLabel,
+  RESOLUTION_LABEL,
   reviewSuperseded,
   threadOpener,
+  showsCloseOut,
   watchedIssues,
 } from "../src/issue-view.ts";
 import { latestChange, recordChange, type LiveChanges } from "../src/live-changes.ts";
@@ -158,6 +160,21 @@ test("each operation reads as one line, with its text kept apart and never parse
   assert.equal(authorName("jun.reports"), "@jun/reports");
   assert.equal(authorName("penguin"), "Penguin");
   assert.equal(authorName(null), "Unknown author");
+});
+
+test("a close names how the issue ended, and the close-out shows only when it holds something", () => {
+  const closing = (resolution?: string) =>
+    describeEntry(entry({ type: "change_state", payload: { state: "closed", reason: "done", ...(resolution ? { resolution } : {}) } }));
+  assert.deepEqual(closing("approved"), { summary: "closed the issue as approved", text: "done" });
+  assert.deepEqual(closing("cancelled"), { summary: "cancelled the issue", text: "done" });
+  assert.deepEqual(closing(), { summary: "moved the issue to Closed", text: "done" });
+
+  assert.equal(showsCloseOut(null), false);
+  assert.equal(showsCloseOut(undefined), false);
+  assert.equal(showsCloseOut({ waitingOn: [], approvedCommit: null, resolution: null }), false);
+  assert.equal(showsCloseOut({ waitingOn: ["Thread jun-web-0003 on #33 is open."], approvedCommit: null, resolution: null }), true);
+  assert.equal(showsCloseOut({ waitingOn: [], approvedCommit: "huddle-031@c3", resolution: "approved" }), true);
+  assert.match(RESOLUTION_LABEL.cancelled, /owner who started the work/u);
 });
 
 test("a failing check is fixed in the sub-issue whose latest check of the same test passes", () => {

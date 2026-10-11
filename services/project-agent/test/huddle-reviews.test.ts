@@ -96,8 +96,10 @@ describe("collectReviews", () => {
     project.publish("jun", JUN_CHECKPOINT);
     assert.equal((await project.open(failingRun())).status, "opened");
     const issue = project.index.issue("1");
+    // Priya started the work, so Priya may cancel it.
+    const payload = { state: "closed", reason: "cancelled", resolution: "cancelled" };
     const closed = await project.submit(
-      { issue: 1, type: "change_state", base_version: issue?.version, payload: { state: "closed", reason: "cancelled" } },
+      { issue: 1, type: "change_state", base_version: issue?.version, payload },
       { person: "priya" },
       "dashboard",
     );

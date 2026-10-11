@@ -26,7 +26,7 @@ export interface IssuePageCommit {
   readonly opId: string;
   readonly repo: string;
   readonly sha: string;
-  readonly kind: "trigger" | "fix" | "related" | null;
+  readonly kind: "trigger" | "fix" | "related" | "approved" | null;
   /** The author segment of the operation that linked the commit, or null when it is not known. */
   readonly linkedBy: string | null;
 }
@@ -84,6 +84,19 @@ export interface IssuePageApproval {
   readonly owners: readonly IssuePageOwnerApproval[];
   /** True when every owner approved the head. */
   readonly approved: boolean;
+}
+
+/** What a Huddle issue waits on before it closes, and how a closed issue ended. */
+export interface IssuePageCloseOut {
+  /**
+   * What the Huddle issue waits on before Penguin records its approved branch and closes it, one
+   * sentence each, as its HuddleAgent last evaluated it; empty once nothing does or the issue is closed.
+   */
+  readonly waitingOn: readonly string[];
+  /** The Huddle repo's approved branch commit, `<repo>@<sha>`, once Penguin recorded it; null before. */
+  readonly approvedCommit: string | null;
+  /** How the closed issue ended, or null while it is open or when its close named no resolution. */
+  readonly resolution: "approved" | "cancelled" | null;
 }
 
 export interface IssuePageThread {
@@ -148,6 +161,11 @@ export interface IssuePage {
     readonly checks: readonly IssuePageCheck[];
     readonly reviews: readonly IssuePageReview[];
     readonly threads: readonly IssuePageThread[];
+    /**
+     * The close-out of a Huddle issue or a closed issue; null for any other issue. Absent from the
+     * board's issue views.
+     */
+    readonly closeOut?: IssuePageCloseOut | null;
   };
   readonly subIssues: readonly IssuePageSubIssue[];
   readonly timeline: readonly IssuePageTimelineEntry[];

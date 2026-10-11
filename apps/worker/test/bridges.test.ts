@@ -153,6 +153,7 @@ function fakeHuddles() {
   const forked: string[] = [];
   const state = { failForks: 0 };
   const reports: { runId: string; runnerId: string; report: unknown }[] = [];
+  const approvals: { issueId: string; runnerId: string; report: unknown }[] = [];
   const directory: HuddleDirectory = {
     async open(event, triggerFork) {
       opened.push({ event, triggerFork });
@@ -194,8 +195,18 @@ function fakeHuddles() {
       if (runId === "8") return { status: "rejected", reason: "not_found", message: "no verification run 8" };
       return { status: "recorded", issueId: "31", state: "in_review", commit: `huddle-031@${"c".repeat(40)}` };
     },
+    async pendingApprovals() {
+      return [{ issueId: "31", huddleRepo: "huddle-031", sha: "c".repeat(40) }];
+    },
+    // Issue 31's branch records, issue 30 was requested at another commit, issue 29 is no Huddle.
+    async reportApproval(issueId, runnerId, report) {
+      approvals.push({ issueId, runnerId, report });
+      if (issueId === "30") return { status: "rejected", reason: "stale", message: "requested at another commit" };
+      if (issueId === "29") return { status: "rejected", reason: "not_found", message: "no Huddle has issue 29" };
+      return { status: "recorded", issueId, state: "closed", commit: `huddle-031@${"c".repeat(40)}` };
+    },
   };
-  return Object.assign(directory, { opened, forked, state, reports });
+  return Object.assign(directory, { opened, forked, state, reports, approvals });
 }
 
 type Call = ReturnType<typeof gateway>["call"];
@@ -551,6 +562,34 @@ test("only a runner lists and reports verification runs; a superseded run answer
   assert.equal((await report("8")).status, 404);
   assert.equal((await report("7", jun.bridgeToken)).status, 403);
   assert.equal(huddles.reports.length, 3);
+});
+
+test("only a runner lists and reports approved branches; a commit no longer requested answers 409", async () => {
+  const { call, huddles } = gateway();
+  const runner = await registerBridge(call, "sam", "runner");
+  const jun = await registerBridge(call, "jun");
+  const sha = "c".repeat(40);
+
+  const listed = await call("/approvals", { method: "GET", token: runner.bridgeToken });
+  assert.equal(listed.status, 200);
+  assert.equal(listed.headers.get("Cache-Control"), "no-store");
+  assert.deepEqual(await listed.json(), { approvals: [{ issueId: "31", huddleRepo: "huddle-031", sha }] });
+  assert.equal((await call("/approvals", { method: "GET", token: jun.bridgeToken })).status, 403);
+  assert.equal((await call("/approvals", { method: "GET" })).status, 401);
+  assert.equal((await call("/approvals", { token: runner.bridgeToken, body: {} })).status, 405);
+
+  const report = (issueId: string, token = runner.bridgeToken) => call(`/approvals/${issueId}`, { token, body: { sha } });
+  const recorded = await report("31");
+  assert.equal(recorded.status, 200);
+  assert.deepEqual(await recorded.json(), { status: "recorded", issueId: "31", state: "closed", commit: `huddle-031@${sha}` });
+  // The runner is named from its token, never from the request.
+  assert.equal(huddles.approvals[0]?.runnerId, runner.bridgeId);
+  assert.equal((await report("30")).status, 409);
+  assert.equal((await report("29")).status, 404);
+  assert.equal((await report("31", jun.bridgeToken)).status, 403);
+  // An issue is named by its number alone, so a padded one is no approval route.
+  assert.notEqual((await call("/approvals/031", { token: runner.bridgeToken, body: { sha } })).status, 200);
+  assert.equal(huddles.approvals.length, 3);
 });
 
 test("the Worker forks the Huddle repo the runner is told to push to", () => {

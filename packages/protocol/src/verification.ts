@@ -91,6 +91,41 @@ export function huddleRepoName(issueId: string): string {
   return `huddle-${huddleRepoId(issueId)}`;
 }
 
+/** The Huddle repo's branch that holds the approved candidate (PRD sections 5 and 6). */
+export const APPROVED_BRANCH = "approved";
+
+/**
+ * An approved branch for the runner to record: once every fix of the Huddle is approved, the combined
+ * tests pass and every thread is resolved, the Huddle repo's `approved` branch is pointed at `sha`,
+ * the verified `integration` commit.
+ */
+export interface ApprovalSpec {
+  /** The Huddle issue's number. */
+  readonly issueId: string;
+  /** The Huddle repo as a project repo name, `huddle-<id>`. */
+  readonly huddleRepo: string;
+  readonly sha: string;
+}
+
+/** The runner's report: the `approved` branch now points at `sha`. */
+export interface ApprovalReport {
+  readonly sha: string;
+}
+
+export type ApprovalReportParse =
+  | { readonly ok: true; readonly report: ApprovalReport }
+  | { readonly ok: false; readonly issues: CombinedRunIssue[] };
+
+/** Checks an approval report from the network and returns a copy holding only its fields. */
+export function parseApprovalReport(value: unknown): ApprovalReportParse {
+  const issues: CombinedRunIssue[] = [];
+  if (!isRecord(value)) return { ok: false, issues: [{ field: "", message: "must be a JSON object" }] };
+  const sha = parseCommitField(value.sha, "sha", (field, message) => {
+    issues.push({ field, message });
+  });
+  return sha === undefined || issues.length > 0 ? { ok: false, issues } : { ok: true, report: { sha } };
+}
+
 const COMMAND_ID = new RegExp(`^${COMMAND_ID_PATTERN}$`, "u");
 
 function isRecord(value: unknown): value is Record<string, unknown> {

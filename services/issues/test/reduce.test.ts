@@ -240,4 +240,28 @@ describe("reduce", () => {
     const later = op(penguin, "link_commit", { commit: "owner-jun@cccccc", supersedes: [check.op_id] });
     assert.equal(ok(reduce(issue, later, noIssues)).checks.get(check.op_id)?.supersededBy, link.op_id);
   });
+
+  test("only Penguin links the approved branch", () => {
+    const approved = { commit: "huddle-031@cccccc", kind: "approved" };
+    rejected(reduce(created(), op(priya, "link_commit", approved), noIssues), "approved_link_forbidden");
+    const linked = ok(reduce(created(), op({ penguin: true }, "link_commit", approved), noIssues));
+    assert.deepEqual([...linked.linkedCommits.values()].map((link) => link.kind), ["approved"]);
+  });
+
+  test("a Huddle issue's close is judged by the close rule; any other issue closes freely", () => {
+    const close = (author: Author, resolution?: string) =>
+      op(author, "change_state", { state: "closed", reason: "Done.", ...(resolution === undefined ? {} : { resolution }) });
+    // Issue 33 here is a Huddle issue that Priya started, still fixing and with no checks.
+    const huddle: ReduceContext = { ...noIssues, huddle: (id) => (id === "33" ? { startedBy: "priya", fixes: [] } : undefined) };
+    const blocked = reduce(created(), close(priya), huddle);
+    rejected(blocked, "close_blocked");
+    assert.match(!blocked.ok ? blocked.message : "", /#33 is open, not in review\. The combined tests have not run\./u);
+    rejected(reduce(created(), close(jun, "cancelled"), huddle), "not_starting_owner");
+    const cancelled = ok(reduce(created(), close(priya, "cancelled"), huddle));
+    assert.deepEqual([cancelled.state, cancelled.stateReason], ["closed", "Done."]);
+    assert.equal(ok(reduce(created(), close(jun), noIssues)).state, "closed");
+    // Moving a Huddle issue to another state is not a close.
+    const fixing = op(jun, "change_state", { state: "fixing", reason: "Back to work." });
+    assert.equal(ok(reduce(created(), fixing, huddle)).state, "fixing");
+  });
 });

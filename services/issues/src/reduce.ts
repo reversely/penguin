@@ -9,15 +9,24 @@
 // its people (packages/policies/src/thread-rights.ts). It also
 // records whether a review counts toward approval, which depends on the issue's scope labels and the
 // owners' delegates: a review from someone without review rights is kept as a comment that does not
-// count (PRD sections 5 and 14).
+// count (PRD sections 5 and 14). A close of a Huddle issue is judged by the close rule
+// (packages/policies/src/huddle-close.ts) over the issue and its fix sub-issues, which the context
+// supplies, and only Penguin links the `approved` commit that rule asks for.
 //
 // A create that names its own op_id as the issue (a bridge's create, written without a number) is
 // renumbered: the issue takes the number the context assigns and keeps the op_id as its alias. Every
 // later reference to the alias, as an operation's issue or as a sub-issue, resolves to the number
 // through the context (#48).
 
-import { reviewRight, threadResolveRight, type Delegates } from "@penguin/policies";
-import { authorSegment, isTemporaryIssueId, type IssueId, type Operation, type Party } from "@penguin/protocol";
+import { closeRefusal, openThreadsOf, reviewRight, threadResolveRight, type Delegates } from "@penguin/policies";
+import {
+  authorSegment,
+  isTemporaryIssueId,
+  type CloseResolution,
+  type IssueId,
+  type Operation,
+  type Party,
+} from "@penguin/protocol";
 import type { ScopeMap } from "@penguin/scope-map";
 
 export const REDUCE_REJECT_REASONS = [
@@ -49,6 +58,15 @@ export const REDUCE_REJECT_REASONS = [
   "supersede_forbidden",
   /** A send_upstream from an author other than an identity assigned to the issue. */
   "not_assignee",
+  /** A link of an `approved` commit from someone other than Penguin. */
+  "approved_link_forbidden",
+  /**
+   * A close of a Huddle issue as approved while a fix lacks a counting approval, a current check fails
+   * or is superseded, a thread is open, or the approved branch is not recorded.
+   */
+  "close_blocked",
+  /** A cancel of a Huddle issue from anyone but the owner who started the work. */
+  "not_starting_owner",
 ] as const;
 
 export type ReduceRejectReason = (typeof REDUCE_REJECT_REASONS)[number];
@@ -87,7 +105,7 @@ export interface LinkedCommit {
   readonly opId: string;
   readonly repo: string;
   readonly sha: string;
-  readonly kind: "trigger" | "fix" | "related" | null;
+  readonly kind: "trigger" | "fix" | "related" | "approved" | null;
 }
 
 export interface Check {
@@ -193,6 +211,17 @@ export interface ReduceContext {
   readonly scopeMap: ScopeMap;
   /** Each owner's delegate, whose review counts in the owner's place. None when absent. */
   readonly delegates?: Delegates;
+  /**
+   * The Huddle whose Huddle issue this is: the owner who started the work and the issue's fix
+   * sub-issues. Undefined for any other issue, whose close no rule judges.
+   */
+  huddle?(issueId: string): HuddleContext | undefined;
+}
+
+export interface HuddleContext {
+  /** The owner whose checkpoint triggered the Huddle: the only one who may cancel it. */
+  readonly startedBy: string;
+  readonly fixes: readonly IssueRecord[];
 }
 
 export type ReduceResult =
@@ -315,6 +344,9 @@ function apply(issue: IssueRecord, operation: Operation, context: ReduceContext)
     }
     case "link_commit": {
       const { commit, kind, supersedes = [] } = p as { commit: string; kind?: LinkedCommit["kind"]; supersedes?: string[] };
+      if (kind === "approved" && !("penguin" in operation.author)) {
+        return reject("approved_link_forbidden", "only Penguin links the approved branch");
+      }
       const checks = supersede(issue, operation, supersedes);
       if ("reason" in checks) return checks;
       const link: LinkedCommit = { opId, ...splitCommit(commit), kind: kind ?? null };
@@ -397,8 +429,9 @@ function apply(issue: IssueRecord, operation: Operation, context: ReduceContext)
       return { ...issue, threads: withEntry(issue.threads, id, updated) };
     }
     case "change_state": {
-      const { state, reason } = p as { state: IssueStateName; reason: string };
-      return { ...issue, state, stateReason: reason };
+      const { state, reason, resolution } = p as { state: IssueStateName; reason: string; resolution?: CloseResolution };
+      const refusal = state === "closed" ? huddleCloseRefusal(issue, operation, resolution, context) : undefined;
+      return refusal ?? { ...issue, state, stateReason: reason };
     }
     case "send_upstream": {
       // The note stays on the timeline; Penguin's reassignment follows as its own operations.
@@ -408,6 +441,27 @@ function apply(issue: IssueRecord, operation: Operation, context: ReduceContext)
       return reject("not_assignee", `${who} is not assigned to issue ${issue.id}, so it cannot send it upstream`);
     }
   }
+}
+
+/** Why a close of a Huddle issue is refused, or undefined when it may close or the issue is no Huddle's. */
+function huddleCloseRefusal(
+  issue: IssueRecord,
+  operation: Operation,
+  resolution: CloseResolution | undefined,
+  context: ReduceContext,
+): Rejection | undefined {
+  const huddle = context.huddle?.(issue.id);
+  if (huddle === undefined) return undefined;
+  const refusal = closeRefusal({
+    issue,
+    fixes: huddle.fixes,
+    openThreads: openThreadsOf(issue, huddle.fixes),
+    scopeMap: context.scopeMap,
+    author: operation.author,
+    startedBy: huddle.startedBy,
+    resolution,
+  });
+  return refusal === undefined ? undefined : reject(refusal.reason, refusal.message);
 }
 
 function subIssueError(issue: IssueRecord, child: string, context: ReduceContext): Rejection | undefined {

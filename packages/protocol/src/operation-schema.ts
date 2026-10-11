@@ -91,6 +91,11 @@ export const OPERATION_TYPES = [
 
 export type OperationType = (typeof OPERATION_TYPES)[number];
 
+/** How a close ends an issue's work (PRD section 6): approved, or cancelled by the owner who started it. */
+export const CLOSE_RESOLUTIONS = ["approved", "cancelled"] as const;
+
+export type CloseResolution = (typeof CLOSE_RESOLUTIONS)[number];
+
 const TEXT_MAX = 32_768;
 
 /** Most checks one `link_commit` may mark superseded; it keeps the operation under the file size cap. */
@@ -128,7 +133,7 @@ export const PAYLOAD_SCHEMAS: Readonly<Record<OperationType, JsonSchema>> = {
   link_commit: payload(
     {
       commit: { $ref: "#/$defs/commit" },
-      kind: { type: "string", enum: ["trigger", "fix", "related"] },
+      kind: { type: "string", enum: ["trigger", "fix", "related", "approved"] },
       supersedes: { type: "array", items: opRef, minItems: 1, maxItems: MAX_SUPERSEDED_CHECKS, uniqueItems: true },
     },
     ["commit"],
@@ -136,7 +141,8 @@ export const PAYLOAD_SCHEMAS: Readonly<Record<OperationType, JsonSchema>> = {
       description:
         "`supersedes` lists the op_ids of checks on this issue that the linked commit makes out of date: a " +
         "newer checkpoint changes the code those results ran against, so they no longer count. Only Penguin " +
-        "writes it.",
+        "writes it. Kind `approved` records the Huddle repo's `approved` branch as close-out evidence; only " +
+        "Penguin links it.",
     },
   ),
   attach_check: payload(
@@ -189,8 +195,15 @@ export const PAYLOAD_SCHEMAS: Readonly<Record<OperationType, JsonSchema>> = {
     {
       state: { type: "string", enum: ["open", "detected", "fixing", "verifying", "in_review", "closed"] },
       reason,
+      resolution: { type: "string", enum: CLOSE_RESOLUTIONS },
     },
     ["state", "reason"],
+    {
+      description:
+        "`resolution` says how a close ends the work: `approved` once Penguin records the approved branch, or " +
+        "`cancelled` by the owner who started it. A Huddle issue's close without one is judged as approved.",
+      allOf: [{ if: { required: ["resolution"] }, then: { properties: { state: { const: "closed" } } } }],
+    },
   ),
   send_upstream: payload({ reason }, ["reason"], {
     description:

@@ -10,6 +10,7 @@
 import type {
   IssuePage,
   IssuePageAssignee,
+  IssuePageCloseOut,
   IssuePageCheck,
   IssuePageReview,
   IssuePageSubIssue,
@@ -31,8 +32,10 @@ import {
   fixedIn,
   penguinState,
   reasonLabel,
+  RESOLUTION_LABEL,
   reviewSuperseded,
   shortSha,
+  showsCloseOut,
   SIGNAL_LABEL,
   STATE_LABEL,
   threadOpener,
@@ -234,6 +237,8 @@ function IssueContent({
 
           <AssigneesPanel issue={issue} identities={identities} onSignedOut={onSignedOut} onWritten={onWritten} />
 
+          {showsCloseOut(issue.closeOut) ? <CloseOutPanel closeOut={issue.closeOut} /> : null}
+
           <section className="panel" aria-labelledby="issue-trigger">
             <h2 id="issue-trigger">Trigger</h2>
             {trigger.length === 0 ? (
@@ -271,6 +276,34 @@ function IssueContent({
         </DetailsPanel>
       </div>
     </article>
+  );
+}
+
+/** How the issue closed and its approved branch, or what a Huddle issue waits on before it closes. */
+function CloseOutPanel({ closeOut }: { closeOut: IssuePageCloseOut }) {
+  const at = closeOut.approvedCommit?.indexOf("@") ?? -1;
+  return (
+    <section className="panel" aria-labelledby="issue-close-out">
+      <h2 id="issue-close-out">Close-out</h2>
+      {closeOut.resolution === null ? null : <p>{RESOLUTION_LABEL[closeOut.resolution]}</p>}
+      {closeOut.approvedCommit === null ? null : (
+        <p className="row">
+          <span className="tag">approved</span>
+          <code className="revision">
+            {closeOut.approvedCommit.slice(0, at)}@{shortSha(closeOut.approvedCommit.slice(at + 1))}
+          </code>
+        </p>
+      )}
+      {closeOut.waitingOn.length === 0 ? null : (
+        <ul className="rows">
+          {closeOut.waitingOn.map((line) => (
+            <li key={line} className="row">
+              {line}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }
 

@@ -5,6 +5,7 @@ import {
   type ApplyInput,
   type ApplyOutcome,
   type BridgeCaller,
+  type HuddleLookup,
   type IndexListener,
   type IssueChange,
   type OperationKeys,
@@ -50,9 +51,15 @@ import { reassignUpstream } from "./upstream.ts";
 import { IngestLedger, ingestPush, type IngestReport } from "./push-ingest.ts";
 import { rebuildIndex, type RebuildReport } from "./rebuild.ts";
 import { OWNERS_PATH, parseOwnersFile, parseScopeFile, SCOPE_MAP_PATH } from "./scope-file.ts";
-import { FixApprovalStore } from "./approval-store.ts";
-import type { HuddleReviewer, HuddleReviewPort, ReviewCollection } from "./huddle-reviews.ts";
+import { CloseOutStore, FixApprovalStore } from "./approval-store.ts";
+import type { HuddleReviewer, ReviewCollection } from "./huddle-reviews.ts";
 import type { HuddleThread, HuddleThreadKeeper } from "./huddle-threads.ts";
+import {
+  CLOSE_RECORDED_REJECTIONS,
+  type ApprovalOutcome,
+  type HuddleClosePort,
+  type HuddleCloser,
+} from "./huddle-close.ts";
 import {
   IdentityStore,
   type Identity,
@@ -81,6 +88,7 @@ import {
   identitiesChangedMessage,
   inboxChangedMessage,
   parseCombinedRunEvent,
+  type ApprovalSpec,
   type Author,
   type Board,
   type IdentitiesPage,
@@ -222,7 +230,22 @@ export {
   type HuddleThreadKeeper,
   type ReviewThreadDraft,
 } from "./huddle-threads.ts";
-export { FIX_APPROVAL_SCHEMA, FixApprovalStore } from "./approval-store.ts";
+export { CLOSE_OUT_SCHEMA, CloseOutStore, FIX_APPROVAL_SCHEMA, FixApprovalStore } from "./approval-store.ts";
+export {
+  APPROVED_BRANCH_SCHEMA,
+  ApprovedBranchStore,
+  closeOut,
+  huddleOpenThreads,
+  pendingApprovals,
+  recordApprovedBranch,
+  type ApprovalOutcome,
+  type ApprovedBranchRequest,
+  type CloseOutcome,
+  type HuddleCloseDeps,
+  type HuddleClosePort,
+  type HuddleCloser,
+} from "./huddle-close.ts";
+export type { ApprovalSpec } from "@penguin/protocol";
 export {
   dropProjectVerificationTable,
   huddleIssueOfRun,
@@ -347,6 +370,7 @@ export class ProjectAgent extends Agent {
   /** Huddle openings and verification steps run one at a time, so no two interleave their writes. */
   #huddleSteps: Promise<unknown> = Promise.resolve();
   #approvals: FixApprovalStore | undefined;
+  #closeOuts: CloseOutStore | undefined;
   /**
    * Fix sub-issues whose reviews, linked commits, labels or threads, and Huddle issues whose threads,
    * an applied operation changed since their Huddles last collected reviews; see
@@ -392,7 +416,8 @@ export class ProjectAgent extends Agent {
    * `owner` is the person the Worker's session names; the operation cannot name anyone else.
    */
   async submitFromDashboard(owner: string, operation: unknown, repos: ProjectRepos): Promise<SubmitOutcome> {
-    const outcome = await this.submit(operation, { person: owner }, "dashboard", await this.#reviewRules(repos));
+    const rules = await this.#reviewRules(repos);
+    const outcome = await this.submit(operation, { person: owner }, "dashboard", rules, CLOSE_RECORDED_REJECTIONS);
     await this.#collectChangedReviews(repos);
     return outcome;
   }
@@ -487,20 +512,52 @@ export class ProjectAgent extends Agent {
     });
   }
 
+  /**
+   * The approved-branch requests waiting for the runner, one per open Huddle whose HuddleAgent found
+   * nothing standing in the way of its close. The Worker lists them only to a runner bridge.
+   */
+  async pendingApprovals(): Promise<ApprovalSpec[]> {
+    const huddles = this.#huddleStore()
+      .open()
+      .filter((huddle) => huddle.issueId !== null && huddle.huddleRepo !== null)
+      .filter((huddle) => this.#index().issue(huddle.issueId as string)?.state !== "closed");
+    const lists = await Promise.all(
+      huddles.map(async (huddle) => (await this.#huddleAgent(huddle.issueId as string)).pendingApprovals(huddle)),
+    );
+    return lists.flat();
+  }
+
+  /**
+   * Records a runner's report that the Huddle repo of Huddle issue `issueId` has its `approved` branch
+   * at the requested commit, with that Huddle's HuddleAgent, which then closes the issue; see
+   * huddle-close.ts. `runnerId` is the reporting runner bridge, from its token.
+   */
+  reportApprovedBranch(issueId: string, runnerId: string, report: unknown, repos: ProjectRepos): Promise<ApprovalOutcome> {
+    return this.#huddleStep(async () => {
+      const huddle = this.#huddleStore().byIssue(this.#index().resolve(issueId));
+      if (huddle?.issueId == null) {
+        return { status: "rejected", reason: "not_found", message: `no Huddle has issue ${issueId}` };
+      }
+      const agent = await this.#huddleAgent(huddle.issueId);
+      return agent.reportApprovedBranch(huddle, runnerId, report, await this.#huddlePort(repos));
+    });
+  }
+
   /** The HuddleAgent of the Huddle whose issue has this number: one instance per Huddle in this project. */
-  async #huddleAgent(issueId: string): Promise<HuddleVerifier & HuddleReviewer & HuddleThreadKeeper> {
+  async #huddleAgent(issueId: string): Promise<HuddleVerifier & HuddleReviewer & HuddleThreadKeeper & HuddleCloser> {
     // The binding's generated stub type refers back to this package, so the stub is typed here by
     // the interfaces HuddleAgent implements.
     const agent = await getAgentByName(this.env.HuddleAgent, `${this.name}-huddle-${issueId}`);
-    return agent as unknown as HuddleVerifier & HuddleReviewer & HuddleThreadKeeper;
+    return agent as unknown as HuddleVerifier & HuddleReviewer & HuddleThreadKeeper & HuddleCloser;
   }
 
   /**
    * What a HuddleAgent reads and writes here, passed to it over RPC: the issue index, the owner forks,
    * the scope map, operations signed with the service key, which never leaves this agent, review
-   * requests in owners' inboxes and each fix's approval for the issue page.
+   * requests in owners' inboxes, and each fix's approval and what the Huddle issue waits on before
+   * it may close, for the issue page.
    */
-  async #huddlePort(repos: ProjectRepos): Promise<HuddleReviewPort> {
+  async #huddlePort(repos: ProjectRepos): Promise<HuddleClosePort> {
     const rules = await this.#reviewRules(repos);
     const index = this.#index();
     return {
@@ -518,13 +575,16 @@ export class ProjectAgent extends Agent {
         const parent = index.issue(issueId)?.parentId;
         if (parent != null) this.#liveFeed().issueChanged(parent);
       },
+      recordCloseOut: (issueId, waitingOn) => {
+        if (this.#closeOutStore().set(issueId, waitingOn)) this.#liveFeed().issueChanged(issueId);
+      },
     };
   }
 
   /**
-   * Has each Huddle's HuddleAgent collect the reviews of its fixes (huddle-reviews.ts), for the
-   * Huddles of the fix sub-issues `#reviewsChanged` names. A failure is logged and never fails the
-   * operation that changed the fix: the next change collects again.
+   * Has each Huddle's HuddleAgent collect the reviews of its fixes (huddle-reviews.ts) and evaluate
+   * its close (huddle-close.ts), for the Huddles of the issues `#reviewsChanged` names. A failure is
+   * logged and never fails the operation that changed the issue: the next change collects again.
    */
   async #collectChangedReviews(repos: ProjectRepos): Promise<void> {
     if (this.#reviewsChanged.size === 0) return;
@@ -656,6 +716,7 @@ export class ProjectAgent extends Agent {
         routes: (issueId) => sessions.routes(issueId),
         session: (sessionId) => sessions.get(sessionId),
         approval: (issueId) => this.#approvalStore().get(issueId),
+        waitingOn: (issueId) => this.#closeOutStore().get(issueId),
       },
       id,
     );
@@ -716,6 +777,7 @@ export class ProjectAgent extends Agent {
         delegates: rules.delegates,
         identities: this.#identityStore(),
         fixes: this.#fixLookup(),
+        huddles: this.#huddleLookup(),
       },
       ...(recordRejections === undefined ? {} : { recordRejections }),
     });
@@ -1156,7 +1218,13 @@ export class ProjectAgent extends Agent {
       delegates: rules.delegates,
       identities: this.#identityStore(),
       fixes: this.#fixLookup(),
+      huddles: this.#huddleLookup(),
     };
+  }
+
+  /** The Huddle issues whose close the close rule judges, with the owner who started each one's work. */
+  #huddleLookup(): HuddleLookup {
+    return { startedBy: (issueId) => this.#huddleStore().byIssue(issueId)?.triggerOwner };
   }
 
   /** The fix sub-issues a send_upstream may name, with the scopes their Huddle's trigger changed. */
@@ -1192,6 +1260,11 @@ export class ProjectAgent extends Agent {
   #approvalStore(): FixApprovalStore {
     this.#approvals ??= new FixApprovalStore(this.#database());
     return this.#approvals;
+  }
+
+  #closeOutStore(): CloseOutStore {
+    this.#closeOuts ??= new CloseOutStore(this.#database());
+    return this.#closeOuts;
   }
 
   #huddleStore(): HuddleStore {

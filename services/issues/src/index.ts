@@ -1,15 +1,20 @@
 export const packageName: string = "@penguin/issues";
 
 export {
+  approvedCommit,
+  closeBlockers,
   fixApproval,
   fixHead,
+  openThreadsOf,
   reviewOwners,
   SCOPE_LABEL_PREFIX,
   threadPeople,
+  verifiedIntegration,
   withinCharter,
   type CharterIdentity,
   type Delegates,
   type FixApproval,
+  type OpenThread,
   type OwnerApproval,
   type OwnerApprovalState,
 } from "@penguin/policies";
@@ -45,6 +50,7 @@ export {
   type Check,
   type Comment,
   type CommentRevision,
+  type HuddleContext,
   type IssueRecord,
   type IssueStateName,
   type LinkedCommit,
