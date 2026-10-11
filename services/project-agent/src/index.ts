@@ -1,4 +1,4 @@
-import { Agent } from "agents";
+import { Agent, type Connection, type ConnectionContext } from "agents";
 
 import {
   IssueIndex,
@@ -14,6 +14,7 @@ import {
   type SubmitOutcome,
   type TimelineEntry,
 } from "./issue-index.ts";
+import { LiveFeed, liveOwner } from "./live-feed.ts";
 import { InboxStore, type InboxItem, type InboxOutcome, type InboxReason } from "./inbox-store.ts";
 import { McpTokenStore, type IssuedMcpToken, type McpCaller } from "./mcp-tokens.ts";
 import {
@@ -90,6 +91,7 @@ export {
   type IdentityRejectReason,
   type TeamIdentityInput,
 } from "./identity-store.ts";
+export { LIVE_OWNER_HEADER, LiveFeed, liveOwner } from "./live-feed.ts";
 export { McpTokenStore, type IssuedMcpToken, type McpCaller } from "./mcp-tokens.ts";
 export {
   CHECKPOINT_SHA_PATTERN,
@@ -195,6 +197,7 @@ export class ProjectAgent extends Agent {
   #mcpTokens: McpTokenStore | undefined;
   #forks: OwnerForkStore | undefined;
   #ledger: IngestLedger | undefined;
+  #live: LiveFeed | undefined;
   /** Ingests run one at a time, so two pushes never interleave their walks and applies. */
   #ingests: Promise<unknown> = Promise.resolve();
 
@@ -210,6 +213,29 @@ export class ProjectAgent extends Agent {
     }
     const [row] = this.sql<{ value: number }>`SELECT value FROM counter WHERE id = 1`;
     return Response.json({ agent: "ProjectAgent", name: this.name, counter: row?.value ?? 0 });
+  }
+
+  /**
+   * Accepts a dashboard's WebSocket, which the Worker forwards only for a signed-in person and
+   * names that person in LIVE_OWNER_HEADER. Any other connection, such as one through the
+   * local-development agent route, is closed. The owner is kept on the connection, which survives
+   * hibernation.
+   */
+  override onConnect(connection: Connection, context: ConnectionContext): void {
+    const owner = liveOwner(context.request);
+    if (owner === undefined) {
+      connection.close(1008, "sign in on the dashboard");
+      return;
+    }
+    connection.setState({ owner });
+  }
+
+  /**
+   * Applies an operation a signed-in person wrote on the dashboard, with that person as author.
+   * `owner` is the person the Worker's session names; the operation cannot name anyone else.
+   */
+  async submitFromDashboard(owner: string, operation: unknown, repos: ProjectRepos): Promise<SubmitOutcome> {
+    return this.submit(operation, { person: owner }, "dashboard", await this.#scopeMap(repos));
   }
 
   /**
@@ -538,11 +564,19 @@ export class ProjectAgent extends Agent {
       const listener: IndexListener = {
         assignmentsChanged: (issueId, added, removed) =>
           this.#sessionStore().assignmentsChanged(issueId, added, removed),
-        issueChanged: (change) => this.#inboxStore().issueChanged(change),
+        issueChanged: (change) => {
+          this.#inboxStore().issueChanged(change);
+          this.#liveFeed().issueChanged(change.issueId);
+        },
       };
       this.#issues = new IssueIndex(this.#database(), listener);
     }
     return this.#issues;
+  }
+
+  #liveFeed(): LiveFeed {
+    this.#live ??= new LiveFeed((message) => this.broadcast(message));
+    return this.#live;
   }
 
   #sessionStore(): SessionStore {

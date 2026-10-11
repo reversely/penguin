@@ -11,5 +11,5 @@
     "types": ["node"]
   },
   "include": ["apps/*/src", "apps/*/test", "services/*/src", "services/*/test", "packages/*/src", "packages/*/test", "tests"],
-  "exclude": ["apps/worker", "services/project-agent/src/index.ts", "services/huddle-agent"]
+  "exclude": ["apps/dashboard", "apps/worker","services/project-agent/src/index.ts", "services/huddle-agent"]
 }

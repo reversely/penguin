@@ -10,3 +10,4 @@ export {
   type OperationCommit,
   type OperationFileRef,
 } from "./order.ts";
+export { INDEX_CHANGED, indexChangedMessage, parseIndexChanged, type IndexChangedMessage } from "./live.ts";

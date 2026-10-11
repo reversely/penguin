@@ -4,5 +4,17 @@
   "private": true,
   "description": "React UI: issue page, board, inbox, identities, scope map, diff viewer",
   "type": "module",
-  "exports": "./src/index.ts"
+  "scripts": {
+    "build": "node build.ts",
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "dependencies": {
+    "@penguin/protocol": "0.0.0",
+    "agents": "0.28.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
 }

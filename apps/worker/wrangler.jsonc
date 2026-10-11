@@ -6,6 +6,25 @@
   // The Agents SDK needs Node.js compatibility for crypto, streams and async context.
   "compatibility_flags": ["nodejs_compat"],
 
+  // The built dashboard (`npm run build -w @penguin/dashboard`), served through Workers static
+  // assets. The Worker runs first on every request, so it decides which paths are dashboard files
+  // and adds the Content Security Policy to them (src/dashboard.ts).
+  //
+  // Dashboard sign-in reads two secrets, GITHUB_OAUTH_CLIENT_ID and GITHUB_OAUTH_CLIENT_SECRET
+  // (`wrangler secret put`), and the PENGUIN_DASHBOARD_OWNERS variable, which maps GitHub logins to
+  // owner ids as `<login>:<owner>,<login>:<owner>`. Without the map nobody can sign in.
+  // `wrangler dev` and `wrangler deploy` build the dashboard first.
+  "build": {
+    "command": "npm run build -w @penguin/dashboard",
+    "cwd": "../..",
+    "watch_dir": "../dashboard/src"
+  },
+  "assets": {
+    "directory": "../dashboard/dist",
+    "binding": "ASSETS",
+    "run_worker_first": true
+  },
+
   // routeAgentRequest() resolves /agents/<kebab-case binding>/<instance> to these bindings,
   // so each binding name matches its class name.
   "durable_objects": {

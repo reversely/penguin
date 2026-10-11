@@ -15,12 +15,16 @@
  * The bridge routes (/bridges, /bridges/codes, /bridges/<id>, /tokens, /operations/pending and
  * /checkpoints) carry their own credentials; see bridges.ts. So do the MCP routes (/mcp, /mcp/tokens and
  * /mcp/tokens/<id>); see mcp.ts. /mcp requires an MCP token in local development too.
+ *
+ * The dashboard's pages, its GitHub sign-in (/auth/*) and its API (/api/*, session cookie) are in
+ * dashboard.ts.
  */
 
 import type { RebuildReport } from "@penguin/project-agent";
 
 import { isDeployer } from "./auth.ts";
 import { handleBridgeRoute, type BridgeHandlers } from "./bridges.ts";
+import { handleDashboardRoute, type DashboardHandlers, type DashboardOptions } from "./dashboard.ts";
 import { handleMcpRoute, type McpHandlers } from "./mcp.ts";
 import {
   artifactsErrorCode,
@@ -33,7 +37,7 @@ export type AgentRouter = (request: Request) => Promise<Response | null>;
 export type ProjectSetup = (request: ProjectSetupRequest) => Promise<ProjectSetupReport>;
 export type IndexRebuild = () => Promise<RebuildReport>;
 
-export interface GatewayHandlers extends BridgeHandlers, McpHandlers {
+export interface GatewayHandlers extends BridgeHandlers, McpHandlers, DashboardHandlers {
   readonly routeAgents: AgentRouter;
   readonly setUpProject: ProjectSetup;
   readonly rebuildIndex: IndexRebuild;
@@ -46,6 +50,8 @@ export interface GatewayOptions {
   deployerToken?: string;
   /** Lifetime of minted Artifacts tokens; undefined when PENGUIN_TOKEN_TTL_SECONDS is invalid. */
   tokenTtlSeconds?: number | undefined;
+  /** GitHub sign-in and the dashboard owner map; without them, sign-in answers 503 and /api 401. */
+  dashboard?: DashboardOptions;
 }
 
 const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]"]);
@@ -144,6 +150,9 @@ export async function handleRequest(
     handlers,
   );
   if (bridgeResponse) return bridgeResponse;
+
+  const dashboardResponse = await handleDashboardRoute(request, url, options.dashboard ?? { owners: new Map() }, handlers);
+  if (dashboardResponse) return dashboardResponse;
 
   if (!isOpenForLocalDev(url, options)) {
     return Response.json({ error: "unauthorized" }, { status: 401 });

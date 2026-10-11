@@ -1,0 +1,196 @@
+:root {
+  color-scheme: light dark;
+  --field: #f4f6f9;
+  --surface: #ffffff;
+  --line: #d5dbe3;
+  --ink: #1c2633;
+  --ink-muted: #556273;
+  --accent: #2b5d8f;
+  --accent-ink: #ffffff;
+  --live: #1f7a4d;
+  --offline: #9a3b2e;
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --field: #11161d;
+    --surface: #19212b;
+    --line: #2d3947;
+    --ink: #e4e9ef;
+    --ink-muted: #9aa7b6;
+    --accent: #6ea3d8;
+    --accent-ink: #0d1520;
+    --live: #5cc092;
+    --offline: #e48a7c;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--field);
+  color: var(--ink);
+  font: 16px/1.5 var(--font);
+}
+
+h1 {
+  margin: 0;
+  font-size: 1.5rem;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+a {
+  color: inherit;
+}
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.25rem;
+  padding: 0 0.875rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.875rem;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.button.primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+/* Sign-in */
+
+.sign-in {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  padding: 16px;
+}
+
+.sign-in-card {
+  display: grid;
+  gap: 1rem;
+  width: 100%;
+  max-width: 22rem;
+  padding: 2rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  text-align: center;
+}
+
+.notice {
+  margin: 0;
+  color: var(--offline);
+}
+
+/* Shell */
+
+.top-bar {
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.top-bar-inner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1.5rem;
+  max-width: 72rem;
+  margin: 0 auto;
+  padding: 0.75rem 16px;
+}
+
+.brand {
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.nav-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  min-height: 2.25rem;
+  padding: 0 0.625rem;
+  border-radius: 6px;
+  color: var(--ink-muted);
+  text-decoration: none;
+}
+
+.nav-link[aria-current="page"] {
+  background: var(--field);
+  color: var(--ink);
+}
+
+.count {
+  min-width: 1.25rem;
+  padding: 0 0.375rem;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 0.75rem;
+  line-height: 1.25rem;
+  text-align: center;
+}
+
+.account {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin-left: auto;
+}
+
+.account form {
+  margin: 0;
+}
+
+.owner {
+  font-size: 0.875rem;
+  overflow-wrap: anywhere;
+}
+
+.tag {
+  padding: 0 0.5rem;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  line-height: 1.25rem;
+}
+
+.tag-live {
+  color: var(--live);
+}
+
+.tag-connecting {
+  color: var(--ink-muted);
+}
+
+.tag-offline {
+  color: var(--offline);
+}
+
+.page {
+  width: 100%;
+  max-width: 72rem;
+  margin: 0 auto;
+  padding: 1.5rem 16px;
+}
