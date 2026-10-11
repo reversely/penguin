@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "op_id": "penguin-0001",
+  "issue": 31,
+  "type": "create",
+  "author": {
+    "penguin": true
+  },
+  "base_version": 0,
+  "payload": {
+    "title": "Identity map change breaks analytics and messaging",
+    "body": "Combined tests fail after owner-priya@7c41e2 adds person_id merge rules."
+  },
+  "signature": "d-qeYAWiXVOyezDZTLFte-Fhfs58OuHuHDrAwpzTaWyBP6cMl3R6B4RNeg3yJvkdUGdFQ5sCMu625iL38Xe1BA"
+}

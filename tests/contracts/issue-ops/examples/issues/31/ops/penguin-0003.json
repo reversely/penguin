@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "op_id": "penguin-0003",
+  "issue": 31,
+  "type": "add_label",
+  "author": {
+    "penguin": true
+  },
+  "base_version": 2,
+  "payload": {
+    "label": "scope:identity-map"
+  },
+  "signature": "crr7Gmi97-YrEaDydrensN_P68V63misnTCqBxjTKsOLiluUPrjutEcA4XboteYGogXIvmhZ6bVkDDYR5cCKAA"
+}

@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "op_id": "jun-0009",
+  "issue": 33,
+  "type": "resolve_thread",
+  "author": {
+    "person": "jun"
+  },
+  "base_version": 16,
+  "payload": {
+    "thread": "jun-0008",
+    "reason": "The lower limit passes."
+  },
+  "signature": "3BUZFyrwpNqHh09xVDpKhDHr-bV-S76vruCaxjuzrhBGse3WeR38EmtgzZ-bkW9g8YMqvHTpIuwYkNcwHUdNCA"
+}

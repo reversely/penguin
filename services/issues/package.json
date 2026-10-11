@@ -4,5 +4,8 @@
   "private": true,
   "description": "Operation schemas, signatures, validator, reducer, index rebuild",
   "type": "module",
-  "exports": "./src/index.ts"
+  "exports": "./src/index.ts",
+  "dependencies": {
+    "@penguin/protocol": "0.0.0"
+  }
 }

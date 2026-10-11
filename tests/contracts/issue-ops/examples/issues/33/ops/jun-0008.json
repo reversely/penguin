@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "op_id": "jun-0008",
+  "issue": 33,
+  "type": "open_thread",
+  "author": {
+    "person": "jun"
+  },
+  "base_version": 13,
+  "payload": {
+    "body": "A limit of five still joins the tablet's users.",
+    "anchor": "owner-priya@9b2f10",
+    "needs": [
+      "priya"
+    ]
+  },
+  "signature": "dN1m2vCF_cc-x2BAfqxb4VTCoKreDiyjBxQUR52FwU6_1XDUGzphpWVJzZ9ZNun1TydUe9CygDP3a_2GAl9UDw"
+}

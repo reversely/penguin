@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "op_id": "penguin-0005",
+  "issue": 31,
+  "type": "attach_check",
+  "author": {
+    "penguin": true
+  },
+  "base_version": 4,
+  "payload": {
+    "command_id": "analytics-tests",
+    "commit": "owner-priya@7c41e2",
+    "test": "test_retention::dau_stable",
+    "result": "fail"
+  },
+  "signature": "Mq1zEQo_kCxylm6qvuykj1wYhsC5j8AWUYNnx5-BGEClMRpHosZsZFffXXz_O71fao6SR4WHDHSFLazTLPbpCQ"
+}

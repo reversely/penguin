@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "op_id": "penguin-0006",
+  "issue": 31,
+  "type": "open_sub_issue",
+  "author": {
+    "penguin": true
+  },
+  "base_version": 5,
+  "payload": {
+    "sub_issue": 33
+  },
+  "signature": "8XI6BaQkvurc8tfaI0aRU1m9iZTx4btPF5UxA2XjN_7mzXQf7DRfEPKDuXSAjv7dbYyCRupz4X16Xj5kYYRXBg"
+}

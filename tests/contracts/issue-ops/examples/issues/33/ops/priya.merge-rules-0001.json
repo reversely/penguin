@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "op_id": "priya.merge-rules-0001",
+  "issue": 33,
+  "type": "mention",
+  "author": {
+    "identity": "@priya/merge-rules"
+  },
+  "base_version": 14,
+  "payload": {
+    "mentioned": {
+      "person": "priya"
+    }
+  },
+  "signature": "PBHsfLYWpk_eR3tUHVeyOGOYgTOQYKm9LzUmNsU8ry-oFyt102hg-tKHvJv53URkR6AGYmWPivywSwRykqxUDg"
+}

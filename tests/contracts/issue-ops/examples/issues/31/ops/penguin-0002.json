@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "op_id": "penguin-0002",
+  "issue": 31,
+  "type": "edit",
+  "author": {
+    "penguin": true
+  },
+  "base_version": 1,
+  "payload": {
+    "body": "Three combined tests fail after owner-priya@7c41e2 adds person_id merge rules."
+  },
+  "signature": "YAZNgO40TU1TpO-eClsWGhs38F6o6fEwTm4Lg7bPItqaRiOPHZlshhxKUpB6vMCeA3fBEGtk5dS7GLnA_BbSCg"
+}

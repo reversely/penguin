@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "op_id": "penguin-0009",
+  "issue": 31,
+  "type": "change_state",
+  "author": {
+    "penguin": true
+  },
+  "base_version": 6,
+  "payload": {
+    "state": "in_review",
+    "reason": "Combined tests pass."
+  },
+  "signature": "kBK_Ilyi3fYdBkPwaXrToR5HYz2qVQs4ebAZQ1W_8KGpMY2L01-adNnHJPDd7i5ktlhdztiR7i2h6VizyqlOAw"
+}

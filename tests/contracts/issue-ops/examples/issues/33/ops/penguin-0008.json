@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "op_id": "penguin-0008",
+  "issue": 33,
+  "type": "unassign",
+  "author": {
+    "penguin": true
+  },
+  "base_version": 4,
+  "payload": {
+    "assignee": {
+      "identity": "@jun/reports"
+    }
+  },
+  "signature": "8YIN-63pNrn78OGglWzDTfJ-YrrR9tub9j8m58mMGO3VakEVs8WgeMktI4vDbIaT0559nxg6O26ok-5c0cMYCQ"
+}

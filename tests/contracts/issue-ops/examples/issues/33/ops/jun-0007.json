@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "op_id": "jun-0007",
+  "issue": 33,
+  "type": "review",
+  "author": {
+    "person": "jun"
+  },
+  "base_version": 12,
+  "payload": {
+    "verdict": "request_changes",
+    "commit": "owner-priya@9b2f10",
+    "reason": "A limit of five still joins the tablet's users."
+  },
+  "signature": "CJTPqAp6JPEktIZGYFApqLG8SurGFg-8XCTRA-XAk2wS64UpFOvVNWVoXhkGfxzGd2Ji5chLTSWD9b1ZMjkHCg"
+}

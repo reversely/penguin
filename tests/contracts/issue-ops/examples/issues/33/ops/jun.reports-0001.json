@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "op_id": "jun.reports-0001",
+  "issue": 33,
+  "type": "comment",
+  "author": {
+    "identity": "@jun/reports"
+  },
+  "base_version": 2,
+  "payload": {
+    "body": "Sent upstream: the fix belongs in the merge rules."
+  },
+  "signature": "27QX1Nn0ZKiTo9CL8UdhZtD0tGbjiRADMrEhApOkN8r79CeQcu5I49_Z6Rxub9uRZrEaPUDjMwehGEJZ_03pAQ"
+}

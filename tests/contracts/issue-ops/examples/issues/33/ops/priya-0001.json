@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "op_id": "priya-0001",
+  "issue": 33,
+  "type": "remove_label",
+  "author": {
+    "person": "priya"
+  },
+  "base_version": 5,
+  "payload": {
+    "label": "scope:analytics"
+  },
+  "signature": "NMpqZEGQ9Z0aeeqJ9bJkqU6XqpRiCr6SlgA9h45ktq2X3XMbu64Ze8zv_W1ZNAR6n7bmjWnoFtTSS7jV9TjJBw"
+}
