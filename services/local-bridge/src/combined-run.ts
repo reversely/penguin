@@ -36,6 +36,12 @@ export interface CombinedRunRequest {
    * the runner has a block checker.
    */
   readonly mainSha?: string;
+  /**
+   * Owners whose tests and type check run whatever the impact graph says: the forks the resolution
+   * ladder just fixed. A codemod leaves a fork using the new name, which the graph no longer counts
+   * as a use of the change, yet the fix must go back through the checks.
+   */
+  readonly recheck?: readonly string[];
 }
 
 /** One failed test from the runner's log. */
@@ -278,6 +284,7 @@ export class CombinedRunner {
     }
     const started = performance.now();
     const { impact, impactError, selected } = await this.#impact(baselineSha, checkpointSha, targets);
+    for (const ownerId of request.recheck ?? []) selected?.add(ownerId);
 
     const results: CombinedResult[] = [];
     const notAffected: string[] = [];

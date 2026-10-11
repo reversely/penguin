@@ -1,6 +1,7 @@
 // The MCP tools for agent sessions (PRD section 8): register_session, get_work, get_issue,
 // post_update and report_checkpoint, plus the feature tools open_feature, feature_token and
-// declare_area (PRD 0.4 section 4.1). get_work also reports whether the session's feature waits on
+// declare_area (PRD 0.4 section 4.1), submit_review (section 6) and the agent tools whats_near, impact,
+// check and apply_fix (section 5.2). get_work also reports whether the session's feature waits on
 // an overlap lock, and which overlapping starts wait for the developer's approval. Each tool calls the ProjectAgent as the owner whose MCP token
 // (K3) the gateway authenticated, so a session registers only as one of that owner's identities,
 // reads and writes only the issues assigned to it, and reports checkpoints only for that owner's fork
@@ -15,7 +16,7 @@
 
 import { McpServer, type CallToolResult } from "@modelcontextprotocol/server";
 import type { IssueRecord, Thread } from "@penguin/issues";
-import { IDENTITY_HANDLE_MAX_LENGTH, OP_ID_PATTERN, SEGMENT_PATTERN } from "@penguin/protocol";
+import { FIX_KINDS, IDENTITY_HANDLE_MAX_LENGTH, OP_ID_PATTERN, SEGMENT_PATTERN } from "@penguin/protocol";
 import * as z from "zod";
 
 type MaybePromise<T> = T | Promise<T>;
@@ -157,6 +158,10 @@ export interface McpFeatures {
   checkpoint(sessionId: string, feature: string, sha: string): Promise<FeatureCallResult>;
   /** Checks and keeps a review form for `scope`, the caller's own scope, on feature `feature`. */
   review(sessionId: string, feature: string, scope: string, form: unknown): Promise<FeatureCallResult>;
+  /** The running features near the paths or scopes, with their people and agents (`whats_near`). */
+  whatsNear(sessionId: string, input: { readonly paths?: readonly string[]; readonly scopes?: readonly string[] }): Promise<FeatureCallResult>;
+  /** Records `impact`, `check` or `apply_fix` on the session's feature for the check runner. */
+  tool(sessionId: string, tool: "impact" | "check" | "apply_fix", input: Readonly<Record<string, unknown>>): Promise<FeatureCallResult>;
 }
 
 /** The project's repos as the Worker names them for one request's owner. */
@@ -422,6 +427,41 @@ const submitReviewInput = z.strictObject({
 });
 const featureTokenInput = z.strictObject({ sessionId, feature: featureId });
 const declareAreaInput = z.strictObject({ sessionId, feature: featureId, area });
+
+// The agent tools (PRD 0.4 section 5.2). These caps match AGENT_TOOL_LIMITS in the ProjectAgent, which
+// checks each path, scope, charter and codemod edit again.
+const areaPath = z.string().min(1).max(512);
+const whatsNearInput = z
+  .strictObject({
+    sessionId,
+    paths: z.array(areaPath).max(256).optional().describe('Paths relative to the repository root, such as "billing/tax/".'),
+    scopes: z.array(z.string().min(1).max(128)).max(64).optional().describe("Scope ids from penguin/scopes.json."),
+  })
+  .refine((input) => (input.paths?.length ?? 0) + (input.scopes?.length ?? 0) > 0, { message: "name at least one path or scope" });
+const featureToolInput = z.strictObject({ sessionId, feature: featureId.describe("The feature this session works on.") });
+const dottedName = z
+  .string()
+  .max(512)
+  .regex(/^[A-Za-z_][A-Za-z0-9_]{0,127}(?:\.[A-Za-z_][A-Za-z0-9_]{0,127})*$/u)
+  .describe('A dotted Python name, such as "shared.dates.start_of_day".');
+const identifier = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,127}$/u);
+const codemodEdit = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.enum(["rename", "move"]), from: dottedName, to: dottedName }),
+  z.strictObject({ kind: z.literal("rename-parameter"), function: dottedName, from: identifier, to: identifier }),
+]);
+const applyFixInput = z.strictObject({
+  sessionId,
+  feature: featureId.describe("The feature this session works on."),
+  kind: z
+    .enum(FIX_KINDS)
+    .describe("format (ruff format), lint (ruff check --fix), lockfile (uv lock) or codemod (a rename, move or keyword rename)."),
+  paths: z
+    .array(areaPath)
+    .max(2_000)
+    .optional()
+    .describe("The Python files to fix, inside your identity's charter. A lockfile fix names none."),
+  edits: z.array(codemodEdit).min(1).max(50).optional().describe("For a codemod: the edits, as the contract diff names them."),
+});
 
 const INSTRUCTIONS =
   "Penguin coordinates issues between owners and their agent sessions. Call register_session once " +
@@ -725,6 +765,76 @@ function registerFeatureTools(server: McpServer, features: McpFeatures): void {
       if (outcome.status === "ok" && outcome.value.state === "refused") return { ...result({ ...outcome.value }), isError: true };
       return answer(outcome);
     },
+  );
+
+  server.registerTool(
+    "whats_near",
+    {
+      title: "What's near",
+      description:
+        "The running features that touch these paths or scopes, or that work in a scope depending on one of " +
+        "them, each with its person, its state and its agent sessions. Call it before you change code another " +
+        "feature may be changing. Your own feature is left out.",
+      inputSchema: whatsNearInput,
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async ({ sessionId: id, paths, scopes }) =>
+      answer(await features.whatsNear(id, { ...(paths === undefined ? {} : { paths }), ...(scopes === undefined ? {} : { scopes }) })),
+  );
+
+  server.registerTool(
+    "impact",
+    {
+      title: "Impact",
+      description:
+        "The functions, contracts and forks your feature's latest checkpoint affects: the impact graph and " +
+        "contract diff of the change against main, with each running feature that uses a changed symbol. The " +
+        "check runner computes it; the answer records the request and says it is waiting.",
+      inputSchema: featureToolInput,
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async ({ sessionId: id, feature }) => answer(await features.tool(id, "impact", { feature })),
+  );
+
+  server.registerTool(
+    "check",
+    {
+      title: "Check",
+      description:
+        "Runs the deterministic checks (overlap, merge, impact graph, contract diff, type check, lint, " +
+        "dependency diff and the affected scopes' tests) on your feature's latest checkpoint merged onto main " +
+        "and onto each affected fork. Penguin routes each failure through the resolution ladder and returns one " +
+        "next step: it applies format, lint, lockfile and codemod fixes itself; it sends a behaviour change to " +
+        "you when it lies inside your charter, to the scope owner's agent when it does not, and an exception to " +
+        "one person. Never try tools in turn. The check runner runs it; the answer says it is waiting.",
+      inputSchema: featureToolInput,
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async ({ sessionId: id, feature }) => answer(await features.tool(id, "check", { feature })),
+  );
+
+  server.registerTool(
+    "apply_fix",
+    {
+      title: "Apply fix",
+      description:
+        "Applies one deterministic fix to your feature's fork at its latest checkpoint: format (ruff format), " +
+        "lint (ruff check --fix), lockfile (uv lock) or codemod (a rename, move or keyword rename generated " +
+        "from the contract diff). Only these kinds exist, and only Python files inside your identity's charter " +
+        "can be named. The result goes back through the checks before Penguin accepts it. The check runner " +
+        "applies it; the answer says it is waiting.",
+      inputSchema: applyFixInput,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async ({ sessionId: id, feature, kind, paths, edits }) =>
+      answer(
+        await features.tool(id, "apply_fix", {
+          feature,
+          kind,
+          paths: paths ?? [],
+          ...(edits === undefined ? {} : { edits }),
+        }),
+      ),
   );
 }
 

@@ -30,6 +30,8 @@ import type {
   ReviewInput,
   ReviewOutcome,
   TokenGrant,
+  ToolRequestOutcome,
+  WhatsNearOutcome,
 } from "@penguin/project-agent";
 
 import type { FeatureCallResult, McpFeatures } from "@penguin/mcp";
@@ -64,6 +66,14 @@ export interface FeatureDirectory {
   ): Promise<FeatureCheckpointOutcome>;
   features(): MaybePromise<readonly Feature[]>;
   submitReview(owner: string, sessionId: string, input: ReviewInput, repos: ProjectRepos): Promise<ReviewOutcome>;
+  whatsNear(owner: string, sessionId: string, input: { readonly paths?: unknown; readonly scopes?: unknown }, repos: ProjectRepos): Promise<WhatsNearOutcome>;
+  requestAgentTool(
+    owner: string,
+    sessionId: string,
+    tool: "impact" | "check" | "apply_fix",
+    input: Readonly<Record<string, unknown>>,
+    repos: ProjectRepos,
+  ): Promise<ToolRequestOutcome>;
 }
 
 export interface FeatureConfig {
@@ -286,6 +296,43 @@ export function mcpFeatures(ports: FeaturePorts, owner: string): McpFeatures {
         if (reported.status === "rejected") return reported;
         return { status: "ok", value: checkpointFields(reported) };
       }),
+    whatsNear: async (sessionId, input) => {
+      const near = await (await ports.directory()).whatsNear(owner, sessionId, input, ports.repos);
+      if (near.status === "rejected") return near;
+      return { status: "ok", value: { recordedAs: near.runId, features: near.features.map(nearFields) } };
+    },
+    tool: async (sessionId, tool, input) => {
+      const requested = await (await ports.directory()).requestAgentTool(owner, sessionId, tool, input, ports.repos);
+      if (requested.status === "rejected") return requested;
+      return {
+        status: "ok",
+        value: {
+          state: "waiting",
+          recordedAs: requested.runId,
+          tool: requested.tool,
+          feature: requested.featureId,
+          checkpoint: requested.checkpointSha,
+          commandId: requested.commandId,
+          input: requested.input,
+          message: "waiting for the check runner",
+        },
+      };
+    },
+  };
+}
+
+/** A running feature near the asked paths or scopes, as `whats_near` answers it. */
+function nearFields(near: Extract<WhatsNearOutcome, { status: "ok" }>["features"][number]): Record<string, unknown> {
+  return {
+    feature: near.featureId,
+    person: near.personId,
+    state: near.state,
+    touches:
+      near.touches === null
+        ? null
+        : { scopes: [...near.touches.scopes], paths: [...near.touches.paths], contracts: [...near.touches.contracts], omittedPaths: near.touches.omittedPaths },
+    dependsOn: near.dependsOn.map(({ consumerScopeId, providerScopeId, kind }) => ({ consumerScope: consumerScopeId, providerScope: providerScopeId, kind })),
+    agents: near.agents.map(({ handle, vendor, status }) => ({ identity: handle, vendor, status })),
   };
 }
 

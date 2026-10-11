@@ -16,6 +16,7 @@ import { ISSUE_USAGE, runIssueCommand, runKeyCommand } from "./issue-cli.ts";
 import { KeychainStore, type KeyStore } from "./key-store.ts";
 import { bridgeRemotes, registerBridge, type Fetch } from "./penguin-client.ts";
 import { WorktreeRegistry } from "./registry.ts";
+import { RESOLVE_USAGE, runApplyFixCommand, runResolveCommand } from "./resolve-cli.ts";
 import { REVIEW_USAGE, runReviewCommand } from "./review-cli.ts";
 import { RUNNER_USAGE, runRunnerCommand } from "./runner-cli.ts";
 import {
@@ -73,6 +74,8 @@ export async function runCli(argv: readonly string[], io: CliIo, deps: CliDepend
   if (command === "impact") return runImpactCommand(rest, io);
   if (command === "review") return runReviewCommand(rest, io);
   if (command === "check") return runCheckCommand(rest, io);
+  if (command === "resolve") return runResolveCommand(rest, io);
+  if (command === "apply-fix") return runApplyFixCommand(rest, io);
   if (command !== "checkpoint") {
     io.write(
       USAGE +
@@ -83,7 +86,8 @@ export async function runCli(argv: readonly string[], io: CliIo, deps: CliDepend
         SESSION_CHECKPOINT_USAGE +
         IMPACT_USAGE +
         REVIEW_USAGE +
-        CHECK_USAGE,
+        CHECK_USAGE +
+        RESOLVE_USAGE,
     );
     return 2;
   }

@@ -12,7 +12,8 @@ the combined tests. The code is in `services/local-bridge/src/`.
 The bridge needs Node.js 22.18 or later, Git 2.38 or later (for `git merge-tree --write-tree`) and,
 on a runner, the test tools the project's `penguin/scopes.json` commands call. The fixtures use
 Python with pytest from `uv sync`. A runner's checks also need Python 3.11 or later, ruff from
-`uv sync` and the pyright package `npm install` installs.
+`uv sync` and the pyright package `npm install` installs. Its fixes need libcst from `uv sync` and
+`uv` on `PATH`.
 
 ```sh
 git clone <penguin repo> ~/penguin
@@ -421,6 +422,94 @@ the dependency bump it prints, for Ana's checkpoint:
 
 On the three fixtures one combined run with every check takes 4 to 9 seconds on an Apple silicon
 laptop. pyright takes about 1 to 2.5 seconds of each target.
+
+### Resolution ladder
+
+The runner routes each failed or erred block check through the resolution ladder of
+[design.md](design.md#routing-and-the-resolution-ladder) (`resolution.ts`). For steps 1 to 3 it
+applies Penguin's own fix and runs the combined run again on the fixed commits. Steps 4 to 6 go to
+an agent or a person with the failing check attached. No step calls a model or an agent.
+
+Each fix is a fixed program with an argument vector and no shell, in a throwaway worktree of the
+commit it starts from, with the scrubbed environment above (`apply-fix.ts`):
+
+| Fix | Command ID | What runs |
+|---|---|---|
+| Format | `fix:ruff-format` | `ruff format` on the named files, with the repository's ruff settings or `--isolated` |
+| Lint autofix | `fix:ruff-autofix` | `ruff check --fix` on the named files |
+| Lockfile | `fix:uv-lock` | `uv lock` in the directory of each `uv.lock`, after merging the other side when the lockfile conflicts |
+| Codemod | `fix:python-codemod` | `python3 -I python_codemod.py --tree <worktree>`, the bridge's own script, with the edits on standard input |
+
+The codemod script uses libcst 1.9.0 (T21). A `rename` or `move` edit rewrites every import and
+reference of one dotted name to another with libcst's `RenameCommand`. A `rename-parameter` edit
+rewrites one keyword in each call that resolves to the function. The script parses the code and
+never imports or runs it. The runner starts it with the interpreter of this repository's uv
+environment, `.venv/bin/python`, which has the pinned libcst. `PENGUIN_CODEMOD_PYTHON` or
+`--codemod-python` names another.
+
+A fix may change only the files it names, inside the allowed paths. For the originating checkpoint
+those are its identity's charter: the charter scopes' paths and its charter paths, from
+`penguin/identities.json`. For an owner's fork they are the paths of the owner's scopes. A lockfile
+fix may change only `uv.lock` files. Its merge may conflict only there. A named file that is a
+symlink or lies under a symlinked directory is refused before the program runs. A program that
+changes any other file is refused and nothing is committed. A fix that changes files becomes one
+commit by `Penguin <penguin@penguin.invalid>` on top of the commit it started from, with a
+`Penguin-Fix: <command ID>` trailer. The ref `refs/penguin/fixes/<commit>` keeps it from garbage
+collection.
+
+The runner chooses where each fix goes:
+
+| Failure | Fix goes into |
+|---|---|
+| Format or lint finding | The side that changed the file: the originating checkpoint, or the owner's fork |
+| Renamed, moved or re-keyworded symbol an owner's fork uses | That owner's fork, on the files the contract diff lists |
+| The same on `main` | The originating checkpoint, on the head tree's own callers |
+| Lockfile conflict | The owner's fork, as a merge of the originating checkpoint; for `main`, the originating checkpoint as a merge of main |
+
+The next round runs every check again. An owner's fork that a fix changed runs its tests and type
+check whatever the impact graph says: after a codemod the fork uses the new name, which the graph no
+longer counts as a use of the change. A fix counts as `accepted` once the next round no longer shows
+its failure. One that did not clear its failure, or was refused, sends that failure up the ladder as
+a behaviour change. Past the round limit (default 3, `--round-limit`) the failure goes to the
+originating feature's person.
+
+Every tool run and every decision is recorded: the tool, its caller, its command ID, its input, what
+it found or changed with the commit before and after. It also holds the run's time. The record counts the
+failures Penguin's fixes resolved, those routed to agents or people and the agent calls made, which
+is zero for the ladder itself.
+
+```sh
+penguin-bridge resolve --repo <path> --base main --head <commit> --identity @<owner>/<name> \
+  --checkpoint jun=<commit> --checkpoint sam=<commit> [--main <commit>] [--round-limit <n>] \
+  [--python <path>] [--ruff <path>] [--uv <path>] [--codemod-python <path>] [--yes] [--write] [--json]
+penguin-bridge apply-fix --repo <path> --kind codemod --commit <commit> --path analytics/weekly.py \
+  --allow analytics --rename shared.dates.start_of_day=shared.dates.start_of_local_day [--json]
+```
+
+`resolve` exits 0 when no failure is left and 1 when one is routed to an agent or a person.
+`--write` moves each branch that `--head` or `--checkpoint` names to its fixed commit, guarded by its
+old value. On the helpful-fix fixture with Priya's head renaming `start_of_day` to
+`start_of_local_day` in `shared/dates.py` and in Priya's own callers, it prints:
+
+```text
+round 1: 20 checks, 4 failing, on ebe750fadc97
+  jun typecheck: step 3 rename -> penguin penguin [fix:python-codemod], accepted
+    the contract diff shows shared.dates.start_of_day renamed to shared.dates.start_of_local_day, used in 1 file(s) of jun
+  ...
+  apply_fix-1 apply_fix fix:python-codemod by penguin: changed, codemod: changed 1 file fe97662fb615 -> c7c5d1ea71d9 [974 ms]
+    changed analytics/weekly.py
+  apply_fix-2 apply_fix fix:python-codemod by penguin: changed, codemod: changed 1 file 4c6e86d6772d -> a10602b89f26 [1136 ms]
+    changed messaging/reminders.py
+round 2: 20 checks, 0 failing, on ebe750fadc97
+4 failures resolved by Penguin's fixes, 0 routed to agents, 0 to people; 0 agent calls; 2 rounds in 17544 ms.
+```
+
+On the fixture's own trigger, `owner-priya-checkpoint`, Jun's and Sam's failing tests go to step 5,
+to `@jun/reports` and `@sam/reminders`, because the failing files lie outside `@priya/batches`'s
+charter. With an unused import added to Priya's `shared/dates.py`, lint fails on every target. The
+failure goes to step 1. One `fix:ruff-autofix` commit on Priya's checkpoint clears it on all
+three. On an Apple silicon laptop one codemod run takes about 1 second, most of it libcst's import.
+Each round of checks takes 8 to 12 seconds.
 
 ### Colour handling
 

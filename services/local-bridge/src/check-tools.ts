@@ -50,7 +50,7 @@ export interface CheckToolOptions {
   readonly maxOutputBytes?: number;
 }
 
-interface ProgramOutcome {
+export interface ProgramOutcome {
   readonly exitCode: number | null;
   readonly stdout: string;
   readonly stderr: string;
@@ -63,17 +63,22 @@ export function runProgram(
   program: string,
   argv: readonly string[],
   cwd: string,
-  options: Pick<CheckToolOptions, "env" | "timeoutMs" | "maxOutputBytes">,
+  options: Pick<CheckToolOptions, "env" | "timeoutMs" | "maxOutputBytes"> & { readonly input?: string },
 ): Promise<ProgramOutcome> {
-  const { env = process.env, timeoutMs = 600_000, maxOutputBytes = 64 * 1024 * 1024 } = options;
+  const { env = process.env, timeoutMs = 600_000, maxOutputBytes = 64 * 1024 * 1024, input } = options;
   return new Promise((resolve) => {
     const child = spawn(program, argv, {
       cwd,
       env: childEnvironment(env),
       shell: false,
       detached: true,
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
     });
+    if (input !== undefined && child.stdin !== null) {
+      // A program that exits before reading its input closes the pipe; its exit code says why.
+      child.stdin.on("error", () => undefined);
+      child.stdin.end(input);
+    }
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
     let size = 0;
@@ -88,8 +93,8 @@ export function runProgram(
       if (size > maxOutputBytes) stop(`output exceeds ${maxOutputBytes} bytes`);
       else into.push(chunk);
     };
-    child.stdout.on("data", collect(stdout));
-    child.stderr.on("data", collect(stderr));
+    child.stdout?.on("data", collect(stdout));
+    child.stderr?.on("data", collect(stderr));
     child.on("error", (error) => {
       clearTimeout(timer);
       resolve({ exitCode: null, stdout: "", stderr: "", stopped: `could not start ${program}: ${error.message}` });
@@ -116,7 +121,7 @@ export function installedPyright(): string | undefined {
 
 // A repository's own ruff settings are used when its root has them; otherwise ruff's defaults, so a
 // configuration file in the runner's home or temporary directory never changes a result.
-function ruffConfig(worktree: string): string[] {
+export function ruffConfig(worktree: string): string[] {
   for (const name of ["ruff.toml", ".ruff.toml"]) {
     if (existsSync(join(worktree, name))) return ["--config", join(worktree, name)];
   }

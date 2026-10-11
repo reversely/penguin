@@ -172,6 +172,28 @@ export {
   type CheckTools,
   type ToolRun,
 } from "./check-tools.ts";
+export {
+  checkFixRequest,
+  defaultCodemodPython,
+  FixApplier,
+  FixRefusedError,
+  symlinkRefusal,
+  type FixApplierOptions,
+  type FixRequest,
+  type FixRun,
+} from "./apply-fix.ts";
+export {
+  charterPaths,
+  DEFAULT_ROUND_LIMIT,
+  formatResolution,
+  loadIdentities,
+  ResolutionLadder,
+  routingContext,
+  type IdentitySeed,
+  type ResolutionLadderOptions,
+  type ResolveRequest,
+  type ResolveResult,
+} from "./resolution.ts";
 export { batchRuns, combinedRunPass, forkFetcher, formatCombinedPass } from "./combined-run-pass.ts";
 export type {
   CombinedBatchResult,

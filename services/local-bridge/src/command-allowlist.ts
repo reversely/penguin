@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
 
 import { isObjectId, runGit } from "@penguin/git-analysis";
-import { DEPENDENCY_COMMAND_ID, IMPACT_COMMAND_ID, SIDE_BY_SIDE_COMMAND_ID } from "@penguin/protocol";
+import { DEPENDENCY_COMMAND_ID, FIX_COMMAND_IDS, IMPACT_COMMAND_ID, SIDE_BY_SIDE_COMMAND_ID } from "@penguin/protocol";
 import { parseScopeMap, type ScopeMap } from "@penguin/scope-map";
 
 /** The repository config that maps command IDs to shell commands, relative to the repo root. */
@@ -57,13 +57,15 @@ export async function resolveCommand(
   return { commandId, scopeId, sha, command: scope.testCommand };
 }
 
-// Penguin's own analysis commands. Unlike a test command, the program is part of the bridge, never
-// the repository: an ID maps to a script shipped beside this file, which reads the repository's Git
-// objects as data.
+// Penguin's own analysis commands and its codemod. Unlike a test command, the program is part of the
+// bridge, never the repository: an ID maps to a script shipped beside this file. An analysis reads
+// the repository's Git objects as data; the codemod rewrites the files it is given in a throwaway
+// worktree.
 const ANALYSIS_SCRIPTS: Readonly<Record<string, string>> = {
   [IMPACT_COMMAND_ID]: "../analysis/python_impact.py",
   [SIDE_BY_SIDE_COMMAND_ID]: "../analysis/side_by_side.py",
   [DEPENDENCY_COMMAND_ID]: "../analysis/python_dependencies.py",
+  [FIX_COMMAND_IDS.codemod]: "../analysis/python_codemod.py",
 };
 
 /** One of the bridge's own analysis commands, resolved to the script it runs. */

@@ -1,9 +1,9 @@
 # Connecting agent sessions to Penguin
 
 > **Design change.** This page describes the current build. In
-> [design.md](design.md#mcp-for-agent-sessions), a session works on one feature. It gains the tools
-> `whats_near`, `impact`, `check`, `apply_fix`, `propose_plan` and `submit_review`
-> ([design.md](design.md#tools-for-agents)).
+> [design.md](design.md#mcp-for-agent-sessions), a session works on one feature. The build serves
+> `whats_near`, `impact`, `check`, `apply_fix` ([Agent tools for a feature](#agent-tools-for-a-feature))
+> and `submit_review`. It gains `propose_plan` ([design.md](design.md#tools-for-agents)).
 
 An owner's Claude Code or Codex session reads the issues assigned to one of the owner's identities and
 writes comments, linked commits and state changes back to them. The session reaches Penguin's MCP
@@ -199,6 +199,31 @@ and `report_checkpoint` lists it under `newOverlaps`. `get_work` lists it under
 lock is approved or withdrawn, the waiting feature's sessions hear of it at their next safe
 checkpoint: the hook answer names it and `report_checkpoint` lists it under `locksSettled`. A
 feature of the same person makes no lock; `ownOverlaps` lists it.
+
+## Agent tools for a feature
+
+A session that works on a feature calls four tools for facts and deterministic fixes
+([design.md](design.md#tools-for-agents)). Each call is recorded with its tool, its caller's
+identity, its input, its answer and its duration, so the feature page and a demo show every use.
+
+| Tool | Input | Answer |
+|---|---|---|
+| `whats_near` | `paths`, `scopes` or both | Each running feature, other than the session's own, whose area touches them or that works in a scope depending on one of them, with its person, state and agent sessions |
+| `impact` | `feature` | The request, recorded at the feature's latest checkpoint for the check runner |
+| `check` | `feature` | The request, recorded the same way |
+| `apply_fix` | `feature`, `kind`, `paths`, `edits` | The request with its fix's command ID, recorded the same way |
+
+`impact`, `check` and `apply_fix` act only on the feature the session works on, once its fork has a
+checkpoint. Their answer has `state: "waiting"` and `message: "waiting for the check runner"`: the
+runner computes the impact graph, runs the checks and applies the fix
+([bridge-and-runner.md](bridge-and-runner.md#resolution-ladder)).
+
+`apply_fix` takes one of four kinds: `format`, `lint`, `lockfile` or `codemod`. `paths` names Python
+files inside the session identity's charter. A lockfile fix names no files. A codemod carries
+`edits`, each `{"kind": "rename" | "move", "from": "<dotted name>", "to": "<dotted name>"}` or
+`{"kind": "rename-parameter", "function": "<dotted name>", "from": "<name>", "to": "<name>"}`.
+Penguin refuses a call with an unknown kind, a file outside the charter, a path that leaves the
+repository or an edit whose names are not Python names. A refused call records nothing.
 
 ## Sending a fix upstream
 

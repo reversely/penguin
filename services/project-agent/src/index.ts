@@ -89,6 +89,15 @@ import { rebuildIndex, type RebuildReport } from "./rebuild.ts";
 import { OWNERS_PATH, parseOwnersFile, parseScopeFile, SCOPE_MAP_PATH } from "./scope-file.ts";
 import { ReviewStore, submitReview, type ReviewInput, type ReviewOutcome, type StoredReview } from "./review-submit.ts";
 import { claimReviews, recordReview, type ReviewClaim, type ReviewReportOutcome } from "./review-record.ts";
+import {
+  AgentToolStore,
+  requestTool,
+  whatsNear,
+  type AgentToolDeps,
+  type AgentToolRun,
+  type ToolRequestOutcome,
+  type WhatsNearOutcome,
+} from "./agent-tools.ts";
 import { CloseOutStore, FixApprovalStore } from "./approval-store.ts";
 import type { HuddleReviewer, ReviewCollection } from "./huddle-reviews.ts";
 import type { HuddleThread, HuddleThreadKeeper } from "./huddle-threads.ts";
@@ -260,6 +269,17 @@ export {
   type StoredFeatureRecord,
   type UnsignedFeatureRecord,
 } from "./feature-store.ts";
+export {
+  AGENT_TOOL_LIMITS,
+  AgentToolStore,
+  requestTool,
+  whatsNear,
+  type AgentToolDeps,
+  type AgentToolRun,
+  type NearFeature,
+  type ToolRequestOutcome,
+  type WhatsNearOutcome,
+} from "./agent-tools.ts";
 export {
   REVIEW_CLAIM_LIMIT,
   REVIEW_LEASE_MS,
@@ -493,6 +513,7 @@ export class ProjectAgent extends Agent {
   #forks: OwnerForkStore | undefined;
   #featureRows: FeatureStore | undefined;
   #reviewRows: ReviewStore | undefined;
+  #toolRows: AgentToolStore | undefined;
   #overlapRows: OverlapStore | undefined;
   /** Overlap checks and approvals run one at a time, so no two race for a record's sequence number. */
   #lockSteps: Promise<unknown> = Promise.resolve();
@@ -1479,6 +1500,49 @@ export class ProjectAgent extends Agent {
   #reviewStore(): ReviewStore {
     this.#reviewRows ??= new ReviewStore(this.#database());
     return this.#reviewRows;
+  }
+
+  /**
+   * `whats_near` (agent-tools.ts): the running features near the paths or scopes `owner`'s session
+   * names, each with its person and agent sessions. The call is recorded.
+   */
+  whatsNear(owner: string, sessionId: string, input: { readonly paths?: unknown; readonly scopes?: unknown }, repos: ProjectRepos): Promise<WhatsNearOutcome> {
+    return whatsNear(this.#agentToolDeps(repos), owner, sessionId, input);
+  }
+
+  /**
+   * `impact`, `check` or `apply_fix` (agent-tools.ts) on the feature `owner`'s session works on: the
+   * request is checked and recorded for the check runner, at the feature's latest checkpoint.
+   */
+  requestAgentTool(
+    owner: string,
+    sessionId: string,
+    tool: "impact" | "check" | "apply_fix",
+    input: { readonly feature?: unknown; readonly kind?: unknown; readonly paths?: unknown; readonly edits?: unknown },
+    repos: ProjectRepos,
+  ): Promise<ToolRequestOutcome> {
+    return requestTool(this.#agentToolDeps(repos), owner, sessionId, tool, input);
+  }
+
+  /** The agent tool calls recorded on a feature, oldest first, for its page. */
+  agentToolRuns(featureId: string): AgentToolRun[] {
+    return this.#toolStore().list(featureId);
+  }
+
+  #toolStore(): AgentToolStore {
+    this.#toolRows ??= new AgentToolStore(this.#database());
+    return this.#toolRows;
+  }
+
+  #agentToolDeps(repos: ProjectRepos): AgentToolDeps {
+    return {
+      features: this.#featureStore(),
+      runs: this.#toolStore(),
+      scopeMap: () => this.#scopeMap(repos),
+      heartbeat: (caller, session) => this.sessionHeartbeat(caller, session),
+      session: (session) => this.readSession(session),
+      identity: (identityId) => this.readIdentity(identityId),
+    };
   }
 
   /** An owner's fork record with its latest reported checkpoint, or undefined before the first report. */

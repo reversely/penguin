@@ -276,8 +276,8 @@ On the three fixtures:
 
 | Fixture | What the checks find |
 |---|---|
-| Identity unification | Tests fail for Jun (two tests) and Sam (one test). The type check passes on both: no caller outside Priya's file calls `Profile.set`. Sam's one existing pyright error is already on Sam's checkpoint. Lint fails on every target with ruff's `I001` in Priya's `ingestion/tests/test_identity_map.py`, whose imports ruff sorts differently from the repository root |
-| Helpful fix | Tests fail for Jun and Sam, one test each. Lint fails with `I001` in Priya's `shared/tests/test_dates.py` |
+| Identity unification | Tests fail for Jun (two tests) and Sam (one test). The type check passes on both: no caller outside Priya's file calls `Profile.set`. Sam's one existing pyright error is already on Sam's checkpoint. Lint passes (`examples/ruff.toml` matches a built fixture's import sorting) |
+| Helpful fix | Tests fail for Jun and Sam, one test each. Lint passes |
 | Dependency bump | The dependency diff fails for Ana and for main. Ana's payment test fails |
 
 ### Tools for agents
@@ -292,6 +292,26 @@ Agents call these tools through MCP. Each tool answers with facts or applies one
 | `apply_fix` | Applies one deterministic fix: format, lint autofix, regenerate a lockfile, or a codemod for a rename, move or signature change |
 | `propose_plan` | Submits a merge plan; Penguin fills in the facts and returns what is missing |
 | `submit_review` | Submits the review form for a plan part ([Review harness](#review-harness)) |
+
+#### Tools in the build
+
+The MCP server serves `whats_near`, `impact`, `check`, `apply_fix` and `submit_review`
+(`services/mcp/src/tools.ts`). The ProjectAgent answers `whats_near` from the running features'
+areas, the scope map and the sessions (`services/project-agent/src/agent-tools.ts`). It lists each
+feature whose area touches the asked paths or scopes. It also lists each feature working in a scope whose
+`depends_on` names one of them. The session's own feature is left out.
+
+`impact`, `check` and `apply_fix` need the check runner's programs. The ProjectAgent checks the
+request and records it at the feature's latest checkpoint. Its answer says the request waits for the
+check runner. Only an agent session of the feature may call them. `apply_fix` takes one of the fixed
+kinds `format`, `lint`, `lockfile` and `codemod`. It takes only Python files inside the caller
+identity's charter. Its codemod edits must name dotted Python names. On the runner,
+`penguin-bridge apply-fix` applies one fix and `penguin-bridge resolve` runs the checks with the
+ladder ([bridge-and-runner.md](bridge-and-runner.md#resolution-ladder)).
+
+Each call is an `AgentToolRun` row: the feature, the session, the caller's identity, the tool, its
+input, its answer and its duration. The feature page and demos read the rows. Their count per
+resolved failure is the agent calls metric of PRD section 11.
 
 ### Routing and the resolution ladder
 
@@ -309,6 +329,43 @@ therefore never tries tools in turn.
 
 Each step's result goes back through the checks before Penguin accepts it. Penguin writes no
 judgment fix. Steps 4 and 5 belong to agents.
+
+#### The ladder in the build
+
+The ladder and its routes are data in `packages/protocol/src/resolution.ts`. `RESOLUTION_LADDER`
+holds the six steps above. `LADDER_ROUTES` maps a check and a failure kind to a step and the fix
+Penguin applies there. A row for one check wins over a row for any check:
+
+| Check | Failure kind | Step | Fix |
+|---|---|---|---|
+| Format | Files to reformat | 1 | `fix:ruff-format` |
+| Lint | New lint findings, import order among them | 1 | `fix:ruff-autofix` |
+| Merge | Conflicts only in `uv.lock` | 2 | `fix:uv-lock` |
+| Tests, type check | The target uses a symbol the contract diff shows renamed, moved, or with one keyword parameter renamed | 3 | `fix:python-codemod` |
+| Any | Any other failure: a behaviour change | 4 inside the originating agent's charter, 5 outside it | None |
+| Any | The check could not run | 6 | None |
+| Any | A step 1 to 3 failure past the round limit | 6 | None |
+
+`classifyFailure` gives each failed or erred check exactly one decision: the step, the next step's
+wording, one actor, the fix's command ID and a one-line reason, with the check's summary and findings
+attached. The charter is the originating identity's `charter_scopes` and `charter_paths`. A failing
+place lies inside it when its file falls in a charter scope or under a charter path. A check that
+names no file is placed by the target's scopes. Step 5 goes to the identity of the scope's owner
+whose charter holds the scope. When the owner has none, the failure goes to the owner in person at
+step 6. A fix Penguin applied that did not clear its failure turns that failure into a behaviour
+change. A tool error goes to the originating feature's person.
+
+`codemodPlan` builds the codemod from the contract diff of `analysis:python-impact`. Each use a
+target makes of a renamed or moved symbol gives a `rename` or `move` edit. A use that calls a function
+whose signature removes one parameter and adds one gives a `rename-parameter` edit. The edits list
+the files of those uses. An added parameter with a default breaks no call, so no check fails on it
+and no codemod follows.
+
+On the helpful-fix fixture, a head that renames `start_of_day` to `start_of_local_day` fails Jun's and
+Sam's tests and type checks. All four failures go to step 3. Penguin's codemod writes one commit into
+each fork, on Jun's `analytics/weekly.py` and Sam's `messaging/reminders.py`. The next round passes
+every check with no agent call
+([bridge-and-runner.md](bridge-and-runner.md#resolution-ladder)).
 
 ## Review harness
 
