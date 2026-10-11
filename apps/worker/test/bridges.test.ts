@@ -46,6 +46,9 @@ function fakeArtifacts(repos: readonly string[]): TokenArtifacts & { minted: { r
           const plaintext = `art_${crypto.randomUUID()}`;
           return { plaintext, scope, expiresAt: new Date(Date.now() + ttl * 1000).toISOString() };
         },
+        async info() {
+          return { remote: `https://account.artifacts.example/git/penguin/${name}.git` };
+        },
         [Symbol.dispose]() {},
       };
     },
@@ -139,10 +142,12 @@ test("jun's bridge gets write on owner-jun and issues and read on owner-priya", 
     const response = await requestToken(call, jun.bridgeToken, repo, scope);
     assert.equal(response.status, 200, `${repo} ${scope}`);
     assert.equal(response.headers.get("Cache-Control"), "no-store");
-    const body = (await response.json()) as { repo: string; scope: string; token: string; expiresAt: string };
+    const body = (await response.json()) as { repo: string; scope: string; token: string; remote: string; expiresAt: string };
     assert.equal(body.repo, repo);
     assert.equal(body.scope, scope);
     assert.match(body.token, /^art_/);
+    // The remote names the prefixed repo and never carries the token.
+    assert.equal(body.remote, `https://account.artifacts.example/git/penguin/test-${repo}.git`);
     // Every token expires no later than the configured TTL.
     assert.ok(Date.parse(body.expiresAt) <= Date.now() + TTL * 1000, body.expiresAt);
     assert.ok(Date.parse(body.expiresAt) >= started + TTL * 1000 - 1000, body.expiresAt);

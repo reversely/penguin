@@ -6,8 +6,10 @@ import { parseArgs } from "node:util";
 import { runGit } from "@penguin/git-analysis";
 
 import { CheckpointPublisher, type ConsentScope } from "./checkpoint.ts";
+import { isPenguinRemote, penguinRemote } from "./git-remote.ts";
 import { ISSUE_USAGE, runIssueCommand, runKeyCommand } from "./issue-cli.ts";
 import { KeychainStore, type KeyStore } from "./key-store.ts";
+import { bridgeRemotes, registerBridge, type Fetch } from "./penguin-client.ts";
 import { WorktreeRegistry, worktreeId } from "./registry.ts";
 import { bridgeSpool, defaultStateDir, runSpoolCommand, SPOOL_USAGE } from "./spool-cli.ts";
 
@@ -17,19 +19,22 @@ export interface CliIo {
   ask: (question: string) => Promise<string>;
 }
 
-const USAGE = `Usage: penguin-bridge checkpoint --owner <id> --project <id> --fork <bare repo path>
+const USAGE = `Usage: penguin-bridge register --server <url> --owner <id> --code <code> [--state-dir <dir>]
+       penguin-bridge checkpoint --owner <id> --project <id> [--fork penguin:owner-<id>|<bare repo path>]
                       [--worktree <path>] [--consent each-publish|worktree|project]
                       [--remote <url>] [--state-dir <dir>]
 `;
 
 export interface CliDependencies {
-  /** Where the bridge signing key lives. Defaults to the OS keychain. */
+  /** Where the bridge signing key and bridge token live. Defaults to the OS keychain. */
   keyStore?: KeyStore;
   /**
-   * The bridge's state folder: the outbound spool and the issues clones. Defaults to ~/.penguin;
-   * a command's --state-dir overrides it.
+   * The bridge's state folder: the outbound spool, the issues clones and the registration record.
+   * Defaults to ~/.penguin; a command's --state-dir overrides it.
    */
   stateDir?: string;
+  /** How the bridge reaches Penguin. Defaults to the global fetch. */
+  fetch?: Fetch;
 }
 
 const CONSENT_SCOPES: readonly ConsentScope[] = ["each-publish", "worktree", "project"];
@@ -39,9 +44,11 @@ export async function runCli(argv: readonly string[], io: CliIo, deps: CliDepend
   const [command, ...rest] = argv;
   const keyStore = deps.keyStore ?? new KeychainStore();
   const stateDir = deps.stateDir ?? defaultStateDir();
-  if (command === "issue") return runIssueCommand(rest, io, keyStore, stateDir);
+  const remotesFor = (dir: string) => bridgeRemotes(dir, keyStore, deps.fetch);
+  if (command === "register") return runRegisterCommand(rest, io, keyStore, stateDir, deps.fetch);
+  if (command === "issue") return runIssueCommand(rest, io, keyStore, stateDir, remotesFor);
   if (command === "key") return runKeyCommand(rest, io, keyStore);
-  if (command === "spool") return runSpoolCommand(rest, io, stateDir);
+  if (command === "spool") return runSpoolCommand(rest, io, stateDir, remotesFor);
   if (command !== "checkpoint") {
     io.write(USAGE + ISSUE_USAGE + SPOOL_USAGE);
     return 2;
@@ -60,10 +67,13 @@ export async function runCli(argv: readonly string[], io: CliIo, deps: CliDepend
     strict: true,
   });
   const consent = values.consent as ConsentScope;
-  if (!values.owner || !values.project || !values.fork || !CONSENT_SCOPES.includes(consent)) {
+  if (!values.owner || !values.project || !CONSENT_SCOPES.includes(consent)) {
     io.write(USAGE);
     return 2;
   }
+  // Without --fork the checkpoint goes to the owner's fork in Artifacts.
+  const fork = values.fork ?? penguinRemote(`owner-${values.owner}`);
+  const checkpointStateDir = values["state-dir"] ?? stateDir;
 
   // The bridge ID only salts path hashes; a one-shot command needs no persistent one.
   const bridgeId = "local";
@@ -76,18 +86,59 @@ export async function runCli(argv: readonly string[], io: CliIo, deps: CliDepend
     fork: {
       owner_id: values.owner,
       project_id: values.project,
-      repo: resolve(values.fork),
+      repo: isPenguinRemote(fork) ? fork : resolve(fork),
       latest_checkpoint_sha: null,
       publishing_consent: consent,
     },
     write: io.write,
-    spool: bridgeSpool(values["state-dir"] ?? stateDir),
+    spool: bridgeSpool(checkpointStateDir),
+    remotes: remotesFor(checkpointStateDir),
     confirm: async () => /^y(es)?$/i.test((await io.ask("Publish this checkpoint? [y/N] ")).trim()),
   });
+  const started = performance.now();
   const result = await publisher.publish(worktreeId(bridgeId, worktree), values.remote);
   if (result.status === "up-to-date") io.write(`The fork already has checkpoint ${result.checkpoint_sha}.\n`);
+  if (result.status === "published") io.write(`Publish took ${Math.round(performance.now() - started)} ms.\n`);
   // A queued checkpoint has the owner's consent and waits only for the fork to be reachable.
   return result.status === "refused" ? 1 : 0;
+}
+
+/** Runs `register`: spends a registration code and stores the bridge token in the key store. */
+async function runRegisterCommand(
+  args: readonly string[],
+  io: CliIo,
+  keyStore: KeyStore,
+  defaultStateDir: string,
+  fetchImpl: Fetch | undefined,
+): Promise<number> {
+  const { values } = parseArgs({
+    args: [...args],
+    options: {
+      server: { type: "string" },
+      owner: { type: "string" },
+      code: { type: "string" },
+      "state-dir": { type: "string" },
+    },
+    strict: true,
+  });
+  if (!values.server || !values.owner || !values.code) {
+    io.write(USAGE);
+    return 2;
+  }
+  const registration = await registerBridge({
+    server: values.server,
+    owner: values.owner,
+    code: values.code,
+    keyStore,
+    stateDir: values["state-dir"] ?? defaultStateDir,
+    fetch: fetchImpl,
+  });
+  // The bridge token went to the key store and is never printed.
+  io.write(
+    `Registered bridge ${registration.bridgeId} for ${registration.owner} (${registration.role}) with ${registration.server}.\n` +
+      "The bridge token is in the key store; Artifacts tokens are fetched at push time and kept in memory.\n",
+  );
+  return 0;
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

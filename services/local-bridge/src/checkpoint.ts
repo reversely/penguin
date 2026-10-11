@@ -4,6 +4,13 @@ import { isAbsolute } from "node:path";
 
 import { runGit, splitNul } from "@penguin/git-analysis";
 
+import {
+  isPenguinRemote,
+  penguinRemote,
+  unregisteredRemotes,
+  type GitRemote,
+  type RemoteResolver,
+} from "./git-remote.ts";
 import type { WorktreeRegistry } from "./registry.ts";
 import type { Spool } from "./spool.ts";
 import { drainSpool } from "./spool-drain.ts";
@@ -22,7 +29,10 @@ export type ConsentScope = "each-publish" | "worktree" | "project";
 export interface OwnerFork {
   owner_id: string;
   project_id: string;
-  /** Phase 1: absolute path of the owner's local bare repository (`owner-<name>.git`). */
+  /**
+   * `penguin:owner-<owner_id>`, the owner's fork in Artifacts, or the absolute path of a local
+   * bare repository (Phase 1).
+   */
   repo: string;
   latest_checkpoint_sha: string | null;
   publishing_consent: ConsentScope;
@@ -68,6 +78,8 @@ export interface CheckpointPublisherOptions {
    * and an unreachable fork queues the push instead of failing the publish.
    */
   spool?: Spool;
+  /** Turns the fork's name into the remote Git talks to. Defaults to local paths only. */
+  remotes?: RemoteResolver;
 }
 
 /**
@@ -90,7 +102,8 @@ export class CheckpointPublisher {
    */
   async publish(id: string, remote?: string): Promise<PublishResult> {
     const { registry, fork, confirm, write, spool } = this.#options;
-    const { path: forkPath, reachable } = await resolveFork(fork, remote, spool !== undefined);
+    const { path: forkPath, reachable: located } = await resolveFork(fork, remote, spool !== undefined);
+    const forkRemote = (this.#options.remotes ?? unregisteredRemotes)(forkPath);
     const record = registry.get(id);
     if (!record) throw new Error(`unknown worktree ${id}`);
     if (record.owner_id !== fork.owner_id) {
@@ -100,7 +113,17 @@ export class CheckpointPublisher {
     const worktree = registry.pathOf(id);
     const forkRef = `refs/heads/${record.branch}`;
 
-    const forkTips = reachable ? await listForkBranches(worktree, forkPath) : new Map<string, string>();
+    let reachable = located;
+    let forkTips = new Map<string, string>();
+    if (reachable) {
+      try {
+        forkTips = await listForkBranches(worktree, forkRemote);
+      } catch (error) {
+        // With a spool the push waits for the fork; without one there is nothing to wait in.
+        if (spool === undefined) throw error;
+        reachable = false;
+      }
+    }
     const localTips = await filterAsync([...forkTips.values()], (sha) =>
       gitSucceeds(worktree, ["cat-file", "-e", `${sha}^{commit}`]),
     );
@@ -141,11 +164,11 @@ export class CheckpointPublisher {
 
     if (spool === undefined) {
       // No force: a fork branch that moved elsewhere rejects the push instead of being overwritten.
-      await runGit(worktree, ["push", "--porcelain", "--end-of-options", forkPath, `${checkpoint}:${forkRef}`]);
+      await forkRemote.git(worktree, (url) => ["push", "--porcelain", "--end-of-options", url, `${checkpoint}:${forkRef}`]);
     } else {
       const id = checkpointEntryId(forkPath, forkRef, checkpoint);
       await spool.enqueue({ kind: "checkpoint", id, worktree, fork: forkPath, ref: forkRef, sha: checkpoint });
-      const drained = await drainSpool(spool);
+      const drained = await drainSpool(spool, this.#options.remotes);
       const failed = drained.failed.find((item) => item.id === id);
       if (failed) throw new Error(failed.reason);
       const waiting = drained.waiting.find((item) => item.id === id);
@@ -181,6 +204,15 @@ async function resolveFork(
   remote: string | undefined,
   allowUnreachable: boolean,
 ): Promise<{ path: string; reachable: boolean }> {
+  if (isPenguinRemote(fork.repo)) {
+    // The Worker grants write on owner-<id> to that owner's bridge only; refuse any other name here too.
+    const own = penguinRemote(`owner-${fork.owner_id}`);
+    if (fork.repo !== own) throw new Error(`fork ${fork.repo} is not ${fork.owner_id}'s fork ${own}`);
+    if (remote !== undefined && remote !== own) {
+      throw new Error(`refusing to push to ${JSON.stringify(remote)}: the only allowed remote is the owner's fork ${own}`);
+    }
+    return { path: own, reachable: true };
+  }
   if (!isAbsolute(fork.repo)) throw new Error(`fork path must be absolute, got ${JSON.stringify(fork.repo)}`);
   const resolved = await realpath(fork.repo).catch((error: unknown) => {
     if (allowUnreachable) return null;
@@ -253,8 +285,8 @@ async function filterAsync<T>(items: T[], keep: (item: T) => Promise<boolean>): 
 }
 
 /** Branch tips of the fork, by full ref name. */
-async function listForkBranches(worktree: string, forkPath: string): Promise<Map<string, string>> {
-  const output = await runGit(worktree, ["ls-remote", "--end-of-options", forkPath]);
+async function listForkBranches(worktree: string, fork: GitRemote): Promise<Map<string, string>> {
+  const output = await fork.git(worktree, (url) => ["ls-remote", "--end-of-options", url]);
   const tips = new Map<string, string>();
   for (const line of output.split("\n")) {
     const [sha, ref] = line.split("\t");

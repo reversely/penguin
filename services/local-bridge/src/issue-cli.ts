@@ -8,11 +8,12 @@ import { parseArgs } from "node:util";
 import type { Author, IssueId, Party } from "@penguin/protocol";
 
 import type { CliIo } from "./cli.ts";
+import { isPenguinRemote, penguinRemote, unregisteredRemotes, type RemoteResolver } from "./git-remote.ts";
 import { IssueWriter, type IssueChange } from "./issue-writer.ts";
 import { loadSigningKey, type KeyStore } from "./key-store.ts";
 import { bridgeSpool } from "./spool-cli.ts";
 
-export const ISSUE_USAGE = `Usage: penguin-bridge issue <command> --owner <id> --repo <issues repo> [--clone <dir>]
+export const ISSUE_USAGE = `Usage: penguin-bridge issue <command> --owner <id> [--repo penguin:issues|<bare repo path>] [--clone <dir>]
                       [--branch <name>] [--as <person|@owner/name>] [--base-version <n>]
                       [--state-dir <dir>]
   create  --title <text> [--body <text>]
@@ -54,6 +55,7 @@ export async function runIssueCommand(
   io: CliIo,
   keyStore: KeyStore,
   defaultStateDir: string,
+  remotesFor: (stateDir: string) => RemoteResolver = () => unregisteredRemotes,
 ): Promise<number> {
   const [command, ...rest] = args;
   let values: Values;
@@ -62,7 +64,7 @@ export async function runIssueCommand(
   let baseVersion: number | undefined;
   try {
     values = parseIssueArgs(rest).values;
-    if (!values.owner || !values.repo) throw new UsageError("--owner and --repo are required");
+    if (!values.owner) throw new UsageError("--owner is required");
     change = buildChange(command, values);
     author = values.as === undefined ? undefined : parseParty(values.as);
     baseVersion = values["base-version"] === undefined ? undefined : parseCount(values["base-version"]);
@@ -74,9 +76,12 @@ export async function runIssueCommand(
 
   const started = performance.now();
   const stateDir = values["state-dir"] ?? defaultStateDir;
-  const remote = resolve(values.repo);
+  // Without --repo the operation goes to the issues repo in Artifacts.
+  const repo = values.repo ?? penguinRemote("issues");
+  const remote = isPenguinRemote(repo) ? repo : resolve(repo);
   const writer = new IssueWriter({
     remote,
+    remotes: remotesFor(stateDir),
     clonePath: resolve(values.clone ?? defaultClonePath(stateDir, remote)),
     branch: values.branch,
     ownerId: values.owner,

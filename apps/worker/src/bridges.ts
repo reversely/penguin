@@ -6,7 +6,8 @@
  * - POST /bridges: spends a code and records the bridge's public signing key. Returns the bridge
  *   token, once.
  * - DELETE /bridges/<id>, deployer only: revokes a bridge.
- * - POST /tokens, bridge token: returns a short-lived Artifacts token on one project repo.
+ * - POST /tokens, bridge token: returns a short-lived Artifacts token on one project repo, with the
+ *   repo's Git remote.
  *
  * Responses that carry a code or token are marked `Cache-Control: no-store`.
  */
@@ -144,7 +145,8 @@ async function issueToken(request: Request, options: BridgeOptions, handlers: Br
 
   try {
     const minted = await handlers.mintToken(repoName, scope, options.tokenTtlSeconds);
-    return json({ repo: repoName, scope: minted.scope, token: minted.token, expiresAt: minted.expiresAt }, 200, NO_STORE);
+    const { scope: mintedScope, token, remote, expiresAt } = minted;
+    return json({ repo: repoName, scope: mintedScope, token, remote, expiresAt }, 200, NO_STORE);
   } catch (error) {
     if (error instanceof RepoNotFoundError) return json({ error: "not found", repo: repoName }, 404);
     return json({ error: "artifacts", code: artifactsErrorCode(error) ?? null }, 502);

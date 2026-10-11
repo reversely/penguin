@@ -12,6 +12,29 @@ export type { ResolvedCommand } from "./command-allowlist.ts";
 export { checkpointEntryId, CheckpointPublisher, formatPreview } from "./checkpoint.ts";
 export { pushCheckpoint } from "./checkpoint-push.ts";
 export type { CheckpointPushResult } from "./checkpoint-push.ts";
+export {
+  ARTIFACTS_GIT_OPTIONS,
+  artifactsRemote,
+  isAuthFailure,
+  isPenguinRemote,
+  localRemote,
+  penguinRemote,
+  penguinRepoOf,
+  RemoteRefusedError,
+  tokenEnvironment,
+  unregisteredRemotes,
+} from "./git-remote.ts";
+export type { GitRemote, RemoteResolver, RepoToken, TokenSource } from "./git-remote.ts";
+export {
+  bridgeRemotes,
+  bridgeTokenAccount,
+  checkedOrigin,
+  readRegistration,
+  registerBridge,
+  registrationFile,
+  TokenClient,
+} from "./penguin-client.ts";
+export type { BridgeRegistration, Fetch, RegisterOptions, TokenClientOptions } from "./penguin-client.ts";
 export { IssuesClone, operationText, RemoteUnavailableError } from "./issues-clone.ts";
 export type { IssuesCloneOptions, PublishOutcome, SyncResult } from "./issues-clone.ts";
 export { pendingOf, Spool, SPOOL_VERSION } from "./spool.ts";

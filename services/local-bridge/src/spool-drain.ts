@@ -3,6 +3,7 @@
 // reachable stay queued for the next attempt.
 
 import { pushCheckpoint } from "./checkpoint-push.ts";
+import { unregisteredRemotes, type RemoteResolver } from "./git-remote.ts";
 import { authorOwner, IssuesClone, RemoteUnavailableError } from "./issues-clone.ts";
 import type { CheckpointEntry, OperationEntry, Spool } from "./spool.ts";
 
@@ -14,9 +15,12 @@ export interface DrainResult {
   readonly waiting: readonly { readonly id: string; readonly reason: string }[];
 }
 
-/** Drains the spool under its lock. */
-export function drainSpool(spool: Spool): Promise<DrainResult> {
-  return spool.withLock(() => drainLocked(spool));
+/**
+ * Drains the spool under its lock. `remotes` resolves each entry's remote name; without it only
+ * local paths are reachable and Artifacts entries stay queued.
+ */
+export function drainSpool(spool: Spool, remotes: RemoteResolver = unregisteredRemotes): Promise<DrainResult> {
+  return spool.withLock(() => drainLocked(spool, remotes));
 }
 
 /**
@@ -24,7 +28,11 @@ export function drainSpool(spool: Spool): Promise<DrainResult> {
  * through and pushed together; checkpoints are pushed one at a time in the order they were queued.
  * `synced` is a clone the caller has just synced online; its group skips a second fetch.
  */
-export async function drainLocked(spool: Spool, synced?: IssuesClone): Promise<DrainResult> {
+export async function drainLocked(
+  spool: Spool,
+  remotes: RemoteResolver = unregisteredRemotes,
+  synced?: IssuesClone,
+): Promise<DrainResult> {
   const pushed: { id: string; commit: string }[] = [];
   const failed: { id: string; reason: string }[] = [];
   const waiting: { id: string; reason: string }[] = [];
@@ -43,6 +51,7 @@ export async function drainLocked(spool: Spool, synced?: IssuesClone): Promise<D
         ? synced
         : new IssuesClone({
             remote: first!.remote,
+            remotes,
             clonePath: first!.clone,
             branch: first!.branch,
             ownerId: authorOwner(first!.operation.author) ?? "penguin",
@@ -66,7 +75,7 @@ export async function drainLocked(spool: Spool, synced?: IssuesClone): Promise<D
 
   for (const entries of checkpoints.values()) {
     for (const [index, entry] of entries.entries()) {
-      const result = await pushCheckpoint(entry);
+      const result = await pushCheckpoint(entry, remotes);
       if (result.status === "waiting") {
         // A later checkpoint on the same branch builds on this one; keep them in order.
         for (const later of entries.slice(index)) waiting.push({ id: later.id, reason: result.reason });
@@ -92,6 +101,8 @@ function append<T>(groups: Map<string, T[]>, key: string, value: T): void {
 
 export interface RetryLoopOptions {
   spool: Spool;
+  /** Resolves each entry's remote name. Defaults to local paths only. */
+  remotes?: RemoteResolver;
   /** The first wait after a drain that left entries queued. Doubles up to `maxDelayMs`. */
   minDelayMs?: number;
   maxDelayMs?: number;
@@ -113,7 +124,14 @@ export class RetryLoop {
   #delay: number;
 
   constructor(options: RetryLoopOptions) {
-    this.#options = { minDelayMs: 1_000, maxDelayMs: 60_000, idleDelayMs: 30_000, onDrain: () => undefined, ...options };
+    this.#options = {
+      minDelayMs: 1_000,
+      maxDelayMs: 60_000,
+      idleDelayMs: 30_000,
+      onDrain: () => undefined,
+      remotes: unregisteredRemotes,
+      ...options,
+    };
     this.#delay = this.#options.minDelayMs;
   }
 
@@ -138,10 +156,10 @@ export class RetryLoop {
   }
 
   async #tick(): Promise<void> {
-    const { spool, minDelayMs, maxDelayMs, idleDelayMs, onDrain } = this.#options;
+    const { spool, remotes, minDelayMs, maxDelayMs, idleDelayMs, onDrain } = this.#options;
     let next: number;
     try {
-      const result = await drainSpool(spool);
+      const result = await drainSpool(spool, remotes);
       onDrain(result);
       if (result.waiting.length > 0) {
         next = this.#delay;

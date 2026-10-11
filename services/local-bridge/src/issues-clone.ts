@@ -1,6 +1,8 @@
 // The bridge's own clone of an issues repo: fetching, recovering from a crash, committing spooled
-// operation files and pushing them. Phase 1 pushes to a local bare repository; #16 points the
-// remote at Artifacts. Callers hold the spool lock, so one bridge process at a time uses a clone.
+// operation files and pushing them. The remote is a local bare repository (Phase 1) or the
+// Artifacts `issues` repo, named `penguin:issues`. The clone keeps no remote in its Git config:
+// every fetch and push names the URL, and an Artifacts token travels in that command's
+// environment only. Callers hold the spool lock, so one bridge process at a time uses a clone.
 
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -9,11 +11,16 @@ import { dirname, isAbsolute, join } from "node:path";
 import { runGit } from "@penguin/git-analysis";
 import { OP_ID_PATTERN, operationPath, validateOperation, type Author, type Operation } from "@penguin/protocol";
 
+import { RemoteUnavailableError, unregisteredRemotes, type GitRemote, type RemoteResolver } from "./git-remote.ts";
 import type { OperationEntry } from "./spool.ts";
 
+export { RemoteUnavailableError } from "./git-remote.ts";
+
 export interface IssuesCloneOptions {
-  /** The issues repository. Phase 1: an absolute path to a local bare repo. */
+  /** The issues repository: an absolute path to a local bare repo, or `penguin:issues`. */
   remote: string;
+  /** Turns `remote` into the remote Git talks to. Defaults to local paths only. */
+  remotes?: RemoteResolver;
   /** The bridge's clone of the issues repo. Created on first use. */
   clonePath: string;
   branch: string;
@@ -31,11 +38,11 @@ export interface PublishOutcome {
   readonly failed: readonly { readonly id: string; readonly reason: string }[];
 }
 
-/** The issues remote could not be fetched or pushed to. The entries stay queued. */
-export class RemoteUnavailableError extends Error {}
-
 // Hooks off and signing off: the bridge's clone runs no code from the repo or the owner's Git setup.
 const GIT_CONFIG = ["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false"];
+
+// Fetching every branch into origin's namespace also succeeds on an empty remote.
+const FETCH_REFSPEC = "+refs/heads/*:refs/remotes/origin/*";
 
 const OP_FILE = new RegExp(`^issues/[^/]+/ops/(${OP_ID_PATTERN.slice(1, -1)})\\.json$`, "u");
 const SEQUENCE_FILE = "penguin-sequence.json";
@@ -56,6 +63,7 @@ export function isOperationPath(path: string): boolean {
 
 export class IssuesClone {
   readonly #options: IssuesCloneOptions;
+  readonly #remote: GitRemote;
   // The bridge creates the clone itself, so its Git directory is always <clone>/.git.
   readonly #gitDir: string;
   /** The branch has a commit, so HEAD can be read. Set by `sync`. */
@@ -68,6 +76,7 @@ export class IssuesClone {
   constructor(options: IssuesCloneOptions) {
     if (!isAbsolute(options.clonePath)) throw new Error("the issues clone path must be absolute");
     this.#options = options;
+    this.#remote = (options.remotes ?? unregisteredRemotes)(options.remote);
     this.#gitDir = join(options.clonePath, ".git");
   }
 
@@ -81,17 +90,16 @@ export class IssuesClone {
    * caller can read the last fetched state.
    */
   async sync(): Promise<SyncResult> {
-    const { remote, clonePath, branch } = this.#options;
+    const { clonePath, branch } = this.#options;
     this.#fresh = false;
     this.#tracked = null;
     if (!existsSync(this.#gitDir)) {
       // init and fetch rather than clone, so an unreachable remote still leaves a usable clone.
       await mkdir(clonePath, { recursive: true });
       await runGit(clonePath, [...GIT_CONFIG, "init", "--quiet"]);
-      await this.#git("remote", "add", "origin", remote);
     }
     await this.#recover();
-    const fetched = await this.#git("fetch", "--quiet", "origin").then(
+    const fetched = await this.#fetch().then(
       () => null,
       (error: Error) => error.message,
     );
@@ -194,7 +202,14 @@ export class IssuesClone {
     const { branch, maxPushAttempts } = this.#options;
     for (let attempt = 1; ; attempt++) {
       try {
-        await this.#git("push", "--quiet", "origin", `HEAD:refs/heads/${branch}`);
+        await this.#remote.git(this.#options.clonePath, (url) => [
+          ...GIT_CONFIG,
+          "push",
+          "--quiet",
+          "--end-of-options",
+          url,
+          `HEAD:refs/heads/${branch}`,
+        ]);
         return;
       } catch (error) {
         if (attempt >= maxPushAttempts) {
@@ -202,7 +217,7 @@ export class IssuesClone {
         }
       }
       try {
-        await this.#git("fetch", "--quiet", "origin");
+        await this.#fetch();
       } catch (error) {
         throw new RemoteUnavailableError(`the issues remote is unreachable: ${lastLine((error as Error).message)}`);
       }
@@ -270,6 +285,17 @@ export class IssuesClone {
     } catch {
       return {};
     }
+  }
+
+  #fetch(): Promise<string> {
+    return this.#remote.git(this.#options.clonePath, (url) => [
+      ...GIT_CONFIG,
+      "fetch",
+      "--quiet",
+      "--end-of-options",
+      url,
+      FETCH_REFSPEC,
+    ]);
   }
 
   #succeeds(...args: string[]): Promise<boolean> {

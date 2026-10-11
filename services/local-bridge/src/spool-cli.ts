@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
 import type { CliIo } from "./cli.ts";
+import { unregisteredRemotes, type RemoteResolver } from "./git-remote.ts";
 import { Spool } from "./spool.ts";
 import { drainSpool, RetryLoop, type DrainResult } from "./spool-drain.ts";
 
@@ -25,16 +26,24 @@ export function bridgeSpool(stateDir: string): Spool {
  * Runs `spool drain` (push what is queued once) or `spool watch` (keep draining, backing off
  * while the remote is unreachable, until interrupted). Resolves with the exit code.
  */
-export async function runSpoolCommand(args: readonly string[], io: CliIo, stateDir: string): Promise<number> {
+export async function runSpoolCommand(
+  args: readonly string[],
+  io: CliIo,
+  stateDir: string,
+  remotesFor: (stateDir: string) => RemoteResolver = () => unregisteredRemotes,
+): Promise<number> {
   const [command, ...rest] = args;
   const { values } = parseArgs({
     args: rest,
     options: { "state-dir": { type: "string" }, interval: { type: "string" } },
     strict: true,
   });
-  const spool = bridgeSpool(values["state-dir"] ?? stateDir);
+  const dir = values["state-dir"] ?? stateDir;
+  const spool = bridgeSpool(dir);
+  // One resolver for the whole command, so `watch` reuses its cached tokens until they expire.
+  const remotes = remotesFor(dir);
   if (command === "drain") {
-    const result = await drainSpool(spool);
+    const result = await drainSpool(spool, remotes);
     io.write(formatDrain(result));
     return result.failed.length > 0 ? 1 : 0;
   }
@@ -46,6 +55,7 @@ export async function runSpoolCommand(args: readonly string[], io: CliIo, stateD
     }
     const loop = new RetryLoop({
       spool,
+      remotes,
       minDelayMs: interval,
       idleDelayMs: interval,
       onDrain: (result) => {

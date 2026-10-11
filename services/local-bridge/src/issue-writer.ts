@@ -17,6 +17,7 @@ import {
 } from "@penguin/protocol";
 
 import { authorOwner, IssuesClone, isOperationPath, opIdOfPath } from "./issues-clone.ts";
+import type { RemoteResolver } from "./git-remote.ts";
 import type { BridgeSigningKey } from "./key-store.ts";
 import { pendingOf, type OperationEntry, type Spool, type SpoolEntry } from "./spool.ts";
 import { drainLocked } from "./spool-drain.ts";
@@ -52,8 +53,10 @@ export type IssueChange =
     };
 
 export interface IssueWriterOptions {
-  /** The issues repository the bridge pushes to. Phase 1: an absolute path to a local bare repo. */
+  /** The issues repository the bridge pushes to: a local bare repo's absolute path, or `penguin:issues`. */
   remote: string;
+  /** Turns spooled remote names into remotes. Defaults to local paths only. */
+  remotes?: RemoteResolver;
   /** The bridge's own clone of the issues repo. Created on first use. */
   clonePath: string;
   /** The issues branch. */
@@ -99,7 +102,7 @@ export interface WriteResult {
  * never as an argument.
  */
 export class IssueWriter {
-  readonly #options: Required<IssueWriterOptions>;
+  readonly #options: Required<Omit<IssueWriterOptions, "remotes">> & Pick<IssueWriterOptions, "remotes">;
   readonly #clone: IssuesClone;
 
   constructor(options: IssueWriterOptions) {
@@ -122,7 +125,7 @@ export class IssueWriter {
         // The fetch just failed, so a push would too; the retry loop takes it from here.
         return { operation: entry.operation, path: entry.path, status: "queued", commit: null, reason: sync.reason };
       }
-      const drained = await drainLocked(spool, this.#clone);
+      const drained = await drainLocked(spool, this.#options.remotes, this.#clone);
       const pushed = drained.pushed.find((item) => item.id === entry.id);
       const failed = drained.failed.find((item) => item.id === entry.id);
       const waiting = drained.waiting.find((item) => item.id === entry.id);

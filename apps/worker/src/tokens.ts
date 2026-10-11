@@ -81,6 +81,7 @@ export function parseTokenTtl(value: string | undefined): number | undefined {
 /** The subset of the binding's `ArtifactsRepo` capability that minting calls. */
 export interface TokenRepoHandle extends Disposable {
   createToken(scope: TokenScope, ttl: number): Promise<{ plaintext: string; expiresAt: string; scope: TokenScope }>;
+  info(): Promise<{ remote: string }>;
 }
 
 export interface TokenArtifacts {
@@ -89,6 +90,8 @@ export interface TokenArtifacts {
 
 export interface MintedToken {
   readonly token: string;
+  /** The repo's HTTPS Git remote, which the bridge pushes to with the token in a header. */
+  readonly remote: string;
   readonly scope: TokenScope;
   readonly expiresAt: string;
 }
@@ -101,7 +104,8 @@ export class RepoNotFoundError extends Error {
 }
 
 /**
- * Mints one token on `repoName`.
+ * Mints one token on `repoName` and reads the repo's Git remote, so the bridge never has to build
+ * the account-specific remote URL itself.
  *
  * @throws RepoNotFoundError when Artifacts has no repo by that name.
  */
@@ -119,8 +123,8 @@ export async function mintRepoToken(
     throw error;
   }
   try {
-    const created = await repo.createToken(scope, ttlSeconds);
-    return { token: created.plaintext, scope: created.scope, expiresAt: created.expiresAt };
+    const [created, info] = await Promise.all([repo.createToken(scope, ttlSeconds), repo.info()]);
+    return { token: created.plaintext, remote: info.remote, scope: created.scope, expiresAt: created.expiresAt };
   } finally {
     repo[Symbol.dispose]();
   }
