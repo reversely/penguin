@@ -4,4 +4,9 @@ cache-dir = "../.ruff_cache"
 # first-party and ruff sorts their imports into a separate block. These settings make a run from
 # this repository sort them the same way, so the block checks on a built fixture find no lint.
 [lint.isort]
-known-first-party = ["analytics", "ingestion", "integrations", "messaging", "payments", "shared", "vendor"]
+known-first-party = [
+    "analytics", "ingestion", "integrations", "messaging", "payments", "shared", "vendor",
+    # money-minor-units
+    "catalog", "checkout", "invoicing", "mobile_api", "orders", "payouts", "promotions",
+    "refunds", "store_dashboard", "tax",
+]

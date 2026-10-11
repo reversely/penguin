@@ -1,0 +1,8 @@
+from orders.model import Line, Order
+from orders.shipments import shipment_total
+
+ORDER = Order("o-1", "NY", "USD", [Line("milk", 2, 1.49), Line("bread", 1, 3.25)])
+
+
+def test_shipment_total_counts_only_its_lines():
+    assert shipment_total(ORDER, ["bread"]) == 3.25

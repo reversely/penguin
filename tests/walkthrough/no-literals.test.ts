@@ -4,6 +4,7 @@
 // that renaming an owner in a fixture changes what the walkthrough derives.
 
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { cp, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -16,9 +17,15 @@ const REPO_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const WALKTHROUGH = fileURLToPath(new URL(".", import.meta.url));
 const TESTS = resolve(WALKTHROUGH, "..");
 
+/**
+ * The fixtures the walkthrough plays: those that commit their owners under `base/penguin/`. The
+ * money-minor-units fixture generates its penguin files from its data file and is not played yet.
+ */
 async function useCases(root: string): Promise<UseCaseFixture[]> {
   const entries = await readdir(join(root, "examples"), { withFileTypes: true });
-  return entries.filter((entry) => entry.isDirectory()).map((entry) => new UseCaseFixture(root, entry.name));
+  return entries
+    .filter((entry) => entry.isDirectory() && existsSync(join(root, "examples", entry.name, "base", "penguin", "owners.json")))
+    .map((entry) => new UseCaseFixture(root, entry.name));
 }
 
 /** The walkthrough's TypeScript files, and every module under tests/ that they import, transitively. */

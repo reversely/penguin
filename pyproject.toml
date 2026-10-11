@@ -33,6 +33,7 @@ norecursedirs = [
     "identity-unification",
     "helpful-fix",
     "dependency-bump",
+    "money-minor-units",
 ]
 addopts = ["--strict-markers"]
 markers = ["slow: long-running fixture reproductions; excluded from the fast suite"]

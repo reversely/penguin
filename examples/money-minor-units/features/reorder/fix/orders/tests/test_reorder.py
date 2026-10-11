@@ -1,0 +1,15 @@
+from orders.model import Line, Order
+from orders.reorder import reorder_estimate
+from shared.money import Money
+
+ORDER = Order(
+    "o-1",
+    "NY",
+    "USD",
+    [Line("milk", 2, Money(149, "USD")), Line("bread", 1, Money(325, "USD"))],
+)
+
+
+def test_estimate_uses_todays_prices():
+    today = {"milk": Money(159, "USD"), "bread": Money(325, "USD")}
+    assert reorder_estimate(ORDER, today) == Money(643, "USD")

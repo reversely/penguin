@@ -23,3 +23,4 @@ the design section that replaces it.
 | [fixture.md](fixture.md) | The identity-unification fixture |
 | [fixture-helpful-fix.md](fixture-helpful-fix.md) | The helpful-fix fixture |
 | [fixture-dependency-bump.md](fixture-dependency-bump.md) | The dependency-bump fixture |
+| [fixture-money.md](fixture-money.md) | The money-minor-units fixture: the case study's fourteen scopes and forty features |
