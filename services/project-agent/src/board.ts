@@ -33,7 +33,7 @@ export function buildBoard(sources: BoardSources): Board {
   });
   const open = new Set(issues.filter((issue) => issue.issue.state !== "closed").map((issue) => issue.issue.id));
   const waiting = sources.actionItems().flatMap(({ personId, issueId, reason }): BoardWaiting[] =>
-    open.has(issueId) && reason !== "assigned" && reason !== "mentioned" && reason !== "closed" ? [{ personId, issueId, reason }] : [],
+    open.has(issueId) && (reason === "review_requested" || reason === "thread" || reason === "start_session") ? [{ personId, issueId, reason }] : [],
   );
   return { owners: owners(identities, sources.running(), issues), issues, waiting };
 }

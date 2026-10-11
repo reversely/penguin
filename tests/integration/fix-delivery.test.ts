@@ -131,8 +131,8 @@ test("a running @jun/reports session gets its fix sub-issues at its next checkpo
   // The bridge's PreToolUse hook reports the checkpoint for the session's worktree.
   const { id: worktreeId } = await worktreeAt(repo);
   const deliveries = project.sessions.checkpointWorktree("jun", worktreeId);
-  assert.deepEqual(deliveries, [{ sessionId: jun, handle: "@jun/reports", delivered: ["2", "3"], threads: [] }]);
-  const answer = JSON.parse(hookAnswer(deliveries.map(({ handle, ...rest }) => ({ ...rest, identity: handle }))) ?? "");
+  assert.deepEqual(deliveries, [{ sessionId: jun, handle: "@jun/reports", delivered: ["2", "3"], threads: [], overlaps: [], settled: [] }]);
+  const answer = JSON.parse(hookAnswer(deliveries.map(({ handle, sessionId, delivered, threads }) => ({ sessionId, delivered, threads, identity: handle, overlaps: [], locksSettled: [] }))) ?? "");
   assert.equal(answer.hookSpecificOutput.hookEventName, "PreToolUse");
   assert.match(answer.hookSpecificOutput.additionalContext, /fix tasks #2, #3 to @jun\/reports/u);
 

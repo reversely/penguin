@@ -314,7 +314,7 @@ test("Jun's request for changes on the shared-device fix opens a thread that rea
   assert.deepEqual(unread("jun"), []);
   const [delivery] = project.sessions.checkpointWorktree("priya", "wt-merge");
   assert.deepEqual(delivery?.threads, [{ issueId: fixes.shared, threadId }]);
-  const answer = JSON.parse(hookAnswer([{ ...delivery!, identity: delivery!.handle }]) ?? "");
+  const answer = JSON.parse(hookAnswer([{ ...delivery!, identity: delivery!.handle, overlaps: [], locksSettled: [] }]) ?? "");
   assert.match(answer.hookSpecificOutput.additionalContext, new RegExp(`a thread on #${fixes.shared} now needs the developer of @priya/merge-rules`, "u"));
   const work = await call(project, "priya", "get_work", { sessionId: priya });
   assert.deepEqual(

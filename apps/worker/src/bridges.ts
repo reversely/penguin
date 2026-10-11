@@ -23,8 +23,9 @@
  *   Huddle repo. A second report of the same trigger opens nothing.
  * - POST /sessions/checkpoint, bridge token: a safe checkpoint in one of the owner's worktrees, sent
  *   by the bridge's hook before an agent's next tool action or as an explicit bridge checkpoint. The
- *   owner's running sessions in that worktree receive their waiting fix tasks. The body carries only
- *   the worktree id.
+ *   owner's running sessions in that worktree receive their waiting fix tasks, and hear of the
+ *   threads and overlapping starts that newly wait for the owner, and of each lock on their feature
+ *   that was approved or withdrawn. The body carries only the worktree id.
  * - GET /verifications, bridge token of a runner bridge: lists the verification runs waiting for the
  *   runner: the checkpoints to merge onto a Huddle repo's `integration` branch and the commands to run.
  * - POST /verifications/<run id>, bridge token of a runner bridge: reports a verification run. Penguin
@@ -59,7 +60,7 @@ import type {
 } from "@penguin/project-agent";
 
 import { bearerToken, isDeployer } from "./auth.ts";
-import { checkpointFields, FEATURE_FORK } from "./features.ts";
+import { checkpointFields, FEATURE_FORK, settledFields } from "./features.ts";
 import { artifactsErrorCode, huddleRepoId, isValidRepoName } from "./repos.ts";
 import {
   allowedScope,
@@ -315,7 +316,7 @@ async function reportFeatureCheckpoint(
   if (outcome.status === "rejected") {
     return json({ error: outcome.reason, message: outcome.message }, FEATURE_REJECTION_STATUS[outcome.reason] ?? 409);
   }
-  const { newWork: _work, newThreads: _threads, ...fields } = checkpointFields(outcome);
+  const { newWork: _work, newThreads: _threads, newOverlaps: _overlaps, locksSettled: _settled, ...fields } = checkpointFields(outcome);
   return json(fields, 200);
 }
 
@@ -340,11 +341,13 @@ async function sessionCheckpoint(request: Request, handlers: BridgeHandlers): Pr
   return json(
     {
       worktreeId,
-      sessions: deliveries.map(({ sessionId, handle, delivered, threads }) => ({
+      sessions: deliveries.map(({ sessionId, handle, delivered, threads, overlaps, settled }) => ({
         sessionId,
         identity: handle,
         delivered,
         threads: threads.map(({ issueId, threadId }) => ({ issueId, threadId })),
+        overlaps: overlaps.map(({ featureId, blockedFeatureId }) => ({ feature: featureId, blockedFeature: blockedFeatureId })),
+        locksSettled: settledFields(settled),
       })),
     },
     200,

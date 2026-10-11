@@ -1,7 +1,8 @@
-// Opening a feature (#87, PRD 0.4 section 4.1 steps 1 and 2) without the network: agent sessions call
-// the real MCP tools, which reach the ProjectAgent's real stores and the Worker's feature module. The
-// Artifacts binding is a fake that counts forks and mints, and a real Git repo on disk stands in for
-// main and the feature's fork when a checkpoint updates the declared area.
+// Opening a feature (#87, PRD 0.4 section 4.1 steps 1 and 2) and its overlap lock (#88, step 3)
+// without the network: agent sessions call the real MCP tools, which reach the ProjectAgent's real
+// stores and the Worker's feature module. The Artifacts binding is a fake that counts forks and
+// mints, and a real Git repo on disk stands in for main and the feature's fork when a checkpoint
+// updates the declared area.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -25,6 +26,14 @@ import {
 } from "../../../services/project-agent/src/feature-open.ts";
 import { FeatureStore, signFeatureRecord, type FeatureRecord } from "../../../services/project-agent/src/feature-store.ts";
 import { IdentityStore } from "../../../services/project-agent/src/identity-store.ts";
+import { InboxStore } from "../../../services/project-agent/src/inbox-store.ts";
+import {
+  approveOverlap,
+  checkOverlap,
+  OverlapStore,
+  settledForSession,
+  type OverlapDeps,
+} from "../../../services/project-agent/src/overlap-lock.ts";
 import { IssueIndex } from "../../../services/project-agent/src/issue-index.ts";
 import { importServiceKey, type ServiceKey } from "../../../services/project-agent/src/service-key.ts";
 import { SessionStore } from "../../../services/project-agent/src/session-store.ts";
@@ -97,6 +106,8 @@ class Project {
   readonly identities: IdentityStore;
   readonly sessions: SessionStore;
   readonly features: FeatureStore;
+  readonly overlaps: OverlapStore;
+  readonly inbox: InboxStore;
   readonly artifacts = new FakeArtifacts();
   readonly names = new RepoNames(PREFIX);
   /** Every token minted: the repo and TTL. The plaintext is kept only to look for leaks. */
@@ -112,9 +123,15 @@ class Project {
     const index = new IssueIndex(sql, {
       assignmentsChanged: (issueId, added, removed) => sessions?.assignmentsChanged(issueId, added, removed),
     });
-    sessions = new SessionStore(sql, this.identities, { assigningOwner: (issueId, handle) => index.assigningOwner(issueId, handle) });
-    this.sessions = sessions;
     this.features = new FeatureStore(sql);
+    this.overlaps = new OverlapStore(sql);
+    this.inbox = new InboxStore(sql, this.identities);
+    sessions = new SessionStore(sql, this.identities, {
+      assigningOwner: (issueId, handle) => index.assigningOwner(issueId, handle),
+      overlapsNeeding: (person) => this.overlaps.openFor(person),
+      settledFor: settledForSession(this.features, this.overlaps),
+    });
+    this.sessions = sessions;
     for (const scope of scopeMap.scopes.values()) {
       const outcome = this.identities.create(
         scope.ownerId,
@@ -151,7 +168,44 @@ class Project {
       scopeMap: async () => scopeMap,
       heartbeat: (caller, sessionId) => this.sessions.heartbeat(caller, sessionId),
       sign: (record) => signFeatureRecord(record, service.privateKey),
+      checkOverlap: (feature) => checkOverlap(this.overlapDeps(), this.features.get(feature.id) ?? feature),
+      overlapStatus: (featureId) => this.overlaps.status(featureId),
     };
+  }
+
+  /** As the ProjectAgent wires them: each lock opened or settled raises or clears an inbox item. */
+  overlapDeps(): OverlapDeps {
+    return {
+      db: this.sqlite.sql,
+      features: this.features,
+      overlaps: this.overlaps,
+      scopeMap: async () => scopeMap,
+      sign: (record) => signFeatureRecord(record, service.privateKey),
+      listener: {
+        lockOpened: ({ featureId, blockedFeatureId, personId }) => this.inbox.overlapRequested(personId, featureId, blockedFeatureId),
+        lockSettled: ({ featureId, blockedFeatureId, personId }) => this.inbox.overlapSettled(personId, featureId, blockedFeatureId),
+      },
+    };
+  }
+
+  approve(caller: string, featureId: string, blockedFeatureId: string) {
+    return approveOverlap(this.overlapDeps(), caller, featureId, blockedFeatureId);
+  }
+
+  /** The ProjectAgent methods get_work reads, over these stores. */
+  mcpProject(): McpProject {
+    return {
+      sessionHeartbeat: (caller, sessionId) => this.sessions.heartbeat(caller, sessionId),
+      sessionWork: (caller, sessionId) => this.sessions.work(caller, sessionId),
+      readIdentity: (id) => this.identities.get(id),
+      threadsNeeding: () => [],
+      featureWork: (caller, sessionId) => {
+        if (this.sessions.heartbeat(caller, sessionId).status !== "ok") return undefined;
+        const feature = this.features.featureOfSession(sessionId);
+        return feature === undefined ? undefined : { feature, ...this.overlaps.status(feature) };
+      },
+      overlapsNeeding: (person) => this.overlaps.openFor(person),
+    } as unknown as McpProject;
   }
 
   checkpointDeps() {
@@ -198,14 +252,23 @@ let nextId = 0;
 
 /** Calls one MCP tool as `owner` and returns its structured result. */
 async function call(project: Project, owner: string, name: string, args: unknown): Promise<{ value: any; isError: boolean }> {
+  return callWith(project, {} as McpProject, owner, name, args);
+}
+
+async function callWith(
+  project: Project,
+  mcpProject: McpProject,
+  owner: string,
+  name: string,
+  args: unknown,
+): Promise<{ value: any; isError: boolean }> {
   const request = new Request("https://penguin.test/mcp", {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
     body: JSON.stringify({ jsonrpc: "2.0", id: ++nextId, method: "tools/call", params: { name, arguments: args } }),
   });
   const repos = { issues: project.names.issues, base: project.names.base, ownerFork: project.names.owner(owner) };
-  const unused = {} as McpProject;
-  const response = await serveMcp(request, owner, () => unused, repos, mcpFeatures(project.ports, owner));
+  const response = await serveMcp(request, owner, () => mcpProject, repos, mcpFeatures(project.ports, owner));
   const text = await response.text();
   const data = text.includes("data: ") ? (text.split("\n").find((line) => line.startsWith("data: ")) as string).slice(6) : text;
   const parsed = JSON.parse(data);
@@ -240,7 +303,8 @@ describe("opening a feature", () => {
     assert.deepEqual(project.features.sessions("tax-rounding"), [first, second]);
     assert.notEqual(opened.value.token.token, again.value.token.token);
     const records = project.features.records("tax-rounding").map((stored) => JSON.parse(stored.file) as FeatureRecord);
-    assert.deepEqual(records.map((record) => record.type), ["open_feature"]);
+    // The opening checks the area against running features; the second open joins and checks nothing.
+    assert.deepEqual(records.map((record) => record.type), ["open_feature", "overlap_check"]);
   });
 
   test("the opening record is signed with the service key and names its record repo path", async () => {
@@ -447,7 +511,7 @@ describe("the declared area", () => {
     const stranger = await declareArea(project.deps(), other, "tax-rounding", { paths: ["x/"] }, null);
     assert.equal(stranger.status === "rejected" && stranger.reason, "forbidden");
     const types = project.features.records("tax-rounding").map((stored) => (JSON.parse(stored.file) as FeatureRecord).type);
-    assert.deepEqual(types, ["open_feature", "declare_area", "declare_area"]);
+    assert.deepEqual(types, ["open_feature", "overlap_check", "declare_area", "overlap_check", "declare_area", "overlap_check"]);
   });
 
   test("a checkpoint adds the paths it changed and their scopes, and the update is timed", async (t) => {
@@ -471,8 +535,10 @@ describe("the declared area", () => {
     assert.deepEqual(reported.value.area.paths, [`${firstPath}/rounding.py`, `${secondPath}/report.py`].sort());
     t.diagnostic(`checkpoint declaration update: ${reported.value.durationMs} ms`);
 
-    const [, record] = project.features.records("tax-rounding").map((stored) => JSON.parse(stored.file) as FeatureRecord);
-    assert.equal(record?.type, "checkpoint_area");
+    const record = project.features
+      .records("tax-rounding")
+      .map((stored) => JSON.parse(stored.file) as FeatureRecord)
+      .find((each) => each.type === "checkpoint_area");
     assert.equal(record?.payload["checkpoint"], sha);
     assert.equal(await verifyOperation(record as never, servicePublic), true);
 
@@ -491,5 +557,162 @@ describe("the declared area", () => {
     const notAgent = await call(project, owner, "report_checkpoint", { sessionId: bystander, sha, fork: "feature-tax-rounding" });
     assert.equal(notAgent.value.error, "forbidden");
     assert.equal(project.features.get("tax-rounding")?.latestCheckpointSha, null);
+  });
+});
+
+describe("the overlap lock", () => {
+  const third = [...scopeMap.scopes.values()].map((scope) => scope.ownerId).find((id) => id !== owner && id !== other) as string;
+  const coveredPath = `${(firstScope.paths[0] as string).replace(/\/$/u, "")}/ids.py`;
+  const freePath = `${(secondScope.paths[0] as string).replace(/\/$/u, "")}/report.py`;
+  let project: Project;
+  let covering: string;
+  beforeEach(async () => {
+    project = new Project();
+    covering = project.register(owner);
+    const opened = await call(project, owner, "open_feature", { sessionId: covering, feature: "identity-rework", area: { scopes: [firstScope.id] } });
+    assert.notEqual(opened.value.token, null);
+  });
+
+  test("a second feature in a covered area waits until the covering person approves", async () => {
+    const session = project.register(other);
+    const opened = await call(project, other, "open_feature", { sessionId: session, feature: "merge-ids", area: { paths: [coveredPath] } });
+    assert.equal(opened.isError, false, JSON.stringify(opened.value));
+    assert.equal(opened.value.token, null);
+    assert.deepEqual(
+      opened.value.waitingOn.map((lock: any) => [lock.feature, lock.person, lock.overlap.scopes, lock.overlap.paths]),
+      [["identity-rework", owner, [firstScope.id], [coveredPath]]],
+    );
+    // The fork exists; only the write token is withheld while the lock is open.
+    assert.equal(project.artifacts.repos.has(`${PREFIX}feature-merge-ids`), true);
+    const locked = await call(project, other, "feature_token", { sessionId: session, feature: "merge-ids" });
+    assert.equal(locked.value.error, "locked");
+    assert.match(locked.value.message, new RegExp(`identity-rework \\(${owner}\\)`, "u"));
+    const waiting = await callWith(project, project.mcpProject(), other, "get_work", { sessionId: session });
+    assert.deepEqual(waiting.value.feature.waitingOn.map((lock: any) => lock.person), [owner]);
+
+    // The covering person hears of it in the inbox, in get_work and once at the next safe checkpoint.
+    assert.deepEqual(
+      project.inbox.items(owner).map(({ issueId, reason }) => [issueId, reason]),
+      [["identity-rework/merge-ids", "overlap"]],
+    );
+    const asked = await callWith(project, project.mcpProject(), owner, "get_work", { sessionId: covering });
+    assert.deepEqual(asked.value.overlapsNeedingYou.map((each: any) => [each.feature, each.blockedFeature]), [["identity-rework", "merge-ids"]]);
+    const told = project.sessions.checkpoint(owner, covering);
+    assert.deepEqual(told.status === "ok" && told.overlaps, [{ featureId: "identity-rework", blockedFeatureId: "merge-ids" }]);
+    const again = project.sessions.checkpoint(owner, covering);
+    assert.deepEqual(again.status === "ok" && again.overlaps, []);
+
+    const quiet = project.sessions.checkpoint(other, session);
+    assert.deepEqual(quiet.status === "ok" && quiet.settled, []);
+    const approved = await project.approve(owner, "identity-rework", "merge-ids");
+    assert.equal(approved.status, "ok", JSON.stringify(approved));
+    assert.deepEqual(project.inbox.items(owner), []);
+    // The waiting feature's session hears of the approval once, at its next safe checkpoint.
+    const heard = project.sessions.checkpoint(other, session);
+    assert.deepEqual(heard.status === "ok" && heard.settled, [
+      { featureId: "identity-rework", blockedFeatureId: "merge-ids", outcome: "approved" },
+    ]);
+    const once = project.sessions.checkpoint(other, session);
+    assert.deepEqual(once.status === "ok" && once.settled, []);
+    const token = await call(project, other, "feature_token", { sessionId: session, feature: "merge-ids" });
+    assert.equal(token.isError, false, JSON.stringify(token.value));
+    assert.equal(token.value.token.fork, "feature-merge-ids");
+    const started = await callWith(project, project.mcpProject(), other, "get_work", { sessionId: session });
+    assert.deepEqual(started.value.feature.waitingOn, []);
+    assert.deepEqual(started.value.feature.approvedBy, [{ feature: "identity-rework", person: owner }]);
+
+    const records = project.features.records("merge-ids").map((stored) => JSON.parse(stored.file) as FeatureRecord);
+    assert.deepEqual(records.map((record) => record.type), ["open_feature", "overlap_check", "approve_overlap"]);
+    const [, check, approval] = records;
+    assert.deepEqual(check?.author, { penguin: true });
+    assert.deepEqual((check?.payload["locks_opened"] as any[]).map((lock) => [lock.feature, lock.person]), [["identity-rework", owner]]);
+    assert.deepEqual(approval?.author, { person: owner });
+    assert.equal(approval?.payload["approved_by"], owner);
+    for (const record of [check, approval]) assert.equal(await verifyOperation(record as never, servicePublic), true);
+  });
+
+  test("a feature in a free area starts at once", async () => {
+    const session = project.register(other);
+    const opened = await call(project, other, "open_feature", { sessionId: session, feature: "reports", area: { paths: [freePath] } });
+    assert.equal(opened.isError, false, JSON.stringify(opened.value));
+    assert.deepEqual(opened.value.waitingOn, []);
+    assert.equal(opened.value.token.fork, "feature-reports");
+    assert.deepEqual(project.inbox.items(owner), []);
+  });
+
+  test("only the covering person approves, once, and only the lock they hold", async () => {
+    const session = project.register(other);
+    await call(project, other, "open_feature", { sessionId: session, feature: "merge-ids", area: { paths: [coveredPath] } });
+    // The blocked person and a third person cannot approve.
+    for (const caller of [other, third]) {
+      const refused = await project.approve(caller, "identity-rework", "merge-ids");
+      assert.equal(refused.status === "rejected" && refused.reason, "forbidden", caller);
+    }
+    // A lock that does not exist, such as the pair reversed, is not found.
+    const reversed = await project.approve(owner, "merge-ids", "identity-rework");
+    assert.equal(reversed.status === "rejected" && reversed.reason, "not_found");
+    assert.equal((await project.approve(owner, "identity-rework", "merge-ids")).status, "ok");
+    // Replaying the approval is refused and writes no second record.
+    const replay = await project.approve(owner, "identity-rework", "merge-ids");
+    assert.equal(replay.status === "rejected" && replay.reason, "conflict");
+    const types = project.features.records("merge-ids").map((stored) => (JSON.parse(stored.file) as FeatureRecord).type);
+    assert.equal(types.filter((type) => type === "approve_overlap").length, 1);
+    assert.equal(project.overlaps.get("identity-rework", "merge-ids")?.approvedBy, owner);
+  });
+
+  test("declaring the feature out of the covered area withdraws its open lock", async () => {
+    const session = project.register(other);
+    await call(project, other, "open_feature", { sessionId: session, feature: "merge-ids", area: { paths: [coveredPath] } });
+    const declared = await call(project, other, "declare_area", { sessionId: session, feature: "merge-ids", area: { paths: [freePath] } });
+    assert.deepEqual(declared.value.waitingOn, []);
+    assert.equal(project.overlaps.get("identity-rework", "merge-ids"), undefined);
+    const heard = project.sessions.checkpoint(other, session);
+    assert.deepEqual(heard.status === "ok" && heard.settled, [
+      { featureId: "identity-rework", blockedFeatureId: "merge-ids", outcome: "withdrawn" },
+    ]);
+    assert.deepEqual(project.inbox.items(owner), []);
+    const check = project.features
+      .records("merge-ids")
+      .map((stored) => JSON.parse(stored.file) as FeatureRecord)
+      .filter((record) => record.type === "overlap_check")
+      .at(-1);
+    assert.deepEqual(check?.payload["locks_withdrawn"], ["identity-rework"]);
+  });
+
+  test("a covering feature of the same person makes no lock; the overlap is recorded and listed", async () => {
+    const session = project.register(owner);
+    const opened = await call(project, owner, "open_feature", { sessionId: session, feature: "merge-ids", area: { paths: [coveredPath] } });
+    assert.equal(opened.isError, false, JSON.stringify(opened.value));
+    assert.deepEqual(opened.value.waitingOn, []);
+    assert.equal(opened.value.token.fork, "feature-merge-ids");
+    assert.deepEqual(
+      opened.value.ownOverlaps.map((each: any) => [each.feature, each.overlap.scopes, each.overlap.paths]),
+      [["identity-rework", [firstScope.id], [coveredPath]]],
+    );
+    assert.equal(project.overlaps.get("identity-rework", "merge-ids"), undefined);
+    assert.deepEqual(project.inbox.items(owner), []);
+    const work = await callWith(project, project.mcpProject(), owner, "get_work", { sessionId: session });
+    assert.deepEqual(work.value.feature.ownOverlaps.map((each: any) => each.feature), ["identity-rework"]);
+    const check = project.features
+      .records("merge-ids")
+      .map((stored) => JSON.parse(stored.file) as FeatureRecord)
+      .find((record) => record.type === "overlap_check");
+    assert.deepEqual(check?.payload["locks_opened"], []);
+    assert.deepEqual((check?.payload["own_overlaps"] as any[]).map((each) => each.feature), ["identity-rework"]);
+    assert.equal(await verifyOperation(check as never, servicePublic), true);
+  });
+
+  test("running features that read the new feature's area are listed as dependents and block nothing", async () => {
+    // A fresh project: a feature in the consumer scope runs, then one opens in the provider scope.
+    project = new Project();
+    const reader = project.register(other);
+    await call(project, other, "open_feature", { sessionId: reader, feature: "reports", area: { scopes: [secondScope.id] } });
+    const session = project.register(owner);
+    const opened = await call(project, owner, "open_feature", { sessionId: session, feature: "identity-rework", area: { paths: [coveredPath] } });
+    assert.deepEqual(opened.value.waitingOn, []);
+    assert.equal(opened.value.token.fork, "feature-identity-rework");
+    const kind = secondScope.dependsOn.find((dependency) => dependency.providerScopeId === firstScope.id)?.kind;
+    assert.deepEqual(opened.value.dependents, [{ feature: "reports", consumerScope: secondScope.id, providerScope: firstScope.id, kind }]);
+    assert.deepEqual(project.overlaps.dependents("identity-rework").map((each) => each.dependentFeatureId), ["reports"]);
   });
 });

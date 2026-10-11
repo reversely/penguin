@@ -61,8 +61,11 @@ export interface Feature {
   readonly updatedAt: string;
 }
 
-/** The record types this module writes: the opening, a declaration and a checkpoint's update. */
-export type FeatureRecordType = "open_feature" | "declare_area" | "checkpoint_area";
+/**
+ * The record types of a feature: the opening, a declaration and a checkpoint's update, written here,
+ * and an overlap check and an approval of a start, written by overlap-lock.ts.
+ */
+export type FeatureRecordType = "open_feature" | "declare_area" | "checkpoint_area" | "overlap_check" | "approve_overlap";
 
 export interface FeatureRecord {
   readonly schema_version: 1;
@@ -313,6 +316,12 @@ export class FeatureStore {
     return row === undefined ? undefined : (row["feature_id"] as string);
   }
 
+  /** The feature a session works on and when it joined, in epoch milliseconds, or undefined. */
+  joinOfSession(sessionId: string): { readonly featureId: string; readonly joinedAt: number } | undefined {
+    const [row] = this.#db.exec(`SELECT feature_id, joined_at FROM FeatureSession WHERE session_id = ?`, sessionId);
+    return row === undefined ? undefined : { featureId: row["feature_id"] as string, joinedAt: Number(row["joined_at"]) };
+  }
+
   /** The ids of a feature's agent sessions, in the order they joined. */
   sessions(featureId: string): string[] {
     return this.#db
@@ -330,6 +339,11 @@ export class FeatureStore {
         path: row["path"] as string,
         file: row["file"] as string,
       }));
+  }
+
+  /** Stores a signed record with no other change; the caller runs it inside its own transaction. */
+  addRecord(record: FeatureRecord): void {
+    this.#appendRecord(record);
   }
 
   #appendRecord(record: FeatureRecord): void {

@@ -27,7 +27,7 @@ import {
   PAGE_OPERATIONS_PER_IDENTITY,
   PAGE_SESSIONS_PER_IDENTITY,
 } from "./identities-page.ts";
-import { InboxStore, type InboxItem, type InboxOutcome, type InboxReason } from "./inbox-store.ts";
+import { InboxStore, parseOverlapRef, type InboxItem, type InboxOutcome, type InboxReason } from "./inbox-store.ts";
 import { McpTokenStore, type IssuedMcpToken, type McpCaller } from "./mcp-tokens.ts";
 import {
   OwnerForkStore,
@@ -55,6 +55,16 @@ import {
   type TokenGrant,
 } from "./feature-open.ts";
 import { FeatureStore, signFeatureRecord, type Feature } from "./feature-store.ts";
+import {
+  approveOverlap,
+  checkOverlap,
+  settledForSession,
+  OverlapStore,
+  type ApproveOutcome,
+  type OverlapDeps,
+  type OverlapLock,
+  type OverlapStatus,
+} from "./overlap-lock.ts";
 import { HuddleStore, type Huddle } from "./huddle-store.ts";
 import { fixTask, type FixTask } from "./fix-task.ts";
 import {
@@ -117,6 +127,7 @@ import {
   type IdentityWriteOutcome,
   type Inbox,
   type IssuePage,
+  type OverlapRequests,
   type VerificationRunSpec,
 } from "@penguin/protocol";
 import { INVARIANTS_PATH, type ScopeMap } from "@penguin/scope-map";
@@ -252,6 +263,31 @@ export {
   type ReviewState,
   type StoredReview,
 } from "./review-submit.ts";
+export {
+  approveOverlap,
+  checkOverlap,
+  findOverlaps,
+  footprint,
+  OVERLAP_LIMITS,
+  OVERLAP_SCHEMA,
+  overlapOf,
+  OverlapStore,
+  planCheck,
+  RUNNING_STATES,
+  settledForSession,
+  type ApproveOutcome,
+  type FeatureDependent,
+  type Overlap,
+  type OverlapDeps,
+  type OverlapFindings,
+  type OverlapListener,
+  type OverlapLock,
+  type OverlapLockState,
+  type OverlapPlan,
+  type OverlapStatus,
+  type OwnOverlap,
+  type SettledLock,
+} from "./overlap-lock.ts";
 export { fixTask, type FailingTest, type FixTask } from "./fix-task.ts";
 export {
   changedPaths,
@@ -340,6 +376,8 @@ export {
 export {
   INBOX_REASONS,
   InboxStore,
+  overlapRef,
+  parseOverlapRef,
   type InboxItem,
   type InboxOutcome,
   type InboxReason,
@@ -435,6 +473,9 @@ export class ProjectAgent extends Agent {
   #forks: OwnerForkStore | undefined;
   #featureRows: FeatureStore | undefined;
   #reviewRows: ReviewStore | undefined;
+  #overlapRows: OverlapStore | undefined;
+  /** Overlap checks and approvals run one at a time, so no two race for a record's sequence number. */
+  #lockSteps: Promise<unknown> = Promise.resolve();
   #ledger: IngestLedger | undefined;
   #live: LiveFeed | undefined;
   /** Ingests run one at a time, so two pushes never interleave their walks and applies. */
@@ -995,6 +1036,25 @@ export class ProjectAgent extends Agent {
     return this.#index().threadsNeeding(person);
   }
 
+  /**
+   * The overlapping starts that wait for `person`'s approval, for `get_work`: the agent tells its
+   * developer about each. `person` is the owner the gateway authenticated.
+   */
+  overlapsNeeding(person: string): OverlapLock[] {
+    return this.#overlapStore().openFor(person);
+  }
+
+  /**
+   * The feature `caller`'s session works on, with the locks its start waits on and its dependents,
+   * for `get_work`; undefined when the session works on none or is not the caller's.
+   */
+  featureWork(caller: string, sessionId: string): ({ readonly feature: string } & OverlapStatus) | undefined {
+    // A heartbeat refuses a session of another owner, as every call with a session does.
+    if (this.sessionHeartbeat(caller, sessionId).status !== "ok") return undefined;
+    const feature = this.#featureStore().featureOfSession(sessionId);
+    return feature === undefined ? undefined : { feature, ...this.#overlapStore().status(feature) };
+  }
+
   /** The task view of a fix sub-issue for `get_work`: pinned base, failing test, acceptance criteria. */
   readFixTask(issueId: string): FixTask | undefined {
     const id = this.#index().resolve(issueId);
@@ -1250,13 +1310,90 @@ export class ProjectAgent extends Agent {
     return this.#featureStore().get(featureId);
   }
 
+  /**
+   * `caller`, the person the dashboard session names, approves the start of `blockedFeatureId`
+   * beside their running feature `featureId` (overlap-lock.ts). Only the person who owns
+   * `featureId` may, once; the approval is a signed record.
+   */
+  approveOverlap(caller: string, featureId: string, blockedFeatureId: string, repos: ProjectRepos): Promise<ApproveOutcome> {
+    return this.#lockStep(() => approveOverlap(this.#overlapDeps(repos), caller, featureId, blockedFeatureId));
+  }
+
+  /** The dashboard's overlapping starts waiting for `caller`: their overlap inbox items with each lock. */
+  overlapRequests(caller: string): OverlapRequests {
+    const overlaps = this.#overlapStore();
+    return {
+      requests: this.#inboxStore()
+        .items(caller)
+        .flatMap((item) => {
+          const ref = item.reason === "overlap" ? parseOverlapRef(item.issueId) : undefined;
+          const held = ref === undefined ? undefined : overlaps.get(ref.featureId, ref.blockedFeatureId);
+          const blocked = held === undefined ? undefined : this.#featureStore().get(held.blockedFeatureId);
+          if (held === undefined || held.state !== "open" || blocked === undefined) return [];
+          return [
+            {
+              feature: held.featureId,
+              blockedFeature: held.blockedFeatureId,
+              blockedPerson: blocked.personId,
+              overlap: {
+                scopes: [...held.overlap.scopes],
+                paths: [...held.overlap.paths],
+                contracts: [...held.overlap.contracts],
+                omittedPaths: held.overlap.omittedPaths,
+              },
+              read: item.read,
+              raisedAt: item.raisedAt,
+            },
+          ];
+        }),
+    };
+  }
+
   #featureDeps(repos: ProjectRepos): FeatureDeps {
+    const overlapDeps = this.#overlapDeps(repos);
     return {
       features: this.#featureStore(),
       scopeMap: () => this.#scopeMap(repos),
       heartbeat: (caller, sessionId) => this.sessionHeartbeat(caller, sessionId),
-      sign: async (record) => signFeatureRecord(record, (await this.#loadServiceKey()).privateKey),
+      sign: overlapDeps.sign,
+      checkOverlap: (feature) =>
+        // The area as stored when the check runs, which a later declaration may have replaced.
+        this.#lockStep(() => checkOverlap(overlapDeps, this.#featureStore().get(feature.id) ?? feature)),
+      overlapStatus: (featureId) => this.#overlapStore().status(featureId),
     };
+  }
+
+  #overlapDeps(repos: ProjectRepos): OverlapDeps {
+    const notify = (personId: string) => sendToOwner(this.getConnections<{ owner?: string }>(), personId, inboxChangedMessage());
+    return {
+      db: this.#database(),
+      features: this.#featureStore(),
+      overlaps: this.#overlapStore(),
+      scopeMap: () => this.#scopeMap(repos),
+      sign: async (record) => signFeatureRecord(record, (await this.#loadServiceKey()).privateKey),
+      listener: {
+        lockOpened: ({ featureId, blockedFeatureId, personId }) => {
+          this.#inboxStore().overlapRequested(personId, featureId, blockedFeatureId);
+          notify(personId);
+        },
+        lockSettled: ({ featureId, blockedFeatureId, personId }) => {
+          this.#inboxStore().overlapSettled(personId, featureId, blockedFeatureId);
+          notify(personId);
+        },
+      },
+    };
+  }
+
+  /** Runs one overlap check or approval after the ones before it; see `#lockSteps`. */
+  #lockStep<T>(step: () => Promise<T>): Promise<T> {
+    const run = this.#lockSteps.then(step);
+    this.#lockSteps = run.catch(() => undefined);
+    return run;
+  }
+
+  #overlapStore(): OverlapStore {
+    this.#overlapRows ??= new OverlapStore(this.#database());
+    return this.#overlapRows;
   }
 
   #featureStore(): FeatureStore {
@@ -1521,6 +1658,10 @@ export class ProjectAgent extends Agent {
         deliverAtCheckpoint: (issueId) => this.#huddleStore().isFix(issueId),
         // A thread that needs a person reaches that person's sessions at their next safe checkpoint.
         threadsNeeding: (person) => threadRefs(index.threadsNeeding(person)),
+        // An overlapping start waiting for a person reaches that person's sessions the same way.
+        overlapsNeeding: (person) => this.#overlapStore().openFor(person),
+        // A lock approved or withdrawn reaches the waiting feature's sessions the same way.
+        settledFor: settledForSession(this.#featureStore(), this.#overlapStore()),
         listener: {
           sessionChanged: (handle) => this.#liveFeed().sessionChanged(handle),
           routeChanged: (issueId) => this.#liveFeed().issueChanged(issueId),

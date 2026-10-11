@@ -1,6 +1,15 @@
 // The dashboard API client. Every call sends the session cookie; a 401 means the session ended.
 
-import type { Board, IdentitiesPage, IdentityWriteOutcome, Inbox, InboxEntry, IssuePage } from "@penguin/protocol";
+import type {
+  Board,
+  IdentitiesPage,
+  IdentityWriteOutcome,
+  Inbox,
+  InboxEntry,
+  IssuePage,
+  OverlapRequest,
+  OverlapRequests,
+} from "@penguin/protocol";
 
 export interface Session {
   readonly owner: string;
@@ -59,6 +68,29 @@ export async function markInboxRead(item: Pick<InboxEntry, "issueId" | "reason">
   if (response.status === 401) throw new SignedOut();
   if (response.status === 404) return false;
   if (!response.ok) throw new Error(`/api/inbox/read answered ${response.status}`);
+  return true;
+}
+
+/** The overlapping starts that wait for the signed-in person's approval. */
+export async function fetchOverlapRequests(): Promise<readonly OverlapRequest[]> {
+  return (await getJson<OverlapRequests>("/api/overlaps")).requests;
+}
+
+/**
+ * Approves the start of `blockedFeature` beside the person's own `feature`. The server names the
+ * approver from the session. Resolves false when the lock is no longer open.
+ */
+export async function approveOverlap(request: Pick<OverlapRequest, "feature" | "blockedFeature">): Promise<boolean> {
+  const response = await fetch("/api/overlaps/approve", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ feature: request.feature, blockedFeature: request.blockedFeature }),
+  });
+  await response.arrayBuffer();
+  if (response.status === 401) throw new SignedOut();
+  if (response.status === 404 || response.status === 409) return false;
+  if (!response.ok) throw new Error(`/api/overlaps/approve answered ${response.status}`);
   return true;
 }
 

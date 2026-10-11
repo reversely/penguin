@@ -28,6 +28,12 @@
  *     nothing. No token is returned: write tokens go to the feature's agent sessions only.
  *   - POST /api/features/<id>/area: replaces the declared area, `{ area }`, of one of the signed-in
  *     person's features.
+ *   - GET /api/overlaps: the overlapping starts that wait for the signed-in person's approval,
+ *     checked against OVERLAP_REQUESTS_SCHEMA; an answer that breaks it answers 500.
+ *   - POST /api/overlaps/approve: approves one of them, `{ feature, blockedFeature }`, as the
+ *     signed-in person. The approver is the session's person: a body with any other field, such as
+ *     `approved_by`, is refused. The ProjectAgent refuses a lock on another person's feature and a
+ *     second approval of the same lock.
  *   - POST /api/operations: one issue operation, applied with the signed-in person as author. An
  *     operation that carries `author` is refused: only the session names the author.
  *   - GET /api/live: the WebSocket to the ProjectAgent, which sends a message on each index change.
@@ -37,7 +43,7 @@
  * `Origin` header, on top of the SameSite=Lax session cookie.
  */
 
-import { checkInbox } from "@penguin/protocol";
+import { checkInbox, checkOverlapRequests, SEGMENT_PATTERN } from "@penguin/protocol";
 
 import type { FeatureOpenResult, FeatureView } from "./features.ts";
 import {
@@ -102,7 +108,15 @@ export interface DashboardBackend {
   openFeature(owner: string, input: { readonly feature: unknown; readonly area?: unknown }): Promise<FeatureOpenResult>;
   /** Replaces the declared area of one of `owner`'s features. */
   declareFeatureArea(owner: string, featureId: string, area: unknown): Promise<FeatureAreaResult>;
+  /** The overlapping starts waiting for `owner` as plain JSON (OverlapRequests in @penguin/protocol). */
+  overlapRequests(owner: string): Promise<unknown>;
+  /** Approves the start of `blockedFeatureId` beside `featureId` as `owner`; the ProjectAgent checks ownership. */
+  approveOverlap(owner: string, featureId: string, blockedFeatureId: string): Promise<OverlapApproveResult>;
 }
+
+export type OverlapApproveResult =
+  | { readonly status: "ok"; readonly lock: unknown }
+  | { readonly status: "rejected"; readonly reason: string; readonly message: string };
 
 export type FeatureAreaResult =
   | { readonly status: "ok"; readonly feature: FeatureView }
@@ -421,6 +435,40 @@ async function featureRoute(
   }
 }
 
+const FEATURE_ID = new RegExp(`^${SEGMENT_PATTERN}$`, "u");
+const FEATURE_ID_MAX_LENGTH = 63;
+const isFeatureId = (value: unknown): value is string =>
+  typeof value === "string" && value.length <= FEATURE_ID_MAX_LENGTH && FEATURE_ID.test(value);
+
+/**
+ * The overlap routes. GET /api/overlaps lists the starts waiting for the session's person;
+ * POST /api/overlaps/approve approves one as that person. The approver comes from the session only.
+ */
+async function overlapRoute(request: Request, url: URL, session: DashboardSession, handlers: DashboardHandlers): Promise<Response> {
+  if (url.pathname === "/api/overlaps") {
+    if (request.method !== "GET") return methodNotAllowed("GET");
+    const requests = await (await handlers.dashboard()).overlapRequests(session.owner);
+    return checkOverlapRequests(requests).length === 0 ? json(requests) : json({ error: "invalid overlaps" }, 500);
+  }
+  if (url.pathname !== "/api/overlaps/approve") return json({ error: "not found" }, 404);
+  if (request.method !== "POST") return methodNotAllowed("POST");
+  if (!isSameOrigin(request, url)) return json({ error: "cross-origin request" }, 403);
+  if (Number(request.headers.get("Content-Length") ?? 0) > MAX_IDENTITY_BODY_BYTES) {
+    return json({ error: "invalid request", message: "the request is too large" }, 413);
+  }
+  const body = await readJsonObject(request);
+  if (body === undefined) return json({ error: "invalid request", message: "the body must be a JSON object" }, 400);
+  const { feature, blockedFeature, ...rest } = body;
+  if (Object.keys(rest).length > 0) {
+    return json({ error: "invalid", message: "the body takes only feature and blockedFeature; the approver is the signed-in person" }, 400);
+  }
+  if (!isFeatureId(feature) || !isFeatureId(blockedFeature)) {
+    return json({ error: "invalid", message: "feature and blockedFeature must be feature ids" }, 400);
+  }
+  const approved = await (await handlers.dashboard()).approveOverlap(session.owner, feature, blockedFeature);
+  return json(approved, approved.status === "ok" ? 200 : (FEATURE_REJECTION_STATUS[approved.reason] ?? 422));
+}
+
 async function handleApi(
   request: Request,
   url: URL,
@@ -448,6 +496,9 @@ async function handleApi(
   if (url.pathname === "/api/features" || url.pathname.startsWith("/api/features/")) {
     const answer = await featureRoute(request, url, session, handlers);
     if (answer !== undefined) return answer;
+  }
+  if (url.pathname === "/api/overlaps" || url.pathname.startsWith("/api/overlaps/")) {
+    return overlapRoute(request, url, session, handlers);
   }
   if (url.pathname === "/api/board") {
     if (request.method !== "GET") return methodNotAllowed("GET");

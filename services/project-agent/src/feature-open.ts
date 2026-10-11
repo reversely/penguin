@@ -6,8 +6,11 @@
 // id that is already open opens nothing: a session of the same person joins the feature instead, and
 // anyone else is refused.
 //
-// A write token on the fork is granted only to a running session that has joined the feature, and
-// only on that feature's own fork. The Worker mints the token; it never reaches this module.
+// A write token on the fork is granted only to a running session that has joined the feature, only
+// on that feature's own fork, and only once no overlap lock holds the feature's start
+// (overlap-lock.ts). The Worker mints the token; it never reaches this module.
+//
+// Each opening and each declaration checks the area against every running feature (PRD 4.1 step 3).
 //
 // The area is written by the agent, may be edited by the person, and grows at each checkpoint with
 // the paths the checkpoint changed and the scopes they fall in. Contracts come only from a
@@ -28,10 +31,11 @@ import {
   type FeatureStore,
   type UnsignedFeatureRecord,
 } from "./feature-store.ts";
+import type { OverlapStatus } from "./overlap-lock.ts";
 import { CHECKPOINT_SHA_PATTERN } from "./owner-forks.ts";
-import type { SessionOutcome } from "./session-store.ts";
+import type { Delivery, OverlapRef, SessionOutcome } from "./session-store.ts";
 
-export type FeatureRejectReason = "invalid" | "forbidden" | "not_found" | "offline" | "conflict";
+export type FeatureRejectReason = "invalid" | "forbidden" | "not_found" | "offline" | "conflict" | "locked";
 
 export type FeatureRejection = {
   readonly status: "rejected";
@@ -40,10 +44,16 @@ export type FeatureRejection = {
 };
 
 export type FeatureOpenOutcome =
-  | { readonly status: "opened" | "existing"; readonly feature: Feature; readonly joined: string | null }
+  | {
+      readonly status: "opened" | "existing";
+      readonly feature: Feature;
+      readonly joined: string | null;
+      /** The locks the feature's start waits on, and its dependents. */
+      readonly overlap: OverlapStatus;
+    }
   | FeatureRejection;
 
-export type FeatureOutcome = { readonly status: "ok"; readonly feature: Feature } | FeatureRejection;
+export type FeatureOutcome = { readonly status: "ok"; readonly feature: Feature; readonly overlap: OverlapStatus } | FeatureRejection;
 
 export type CheckpointAreaOutcome =
   | {
@@ -67,6 +77,10 @@ export interface FeatureDeps {
   readonly heartbeat: (caller: string, sessionId: string) => SessionOutcome;
   /** Signs a record with the service key, which never leaves the ProjectAgent. */
   readonly sign: (record: UnsignedFeatureRecord) => Promise<FeatureRecord>;
+  /** Checks the feature's stored area against every running feature (overlap-lock.ts `checkOverlap`). */
+  readonly checkOverlap: (feature: Feature) => Promise<OverlapStatus>;
+  /** The feature's stored locks and dependents. */
+  readonly overlapStatus: (featureId: string) => OverlapStatus;
 }
 
 export interface FeatureOpenInput {
@@ -121,7 +135,10 @@ export async function openFeature(
     // Another open of the same id won between the read above and this write.
     return joinExisting(deps, caller, deps.features.get(id) as Feature, sessionId, "existing");
   }
-  return joinExisting(deps, caller, deps.features.get(id) as Feature, sessionId, "opened");
+  const opened = deps.features.get(id) as Feature;
+  const joined = joinExisting(deps, caller, opened, sessionId, "opened");
+  if (joined.status === "rejected") return joined;
+  return { ...joined, overlap: await deps.checkOverlap(opened) };
 }
 
 function joinExisting(
@@ -132,10 +149,11 @@ function joinExisting(
   status: "opened" | "existing",
 ): FeatureOpenOutcome {
   if (feature.personId !== caller) return rejected("forbidden", `feature ${feature.id} belongs to another person`);
-  if (sessionId === null) return { status, feature, joined: null };
+  const overlap = deps.overlapStatus(feature.id);
+  if (sessionId === null) return { status, feature, joined: null, overlap };
   const joined = deps.features.join(feature.id, sessionId);
   if (!joined.joined) return rejected("conflict", `session ${sessionId} already works on feature ${joined.featureId}`);
-  return { status, feature, joined: sessionId };
+  return { status, feature, joined: sessionId, overlap };
 }
 
 /** Records the fork the Worker made for a feature. */
@@ -145,8 +163,9 @@ export function recordFeatureRepo(features: FeatureStore, featureId: string, rep
 
 /**
  * Grants `caller`'s session `sessionId` a write token on feature `featureId`'s fork: the session must
- * be running and an agent of that feature, and the fork must exist. Any other feature's fork, main
- * and the record repo can never be named here: the grant carries only the feature's own repo.
+ * be running and an agent of that feature, the fork must exist and no open overlap lock may hold the
+ * feature's start. Any other feature's fork, main and the record repo can never be named here: the
+ * grant carries only the feature's own repo.
  */
 export function featureTokenGrant(deps: FeatureDeps, caller: string, sessionId: string, featureId: unknown): TokenGrant {
   const id = parseFeatureId(featureId);
@@ -159,6 +178,8 @@ export function featureTokenGrant(deps: FeatureDeps, caller: string, sessionId: 
     return rejected("forbidden", `session ${sessionId} is not an agent of feature ${id}`);
   }
   if (feature.repo === null) return rejected("not_found", `feature ${id} has no fork yet; open it again to make one`);
+  const { waitingOn } = deps.overlapStatus(id);
+  if (waitingOn.length > 0) return rejected("locked", lockedMessage(id, waitingOn));
   return { status: "ok", featureId: id, repo: feature.repo };
 }
 
@@ -186,7 +207,14 @@ export async function declareArea(
   const parsed = parseArea(area, await deps.scopeMap());
   if (!parsed.ok) return rejected("invalid", parsed.message);
   const record = await deps.sign(deps.features.draftRecord(id, "declare_area", author, { area: { ...parsed.area } }));
-  return { status: "ok", feature: deps.features.setArea(id, parsed.area, record, null) as Feature };
+  const declared = deps.features.setArea(id, parsed.area, record, null) as Feature;
+  return { status: "ok", feature: declared, overlap: await deps.checkOverlap(declared) };
+}
+
+/** Why a feature may not start yet: each covering feature and the person who approves its start. */
+export function lockedMessage(featureId: string, waitingOn: OverlapStatus["waitingOn"]): string {
+  const holders = waitingOn.map((lock) => `${lock.featureId} (${lock.personId})`).join(", ");
+  return `feature ${featureId} overlaps running features ${holders}; it starts once each of their people approves`;
 }
 
 /** Reads what a checkpoint changed: its baseline on main and the changed file paths. */
@@ -244,6 +272,8 @@ export type FeatureCheckpointOutcome =
   | (Extract<CheckpointAreaOutcome, { status: "ok" }> & {
       readonly delivered: readonly string[];
       readonly threads: readonly { readonly issueId: string; readonly threadId: string }[];
+      readonly overlaps: readonly OverlapRef[];
+      readonly settled: Delivery["settled"];
       readonly durationMs: number;
     })
   | FeatureRejection;
@@ -252,8 +282,8 @@ export interface FeatureCheckpointDeps extends FeatureDeps {
   /** True when the commit is in the Artifacts repo (the binding's `readCommit` finds it). */
   readonly commitExists: (repo: string, sha: string) => Promise<boolean>;
   readonly readChange: CheckpointReader;
-  /** The session's safe checkpoint: the fix tasks and threads it delivers (SessionStore.checkpoint). */
-  readonly deliver: (caller: string, sessionId: string) => { readonly delivered: readonly string[]; readonly threads: readonly { readonly issueId: string; readonly threadId: string }[] } | undefined;
+  /** The session's safe checkpoint: the fix tasks, threads and overlapping starts it delivers (SessionStore.checkpoint). */
+  readonly deliver: (caller: string, sessionId: string) => Pick<Delivery, "delivered" | "threads" | "overlaps" | "settled"> | undefined;
   readonly now?: () => number;
 }
 
@@ -295,6 +325,8 @@ export async function reportFeatureCheckpoint(
     ...outcome,
     delivered: delivery?.delivered ?? [],
     threads: delivery?.threads ?? [],
+    overlaps: delivery?.overlaps ?? [],
+    settled: delivery?.settled ?? [],
     durationMs: now() - started,
   };
 }

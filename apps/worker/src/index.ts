@@ -96,6 +96,12 @@ export default {
               const declared = await agent.declareFeatureArea(owner, featureId, area, null, repos);
               return declared.status === "ok" ? { status: "ok", feature: featureView(declared.feature) } : declared;
             },
+            overlapRequests: async (owner) => agent.overlapRequests(owner),
+            // The approver is the session's person, named by the dashboard route, never by the body.
+            approveOverlap: async (owner, featureId, blockedFeatureId) => {
+              const approved = await agent.approveOverlap(owner, featureId, blockedFeatureId, repos);
+              return approved.status === "ok" ? { status: "ok", lock: approved.lock } : approved;
+            },
             connectLive: (liveRequest, owner) => {
               // The browser cannot name the owner: the header is replaced with the session's.
               const headers = new Headers(liveRequest.headers);

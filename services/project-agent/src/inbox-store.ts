@@ -15,6 +15,10 @@
 //   person, ... Add the thread to the person's inbox"). Opening a thread raises it for each person
 //   the thread needs; a reply raises it again for every person of the thread (thread-rights.ts),
 //   which includes the reviewer whose request for changes opened it.
+// - "overlap": a feature's start waits for the person to approve it beside their running feature
+//   (overlap-lock.ts, PRD 4.1 step 3). The item names no issue: its `issue_id` holds the lock as
+//   `<covering feature>/<blocked feature>`, which no issue id can be. It goes once the lock is
+//   approved or withdrawn.
 //
 // The person who did the thing gets no "assigned", "mentioned" or "closed" item for it. An identity's
 // operation counts as its owner half's doing, as in IssueIndex.assigningOwner.
@@ -33,7 +37,7 @@ import type { IdentityStore } from "./identity-store.ts";
 import type { IssueChange, SqlDatabase } from "./issue-index.ts";
 import { responsibleOwners, type StartRequestListener } from "./session-store.ts";
 
-export const INBOX_REASONS = ["assigned", "mentioned", "closed", "start_session", "review_requested", "thread"] as const;
+export const INBOX_REASONS = ["assigned", "mentioned", "closed", "start_session", "review_requested", "thread", "overlap"] as const;
 export type InboxReason = (typeof INBOX_REASONS)[number];
 
 export interface InboxItem {
@@ -158,6 +162,20 @@ export class InboxStore implements StartRequestListener {
     this.#raise(ownerId, issueId, "review_requested");
   }
 
+  /** Asks `personId` to approve the start of `blockedFeatureId` beside their feature `featureId`. */
+  overlapRequested(personId: string, featureId: string, blockedFeatureId: string): void {
+    this.#raise(personId, overlapRef(featureId, blockedFeatureId), "overlap");
+  }
+
+  /** The lock was approved or withdrawn, so the request goes. */
+  overlapSettled(personId: string, featureId: string, blockedFeatureId: string): void {
+    this.#db.exec(
+      `DELETE FROM InboxItem WHERE person_id = ? AND issue_id = ? AND reason = 'overlap'`,
+      personId,
+      overlapRef(featureId, blockedFeatureId),
+    );
+  }
+
   startWithdrawn(ownerId: string, issueId: string): void {
     this.#db.exec(
       `DELETE FROM InboxItem WHERE person_id = ? AND issue_id = ? AND reason = 'start_session'`,
@@ -192,6 +210,17 @@ export class InboxStore implements StartRequestListener {
       this.#now(),
     );
   }
+}
+
+/** An overlap item's reference: the covering feature and the blocked one. Feature ids hold no "/". */
+export function overlapRef(featureId: string, blockedFeatureId: string): string {
+  return `${featureId}/${blockedFeatureId}`;
+}
+
+/** The covering and blocked feature ids of an overlap item's reference, or undefined. */
+export function parseOverlapRef(ref: string): { readonly featureId: string; readonly blockedFeatureId: string } | undefined {
+  const [featureId, blockedFeatureId, ...rest] = ref.split("/");
+  return featureId && blockedFeatureId && rest.length === 0 ? { featureId, blockedFeatureId } : undefined;
 }
 
 /** The reviewer of a review on the issue, by the review's op_id. */

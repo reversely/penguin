@@ -401,6 +401,41 @@ describe("safe checkpoints for agent sessions", () => {
     assert.match(context, /Tell your developer about each thread in get_work's threadsNeedingYou\.$/u);
   });
 
+  test("as a PreToolUse hook it tells the agent about a start that waits for its developer's approval", async () => {
+    await registered();
+    penguin.deliveries = () => [
+      {
+        sessionId: "ses_3",
+        identity: "@priya/merge-rules",
+        delivered: [],
+        overlaps: [{ feature: "identity-rework", blockedFeature: "merge-ids" }],
+      },
+    ];
+    assert.equal(await cli(["session-checkpoint", "--hook", "--worktree", repo.worktreeA]), 0);
+    const context = JSON.parse(output.join("")).hookSpecificOutput.additionalContext;
+    assert.match(
+      context,
+      /^Penguin: feature merge-ids waits for the developer of @priya\/merge-rules \(session ses_3\) to approve its start beside feature identity-rework\. /u,
+    );
+    assert.match(context, /overlapsNeedingYou; they approve it on the dashboard's inbox\.$/u);
+  });
+
+  test("as a PreToolUse hook it tells the agent that a lock on its feature's start was approved", async () => {
+    await registered();
+    penguin.deliveries = () => [
+      {
+        sessionId: "ses_4",
+        identity: "@jun/reports",
+        delivered: [],
+        locksSettled: [{ feature: "identity-rework", blockedFeature: "merge-ids", outcome: "approved" }],
+      },
+    ];
+    assert.equal(await cli(["session-checkpoint", "--hook", "--worktree", repo.worktreeA]), 0);
+    const context = JSON.parse(output.join("")).hookSpecificOutput.additionalContext;
+    assert.match(context, /^Penguin: the lock of feature identity-rework on feature merge-ids was approved for @jun\/reports \(session ses_4\)\. /u);
+    assert.match(context, /call feature_token for the write token on your feature's fork\.$/u);
+  });
+
   test("an unreachable Penguin never stops the agent's tool call, and the command says why", async () => {
     await registered();
     offline = "all";

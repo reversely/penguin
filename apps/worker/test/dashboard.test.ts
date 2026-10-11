@@ -9,6 +9,7 @@ import {
   type FeatureAreaResult,
   type IdentityWriteOutcome,
   type InboxReadOutcome,
+  type OverlapApproveResult,
 } from "../src/dashboard.ts";
 import type { FeatureOpenResult } from "../src/features.ts";
 import { type GatewayHandlers, handleRequest } from "../src/gateway.ts";
@@ -105,12 +106,44 @@ class Backend implements DashboardBackend {
     if (id === "../main") return { status: "rejected", reason: "invalid", message: "bad id" };
     const status = this.opened.has(id) ? "existing" : "opened";
     this.opened.add(id);
-    return { status, feature: this.view(id, owner), token: null, timings: { totalMs: 5, forkMs: status === "opened" ? 4 : null, tokenMs: null } };
+    return {
+      status,
+      feature: this.view(id, owner),
+      token: null,
+      overlap: { waitingOn: [], approvedBy: [], dependents: [] },
+      timings: { totalMs: 5, forkMs: status === "opened" ? 4 : null, tokenMs: null },
+    };
   }
   async declareFeatureArea(owner: string, featureId: string, area: unknown): Promise<FeatureAreaResult> {
     this.featureCalls.push({ action: "declare", owner, input: { featureId, area } });
     if (owner !== "jun") return { status: "rejected", reason: "forbidden", message: "not yours" };
     return { status: "ok", feature: this.view(featureId, owner) };
+  }
+  readonly approvals: { owner: string; featureId: string; blockedFeatureId: string }[] = [];
+  /** What GET /api/overlaps answers; a test may break it to see the schema check. */
+  overlaps: unknown = {
+    requests: [
+      {
+        feature: "identity-rework",
+        blockedFeature: "merge-ids",
+        blockedPerson: "jun",
+        overlap: { scopes: ["identity-map"], paths: ["ingestion/ids.py"], contracts: [], omittedPaths: 0 },
+        read: false,
+        raisedAt: "2026-10-11T00:00:00.000Z",
+      },
+    ],
+  };
+
+  async overlapRequests() {
+    return this.overlaps;
+  }
+  async approveOverlap(owner: string, featureId: string, blockedFeatureId: string): Promise<OverlapApproveResult> {
+    this.approvals.push({ owner, featureId, blockedFeatureId });
+    if (owner !== "priya") return { status: "rejected", reason: "forbidden", message: "not your feature" };
+    if (this.approvals.filter((each) => each.owner === "priya").length > 1) {
+      return { status: "rejected", reason: "conflict", message: "already approved" };
+    }
+    return { status: "ok", lock: { featureId, blockedFeatureId, approvedBy: owner } };
   }
   private view(id: string, person: string) {
     return { id, person, fork: `feature-${id}`, state: "building", area: { scopes: [], paths: [], contracts: [] }, openedAt: "2026-10-11T00:00:00.000Z", latestCheckpointSha: null };
@@ -566,6 +599,50 @@ describe("a signed-in person's features", () => {
     assert.equal((await browser.request("/api/features")).status, 401);
     assert.equal((await browser.post("/api/features", { feature: "x" })).status, 401);
     assert.deepEqual(browser.backend.featureCalls, []);
+  });
+});
+
+describe("a signed-in person's overlapping starts", () => {
+  test("lists the starts waiting for them, checked against the schema", async () => {
+    const browser = new Browser();
+    await browser.signIn("Priya-GH");
+    const listed = await browser.request("/api/overlaps");
+    assert.equal(listed.status, 200);
+    assert.deepEqual((await listed.json()).requests.map((each: { blockedFeature: string }) => each.blockedFeature), ["merge-ids"]);
+    browser.backend.overlaps = { requests: [{ feature: "../main" }] };
+    assert.equal((await browser.request("/api/overlaps")).status, 500);
+  });
+
+  test("approves as the session's person; a forged approver, another person and a replay are refused", async () => {
+    const priya = new Browser();
+    await priya.signIn("Priya-GH");
+    const lock = { feature: "identity-rework", blockedFeature: "merge-ids" };
+    // The approver comes from the session only: a body naming one is refused before the ProjectAgent.
+    for (const forged of [{ ...lock, approved_by: "priya" }, { ...lock, approvedBy: "jun" }, { ...lock, owner: "priya" }]) {
+      assert.equal((await priya.post("/api/overlaps/approve", forged)).status, 400);
+    }
+    for (const bad of [{ feature: "../main", blockedFeature: "merge-ids" }, { feature: "identity-rework" }, { feature: "a", blockedFeature: 7 }]) {
+      assert.equal((await priya.post("/api/overlaps/approve", bad)).status, 400);
+    }
+    assert.equal((await priya.post("/api/overlaps/approve", lock, "https://evil.test")).status, 403);
+    assert.deepEqual(priya.backend.approvals, []);
+
+    const jun = new Browser(priya.backend);
+    await jun.signIn("jun-gh");
+    assert.equal((await jun.post("/api/overlaps/approve", lock)).status, 403);
+    assert.equal((await priya.post("/api/overlaps/approve", lock)).status, 200);
+    assert.equal((await priya.post("/api/overlaps/approve", lock)).status, 409);
+    assert.deepEqual(
+      priya.backend.approvals.map(({ owner }) => owner),
+      ["jun", "priya", "priya"],
+    );
+  });
+
+  test("without a session the overlap routes answer 401", async () => {
+    const browser = new Browser();
+    assert.equal((await browser.request("/api/overlaps")).status, 401);
+    assert.equal((await browser.post("/api/overlaps/approve", { feature: "a", blockedFeature: "b" })).status, 401);
+    assert.deepEqual(browser.backend.approvals, []);
   });
 });
 

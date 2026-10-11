@@ -187,6 +187,19 @@ agent tells its developer about each one in its own conversation and replies wit
 (`reply_thread`). A person in the thread resolves it on the issue page: the reviewer, a person it
 needs or a person who replied.
 
+## Overlapping starts
+
+A feature whose declared area another running feature covers waits to start until the covering
+feature's person approves ([design.md](design.md#step-3-in-the-build)). Its `open_feature` answer
+carries no token and lists the covering features in `waitingOn`. `get_work` reports the same under
+`feature.waitingOn`; once the list is empty, `feature_token` gives the token. The covering person's
+running sessions hear of the request once, at their next safe checkpoint: the hook answer names it
+and `report_checkpoint` lists it under `newOverlaps`. `get_work` lists it under
+`overlapsNeedingYou`. The agent tells its developer, who approves on the dashboard inbox. Once the
+lock is approved or withdrawn, the waiting feature's sessions hear of it at their next safe
+checkpoint: the hook answer names it and `report_checkpoint` lists it under `locksSettled`. A
+feature of the same person makes no lock; `ownOverlaps` lists it.
+
 ## Sending a fix upstream
 
 A session can find that its fix task belongs in the scope the trigger changed, outside its identity's

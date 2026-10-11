@@ -74,12 +74,12 @@ flowchart TB
 | Piece | Code | Serves | Owns |
 |---|---|---|---|
 | Worker gateway | `apps/worker/src/` | Every caller: bridges, the runner, agent sessions, browsers | Authentication of each caller, request routing, the Queue consumer, repo setup, Artifacts token minting |
-| ProjectAgent | `services/project-agent/src/` | The whole project | The issue index, operation validation, identities, sessions and routing, inboxes, bridge and MCP token registries, owner forks' latest checkpoints, combined-run scheduling, the Huddle records |
+| ProjectAgent | `services/project-agent/src/` | The whole project | The issue index, operation validation, identities, sessions and routing, inboxes, bridge and MCP token registries, owner forks' latest checkpoints, combined-run scheduling, the Huddle records, features with their overlap locks and dependents |
 | HuddleAgent | `services/huddle-agent/src/index.ts` | One Huddle issue | That Huddle's verification runs, fix review standing, threads and approved-branch request |
 | Artifacts repos | One namespace, `penguin` | Every Git client and the Worker | Versioned source and the issue operation log |
 | `penguin-bridge` | `services/local-bridge/src/` | One owner on one machine | Checkpoint publishing with consent, the issue command line, the safe-checkpoint hook, the outbound spool |
 | Integration runner | `penguin-bridge runner` on a designated machine | The project | Pushing queued operations, combined runs, verification runs, the `approved` branch |
-| Dashboard | `apps/dashboard/src/` | People in a browser | The team map, the inbox, the issue page, the identities page |
+| Dashboard | `apps/dashboard/src/` | People in a browser | The team map, the inbox with its overlapping starts to approve, the issue page, the identities page |
 | MCP tools | `services/mcp/src/tools.ts` | Agent sessions | `register_session`, `get_work`, `get_issue`, `post_update`, `report_checkpoint`, `open_feature`, `feature_token`, `declare_area`, `submit_review` |
 
 Shared rules live in packages that both the Worker and the bridge import: the operation schema and
@@ -121,8 +121,12 @@ bridges and MCP tokens as hashes, `OwnerFork` latest checkpoints, `CombinedRun`,
 fix approvals and close-out blockers for the issue page. The feature tables are live state too
 (`services/project-agent/src/feature-store.ts`): `Feature` holds each feature's person, fork, state
 and declared area. `FeatureSession` names the agent sessions of each feature. `FeatureRecord` holds
-the signed records of each opening, declaration and checkpoint update until the record repo takes
-them.
+the signed records of each opening, declaration, checkpoint update, overlap check and approval
+until the record repo takes them. `OverlapLock` and `FeatureDependent`
+(`services/project-agent/src/overlap-lock.ts`) hold each feature's overlap locks and the running
+features that read its area. `OwnOverlap` holds overlaps with the same person's running
+features, which make no lock. `OverlapSettled` records each lock that was approved or withdrawn.
+`OverlapNotice` and `SettledNotice` record which sessions heard of each lock and each settlement.
 
 Each HuddleAgent keeps the state of one Huddle in its own SQLite store: `VerificationRun`,
 `FixReview`, `HuddleThread` and `ApprovedBranch`. The ProjectAgent names the instance
@@ -154,11 +158,18 @@ matches a pending operation clears its `PendingOp` row.
 1. An agent session calls `open_feature`, or a person posts to `POST /api/features`. The Worker
    passes the request to the ProjectAgent. The ProjectAgent checks the feature id and the paths. It
    checks the scopes and contracts against `penguin/scopes.json` on main. It stores the feature with a
-   signed `open_feature` record and makes the session an agent of the feature.
+   signed `open_feature` record and makes the session an agent of the feature. It then compares the
+   area with every running feature. Each feature that covers part of the area gets an
+   `OverlapLock` and an inbox item for its person. Each feature that reads the area through a scope
+   dependency is stored as a dependent. A signed `overlap_check` record states both.
 2. While the feature has no fork, the Worker forks the `base` repo into `feature-<id>` and records
    the fork. An existing repo counts as forked, so a second open makes no second fork.
 3. For a session, the Worker asks the ProjectAgent for a grant and mints a `write` token on
-   `feature-<id>`. The token goes back in the tool's answer and nowhere else.
+   `feature-<id>`. The token goes back in the tool's answer and nowhere else. While a lock is open
+   the ProjectAgent grants nothing. The covering person approves on the dashboard through
+   `POST /api/overlaps/approve`. The Worker names the approver from the session. The ProjectAgent
+   checks that this person owns the covering feature and writes a signed `approve_overlap`
+   record. The session's next `feature_token` call then gets its token.
 4. Each checkpoint on the fork, from `report_checkpoint` or the bridge's `POST /checkpoints`, must be
    in the fork. The ProjectAgent diffs it against its baseline on main and adds the changed paths
    and their scopes to the declared area.

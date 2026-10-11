@@ -26,6 +26,11 @@
 // section 4, Layer 2: "tell that person's running sessions so each agent can tell its developer"):
 // a session's checkpoint names each open thread needing the owner who reported the checkpoint that
 // the session has not yet been told of, and ThreadNotice records that it was told.
+//
+// A request to approve an overlapping start (overlap-lock.ts, PRD 4.1 step 3) reaches the covering
+// person's running sessions the same way, and OverlapNotice records that each session was told. When
+// such a lock is approved or withdrawn, the waiting feature's sessions hear of it once at their next
+// safe checkpoint, and SettledNotice records that each was told.
 
 import type { Assignment } from "@penguin/issues";
 import { IDENTITY_HANDLE_MAX_LENGTH, SEGMENT_PATTERN } from "@penguin/protocol";
@@ -94,15 +99,30 @@ export function threadRefs(threads: readonly { readonly issueId: string; readonl
   return threads.map(({ issueId, thread }) => ({ issueId, threadId: thread.id }));
 }
 
+/** An open overlap lock: the covering feature and the feature whose start waits on its person. */
+export interface OverlapRef {
+  readonly featureId: string;
+  readonly blockedFeatureId: string;
+}
+
+/** A lock on the session's feature that was approved or withdrawn, by its settlement id. */
+export interface SettledRef extends OverlapRef {
+  readonly id: number;
+  readonly outcome: "approved" | "withdrawn";
+}
+
 /**
  * One session's safe checkpoint: the fix tasks it delivered, in the order they routed, and the
- * threads needing its owner that the session hears of for the first time.
+ * threads and overlapping starts needing its owner that the session hears of for the first time.
  */
 export interface Delivery {
   readonly sessionId: string;
   readonly handle: string;
   readonly delivered: string[];
   readonly threads: ThreadRef[];
+  readonly overlaps: OverlapRef[];
+  /** Locks on the session's feature that stopped holding its start since the session last heard. */
+  readonly settled: Omit<SettledRef, "id">[];
 }
 
 export type CheckpointDelivery = ({ readonly status: "ok" } & Delivery) | SessionRejection;
@@ -175,6 +195,10 @@ export interface SessionStoreOptions {
   readonly deliverAtCheckpoint?: (issueId: string) => boolean;
   /** The open threads that need the person, on any issue (IssueIndex.threadsNeeding). None when absent. */
   readonly threadsNeeding?: (person: string) => readonly ThreadRef[];
+  /** The open overlap locks the person is asked to approve (OverlapStore.openFor). None when absent. */
+  readonly overlapsNeeding?: (person: string) => readonly OverlapRef[];
+  /** The locks on the session's feature settled since it joined (OverlapStore.settledSince). None when absent. */
+  readonly settledFor?: (sessionId: string) => readonly SettledRef[];
 }
 
 /** The routing tables. They hold live state only: a rebuild from the issues repo never routes. */
@@ -198,6 +222,14 @@ export const SESSION_SCHEMA: readonly string[] = [
     session_id TEXT NOT NULL, issue_id TEXT NOT NULL, routed_at INTEGER NOT NULL,
     PRIMARY KEY (session_id, issue_id))`,
   // A thread that needs the session's owner, which a checkpoint of the session has named.
+  // An overlapping start awaiting the session's owner, which a checkpoint of the session has named.
+  `CREATE TABLE IF NOT EXISTS OverlapNotice (
+    session_id TEXT NOT NULL, feature_id TEXT NOT NULL, blocked_feature_id TEXT NOT NULL, told_at INTEGER NOT NULL,
+    PRIMARY KEY (session_id, feature_id, blocked_feature_id))`,
+  // A settled lock on the session's feature that a checkpoint of the session has named.
+  `CREATE TABLE IF NOT EXISTS SettledNotice (
+    session_id TEXT NOT NULL, settled_id INTEGER NOT NULL, told_at INTEGER NOT NULL,
+    PRIMARY KEY (session_id, settled_id))`,
   `CREATE TABLE IF NOT EXISTS ThreadNotice (
     session_id TEXT NOT NULL, thread_id TEXT NOT NULL, issue_id TEXT NOT NULL, told_at INTEGER NOT NULL,
     PRIMARY KEY (session_id, thread_id))`,
@@ -222,6 +254,8 @@ export class SessionStore implements AssignmentListener {
   readonly #listener: SessionListener | undefined;
   readonly #deliverAtCheckpoint: (issueId: string) => boolean;
   readonly #threadsNeeding: (person: string) => readonly ThreadRef[];
+  readonly #overlapsNeeding: (person: string) => readonly OverlapRef[];
+  readonly #settledFor: (sessionId: string) => readonly SettledRef[];
 
   /** Create after the IssueIndex on the same handle: routing reads and writes its Assignment table. */
   constructor(db: SqlDatabase, identities: IdentityStore, options: SessionStoreOptions = {}) {
@@ -235,6 +269,8 @@ export class SessionStore implements AssignmentListener {
     this.#listener = options.listener;
     this.#deliverAtCheckpoint = options.deliverAtCheckpoint ?? (() => false);
     this.#threadsNeeding = options.threadsNeeding ?? (() => []);
+    this.#overlapsNeeding = options.overlapsNeeding ?? (() => []);
+    this.#settledFor = options.settledFor ?? (() => []);
     for (const statement of SESSION_SCHEMA) db.exec(statement);
   }
 
@@ -530,7 +566,34 @@ export class SessionStore implements AssignmentListener {
           now,
         ).length > 0,
     );
-    return { sessionId: session.id, handle: session.handle, delivered, threads: threads.map((ref) => ({ ...ref })) };
+    const overlaps = this.#overlapsNeeding(owner).filter(
+      ({ featureId, blockedFeatureId }) =>
+        this.#db.exec(
+          `INSERT OR IGNORE INTO OverlapNotice (session_id, feature_id, blocked_feature_id, told_at) VALUES (?, ?, ?, ?)
+           RETURNING feature_id`,
+          session.id,
+          featureId,
+          blockedFeatureId,
+          now,
+        ).length > 0,
+    );
+    const settled = this.#settledFor(session.id).filter(
+      ({ id }) =>
+        this.#db.exec(
+          `INSERT OR IGNORE INTO SettledNotice (session_id, settled_id, told_at) VALUES (?, ?, ?) RETURNING settled_id`,
+          session.id,
+          id,
+          now,
+        ).length > 0,
+    );
+    return {
+      sessionId: session.id,
+      handle: session.handle,
+      delivered,
+      threads: threads.map((ref) => ({ ...ref })),
+      overlaps: overlaps.map(({ featureId, blockedFeatureId }) => ({ featureId, blockedFeatureId })),
+      settled: settled.map(({ featureId, blockedFeatureId, outcome }) => ({ featureId, blockedFeatureId, outcome })),
+    };
   }
 
   /**
@@ -595,6 +658,8 @@ export class SessionStore implements AssignmentListener {
       // A fix task the session never received waits for the next session's checkpoint instead.
       this.#db.exec(`DELETE FROM PendingDelivery WHERE session_id = ?`, row["id"] as string);
       this.#db.exec(`DELETE FROM ThreadNotice WHERE session_id = ?`, row["id"] as string);
+      this.#db.exec(`DELETE FROM OverlapNotice WHERE session_id = ?`, row["id"] as string);
+      this.#db.exec(`DELETE FROM SettledNotice WHERE session_id = ?`, row["id"] as string);
       const unrouted = this.#db.exec(
         `UPDATE Assignment SET session_id = NULL WHERE session_id = ? RETURNING issue_id`,
         row["id"] as string,

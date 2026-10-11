@@ -29,12 +29,12 @@ eight tools:
 | Tool | What the agent uses it for |
 |---|---|
 | `register_session` | Says which of its person's agent identities it works as, such as `@jun/reports` |
-| `get_work` | Reads the issues and fix tasks assigned to that identity; also the threads that need its person |
+| `get_work` | Reads the issues and fix tasks assigned to that identity; also the threads and overlapping starts that need its person and whether its feature waits to start |
 | `get_issue` | Reads one issue in full |
 | `post_update` | Comments, links a commit, changes state, replies in a thread, sends a fix upstream |
 | `report_checkpoint` | Reports a checkpoint on its person's owner fork or on its feature's fork; the answer lists any task or thread that arrived |
-| `open_feature` | Opens a feature, or joins one its person already opened, with a declared area; the answer carries a short-lived write token on the feature's fork |
-| `feature_token` | Gets a fresh write token on its feature's fork |
+| `open_feature` | Opens a feature, or joins one its person already opened, with a declared area; the answer carries a short-lived write token on the feature's fork, or lists the running features whose people must approve first |
+| `feature_token` | Gets a fresh write token on its feature's fork once no overlap lock holds its start |
 | `declare_area` | Replaces its feature's declared scopes, paths and contracts |
 | `submit_review` | Submits the review form for its own scope on another feature's change; the answer accepts it or lists every reason it is refused |
 

@@ -11,6 +11,8 @@
  *   another feature's fork or the record repo. The token is `write`, for the configured minutes.
  * - The token's plaintext is returned to the caller once. It is never logged and never sent to the
  *   ProjectAgent, so no Durable Object stores it.
+ * - While an overlap lock holds the feature's start (PRD 4.1 step 3), the fork is still made but no
+ *   token is minted: the answer names the running features the start waits on and their people.
  *
  * The fork options and the token lifetime come from the Worker's configuration
  * (PENGUIN_FEATURE_FORK_DEFAULT_BRANCH_ONLY, PENGUIN_FEATURE_TOKEN_TTL_MINUTES); the repo prefix from
@@ -23,6 +25,7 @@ import type {
   FeatureOpenInput,
   FeatureOpenOutcome,
   FeatureOutcome,
+  OverlapStatus,
   ProjectRepos,
   ReviewInput,
   ReviewOutcome,
@@ -103,12 +106,62 @@ export type FeatureFailure =
   | { readonly status: "rejected"; readonly reason: string; readonly message: string }
   | { readonly status: "misconfigured"; readonly message: string };
 
+/** The overlap check's answer as agents see it (overlap-lock.ts). */
+export interface OverlapView {
+  /** The running features whose people must approve before the feature starts. */
+  readonly waitingOn: readonly {
+    readonly feature: string;
+    readonly person: string;
+    readonly overlap: OverlapStatus["waitingOn"][number]["overlap"];
+  }[];
+  readonly approvedBy: readonly { readonly feature: string; readonly person: string | null }[];
+  /** Running features of the same person that cover part of the area: no lock, listed only. */
+  readonly ownOverlaps: readonly {
+    readonly feature: string;
+    readonly overlap: OverlapStatus["waitingOn"][number]["overlap"];
+  }[];
+  /** Running features that read what this feature changes; they go into its merge plan. */
+  readonly dependents: readonly {
+    readonly feature: string;
+    readonly consumerScope: string;
+    readonly providerScope: string;
+    readonly kind: string;
+  }[];
+}
+
+export function overlapView(status: OverlapStatus): OverlapView {
+  return {
+    waitingOn: status.waitingOn.map((lock) => ({
+      feature: lock.featureId,
+      person: lock.personId,
+      overlap: {
+        scopes: [...lock.overlap.scopes],
+        paths: [...lock.overlap.paths],
+        contracts: [...lock.overlap.contracts],
+        omittedPaths: lock.overlap.omittedPaths,
+      },
+    })),
+    approvedBy: status.approved.map((lock) => ({ feature: lock.featureId, person: lock.approvedBy })),
+    ownOverlaps: status.ownOverlaps.map(({ featureId, overlap }) => ({
+      feature: featureId,
+      overlap: { scopes: [...overlap.scopes], paths: [...overlap.paths], contracts: [...overlap.contracts], omittedPaths: overlap.omittedPaths },
+    })),
+    dependents: status.dependents.map((each) => ({
+      feature: each.dependentFeatureId,
+      consumerScope: each.consumerScopeId,
+      providerScope: each.providerScopeId,
+      kind: each.kind,
+    })),
+  };
+}
+
 export type FeatureOpenResult =
   | {
       readonly status: "opened" | "existing";
       readonly feature: FeatureView;
-      /** The opening session's write token, or null when a person opened the feature. */
+      /** The opening session's write token, or null when a person opened it or its start waits. */
       readonly token: MintedToken | null;
+      readonly overlap: OverlapView;
       readonly timings: OpenTimings;
     }
   | FeatureFailure;
@@ -163,7 +216,8 @@ export async function openFeatureWithFork(
 
   let token: MintedToken | null = null;
   let tokenMs: number | null = null;
-  if (sessionId !== null && tokenTtlSeconds !== undefined) {
+  // A start an overlap lock holds gets no token; `feature_token` gives one once every lock is approved.
+  if (sessionId !== null && tokenTtlSeconds !== undefined && outcome.overlap.waitingOn.length === 0) {
     const tokenStarted = now();
     const issued = await issueFeatureToken(ports, owner, sessionId, feature.id);
     if (issued.status !== "ok") return issued;
@@ -174,6 +228,7 @@ export async function openFeatureWithFork(
     status: outcome.status,
     feature: featureView(feature),
     token,
+    overlap: overlapView(outcome.overlap),
     timings: { totalMs: now() - started, forkMs, tokenMs },
   };
 }
@@ -204,7 +259,10 @@ export function mcpFeatures(ports: FeaturePorts, owner: string): McpFeatures {
         const opened = await openFeatureWithFork(ports, owner, { feature, area }, sessionId);
         if (opened.status === "rejected" || opened.status === "misconfigured") return failure(opened);
         const token = opened.token === null ? null : tokenFields(opened.feature.fork, opened.token);
-        return { status: "ok", value: { status: opened.status, feature: opened.feature, token, timings: opened.timings } };
+        return {
+          status: "ok",
+          value: { status: opened.status, feature: opened.feature, token, ...opened.overlap, timings: opened.timings },
+        };
       }),
     token: (sessionId, feature) =>
       guarded(async () => {
@@ -214,7 +272,8 @@ export function mcpFeatures(ports: FeaturePorts, owner: string): McpFeatures {
       }),
     declare: async (sessionId, feature, area) => {
       const declared = await (await ports.directory()).declareFeatureArea(owner, feature, area, sessionId, ports.repos);
-      return declared.status === "ok" ? { status: "ok", value: { feature: featureView(declared.feature) } } : declared;
+      if (declared.status !== "ok") return declared;
+      return { status: "ok", value: { feature: featureView(declared.feature), ...overlapView(declared.overlap) } };
     },
     review: (sessionId, feature, scope, form) =>
       guarded(async () => {
@@ -243,7 +302,16 @@ export function checkpointFields(reported: Extract<FeatureCheckpointOutcome, { s
     durationMs: reported.durationMs,
     newWork: [...reported.delivered],
     newThreads: reported.threads.map(({ issueId, threadId }) => ({ issueId, threadId })),
+    newOverlaps: reported.overlaps.map(({ featureId, blockedFeatureId }) => ({ feature: featureId, blockedFeature: blockedFeatureId })),
+    locksSettled: settledFields(reported.settled),
   };
+}
+
+/** Locks on the session's feature that were approved or withdrawn, as the wire names them. */
+export function settledFields(
+  settled: readonly { readonly featureId: string; readonly blockedFeatureId: string; readonly outcome: string }[],
+): Record<string, unknown>[] {
+  return settled.map(({ featureId, blockedFeatureId, outcome }) => ({ feature: featureId, blockedFeature: blockedFeatureId, outcome }));
 }
 
 /** Mints a fresh write token on feature `featureId`'s fork for `owner`'s session, on a grant only. */

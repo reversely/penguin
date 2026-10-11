@@ -5,7 +5,9 @@
 // - from the agent product's PreToolUse hook, before the agent's next tool action. Claude Code and
 //   Codex both run a command hook in the session's working directory and add a JSON answer's
 //   `hookSpecificOutput.additionalContext` to the model's context, which is how the agent hears
-//   that a fix task arrived, or that a thread now needs its developer;
+//   that a fix task arrived, that a thread now needs its developer, that another feature's start
+//   waits for its developer's approval, or that a lock on its own feature's start was approved or
+//   withdrawn;
 // - as an explicit bridge checkpoint, by hand or after `penguin-bridge checkpoint` publishes.
 //
 // Penguin knows the session by the worktree id it registered with, which `penguin-bridge
@@ -41,15 +43,29 @@ export interface ThreadNotice {
   readonly threadId: string;
 }
 
+/** A feature whose start waits for the developer's approval beside their running feature. */
+export interface OverlapNotice {
+  readonly feature: string;
+  readonly blockedFeature: string;
+}
+
+/** A lock on the session's feature that was approved or withdrawn, so the feature may start. */
+export interface SettledNotice extends OverlapNotice {
+  readonly outcome: string;
+}
+
 /**
- * One session's part of a safe checkpoint: the fix tasks Penguin delivered to it, and the threads
- * needing the session's developer that it hears of for the first time.
+ * One session's part of a safe checkpoint: the fix tasks Penguin delivered to it, the threads and
+ * overlapping starts needing the session's developer, and the settled locks on its own feature, each
+ * heard of for the first time.
  */
 export interface SessionDelivery {
   readonly sessionId: string;
   readonly identity: string;
   readonly delivered: readonly string[];
   readonly threads: readonly ThreadNotice[];
+  readonly overlaps: readonly OverlapNotice[];
+  readonly locksSettled: readonly SettledNotice[];
 }
 
 /** The worktree that holds `path`, and the id sessions in it register with. */
@@ -88,18 +104,31 @@ export async function sendSessionCheckpoint(
   });
 }
 
-/** A session's delivery from Penguin's answer, or undefined when malformed. A server without threads sends none. */
+/**
+ * A session's delivery from Penguin's answer, or undefined when malformed. A server without threads
+ * or overlap locks sends none.
+ */
 function asDelivery(value: unknown): SessionDelivery | undefined {
   if (typeof value !== "object" || value === null) return undefined;
-  const { sessionId, identity, delivered, threads = [] } = value as Record<string, unknown>;
+  const { sessionId, identity, delivered, threads = [], overlaps = [], locksSettled = [] } = value as Record<string, unknown>;
   const wellFormed =
     typeof sessionId === "string" &&
     typeof identity === "string" &&
     Array.isArray(delivered) &&
     delivered.every((issue) => typeof issue === "string") &&
     Array.isArray(threads) &&
-    threads.every(isThreadNotice);
-  return wellFormed ? { sessionId, identity, delivered, threads } : undefined;
+    threads.every(isThreadNotice) &&
+    Array.isArray(overlaps) &&
+    overlaps.every(isOverlapNotice) &&
+    Array.isArray(locksSettled) &&
+    locksSettled.every((notice) => isOverlapNotice(notice) && typeof (notice as { outcome?: unknown }).outcome === "string");
+  return wellFormed ? { sessionId, identity, delivered, threads, overlaps, locksSettled: locksSettled as SettledNotice[] } : undefined;
+}
+
+function isOverlapNotice(value: unknown): value is OverlapNotice {
+  if (typeof value !== "object" || value === null) return false;
+  const { feature, blockedFeature } = value as Record<string, unknown>;
+  return typeof feature === "string" && typeof blockedFeature === "string";
 }
 
 function isThreadNotice(value: unknown): value is ThreadNotice {
@@ -108,7 +137,7 @@ function isThreadNotice(value: unknown): value is ThreadNotice {
   return typeof issueId === "string" && typeof threadId === "string";
 }
 
-/** One line per session that received fix tasks and one per session with new threads, or "". */
+/** One line per session for each of fix tasks, new threads and overlapping starts it received, or "". */
 export function formatDeliveries(deliveries: readonly SessionDelivery[]): string {
   return deliveries
     .flatMap((delivery) => {
@@ -124,6 +153,14 @@ export function formatDeliveries(deliveries: readonly SessionDelivery[]): string
         const threads = delivery.threads.length === 1 ? "a thread" : `${delivery.threads.length} threads`;
         const need = delivery.threads.length === 1 ? "needs" : "need";
         lines.push(`Penguin: ${threads} on ${issues} now ${need} the developer of ${session}.\n`);
+      }
+      for (const { feature, blockedFeature } of delivery.overlaps) {
+        lines.push(
+          `Penguin: feature ${blockedFeature} waits for the developer of ${session} to approve its start beside feature ${feature}.\n`,
+        );
+      }
+      for (const { feature, blockedFeature, outcome } of delivery.locksSettled) {
+        lines.push(`Penguin: the lock of feature ${feature} on feature ${blockedFeature} was ${outcome} for ${session}.\n`);
       }
       return lines;
     })
@@ -141,9 +178,15 @@ export function hookAnswer(deliveries: readonly SessionDelivery[]): string | und
   const threads = deliveries.some((delivery) => delivery.threads.length > 0)
     ? " Tell your developer about each thread in get_work's threadsNeedingYou."
     : "";
+  const overlaps = deliveries.some((delivery) => delivery.overlaps.length > 0)
+    ? " Tell your developer about each start in get_work's overlapsNeedingYou; they approve it on the dashboard's inbox."
+    : "";
+  const settled = deliveries.some((delivery) => delivery.locksSettled.length > 0)
+    ? " Once get_work's feature.waitingOn is empty, call feature_token for the write token on your feature's fork."
+    : "";
   const additionalContext =
     `${delivered.trim().replaceAll("\n", " ")} Finish the step you are on, then call the penguin get_work tool with ` +
-    `your sessionId to read each task's pinned base, allowed paths, failing tests and acceptance criteria.${threads}`;
+    `your sessionId to read each task's pinned base, allowed paths, failing tests and acceptance criteria.${threads}${overlaps}${settled}`;
   return `${JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext } })}\n`;
 }
 

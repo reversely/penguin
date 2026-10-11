@@ -33,6 +33,7 @@ import { STATE_LABEL } from "./issue-view.ts";
 import { linkHandler } from "./links.ts";
 import { useArrivals } from "./motion.tsx";
 import { NewIssueLink } from "./new-issue-page.tsx";
+import { OverlapRequests } from "./overlap-requests.tsx";
 import { INBOX_ALL_PATH, type Route } from "./routes.ts";
 import { SIDEBAR_LIST, SidebarList } from "./sidebar-slot.tsx";
 import type { Live } from "./use-live.ts";
@@ -182,6 +183,7 @@ export function InboxPage({ inbox, viewer, live, showAll, navigate, onSignedOut 
         <h1>Inbox</h1>
         <NewIssueLink navigate={navigate} />
       </header>
+      <OverlapRequests live={live} onSignedOut={onSignedOut} />
       {wide ? (
         // The sidebar holds the rows and says when the inbox could not be read.
         load.kind === "ready" ? (

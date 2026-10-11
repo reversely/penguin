@@ -140,6 +140,12 @@ person's own identities.
 The person who did something gets no item for it. An item is keyed by person, issue and reason, so a
 later event of the same reason marks it unread again (`services/project-agent/src/inbox-store.ts`).
 
+Above the groups, Overlapping starts lists each feature whose start waits for the person beside one
+of their running features (`overlap-requests.tsx`, read from `GET /api/overlaps`). A row names the
+waiting feature, its person, the person's own feature and the scopes, contracts and paths where the
+two areas meet. Approve start posts `POST /api/overlaps/approve`; the row goes once the approval is
+recorded ([design.md](design.md#step-3-in-the-build)). The section shows only while a start waits.
+
 ## Issue page
 
 The centre holds the issue's activity in apply order (`issue-thread.tsx`):

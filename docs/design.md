@@ -97,6 +97,47 @@ The procedure moves conflict handling to the start of the work. Each step below 
   `defaultBranchOnly`. `PENGUIN_FEATURE_TOKEN_TTL_MINUTES` sets the token lifetime.
   `PENGUIN_REPO_PREFIX` leads every repo name. Opening refuses without valid values.
 
+#### Step 3 in the build
+
+- **When the check runs.** The ProjectAgent checks a feature's stored area against every other
+  running feature at each opening and at each declaration, from `declare_area` or
+  `POST /api/features/<id>/area` (`services/project-agent/src/overlap-lock.ts`). A checkpoint
+  grows the area without a check. Checks and approvals run one at a time.
+- **Same area.** Two areas overlap where a scope one declares holds a path, a contract or a scope
+  of the other. They also overlap where one declared path is, contains or lies inside a path the
+  other declares, or where both name one contract. Two files in one scope stay apart unless one
+  feature declares the scope. Each covering feature gives one `OverlapLock(feature_id,
+  blocked_feature_id, state, approved_by)` with the scopes, paths and contracts where the areas
+  meet. A later declaration that no longer overlaps withdraws an open lock. An approved lock stays
+  approved.
+- **Same person.** A covering feature that belongs to the declaring feature's own person makes no
+  lock, since that person already knows both pieces of work. The ProjectAgent keeps the overlap as
+  an `OwnOverlap`, writes it into the check's record and lists it on the feature under
+  `ownOverlaps` in the `open_feature`, `declare_area` and `get_work` answers.
+- **The wait.** While any lock on a feature is open, the Worker mints no write token on its fork.
+  `open_feature` still makes the fork. It answers with a null token and lists each covering
+  feature with its person in `waitingOn`. `feature_token` refuses with `locked`. `get_work` reports
+  the wait under `feature.waitingOn`. Once every lock is approved, `feature_token` gives the token.
+- **The end of the wait.** When a lock is approved or withdrawn, each session of the waiting
+  feature hears of it once, at its next safe checkpoint. The bridge hook's answer names the lock
+  and tells the agent to call `feature_token`. `report_checkpoint` lists it under `locksSettled`.
+  `get_work` lists each approval under `feature.approvedBy`. A session that joins the feature
+  after the lock settled hears nothing of it.
+- **The approval.** The covering person gets an inbox item of reason `overlap`. Their running
+  sessions hear of it at their next safe checkpoint: the bridge hook's answer names it,
+  `report_checkpoint` lists it under `newOverlaps` and `get_work` lists it under
+  `overlapsNeedingYou`. The person approves on the dashboard inbox, which posts
+  `POST /api/overlaps/approve` with `{ feature, blockedFeature }`. The Worker takes the approver
+  from the dashboard session and refuses a body with any other field. The ProjectAgent refuses a
+  caller who does not own the covering feature, a lock that does not exist and a second approval.
+- **Depends on it.** A running feature that works in a scope whose `depends_on` names a scope the
+  new area falls in is stored on the new feature as a `FeatureDependent`, with the consumer
+  scope, the provider scope and the dependency's kind. It creates no lock.
+- **Records.** Each check writes a signed `overlap_check` record on the checked feature, authored by
+  Penguin, with the locks it opened, the locks it withdrew, the same person's overlaps and the
+  dependents. Each approval writes
+  a signed `approve_overlap` record on the blocked feature, authored by the approving person.
+
 ### Plan
 
 1. A feature that changes a contract, a stored data shape or an invariant that other features or
@@ -394,6 +435,11 @@ People see only the exceptions in this table. Everything else proceeds without t
 | A check fails in an area with no tests and no type coverage | That scope's owner |
 | Agents pass a fix back and forth past the project's round limit (default 3) | The originating feature's person |
 | A plan exceeds the break limit | The originating feature's person, to split it |
+
+The overlapping start is built for features of two different people. The ProjectAgent puts it in
+the covering person's inbox and tells that person's running sessions at their next safe checkpoint
+([Step 3 in the build](#step-3-in-the-build)). The dashboard inbox lists it under Overlapping starts
+with an Approve start control.
 
 ## Interface
 

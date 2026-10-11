@@ -32,3 +32,4 @@ export type * from "./board.ts";
 export * from "./inbox.ts";
 export type * from "./identities.ts";
 export * from "./review.ts";
+export * from "./overlap.ts";
