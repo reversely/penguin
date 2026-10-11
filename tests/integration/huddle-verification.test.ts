@@ -25,7 +25,6 @@ import {
   type RemoteResolver,
   type VerificationReply,
 } from "@penguin/local-bridge";
-import { verificationSpecs } from "../../services/project-agent/src/huddle-verify.ts";
 
 import { HuddleProject } from "../../services/project-agent/test/huddle-project.ts";
 
@@ -97,7 +96,7 @@ async function setUp(name: string) {
     readRemotes: remotes,
     writeRemotes: remotes,
   });
-  const pending = () => verificationSpecs({ huddles: project.huddles, runs: project.verificationRuns });
+  const pending = () => project.verificationSpecs();
   // Penguin answers the runner the way the Worker route does; a refused report fails the test.
   const report = async (runId: string, body: unknown): Promise<VerificationReply> => {
     const outcome = await project.reportVerification(runId, body);

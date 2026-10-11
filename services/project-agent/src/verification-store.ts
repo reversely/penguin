@@ -1,11 +1,14 @@
-// The verification runs of each Huddle (PRD section 7, HuddleAgent storage: `Candidate` and `Check`),
-// kept beside the Huddle record in the ProjectAgent, which holds the issue index and the owner forks
-// a run is planned from. A run is one set of owners' checkpoints to merge onto the Huddle repo's
-// `integration` branch and the commands to run there.
+// The verification runs of one Huddle (PRD section 7, HuddleAgent storage: `Candidate` and `Check`),
+// kept in the SQLite of that Huddle's HuddleAgent (PRD section 5). A run is one set of owners'
+// checkpoints to merge onto the Huddle repo's `integration` branch and the commands to run there.
 //
 // A run is `pending` until the runner reports it, then `done`. A newer checkpoint schedules a new run
 // and marks every earlier unfinished run `superseded`; a report for a superseded run never counts.
 // The table is live coordination state with no counterpart in the issues repo.
+//
+// The runner names a run by its ID alone (`POST /verifications/<run id>`), so run IDs are unique
+// across the project: the HuddleAgent of Huddle issue N numbers its runs from N * RUNS_PER_HUDDLE + 1,
+// and the ProjectAgent finds a run's Huddle from its ID (`huddleIssueOfRun`).
 
 import type { VerificationCheckpoint, VerificationCommand, VerificationReport } from "@penguin/protocol";
 
@@ -21,6 +24,22 @@ export const VERIFICATION_SCHEMA: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS VerificationRun_trigger ON VerificationRun (trigger_commit, run_id)`,
   `CREATE INDEX IF NOT EXISTS VerificationRun_status ON VerificationRun (status, run_id)`,
 ];
+
+/** How many run IDs each Huddle's range holds. */
+export const RUNS_PER_HUDDLE = 1_000_000;
+
+/** The first run ID before the range of the Huddle whose issue has this number. */
+export function runIdBaseOf(issueId: string): number {
+  if (!/^[1-9][0-9]{0,8}$/u.test(issueId)) throw new Error(`no run ID range for issue ${issueId}`);
+  return Number(issueId) * RUNS_PER_HUDDLE;
+}
+
+/** The Huddle issue whose HuddleAgent numbered run `runId`, or undefined for an ID in no Huddle's range. */
+export function huddleIssueOfRun(runId: string): string | undefined {
+  if (!/^[0-9]{1,15}$/u.test(runId)) return undefined;
+  const issue = Math.floor(Number(runId) / RUNS_PER_HUDDLE);
+  return issue === 0 ? undefined : String(issue);
+}
 
 export type VerificationStatus = "pending" | "done" | "superseded";
 
@@ -39,13 +58,21 @@ export interface VerificationRun {
   readonly createdAt: string;
 }
 
+export interface VerificationStoreOptions {
+  readonly now?: () => number;
+  /** Run IDs start after this number and stay below it plus RUNS_PER_HUDDLE; see `runIdBaseOf`. */
+  readonly runIdBase?: number;
+}
+
 export class VerificationStore {
   readonly #db: SqlDatabase;
   readonly #now: () => number;
+  readonly #runIdBase: number;
 
-  constructor(db: SqlDatabase, now: () => number = Date.now) {
+  constructor(db: SqlDatabase, options: VerificationStoreOptions = {}) {
     this.#db = db;
-    this.#now = now;
+    this.#now = options.now ?? Date.now;
+    this.#runIdBase = options.runIdBase ?? 0;
     for (const statement of VERIFICATION_SCHEMA) db.exec(statement);
   }
 
@@ -85,9 +112,14 @@ export class VerificationStore {
         this.#now(),
         triggerCommit,
       );
+      // Rows are never deleted, so one past the highest ID never reuses one.
+      const [last] = this.#db.exec(`SELECT MAX(run_id) AS run_id FROM VerificationRun`);
+      const runId = Math.max(Number(last?.["run_id"] ?? 0), this.#runIdBase) + 1;
+      if (runId > this.#runIdBase + RUNS_PER_HUDDLE - 1) throw new Error(`the Huddle used every run ID in its range`);
       const [row] = this.#db.exec(
-        `INSERT INTO VerificationRun (trigger_commit, checkpoints, commands, status, created_at)
-         VALUES (?, ?, ?, 'pending', ?) RETURNING *`,
+        `INSERT INTO VerificationRun (run_id, trigger_commit, checkpoints, commands, status, created_at)
+         VALUES (?, ?, ?, ?, 'pending', ?) RETURNING *`,
+        runId,
         triggerCommit,
         JSON.stringify(checkpoints),
         JSON.stringify(commands),
@@ -107,6 +139,22 @@ export class VerificationStore {
       Number(runId),
     );
   }
+}
+
+/**
+ * Drops the VerificationRun table a ProjectAgent kept before the runs moved to the HuddleAgents, when
+ * it holds no run. A table that still holds runs is kept, so no run is lost, and reported as `kept`.
+ */
+export function dropProjectVerificationTable(db: SqlDatabase): "dropped" | "absent" | "kept" {
+  let rows: number;
+  try {
+    rows = Number(db.exec(`SELECT COUNT(*) AS n FROM VerificationRun`)[0]?.["n"]);
+  } catch {
+    return "absent";
+  }
+  if (rows > 0) return "kept";
+  db.exec(`DROP TABLE VerificationRun`);
+  return "dropped";
 }
 
 /** True when two runs merge the same checkpoints in the same order. */

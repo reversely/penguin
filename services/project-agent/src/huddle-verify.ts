@@ -11,6 +11,11 @@
 // The runner's report becomes one check per command, or per failing test, on the integration
 // revision, with its fingerprint. The issue moves to IN_REVIEW when every command passes and back to
 // FIXING otherwise: a clean Git merge whose tests fail keeps the issue out of review.
+//
+// The ProjectAgent keeps the Huddle record and the issue index; each Huddle's HuddleAgent runs these
+// steps over its own runs and writes its operations back through the ProjectAgent, which signs and
+// validates them (PRD section 5). The steps below take one Huddle; `huddlesOf` picks the Huddles a
+// checkpoint concerns.
 
 import type { IssueRecord } from "@penguin/issues";
 import {
@@ -24,18 +29,47 @@ import {
 } from "@penguin/protocol";
 
 import type { HuddleDraft } from "./huddle-open.ts";
-import { ownerCommit, type Huddle, type HuddleStore } from "./huddle-store.ts";
+import { ownerCommit, type Huddle } from "./huddle-store.ts";
 import type { SubmitOutcome } from "./issue-index.ts";
 import type { OwnerFork } from "./owner-forks.ts";
 import { sameCheckpoints, type VerificationRun, type VerificationStore } from "./verification-store.ts";
 
-export interface HuddleVerifyDeps {
-  readonly huddles: HuddleStore;
-  readonly runs: VerificationStore;
-  issue(issueId: string): IssueRecord | undefined;
+/**
+ * What a HuddleAgent reads and writes through the ProjectAgent, which holds the issue index, the
+ * owner forks and the service key. Over Durable Object RPC each call answers with a promise.
+ */
+export interface HuddleProjectPort {
+  issue(issueId: string): IssueRecord | undefined | Promise<IssueRecord | undefined>;
   /** Signs the operation with the service key and applies it, with Penguin as author. */
   submit(operation: HuddleDraft): Promise<SubmitOutcome>;
-  ownerFork(ownerId: string): OwnerFork | undefined;
+  ownerFork(ownerId: string): OwnerFork | undefined | Promise<OwnerFork | undefined>;
+}
+
+/** One Huddle's runs, kept by its HuddleAgent, and the ProjectAgent's side. */
+export interface HuddleVerifyDeps extends HuddleProjectPort {
+  readonly runs: VerificationStore;
+}
+
+/**
+ * The verification steps a HuddleAgent answers over RPC for its one Huddle. The ProjectAgent passes
+ * the Huddle record and, for steps that write, the port back to itself.
+ */
+export interface HuddleVerifier {
+  scheduleVerification(huddle: Huddle, project: HuddleProjectPort): Promise<VerificationScheduleOutcome | undefined>;
+  pendingVerifications(huddle: Huddle): PendingVerification[] | Promise<PendingVerification[]>;
+  reportVerification(
+    huddle: Huddle,
+    runId: string,
+    runnerId: string,
+    report: unknown,
+    project: HuddleProjectPort,
+  ): Promise<VerificationOutcome>;
+}
+
+/** A pending run as the runner lists it, with when it was scheduled. */
+export interface PendingVerification {
+  readonly spec: VerificationRunSpec;
+  readonly createdAt: string;
 }
 
 export type VerificationScheduleOutcome =
@@ -116,18 +150,16 @@ export function verificationPlan(huddle: Huddle, ownerFork: (ownerId: string) =>
 }
 
 /**
- * Schedules a run for every open Huddle that `ownerId` takes part in, or for every open Huddle when
- * `ownerId` is undefined. The caller runs one Huddle step at a time.
+ * The open Huddles that `ownerId` takes part in, or every open Huddle when `ownerId` is undefined: the
+ * Huddles a checkpoint of that owner schedules a run for, one Huddle step at a time.
  */
-export async function scheduleVerifications(deps: HuddleVerifyDeps, ownerId?: string): Promise<VerificationScheduleOutcome[]> {
-  const outcomes: VerificationScheduleOutcome[] = [];
-  for (const huddle of deps.huddles.open()) {
-    const owners = [huddle.triggerOwner, ...huddle.event.results.map((result) => result.ownerId)];
-    if (ownerId !== undefined && !owners.includes(ownerId)) continue;
-    const outcome = await scheduleVerification(deps, huddle);
-    if (outcome !== undefined) outcomes.push(outcome);
-  }
-  return outcomes;
+export function huddlesOf(open: readonly Huddle[], ownerId?: string): Huddle[] {
+  return open.filter((huddle) => ownerId === undefined || ownersOf(huddle).includes(ownerId));
+}
+
+/** The trigger's owner and each owner whose test failed. */
+function ownersOf(huddle: Huddle): string[] {
+  return [huddle.triggerOwner, ...huddle.event.results.map((result) => result.ownerId)];
 }
 
 /**
@@ -136,11 +168,15 @@ export async function scheduleVerifications(deps: HuddleVerifyDeps, ownerId?: st
  */
 export async function scheduleVerification(deps: HuddleVerifyDeps, huddle: Huddle): Promise<VerificationScheduleOutcome | undefined> {
   const issueId = huddle.issueId;
-  const issue = issueId === null ? undefined : deps.issue(issueId);
+  const issue = issueId === null ? undefined : await deps.issue(issueId);
   if (issueId === null || issue === undefined || !["fixing", "verifying", "in_review"].includes(issue.state)) {
     return undefined;
   }
-  const plan = verificationPlan(huddle, deps.ownerFork);
+  // Each owner's fork is read once, up front, since every read may cross to the ProjectAgent.
+  const forks = new Map(
+    await Promise.all([...new Set(ownersOf(huddle))].map(async (ownerId) => [ownerId, await deps.ownerFork(ownerId)] as const)),
+  );
+  const plan = verificationPlan(huddle, (ownerId) => forks.get(ownerId));
   const initial = initialCheckpoints(huddle);
   const latest = deps.runs.latest(huddle.triggerCommit);
   const tested = latest?.checkpoints ?? initial;
@@ -173,7 +209,7 @@ async function announce(
   for (const checkpoint of run.checkpoints) {
     if (opening.has(`${checkpoint.ownerId}@${checkpoint.sha}`)) continue;
     const commit = ownerCommit(checkpoint.ownerId, checkpoint.sha);
-    const current = currentChecks(issueOf(deps, issueId));
+    const current = currentChecks(await issueOf(deps, issueId));
     await ensure(
       deps,
       issueId,
@@ -189,42 +225,58 @@ async function announce(
   });
 }
 
-/** The pending runs the runner can take: their Huddle's repo is forked. */
-export function verificationSpecs(deps: Pick<HuddleVerifyDeps, "huddles" | "runs">): VerificationRunSpec[] {
-  return deps.runs.pending().flatMap((run) => {
-    const huddle = deps.huddles.get(run.triggerCommit);
-    if (huddle?.issueId == null || huddle.huddleRepo === null) return [];
-    return [
-      {
+/** The Huddle's pending runs the runner can take, oldest first, once the Huddle's repo is forked. */
+export function pendingVerifications(runs: Pick<VerificationStore, "pending">, huddle: Huddle): PendingVerification[] {
+  const issueId = huddle.issueId;
+  if (issueId === null || huddle.huddleRepo === null) return [];
+  return runs
+    .pending()
+    .filter((run) => run.triggerCommit === huddle.triggerCommit)
+    .map((run) => ({
+      createdAt: run.createdAt,
+      spec: {
         runId: run.runId,
-        issueId: huddle.issueId,
-        huddleRepo: huddleRepoName(huddle.issueId),
+        issueId,
+        huddleRepo: huddleRepoName(issueId),
         baseSha: huddle.baselineSha,
         checkpoints: run.checkpoints,
         commands: run.commands,
       },
-    ];
-  });
+    }));
+}
+
+/** The Huddle's pending runs as the runner lists them; see `pendingVerifications`. */
+export function verificationSpecs(runs: Pick<VerificationStore, "pending">, huddle: Huddle): VerificationRunSpec[] {
+  return pendingVerifications(runs, huddle).map((pending) => pending.spec);
+}
+
+/** The answer to a report of a run in no Huddle: an invalid report is refused as invalid first, as in `recordVerification`. */
+export function unknownVerification(runId: string, input: unknown): VerificationOutcome {
+  const parsed = parseVerificationReport(input);
+  if (!parsed.ok) return invalidReport(parsed.issues);
+  return { status: "rejected", reason: "not_found", message: `no verification run ${runId}` };
+}
+
+function invalidReport(issues: readonly { readonly field: string; readonly message: string }[]): VerificationOutcome {
+  const message = issues.map((issue) => `${issue.field || "/"} ${issue.message}`).join("; ");
+  return { status: "rejected", reason: "invalid", message };
 }
 
 /**
- * Records a runner's report of run `runId`: one check per result on the Huddle issue and the state
- * the results lead to. `runnerId` is the reporting runner bridge, from its token.
+ * Records a runner's report of the Huddle's run `runId`: one check per result on the Huddle issue and
+ * the state the results lead to. `runnerId` is the reporting runner bridge, from its token.
  */
 export async function recordVerification(
   deps: HuddleVerifyDeps,
+  huddle: Huddle,
   runId: string,
   runnerId: string,
   input: unknown,
 ): Promise<VerificationOutcome> {
   const parsed = parseVerificationReport(input);
-  if (!parsed.ok) {
-    const message = parsed.issues.map((issue) => `${issue.field || "/"} ${issue.message}`).join("; ");
-    return { status: "rejected", reason: "invalid", message };
-  }
+  if (!parsed.ok) return invalidReport(parsed.issues);
   const run = /^[0-9]+$/u.test(runId) ? deps.runs.get(runId) : undefined;
-  const huddle = run === undefined ? undefined : deps.huddles.get(run.triggerCommit);
-  if (run === undefined || huddle?.issueId == null) {
+  if (run === undefined || run.triggerCommit !== huddle.triggerCommit || huddle.issueId === null) {
     return { status: "rejected", reason: "not_found", message: `no verification run ${runId}` };
   }
   const issueId = huddle.issueId;
@@ -243,7 +295,7 @@ export async function recordVerification(
     ? "in_review"
     : "fixing";
   try {
-    if (issueOf(deps, issueId).state !== "closed") {
+    if ((await issueOf(deps, issueId)).state !== "closed") {
       for (const draft of checkDrafts(run, report, commit)) {
         await ensure(deps, issueId, (issue) => hasCheck(issue, draft), "attach_check", draft);
       }
@@ -257,7 +309,7 @@ export async function recordVerification(
     return { status: "rejected", reason: "operation_rejected", message: error.message };
   }
   deps.runs.finish(run.runId, runnerId, report);
-  return { status: "recorded", issueId, state: issueOf(deps, issueId).state, commit };
+  return { status: "recorded", issueId, state: (await issueOf(deps, issueId)).state, commit };
 }
 
 /** Why a report does not answer the run, or undefined when it does. */
@@ -332,8 +384,8 @@ function currentChecks(issue: IssueRecord): string[] {
   return [...issue.checks.values()].filter((check) => check.supersededBy === null).map((check) => check.opId);
 }
 
-function issueOf(deps: Pick<HuddleVerifyDeps, "issue">, issueId: string): IssueRecord {
-  const issue = deps.issue(issueId);
+async function issueOf(deps: Pick<HuddleProjectPort, "issue">, issueId: string): Promise<IssueRecord> {
+  const issue = await deps.issue(issueId);
   if (issue === undefined) throw new VerificationRejected(`issue ${issueId} is missing from the index`);
   return issue;
 }
@@ -346,7 +398,7 @@ async function ensure(
   type: string,
   payload: Readonly<Record<string, unknown>>,
 ): Promise<void> {
-  const issue = issueOf(deps, issueId);
+  const issue = await issueOf(deps, issueId);
   if (present(issue)) return;
   const outcome = await deps.submit({ issue: Number(issueId), type, base_version: issue.version, payload });
   if (outcome.status === "rejected") {

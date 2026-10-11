@@ -1,4 +1,4 @@
-import { Agent, type Connection, type ConnectionContext } from "agents";
+import { Agent, getAgentByName, type Connection, type ConnectionContext } from "agents";
 
 import {
   IssueIndex,
@@ -36,14 +36,15 @@ import { CombinedRunStore, scheduleCombinedRuns, type ClaimListing } from "./com
 import { HuddleStore, type Huddle } from "./huddle-store.ts";
 import { fixTask, type FixTask } from "./fix-task.ts";
 import {
-  recordVerification,
-  scheduleVerifications,
-  verificationSpecs,
-  type HuddleVerifyDeps,
+  huddlesOf,
+  unknownVerification,
+  type HuddleProjectPort,
+  type HuddleVerifier,
+  type PendingVerification,
   type VerificationScheduleOutcome,
   type VerificationOutcome,
 } from "./huddle-verify.ts";
-import { VerificationStore } from "./verification-store.ts";
+import { dropProjectVerificationTable, huddleIssueOfRun } from "./verification-store.ts";
 import { reassignUpstream } from "./upstream.ts";
 import { IngestLedger, ingestPush, type IngestReport } from "./push-ingest.ts";
 import { rebuildIndex, type RebuildReport } from "./rebuild.ts";
@@ -181,22 +182,32 @@ export {
   type ScheduleOutcome,
 } from "./combined-run-schedule.ts";
 export {
+  huddlesOf,
   initialCheckpoints,
+  pendingVerifications,
   recordVerification,
   scheduleVerification,
-  scheduleVerifications,
+  unknownVerification,
   verificationPlan,
   verificationSpecs,
+  type HuddleProjectPort,
+  type HuddleVerifier,
   type HuddleVerifyDeps,
+  type PendingVerification,
   type VerificationScheduleOutcome,
   type VerificationOutcome,
   type VerificationPlan,
 } from "./huddle-verify.ts";
 export {
+  dropProjectVerificationTable,
+  huddleIssueOfRun,
+  runIdBaseOf,
+  RUNS_PER_HUDDLE,
   sameCheckpoints,
   VerificationStore,
   type VerificationRun,
   type VerificationStatus,
+  type VerificationStoreOptions,
 } from "./verification-store.ts";
 export {
   reassignUpstream,
@@ -280,6 +291,7 @@ export type IngestResult = IngestReport & { readonly durationMs: number };
 
 /**
  * Holds the project-wide state: issue index, scope map, owners, identities, sessions and inboxes.
+ * It opens Huddle issues and hands each Huddle's verification loop to that Huddle's HuddleAgent.
  * It keeps a counter in its SQL storage beside the issue index.
  */
 export class ProjectAgent extends Agent {
@@ -298,13 +310,16 @@ export class ProjectAgent extends Agent {
   #ingests: Promise<unknown> = Promise.resolve();
   #huddles: HuddleStore | undefined;
   #combinedRuns: CombinedRunStore | undefined;
-  #verificationRuns: VerificationStore | undefined;
   /** Huddle openings and verification steps run one at a time, so no two interleave their writes. */
   #huddleSteps: Promise<unknown> = Promise.resolve();
 
   override onStart(): void {
     this.sql`CREATE TABLE IF NOT EXISTS counter (id INTEGER PRIMARY KEY CHECK (id = 1), value INTEGER NOT NULL)`;
     this.sql`INSERT OR IGNORE INTO counter (id, value) VALUES (1, 0)`;
+    // Verification runs are kept by each Huddle's HuddleAgent; an empty table left from before goes.
+    if (dropProjectVerificationTable(this.#database()) === "kept") {
+      console.error(JSON.stringify({ event: "project_verification_runs_kept" }));
+    }
   }
 
   /** POST increments the counter; any other method reads it. */
@@ -382,35 +397,68 @@ export class ProjectAgent extends Agent {
   }
 
   /**
-   * The verification runs waiting for the runner, with what each merges and runs. The Worker lists
-   * them only to a runner bridge.
+   * The verification runs waiting for the runner, with what each merges and runs, oldest first. Each
+   * open Huddle's HuddleAgent lists its own. The Worker lists them only to a runner bridge.
    */
-  pendingVerifications(): VerificationRunSpec[] {
-    return verificationSpecs({ huddles: this.#huddleStore(), runs: this.#verificationStore() });
+  async pendingVerifications(): Promise<VerificationRunSpec[]> {
+    const huddles = this.#huddleStore().open().filter((huddle) => huddle.issueId !== null && huddle.huddleRepo !== null);
+    const lists: PendingVerification[][] = await Promise.all(
+      huddles.map(async (huddle) => (await this.#huddleAgent(huddle.issueId as string)).pendingVerifications(huddle)),
+    );
+    return lists
+      .flat()
+      .sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0))
+      .map((pending) => pending.spec);
   }
 
   /**
-   * Records a runner's report of a verification run (see huddle-verify.ts). `runnerId` is the reporting
-   * runner bridge, which the Worker takes from its token.
+   * Records a runner's report of a verification run with the HuddleAgent of the Huddle the run ID
+   * belongs to (see huddle-verify.ts). `runnerId` is the reporting runner bridge, which the Worker
+   * takes from its token.
    */
   reportVerification(runId: string, runnerId: string, report: unknown, repos: ProjectRepos): Promise<VerificationOutcome> {
-    return this.#huddleStep(async () => recordVerification(await this.#verifyDeps(repos), runId, runnerId, report));
+    return this.#huddleStep(async () => {
+      const issueId = huddleIssueOfRun(runId);
+      const huddle = issueId === undefined ? undefined : this.#huddleStore().byIssue(issueId);
+      if (huddle?.issueId == null) return unknownVerification(runId, report);
+      const agent = await this.#huddleAgent(huddle.issueId);
+      return agent.reportVerification(huddle, runId, runnerId, report, await this.#huddlePort(repos));
+    });
   }
 
   /**
    * Schedules a verification run for each open Huddle `ownerId` takes part in, after a newer
-   * checkpoint of that owner was recorded.
+   * checkpoint of that owner was recorded. Each Huddle's HuddleAgent decides and keeps the run.
    */
   scheduleVerifications(ownerId: string, repos: ProjectRepos): Promise<VerificationScheduleOutcome[]> {
-    return this.#huddleStep(async () => scheduleVerifications(await this.#verifyDeps(repos), ownerId));
+    return this.#huddleStep(async () => {
+      const outcomes: VerificationScheduleOutcome[] = [];
+      const huddles = huddlesOf(this.#huddleStore().open(), ownerId);
+      const port = huddles.length === 0 ? undefined : await this.#huddlePort(repos);
+      for (const huddle of huddles) {
+        if (huddle.issueId === null || port === undefined) continue;
+        const outcome = await (await this.#huddleAgent(huddle.issueId)).scheduleVerification(huddle, port);
+        if (outcome !== undefined) outcomes.push(outcome);
+      }
+      return outcomes;
+    });
   }
 
-  async #verifyDeps(repos: ProjectRepos): Promise<HuddleVerifyDeps> {
+  /** The HuddleAgent of the Huddle whose issue has this number: one instance per Huddle in this project. */
+  async #huddleAgent(issueId: string): Promise<HuddleVerifier> {
+    // The binding's generated stub type refers back to this package, so the stub is typed here by
+    // the interface HuddleAgent implements.
+    return (await getAgentByName(this.env.HuddleAgent, `${this.name}-huddle-${issueId}`)) as unknown as HuddleVerifier;
+  }
+
+  /**
+   * What a HuddleAgent reads and writes here, passed to it over RPC: the issue index, the owner forks,
+   * and operations signed with the service key, which never leaves this agent.
+   */
+  async #huddlePort(repos: ProjectRepos): Promise<HuddleProjectPort> {
     const scopeMap = await this.#scopeMap(repos);
     const index = this.#index();
     return {
-      huddles: this.#huddleStore(),
-      runs: this.#verificationStore(),
       issue: (issueId) => index.issue(issueId),
       submit: (operation) => this.submit(operation, { penguin: true }, "penguin", scopeMap),
       ownerFork: (ownerId) => this.#ownerForks().get(ownerId),
@@ -1011,11 +1059,6 @@ export class ProjectAgent extends Agent {
     return this.#combinedRuns;
 }
 
-  #verificationStore(): VerificationStore {
-    this.#verificationRuns ??= new VerificationStore(this.#database());
-    return this.#verificationRuns;
-  }
-
   #ownerForks(): OwnerForkStore {
     this.#forks ??= new OwnerForkStore(this.#database());
     return this.#forks;
@@ -1102,7 +1145,8 @@ async function withRepo<T>(artifacts: Artifacts, name: string, use: (repo: Artif
   }
 }
 
-function durableObjectSql(storage: DurableObjectStorage): SqlDatabase {
+/** A Durable Object's SQLite storage as the stores' SqlDatabase. */
+export function durableObjectSql(storage: DurableObjectStorage): SqlDatabase {
   return {
     exec: (query: string, ...bindings: SqlValue[]) =>
       storage.sql.exec<Record<string, SqlValue>>(query, ...bindings).toArray(),

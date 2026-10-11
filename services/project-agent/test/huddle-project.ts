@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { generateSigningKeyPair, type ReduceRejectReason, type RejectReason } from "@penguin/issues";
-import type { Author, CombinedRunEvent } from "@penguin/protocol";
+import type { Author, CombinedRunEvent, VerificationRunSpec } from "@penguin/protocol";
 import { parseScopeMap, type ScopeMap } from "@penguin/scope-map";
 
 import { parseCombinedRunEvent } from "@penguin/protocol";
@@ -19,10 +19,13 @@ import {
   type ScheduleOutcome,
 } from "../src/combined-run-schedule.ts";
 import { openHuddle, type HuddleOpenDeps, type HuddleOpenOutcome } from "../src/huddle-open.ts";
-import { HuddleStore } from "../src/huddle-store.ts";
+import { HuddleStore, type Huddle } from "../src/huddle-store.ts";
 import {
+  huddlesOf,
   recordVerification,
-  scheduleVerifications,
+  scheduleVerification,
+  unknownVerification,
+  verificationSpecs,
   type HuddleVerifyDeps,
   type VerificationScheduleOutcome,
   type VerificationOutcome,
@@ -88,7 +91,12 @@ export class HuddleProject {
   readonly forks: OwnerForkStore;
   readonly huddles: HuddleStore;
   readonly runs: CombinedRunStore;
-  readonly verificationRuns: VerificationStore;
+  /**
+   * Each Huddle's verification runs, by trigger commit, each over its own database as each Huddle's
+   * HuddleAgent keeps them. Run IDs start at 1 in every Huddle here; the agent gives each Huddle its
+   * own range (`runIdBaseOf`).
+   */
+  readonly huddleRuns = new Map<string, VerificationStore>();
   /** Commits in each owner's fork, by owner id, as the Artifacts binding's readCommit would find them. */
   readonly published = new Map<string, Set<string>>();
   /** The sessions' clock in epoch milliseconds; the real clock while undefined. */
@@ -120,7 +128,6 @@ export class HuddleProject {
     this.huddles = new HuddleStore(this.sql);
     let nextRun = 0;
     this.runs = new CombinedRunStore(this.sql, { newId: () => `run-${++nextRun}` });
-    this.verificationRuns = new VerificationStore(this.sql);
     if (options.seedIdentities ?? true) {
       for (const seed of seedIdentities()) this.identity(seed.owner, seed.handle, seed.charter_scopes);
     }
@@ -206,21 +213,53 @@ export class HuddleProject {
     };
   }
 
-  /** The dependencies ProjectAgent's verification steps pass. */
-  async verifyDeps(): Promise<HuddleVerifyDeps> {
-    const deps = await this.deps();
-    const { issue, submit, ownerFork } = deps;
-    return { huddles: this.huddles, runs: this.verificationRuns, issue, submit, ownerFork };
+  /** The runs of the Huddle opened by `triggerCommit`, kept as its HuddleAgent keeps them. */
+  runsOf(triggerCommit: string): VerificationStore {
+    let runs = this.huddleRuns.get(triggerCommit);
+    if (runs === undefined) {
+      runs = new VerificationStore(sqlite().sql);
+      this.huddleRuns.set(triggerCommit, runs);
+    }
+    return runs;
   }
 
-  /** Records `sha` as `owner`'s latest checkpoint and schedules verification, as a checkpoint report does. */
+  /** The runs of the one open Huddle the verification tests open. */
+  get verificationRuns(): VerificationStore {
+    const [huddle, ...others] = this.huddles.open();
+    assert.ok(huddle !== undefined && others.length === 0, "one open Huddle");
+    return this.runsOf(huddle.triggerCommit);
+  }
+
+  /** The dependencies a HuddleAgent's verification steps have: its runs and the ProjectAgent's side. */
+  async verifyDeps(huddle: Huddle): Promise<HuddleVerifyDeps> {
+    const { issue, submit, ownerFork } = await this.deps();
+    return { runs: this.runsOf(huddle.triggerCommit), issue, submit, ownerFork };
+  }
+
+  /**
+   * Records `sha` as `owner`'s latest checkpoint and schedules verification of each open Huddle the
+   * owner takes part in, as a checkpoint report does.
+   */
   async checkpoint(owner: string, sha: string): Promise<VerificationScheduleOutcome[]> {
     this.publish(owner, sha);
-    return scheduleVerifications(await this.verifyDeps(), owner);
+    const outcomes: VerificationScheduleOutcome[] = [];
+    for (const huddle of huddlesOf(this.huddles.open(), owner)) {
+      const outcome = await scheduleVerification(await this.verifyDeps(huddle), huddle);
+      if (outcome !== undefined) outcomes.push(outcome);
+    }
+    return outcomes;
   }
 
+  /** The runs waiting for the runner across the open Huddles, as the ProjectAgent lists them. */
+  verificationSpecs(): VerificationRunSpec[] {
+    return this.huddles.open().flatMap((huddle) => verificationSpecs(this.runsOf(huddle.triggerCommit), huddle));
+  }
+
+  /** Records a report with the Huddle whose HuddleAgent holds run `runId`. */
   async reportVerification(runId: string, report: unknown, runnerId = "runner-1"): Promise<VerificationOutcome> {
-    return recordVerification(await this.verifyDeps(), runId, runnerId, report);
+    const huddle = this.huddles.open().find((open) => this.runsOf(open.triggerCommit).get(runId) !== undefined);
+    if (huddle === undefined) return unknownVerification(runId, report);
+    return recordVerification(await this.verifyDeps(huddle), huddle, runId, runnerId, report);
   }
 
   /** Opens the Huddle for a combined-run report and completes the runs it answers, as the agent does. */

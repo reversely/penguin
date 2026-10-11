@@ -3,7 +3,6 @@ import { describe, test } from "node:test";
 
 import type { CombinedRunEvent, VerificationReport } from "@penguin/protocol";
 
-import { verificationSpecs } from "../src/huddle-verify.ts";
 import { HuddleProject } from "./huddle-project.ts";
 
 // Distinct full SHAs, spelled out so each reads as what it stands for.
@@ -94,7 +93,7 @@ function checks(project: HuddleProject): string[] {
 }
 
 function specs(project: HuddleProject) {
-  return verificationSpecs({ huddles: project.huddles, runs: project.verificationRuns });
+  return project.verificationSpecs();
 }
 
 describe("scheduling verification", () => {
