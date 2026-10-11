@@ -20,6 +20,7 @@ import {
   type SessionInput,
   type SessionOutcome,
 } from "../src/session-store.ts";
+import { scheduleSweep, type SweepPort } from "../src/session-sweep.ts";
 import { GitRepo, sqlite } from "./issues-repo.ts";
 
 const fixture = join(import.meta.dirname, "../../../examples/identity-unification/base/penguin");
@@ -495,5 +496,113 @@ describe("sessions: routing assigned issues", () => {
     assert.deepEqual(project.work("jun", id), ["40"]);
     assert.deepEqual(project.sessions.routes("40"), [{ handle: "@jun/reports", sessionId: id, waitingFor: null }]);
     assert.equal(project.db.prepare(`SELECT COUNT(*) AS n FROM OwnerRequest`).get()?.["n"], 0);
+  });
+});
+
+/** The Agents SDK scheduler as the sweep uses it: rows at whole seconds, each removed once its callback returns. */
+class Scheduler {
+  readonly rows = new Map<number, number>();
+  readonly now: () => number;
+  #nextRow = 0;
+
+  constructor(now: () => number) {
+    this.now = now;
+  }
+
+  port(sessions: SessionStore): SweepPort {
+    return {
+      sweep: () => sessions.sweep(),
+      now: this.now,
+      scheduled: async () => [...this.rows.values()],
+      schedule: async (at) => void this.rows.set(++this.#nextRow, Math.floor(at / 1000) * 1000),
+    };
+  }
+
+  /** Runs each sweep due by now, earliest first. `during` runs once, while the first sweep's row still exists. */
+  async fire(port: SweepPort, during?: () => Promise<void>): Promise<void> {
+    for (;;) {
+      const [due] = [...this.rows].filter(([, at]) => at <= this.now()).sort((a, b) => a[1] - b[1]);
+      if (due === undefined) return;
+      const sweep = scheduleSweep(port);
+      await during?.();
+      during = undefined;
+      await sweep;
+      this.rows.delete(due[0]);
+    }
+  }
+
+  /** Whether a sweep is scheduled that has not fired yet. */
+  get armed(): boolean {
+    return [...this.rows.values()].some((at) => at > this.now());
+  }
+}
+
+/** A session store whose sessionChanged messages are recorded, swept by `Scheduler` as the ProjectAgent sweeps it. */
+function sweptProject() {
+  const project = new Project();
+  const changed: string[] = [];
+  project.sessions = new SessionStore(project.sql, project.identities, {
+    now: () => project.now,
+    newId: () => `session-${project.now}`,
+    assigningOwner: () => undefined,
+    listener: { sessionChanged: (handle) => changed.push(handle), routeChanged: () => {} },
+  });
+  const scheduler = new Scheduler(() => project.now);
+  const port = scheduler.port(project.sessions);
+  /** A registration or heartbeat, then the sweep scheduling the ProjectAgent does after it. */
+  const arm = async (outcome: SessionOutcome) => {
+    const armed = session(outcome);
+    await scheduleSweep(port);
+    return armed;
+  };
+  return { project, changed, scheduler, port, arm };
+}
+
+describe("sessions: the offline sweep", () => {
+  const input = { vendor: "codex", worktreeId: "wt_1", branch: "main" };
+
+  test("a heartbeat during a running sweep leaves a sweep scheduled, which marks the session offline", async () => {
+    const { project, changed, scheduler, port, arm } = sweptProject();
+    project.identity("jun", "@jun/reports", true);
+    project.identity("jun", "@jun/alerts", true);
+    await arm(project.sessions.register("jun", { identity: "@jun/reports", ...input }));
+    project.now += 10_000;
+    const alerts = await arm(project.sessions.register("jun", { identity: "@jun/alerts", ...input }));
+    assert.equal(scheduler.rows.size, 1, "registrations and heartbeats reuse the pending sweep");
+    changed.length = 0;
+
+    // The first window ends, and @jun/alerts sends a heartbeat while that sweep runs.
+    project.now = START + SESSION_OFFLINE_AFTER_MS + 1_000;
+    await scheduler.fire(port, async () => {
+      await arm(project.sessions.heartbeat("jun", alerts.id));
+    });
+    assert.deepEqual(changed, ["@jun/reports"]);
+    assert.ok(scheduler.armed, "a sweep stays scheduled while @jun/alerts runs");
+
+    // The @jun/alerts window ends with no further read or heartbeat.
+    project.now += SESSION_OFFLINE_AFTER_MS + 1_000;
+    await scheduler.fire(port);
+    assert.deepEqual(changed, ["@jun/reports", "@jun/alerts"]);
+    assert.equal(scheduler.rows.size, 0, "with no session running, no sweep stays scheduled");
+  });
+
+  test("a registration during a sweep that took the last session offline leaves a sweep scheduled", async () => {
+    const { project, changed, scheduler, port, arm } = sweptProject();
+    project.identity("jun", "@jun/reports", true);
+    project.identity("jun", "@jun/alerts", true);
+    await arm(project.sessions.register("jun", { identity: "@jun/reports", ...input }));
+    changed.length = 0;
+
+    project.now += SESSION_OFFLINE_AFTER_MS + 1_000;
+    await scheduler.fire(port, async () => {
+      await arm(project.sessions.register("jun", { identity: "@jun/alerts", ...input }));
+    });
+    assert.deepEqual(changed, ["@jun/reports", "@jun/alerts"]);
+    assert.ok(scheduler.armed, "a sweep stays scheduled while @jun/alerts runs");
+
+    project.now += SESSION_OFFLINE_AFTER_MS + 1_000;
+    await scheduler.fire(port);
+    assert.deepEqual(changed, ["@jun/reports", "@jun/alerts", "@jun/alerts"]);
+    assert.equal(scheduler.rows.size, 0, "with no session running, no sweep stays scheduled");
   });
 });

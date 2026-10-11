@@ -40,6 +40,7 @@ import {
   type TeamIdentityInput,
 } from "./identity-store.ts";
 import { importServiceKey, type ServiceKey } from "./service-key.ts";
+import { scheduleSweep } from "./session-sweep.ts";
 import {
   SESSION_OFFLINE_AFTER_MS,
   SessionStore,
@@ -327,9 +328,7 @@ export class ProjectAgent extends Agent {
    * next sweep for when the next running session's window ends. Called by the Agents SDK scheduler.
    */
   async sweepSessions(): Promise<void> {
-    // A new row: this job's own row stays until the callback returns, so an idempotent schedule here
-    // would match it and the chain would end with it.
-    await this.#scheduleSweep(false);
+    await this.#scheduleSweep();
   }
 
   /**
@@ -501,20 +500,24 @@ export class ProjectAgent extends Agent {
   /** Makes sure a sweep is scheduled after a session registered or sent a heartbeat. */
   #armSweep<T extends { readonly status: string }>(outcome: T): T {
     if (outcome.status === "ok") {
-      this.#scheduleSweep(true).catch((error: unknown) => console.error("scheduling the session sweep failed", error));
+      this.#scheduleSweep().catch((error: unknown) => console.error("scheduling the session sweep failed", error));
     }
     return outcome;
   }
 
-  /**
-   * Sweeps now and schedules the next sweep, one second after the next running session's window
-   * ends; with no session running, none. `idempotent` reuses a sweep already scheduled, which is
-   * never later than the one needed: a heartbeat only moves a window's end later.
-   */
-  async #scheduleSweep(idempotent: boolean): Promise<void> {
-    const next = this.#sessionStore().sweep();
-    if (next === undefined) return;
-    await this.schedule(new Date(next + 1_000), "sweepSessions", undefined, { idempotent });
+  /** Sweeps now and keeps a later sweep scheduled while any session runs; see `scheduleSweep`. */
+  #scheduleSweep(): Promise<void> {
+    return scheduleSweep({
+      sweep: () => this.#sessionStore().sweep(),
+      now: () => Date.now(),
+      scheduled: async () =>
+        (await this.listSchedules())
+          .filter((schedule) => schedule.callback === "sweepSessions")
+          .map((schedule) => schedule.time * 1_000),
+      schedule: async (at) => {
+        await this.schedule(new Date(at), "sweepSessions");
+      },
+    });
   }
 
   #loadServiceKey(): Promise<ServiceKey> {
