@@ -21,5 +21,11 @@
   // One Artifacts namespace holds the base repo, the owner forks, the issues repo and the Huddle
   // repos. Artifacts creates the namespace on the first repo create. Artifacts has no local
   // simulator, so `remote` points `wrangler dev` at the real service.
-  "artifacts": [{ "binding": "ARTIFACTS", "namespace": "penguin", "remote": true }]
+  "artifacts": [{ "binding": "ARTIFACTS", "namespace": "penguin", "remote": true }],
+
+  // The Worker consumes the issues repo's `cf.artifacts.repo.pushed` events (setup inventory S4).
+  // The subscription that feeds the queue is created on the dashboard, not here.
+  "queues": {
+    "consumers": [{ "queue": "penguin-issues-events" }]
+  }
 }

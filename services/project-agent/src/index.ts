@@ -5,6 +5,7 @@ import {
   type ApplyInput,
   type ApplyOutcome,
   type BridgeCaller,
+  type OperationKeys,
   type PendingListing,
   type PendingSource,
   type SqlDatabase,
@@ -12,6 +13,8 @@ import {
   type SubmitOutcome,
   type TimelineEntry,
 } from "./issue-index.ts";
+import { IngestLedger, ingestPush, type IngestReport } from "./push-ingest.ts";
+import { parseScopeFile, SCOPE_MAP_PATH } from "./scope-file.ts";
 import { importServiceKey, type ServiceKey } from "./service-key.ts";
 import type { IssueRecord } from "@penguin/issues";
 import type { Author } from "@penguin/protocol";
@@ -40,6 +43,7 @@ export {
   type TimelineEntry,
 } from "./issue-index.ts";
 export { importServiceKey, type ServiceKey } from "./service-key.ts";
+export type { IngestReport } from "./push-ingest.ts";
 
 /** The Worker secret this class reads. `wrangler types` does not list secrets, so it is declared here. */
 interface ServiceKeyEnv {
@@ -55,14 +59,41 @@ export {
   type RegistrationCode,
 } from "./bridge-registry.ts";
 
+/** The project's repos the agent reads, named by the Worker from its configuration. */
+export interface ProjectRepos {
+  /** The issues repo, which holds the operation log. */
+  readonly issues: string;
+  /** The base repo, whose `penguin/scopes.json` decides review rights. */
+  readonly base: string;
+}
+
+/**
+ * An operation handed to the agent directly. A CryptoKey cannot cross Durable Object RPC
+ * (`wrangler dev` 4.149.0: "DataCloneError: Could not serialize object of type CryptoKey"), so the
+ * agent loads the keys itself.
+ */
+export type OperationInput = Omit<ApplyInput, "keys">;
+
+/** A push to the issues repo's main branch, taken from a `cf.artifacts.repo.pushed` event. */
+export interface IssuesPush {
+  readonly before: string;
+  readonly after: string;
+}
+
+export type IngestResult = IngestReport & { readonly durationMs: number };
+
 /**
  * Holds the project-wide state: issue index, scope map, owners, identities and sessions.
  * It keeps a counter in its SQL storage beside the issue index.
  */
 export class ProjectAgent extends Agent {
+  #sql: SqlDatabase | undefined;
   #issues: IssueIndex | undefined;
   #serviceKey: Promise<ServiceKey> | undefined;
   #bridges: BridgeRegistry | undefined;
+  #ledger: IngestLedger | undefined;
+  /** Ingests run one at a time, so two pushes never interleave their walks and applies. */
+  #ingests: Promise<unknown> = Promise.resolve();
 
   override onStart(): void {
     this.sql`CREATE TABLE IF NOT EXISTS counter (id INTEGER PRIMARY KEY CHECK (id = 1), value INTEGER NOT NULL)`;
@@ -82,8 +113,23 @@ export class ProjectAgent extends Agent {
    * Validates one operation, applies it to the issue index and records it in AppliedOp. A pushed
    * file that matches a pending operation instead records its commit and clears the PendingOp row.
    */
-  applyOperation(input: ApplyInput): Promise<ApplyOutcome> {
-    return this.#index().apply(input);
+  async applyOperation(input: OperationInput, repos: ProjectRepos): Promise<ApplyOutcome> {
+    return this.#index().apply({ ...input, keys: await this.#operationKeys(repos) });
+  }
+
+  /**
+   * Applies the operation files added on the issues repo's main branch up to `push.after`, in
+   * coordination order, and resolves once every one is recorded in AppliedOp. Commits already
+   * ingested are skipped, so a repeated or late event applies nothing twice. `push.before` is not a
+   * stopping point: see push-ingest.ts for why the walk ends at the last ingested commit instead.
+   *
+   * Rejects when key material or a Git object is missing, so no operation is judged without its
+   * keys, and the caller retries.
+   */
+  ingestPush(push: IssuesPush, repos: ProjectRepos): Promise<IngestResult> {
+    const run = this.#ingests.then(() => this.#ingest(push, repos));
+    this.#ingests = run.catch(() => undefined);
+    return run;
   }
 
   /** One issue's state and its timeline of applied and rejected operations. */
@@ -110,7 +156,7 @@ export class ProjectAgent extends Agent {
 
   /**
    * For the integration runner only: every pending operation as the signed file to push and its
-   * path. The push event for those files then reaches `applyOperation`, which clears the rows.
+   * path. The push event for those files then reaches `ingestPush`, which clears the rows.
    */
   pendingOperations(caller: BridgeCaller): PendingListing {
     return this.#index().pendingFiles(caller);
@@ -146,14 +192,59 @@ export class ProjectAgent extends Agent {
     return this.#registry().revoke(bridgeId);
   }
 
+  async #ingest(push: IssuesPush, repos: ProjectRepos): Promise<IngestResult> {
+    const started = Date.now();
+    const keys = await this.#operationKeys(repos);
+    const index = this.#index();
+    this.#ledger ??= new IngestLedger(this.#database());
+    const ledger = this.#ledger;
+    const report = await withRepo(this.env.ARTIFACTS, repos.issues, (repo) =>
+      ingestPush(repo, push.after, ledger, (file, commit) =>
+        index.apply({ file: file.bytes, gitCommit: commit, path: file.path, keys }),
+      ),
+    );
+    return { ...report, durationMs: Date.now() - started };
+  }
+
+  /**
+   * The keys operations are judged by, read fresh for each call: the service key (K5), the signing
+   * keys of unrevoked bridges only, so a revoked bridge's key no longer verifies, and the scope map.
+   */
+  async #operationKeys(repos: ProjectRepos): Promise<OperationKeys> {
+    const [serviceKey, bridges, scopeFile] = await Promise.all([
+      this.#loadServiceKey(),
+      this.#registry().bridgeKeys(),
+      withRepo(this.env.ARTIFACTS, repos.base, async (repo) => {
+        const blob = await repo.readFile({ ref: "HEAD", path: SCOPE_MAP_PATH });
+        return blob === null ? null : new Uint8Array(await blob.arrayBuffer());
+      }),
+    ]);
+    return { serviceKey: serviceKey.publicKey, bridges, scopeMap: parseScopeFile(scopeFile) };
+  }
+
+  #database(): SqlDatabase {
+    this.#sql ??= durableObjectSql(this.ctx.storage);
+    return this.#sql;
+  }
+
   #registry(): BridgeRegistry {
-    this.#bridges ??= new BridgeRegistry(durableObjectSql(this.ctx.storage));
+    this.#bridges ??= new BridgeRegistry(this.#database());
     return this.#bridges;
   }
 
   #index(): IssueIndex {
-    this.#issues ??= new IssueIndex(durableObjectSql(this.ctx.storage));
+    this.#issues ??= new IssueIndex(this.#database());
     return this.#issues;
+  }
+}
+
+/** Opens a repo through the binding, runs `use` with it and releases the RPC stub afterwards. */
+async function withRepo<T>(artifacts: Artifacts, name: string, use: (repo: ArtifactsRepo) => Promise<T>): Promise<T> {
+  const repo = await artifacts.get(name);
+  try {
+    return await use(repo);
+  } finally {
+    repo[Symbol.dispose]();
   }
 }
 
