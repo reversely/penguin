@@ -93,7 +93,8 @@ export class HuddleStore {
       sha,
       baselineSha,
       JSON.stringify(event.changedScopes),
-      JSON.stringify(event),
+      // The block checks live in their own table (combined-run-schedule.ts); the Huddle keeps the tests.
+      JSON.stringify({ ...event, checks: undefined }),
       this.#now(),
     );
     return this.get(triggerCommit) as Huddle;

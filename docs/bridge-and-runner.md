@@ -11,7 +11,8 @@ the combined tests. The code is in `services/local-bridge/src/`.
 
 The bridge needs Node.js 22.18 or later, Git 2.38 or later (for `git merge-tree --write-tree`) and,
 on a runner, the test tools the project's `penguin/scopes.json` commands call. The fixtures use
-Python with pytest from `uv sync`.
+Python with pytest from `uv sync`. A runner's checks also need Python 3.11 or later, ruff from
+`uv sync` and the pyright package `npm install` installs.
 
 ```sh
 git clone <penguin repo> ~/penguin
@@ -204,7 +205,11 @@ penguin-bridge runner --combined
    ([issues.md](issues.md#pending-push)).
 2. With `--combined` or `--repo <path>`, also runs Penguin's test jobs in the repository at `<path>`,
    default `~/.penguin/combined`, created empty when missing:
-   - claims and runs combined runs (`combined-run-pass.ts`);
+   - claims and runs combined runs with the [block checks](#block-checks) on every merged tree
+     (`combined-run-pass.ts`). `--python <path>` names the interpreter for the impact graph and
+     the dependency diff, default `python3`. `--ruff <path>` names ruff. Without it the runner uses `PENGUIN_RUFF`, then this repository's
+     pinned ruff in `.venv/bin/ruff`, then `ruff` on `PATH`, because an older ruff elsewhere on `PATH`
+     (such as an Anaconda install) formats differently;
    - lists and runs verification runs, pushing each merge to the Huddle repo's `integration` branch
      (`verification-run.ts`);
    - lists approved branches and pushes the Huddle repo's `approved` branch (`approval-run.ts`).
@@ -259,9 +264,13 @@ The script reads only Git objects. It never checks out a tree or imports the cod
 | Missing commit or malformed request | Exit status 2 with one line on standard error |
 
 A combined run (`CombinedRunner`) given an analyzer runs the analysis first, with one fork per
-dependent owner that has a checkpoint. It then runs tests only for the owners the report selects.
-Each skipped scope is listed under `notAffected` in the run's report. A failed analysis is recorded
-as `impactError`. Every dependent scope's tests then run.
+dependent owner that has a checkpoint. It merges every owner's checkpoint, then runs tests only for
+the owners the report selects. Each skipped scope gets a `not-affected` result with its owner's
+checkpoint and is listed under `notAffected` in the run's report. Penguin accepts a `not-affected`
+result as the end of that owner's claimed run (`combined-run-schedule.ts`), so the run is never
+claimed again. A merge conflict outranks the impact graph: an unaffected owner whose merge
+conflicts gets `conflict`. A failed analysis is recorded as `impactError`. Every dependent scope's
+tests then run. Runner mode passes the analyzer to every combined run.
 
 To see the report for any two commits:
 
@@ -320,6 +329,92 @@ accepted and 1 when it is refused.
 
 On the identity-unification fixture one side of a run of two recorded examples takes about 110 ms
 of wall time on an Apple silicon laptop, worktree included. The two calls take under 1.5 ms together.
+
+### Block checks
+
+Runner mode runs the checks of [design.md](design.md#checks) on every merged tree of each combined
+run (`block-checks.ts`). The targets are `main`, which is the checkpoint merged onto main's commit,
+plus each dependent owner's checkpoint merged with the trigger. Each check names a command ID that
+maps to a fixed program in the bridge. No program or argument comes from the repository.
+
+| Check | Command ID | What runs | Fails when |
+|---|---|---|---|
+| Overlap | `git:diff-hunks` | `git diff -U0` from the merge base to each side, per file both sides change, with `--literal-pathspecs` | Both sides change the same hunk of one file |
+| Merge | `git:merge-tree` | `git merge-tree --write-tree` | A path conflicts. Lint, format, type check and tests then report `not-run` |
+| Dependency diff | `analysis:python-dependencies` | `python3 -I python_dependencies.py`, reading Git objects only | A library changed version and the target's scopes import it |
+| Lint | `check:ruff-lint` | `ruff check --output-format json` on the Python files the merge changes | The merged tree has a finding the target's own tree lacks |
+| Format | `check:ruff-format` | `ruff format --check` on the same files | A file would be reformatted that the target's own tree leaves alone |
+| Type check | `check:pyright` | pyright 1.1.414 with `--outputjson` on the whole merged tree | The merged tree has an error the target's own tree lacks |
+| Tests | `test:<scope id>` | The scope's test command (`test-runner.ts`) | The command exits other than 0 |
+
+Lint, format and the type check run twice: once in a throwaway worktree of the merged commit, once
+in one of the target's own commit. A finding counts when the merged tree has it and the target's
+tree does not. The match uses the file, the rule and the message, without the line, since the merge
+can move lines. On identity unification Sam's checkpoint already has one pyright error in
+`messaging/audience.py`. The merged tree has it too, so the check passes with "no new type errors
+(1 already on sam)".
+
+ruff uses the repository's own settings when the merged tree's root holds `ruff.toml`, `.ruff.toml`
+or a `pyproject.toml` with a `[tool.ruff]` table. Otherwise it runs with `--isolated`, so a
+configuration file in the runner's home directory never changes a result. File paths go to ruff
+after `--`, so a file named `-x.py` is read as a path. pyright comes from the `pyright` package that
+`npm install` puts beside the bridge. It resolves imports with the Python on `PATH`, or with
+`--python <path>`.
+
+The type check and the tests run only for targets the impact graph selects. Every other target gets
+`not-affected` for both. Each tool runs with an argument vector, no shell, the scrubbed environment
+above and its own process group. A tool still running after 10 minutes is stopped with its group.
+A test command still running after 30 minutes is stopped the same way. A tool that cannot start, or
+whose output does not parse, gives the result `error`.
+
+Each check is a `BlockCheck` record (`packages/protocol/src/block-check.ts`) with these fields:
+
+| Field | Holds |
+|---|---|
+| `planId` | The merge plan, or null for a combined run |
+| `target`, `check`, `result` | `main` or the owner, the check and `passed`, `failed`, `not-affected`, `not-run` or `error` |
+| `tool` | The program's name, the version it reports and the command ID |
+| `input` | The trigger checkpoint, the target's commit, the merged commit and the files read |
+| `findings`, `findingCount` | The first 20 findings with file, line, rule and message; the total count |
+| `summary` | One line that says what the check found |
+| `fingerprint` | The merged commit, its lockfile hash and the command ID, hashed |
+| `logRef` | `sha256:` of the tool's raw output, which stays on the runner |
+| `durationMs` | Wall time of the check on both trees |
+
+The checks go to Penguin in the combined-run report's `checks` field. Penguin validates each record
+against `BLOCK_CHECK_SCHEMA` and keeps it in the ProjectAgent's `BlockCheck` table by trigger,
+target and check. A later report of the same check on the same target commit replaces the row. Raw
+output never leaves the runner.
+
+To run the checks on local commits:
+
+```sh
+penguin-bridge check --repo <path> --base main --head owner-priya-checkpoint \
+  --checkpoint jun=owner-jun-checkpoint --checkpoint sam=owner-sam-checkpoint \
+  [--main <commit>] [--python <path>] [--ruff <path>] [--yes] [--json]
+```
+
+The command asks before each test run unless `--yes`. It exits 1 when any check fails or errs. On
+the dependency bump it prints, for Ana's checkpoint:
+
+```text
+f4cca7502ccf onto ana@d9bcd7b86ff0 (merged ae12b9e8917a)
+  overlap passed: no file changed in both [git diff, git:diff-hunks, 35 ms]
+  merge passed: merges cleanly [git merge-tree, git:merge-tree, 26 ms]
+  dependencies failed: shared.http changed version; ana imports it in 3 places [python-dependencies, analysis:python-dependencies, 228 ms]
+    shared/http.py vendored shared.http 1.4.0 -> 2.0.0, from vendor.wire_v1 to vendor.wire_v2
+    payments/tests/fake_processor.py:3 imports shared.http (shared.http)
+    payments/tests/test_webhooks.py:4 imports shared.http (shared.http)
+    payments/webhooks.py:4 imports shared.http (shared.http)
+  lint passed: no new lint findings [ruff 0.17.0, check:ruff-lint, 24 ms]
+  format passed: no new files to reformat [ruff 0.17.0, check:ruff-format, 26 ms]
+  typecheck passed: no new type errors [pyright 1.1.414, check:pyright, 2115 ms]
+  tests failed: 1 failing test; the command exited with 1 [test, test:payments, 367 ms]
+    payments/tests/test_webhooks.py fails: test_timed_out_charge_is_charged_once
+```
+
+On the three fixtures one combined run with every check takes 4 to 9 seconds on an Apple silicon
+laptop. pyright takes about 1 to 2.5 seconds of each target.
 
 ### Colour handling
 

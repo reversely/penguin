@@ -4,6 +4,7 @@
 // fingerprint, never a test log or a diff: the evidence a Huddle issue attaches is the failing test
 // result and its fingerprint only (PRD section 14, decision 2).
 
+import { BLOCK_CHECK_LIMITS, checkBlockCheck, type BlockCheck } from "./block-check.ts";
 import {
   COMMAND_ID_PATTERN,
   FINGERPRINT_PATTERN,
@@ -11,7 +12,9 @@ import {
   PERSON_ID_PATTERN,
 } from "./operation-schema.ts";
 
-export const COMBINED_RESULT_STATUSES = ["passed", "failed", "conflict", "no-checkpoint"] as const;
+// `not-affected`: the impact graph shows the owner's checkpoint uses nothing the change touches,
+// so the scope's tests did not run. The result still completes the owner's claimed run.
+export const COMBINED_RESULT_STATUSES = ["passed", "failed", "conflict", "no-checkpoint", "not-affected"] as const;
 export type CombinedResultStatus = (typeof COMBINED_RESULT_STATUSES)[number];
 
 /** Limits that keep one event small enough to hold in one SQL row and one issue body. */
@@ -63,6 +66,8 @@ export interface CombinedRunEvent {
   readonly unmapped: readonly string[];
   /** One result per dependent scope. */
   readonly results: readonly CombinedRunResult[];
+  /** The section 5.1 checks on each merged tree; absent from a runner that ran tests only. */
+  readonly checks?: readonly BlockCheck[];
 }
 
 export interface CombinedRunIssue {
@@ -113,6 +118,8 @@ export function parseCombinedRunEvent(value: unknown): CombinedRunParse {
     });
   }
 
+  const checks = blockChecks(value.checks, report);
+
   if (issues.length > 0) return { ok: false, issues };
   return {
     ok: true,
@@ -121,8 +128,25 @@ export function parseCombinedRunEvent(value: unknown): CombinedRunParse {
       changedScopes,
       unmapped,
       results,
+      ...(value.checks === undefined ? {} : { checks }),
     },
   };
+}
+
+/** Checks the event's `checks`: absent, or an array of block checks. */
+function blockChecks(raw: unknown, report: Report): BlockCheck[] {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw) || raw.length > BLOCK_CHECK_LIMITS.checks) {
+    report("checks", `must be an array of at most ${BLOCK_CHECK_LIMITS.checks} checks`);
+    return [];
+  }
+  const checks: BlockCheck[] = [];
+  raw.forEach((check: unknown, index) => {
+    const [first] = checkBlockCheck(check);
+    if (first === undefined) checks.push(check as BlockCheck);
+    else report(`checks[${index}]${first.path.replaceAll("/", ".")}`, first.message);
+  });
+  return checks;
 }
 
 /** Records one problem with a field of a value from the network. */
@@ -155,6 +179,9 @@ function result(raw: unknown, at: string, report: Report): CombinedRunResult | u
   const tested = status === "passed" || status === "failed";
   if (tested && (fingerprint === null || ownerCheckpoint === null)) {
     fail(at, "a passed or failed result must carry its ownerCheckpoint and fingerprint");
+  }
+  if (status === "not-affected" && (ownerCheckpoint === null || fingerprint !== null)) {
+    fail(at, "a not-affected result carries its ownerCheckpoint and no fingerprint");
   }
   const failingTests = parseFailingTestList(raw.failingTests, `${at}.failingTests`, fail);
   if (status !== "failed" && failingTests.length > 0) fail(`${at}.failingTests`, "only a failed result lists failing tests");

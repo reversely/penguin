@@ -15,7 +15,12 @@
 // same checkpoint twice schedules nothing new. A run carries command IDs (`test:<scope id>`), never
 // shell commands: the runner resolves each ID from the repository's own config.
 
-import { COMMAND_ID_PATTERN, type CombinedRunEvent, type CombinedResultStatus } from "@penguin/protocol";
+import {
+  COMMAND_ID_PATTERN,
+  type BlockCheck,
+  type CombinedRunEvent,
+  type CombinedResultStatus,
+} from "@penguin/protocol";
 import { affectedOwners, type ScopeMap } from "@penguin/scope-map";
 
 import { BASE_BRANCH } from "./base-repo.ts";
@@ -30,6 +35,13 @@ export const COMBINED_RUN_SCHEMA: readonly string[] = [
     owner_id TEXT NOT NULL, owner_checkpoint TEXT NOT NULL, command_ids TEXT NOT NULL, status TEXT NOT NULL,
     claimed_by TEXT, claimed_at INTEGER, completed_at INTEGER, scheduled_at INTEGER NOT NULL,
     UNIQUE (trigger_owner, trigger_sha, owner_id, owner_checkpoint))`,
+  // One row per section 5.1 check on one merged tree of a trigger. A later report of the same check
+  // on the same target commit replaces it.
+  `CREATE TABLE IF NOT EXISTS BlockCheck (
+    trigger_owner TEXT NOT NULL, trigger_sha TEXT NOT NULL, plan_id TEXT, target TEXT NOT NULL,
+    target_commit TEXT NOT NULL, check_name TEXT NOT NULL, command_id TEXT NOT NULL, result TEXT NOT NULL,
+    fingerprint TEXT, log_ref TEXT, record TEXT NOT NULL, recorded_at INTEGER NOT NULL,
+    PRIMARY KEY (trigger_owner, trigger_sha, target, target_commit, check_name, command_id))`,
 ];
 
 /** How long a claimed run stays with its runner before another claim may take it again. */
@@ -44,8 +56,12 @@ export const BASELINE_SEARCH_LIMIT = 1_000;
 /** The most trees one diff reads, so a huge checkpoint cannot hold the agent indefinitely. */
 export const MAX_TREE_READS = 5_000;
 
-/** `scheduled` until a runner claims it, `claimed` until its result is reported, then the result. */
-export type CombinedRunStatus = "scheduled" | "claimed" | "passed" | "failed" | "conflict";
+/**
+ * `scheduled` until a runner claims it, `claimed` until its result is reported, then the result.
+ * `not-affected`: the impact graph showed the owner's checkpoint uses nothing the change touches,
+ * so the runner skipped the owner's tests; the run is complete.
+ */
+export type CombinedRunStatus = "scheduled" | "claimed" | "passed" | "failed" | "conflict" | "not-affected";
 
 export interface CombinedRun {
   readonly runId: string;
@@ -169,9 +185,11 @@ export class CombinedRunStore {
   /**
    * Records the result of each run the event answers: the run for the event's trigger and each
    * result's owner and checkpoint. An owner with several dependent scopes gets the worst of their
-   * results: failed, then conflict, then passed. Returns the runs completed.
+   * results: failed, then conflict, then passed, then not affected. The event's block checks are
+   * recorded with the trigger. Returns the runs completed.
    */
   complete(event: CombinedRunEvent): CombinedRun[] {
+    this.#recordChecks(event);
     const outcomes = new Map<string, { ownerId: string; ownerCheckpoint: string; status: CombinedRunStatus }>();
     for (const result of event.results) {
       const status = runStatus(result.status);
@@ -205,9 +223,51 @@ export class CombinedRunStore {
     }
     return completed;
   }
+
+  /** The block checks recorded for a trigger, by target, then in the order the runner sent them. */
+  checks(ownerId: string, sha: string): BlockCheck[] {
+    return this.#db
+      .exec(
+        `SELECT record FROM BlockCheck WHERE trigger_owner = ? AND trigger_sha = ? ORDER BY target, rowid`,
+        ownerId,
+        sha,
+      )
+      .map((row) => JSON.parse(row["record"] as string) as BlockCheck);
+  }
+
+  #recordChecks(event: CombinedRunEvent): void {
+    const { ownerId, sha } = event.trigger;
+    for (const check of event.checks ?? []) {
+      this.#db.exec(
+        `INSERT OR REPLACE INTO BlockCheck (trigger_owner, trigger_sha, plan_id, target, target_commit, check_name,
+           command_id, result, fingerprint, log_ref, record, recorded_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ownerId,
+        sha,
+        check.planId,
+        check.target,
+        check.input.target,
+        check.check,
+        check.tool.commandId,
+        check.result,
+        check.fingerprint?.id ?? null,
+        check.logRef,
+        JSON.stringify(check),
+        this.#now(),
+      );
+    }
+  }
 }
 
-const SEVERITY: Record<CombinedRunStatus, number> = { scheduled: 0, claimed: 0, passed: 1, conflict: 2, failed: 3 };
+// An owner with one affected and one unaffected scope completes with the affected scope's result.
+const SEVERITY: Record<CombinedRunStatus, number> = {
+  scheduled: 0,
+  claimed: 0,
+  "not-affected": 1,
+  passed: 2,
+  conflict: 3,
+  failed: 4,
+};
 
 function runStatus(status: CombinedResultStatus): CombinedRunStatus | undefined {
   return status === "no-checkpoint" ? undefined : status;

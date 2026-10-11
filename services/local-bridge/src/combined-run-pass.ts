@@ -6,11 +6,13 @@
 // committed at the trigger checkpoint; an ID that does not is refused and never runs. Every step is
 // a local Git or test command plus the claim and the report; nothing calls a model.
 
-import type { CombinedRunEvent } from "@penguin/protocol";
+import { MAIN_TARGET, type CombinedRunEvent } from "@penguin/protocol";
 
+import type { BlockChecker } from "./block-checks.ts";
 import { resolveCommand } from "./command-allowlist.ts";
 import { combinedRunEvent, CombinedRunner, type CombinedResult } from "./combined-run.ts";
 import type { RemoteResolver } from "./git-remote.ts";
+import type { ImpactAnalyzer } from "./impact-analysis.ts";
 import type { ClaimedCombinedRun, CombinedRunReply } from "./penguin-client.ts";
 import { fetchRepoBranches } from "./runner-repo.ts";
 import type { TestRunner } from "./test-runner.ts";
@@ -25,6 +27,10 @@ export interface CombinedPassOptions {
   /** The runner's repository, where checkpoints are merged and tests run in throwaway worktrees. */
   readonly repoPath: string;
   readonly runner: TestRunner;
+  /** Selects the owners whose tests run; an unselected owner's run completes as not affected. */
+  readonly impact?: ImpactAnalyzer;
+  /** Runs the section 5.1 checks on each merged tree; their results go out with the report. */
+  readonly checks?: BlockChecker;
 }
 
 export interface RefusedCommand {
@@ -40,6 +46,13 @@ export interface CombinedBatchResult {
   /** Command IDs that did not resolve in the repository config; none of them ran. */
   readonly refused: readonly RefusedCommand[];
   readonly results: readonly { readonly ownerId: string; readonly scopeId: string; readonly status: string }[];
+  /** The block checks that failed or could not run, by target. */
+  readonly failedChecks: readonly {
+    readonly target: string;
+    readonly check: string;
+    readonly result: string;
+    readonly summary: string;
+  }[];
   /** Penguin's answer to the report, or null when nothing was reported. */
   readonly reply: CombinedRunReply | null;
   /** Why the batch stopped; its runs stay claimed until their lease runs out and are then run again. */
@@ -97,21 +110,27 @@ async function runBatch(options: CombinedPassOptions, runs: readonly ClaimedComb
       latestCheckpoints[run.ownerId] = run.ownerCheckpoint;
       commandIds.push(...allowed);
     }
-    if (commandIds.length === 0) return { ...base, refused, results: [], reply: null, error: null };
+    if (commandIds.length === 0) return { ...base, refused, results: [], failedChecks: [], reply: null, error: null };
 
-    const report = await new CombinedRunner({ repoPath: options.repoPath, runner: options.runner }).run({
+    const { repoPath, runner, impact, checks: checker } = options;
+    const report = await new CombinedRunner({ repoPath, runner, impact, checks: checker }).run({
       checkpointSha: trigger.sha,
       baselineSha: trigger.baselineSha,
       latestCheckpoints,
       commandIds,
     });
     // Only the claimed owners' results: another dependent owner has a run of their own, or none.
-    const results = report.results.filter((result: CombinedResult) => Object.hasOwn(latestCheckpoints, result.ownerId));
-    const reply = await options.report(combinedRunEvent({ ...report, results }, trigger.ownerId));
+    const claimed = (ownerId: string) => Object.hasOwn(latestCheckpoints, ownerId);
+    const results = report.results.filter((result: CombinedResult) => claimed(result.ownerId));
+    const checks = report.checks?.filter((check) => check.target === MAIN_TARGET || claimed(check.target));
+    const reply = await options.report(combinedRunEvent({ ...report, results, checks }, trigger.ownerId));
     const summary = results.map(({ ownerId, scopeId, status }) => ({ ownerId, scopeId, status }));
-    return { ...base, refused, results: summary, reply, error: null };
+    const failedChecks = (checks ?? [])
+      .filter((check) => check.result === "failed" || check.result === "error")
+      .map(({ target, check, result, summary: text }) => ({ target, check, result, summary: text }));
+    return { ...base, refused, results: summary, failedChecks, reply, error: null };
   } catch (error) {
-    return { ...base, refused, results: [], reply: null, error: (error as Error).message };
+    return { ...base, refused, results: [], failedChecks: [], reply: null, error: (error as Error).message };
   }
 }
 
@@ -147,6 +166,9 @@ export function formatCombinedPass(result: CombinedPassResult): string {
     const reply = batch.reply === null ? "not reported" : `Penguin: ${batch.reply.status}`;
     const issue = batch.reply?.issueId === undefined ? "" : ` #${batch.reply.issueId}`;
     lines.push(`Combined run of ${trigger}: ${results || "nothing ran"} (${reply}${issue}).`);
+    for (const check of batch.failedChecks) {
+      lines.push(`  ${check.check} on ${check.target} ${check.result}: ${check.summary}`);
+    }
   }
   lines.push(`${result.claimed} combined run${result.claimed === 1 ? "" : "s"} claimed (${result.durationMs} ms).`);
   return `${lines.join("\n")}\n`;

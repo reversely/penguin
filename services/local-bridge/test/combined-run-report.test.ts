@@ -31,6 +31,7 @@ const REPORT: CombinedRunReport = {
       signal: null,
       failingTests: [{ nodeId: "analytics/tests/test_retention.py::test_dau_stable", testId: "test_retention::dau_stable" }],
       log: "FAILED analytics/tests/test_retention.py::test_dau_stable - assert 1 == 2",
+      durationMs: 0,
     },
     { ownerId: "sam", scopeId: "messaging", commandId: "test:messaging", status: "conflict", ownerCheckpoint: sha("9"), conflictedPaths: ["x"] },
     { ownerId: "lee", scopeId: "billing", commandId: "test:billing", status: "no-checkpoint" },

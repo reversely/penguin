@@ -14,5 +14,8 @@
     "@penguin/issues": "0.0.0",
     "@penguin/protocol": "0.0.0",
     "@penguin/scope-map": "0.0.0"
+  },
+  "devDependencies": {
+    "pyright": "1.1.414"
   }
 }

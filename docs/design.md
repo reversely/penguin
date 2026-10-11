@@ -208,6 +208,37 @@ report lists `start_of_day()` as modified with an unchanged signature. It lists 
 identity unification it lists the `Profile` field change and the new required `identity` parameter
 of `Profile.set`. It lists every analytics and messaging file that imports the identity map.
 
+#### The checks on merged trees
+
+The check runner merges the originating checkpoint onto main and onto each affected owner's
+checkpoint. It runs every check in the table above on each merged tree, except the contract diff,
+which comes from the impact report. Overlap, merge and the dependency diff read Git objects. Lint
+and format run ruff (T18). The type check runs pyright 1.1.414 (T19). Tests run each affected
+scope's own test command. The type check and the tests run only for the targets the impact graph
+selects. An owner left out gets a `not-affected` result, which completes that owner's run.
+[bridge-and-runner.md](bridge-and-runner.md#block-checks) describes each command and its limits.
+
+Lint, format and type findings count only when the merged tree has them and the target's own tree
+does not. A finding already on the target before the merge never fails the block. The dependency
+diff reads versions from `pyproject.toml`, `requirements*.txt`, `uv.lock` and vendored modules that
+state `__version__`. It fails a target whose scopes import a library that changed version. In the
+dependency bump, `shared/http.py` re-exports `__version__` from `vendor/wire_v2` in place of
+`vendor/wire_v1`. The dependency diff therefore reports `shared.http` 1.4.0 to 2.0.0 with the three
+places Ana's payments scope imports it.
+
+Each result is a `BlockCheck` record: the target, the check, the result, the tool with its version
+and command ID, the commits it read, its findings with file and line, a fingerprint, a reference to
+the raw output kept on the runner and the wall time. The runner sends the records with the combined
+run's report. The ProjectAgent keeps them by trigger checkpoint for the feature page.
+
+On the three fixtures:
+
+| Fixture | What the checks find |
+|---|---|
+| Identity unification | Tests fail for Jun (two tests) and Sam (one test). The type check passes on both: no caller outside Priya's file calls `Profile.set`. Sam's one existing pyright error is already on Sam's checkpoint. Lint fails on every target with ruff's `I001` in Priya's `ingestion/tests/test_identity_map.py`, whose imports ruff sorts differently from the repository root |
+| Helpful fix | Tests fail for Jun and Sam, one test each. Lint fails with `I001` in Priya's `shared/tests/test_dates.py` |
+| Dependency bump | The dependency diff fails for Ana and for main. Ana's payment test fails |
+
 ### Tools for agents
 
 Agents call these tools through MCP. Each tool answers with facts or applies one deterministic change.

@@ -156,7 +156,7 @@ describe("on a scratch repository", () => {
     repo = await createFixtureRepo();
     scratch = await newScratch();
     await mkdir(join(repo.main, "penguin"));
-    await repo.write(repo.main, "penguin/scopes.json", scopesJson({ app: "echo first", env: "env", fails: "exit 3" }));
+    await repo.write(repo.main, "penguin/scopes.json", scopesJson({ app: "echo first", env: "env", fails: "exit 3", hangs: "sleep 30 & sleep 30" }));
     first = await repo.commitAll(repo.main, "config one");
     await repo.write(repo.main, "penguin/scopes.json", scopesJson({ app: "echo second" }));
     second = await repo.commitAll(repo.main, "config two");
@@ -199,6 +199,18 @@ describe("on a scratch repository", () => {
     assert.doesNotMatch(log, /secret/);
     const leaked = Object.values(childEnvironment(env)).filter((value) => value?.endsWith("-secret"));
     assert.deepEqual(leaked, []);
+  });
+
+  test("a command that hangs is stopped at the timeout with every process it started", async () => {
+    const started = performance.now();
+    const result = await new TestRunner({ repoPath: repo.main, scratchDir: scratch, consent: () => true, timeoutMs: 300 }).run({
+      commandId: "test:hangs",
+      sha: first,
+    });
+    assert.equal(result.signal, "SIGKILL");
+    assert.match(result.log, /Stopped after 300 ms/);
+    assert.ok(performance.now() - started < 10_000);
+    assert.deepEqual(await readdir(scratch), []);
   });
 
   test("the child environment turns colour off", () => {

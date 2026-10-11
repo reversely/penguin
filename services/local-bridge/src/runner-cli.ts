@@ -12,9 +12,12 @@ import { runGit } from "@penguin/git-analysis";
 import { RUNNER_INTERVAL_MS } from "@penguin/protocol";
 
 import { approvalPass, ApprovedBranchWriter, formatApprovalPass, type ApprovalPassResult } from "./approval-run.ts";
+import { BlockChecker, pythonDependencyAnalyzer } from "./block-checks.ts";
+import { checkTools } from "./check-tools.ts";
 import type { CliIo } from "./cli.ts";
 import { combinedRunPass, forkFetcher, formatCombinedPass, type CombinedPassResult } from "./combined-run-pass.ts";
 import { penguinRemote } from "./git-remote.ts";
+import { pythonImpactAnalyzer } from "./impact-analysis.ts";
 import { defaultClonePath } from "./issue-cli.ts";
 import { IssuesClone } from "./issues-clone.ts";
 import type { KeyStore } from "./key-store.ts";
@@ -42,13 +45,16 @@ import {
 } from "./verification-run.ts";
 
 export const RUNNER_USAGE = `       penguin-bridge runner [--once] [--interval <ms>] [--branch <name>] [--state-dir <dir>]
-                      [--combined] [--repo <path>]
+                      [--combined] [--repo <path>] [--python <path>] [--ruff <path>]
          --combined or --repo also runs Penguin's test jobs in the repository at <path> (default
          <state-dir>/combined): the combined runs it schedules on checkpoints and the Huddle
          verification runs. Each fetches checkpoints there and runs the allowlisted tests in
          throwaway worktrees; verification pushes the Huddle repo's integration branch, and an
          approved Huddle has its approved branch pushed there too. Passing either option is the
-         runner operator's consent to those runs and pushes.
+         runner operator's consent to those runs and pushes. Each combined run also runs the
+         section 5.1 checks on every merged tree: the impact graph and dependency diff with
+         <python> (default python3), lint and format with <ruff> (default ruff on PATH) and the
+         type check with the pyright package installed beside the bridge.
 `;
 
 /** One pass of the test jobs: each job's result, or why it did not run. */
@@ -78,6 +84,8 @@ export async function runRunnerCommand(
       "state-dir": { type: "string" },
       combined: { type: "boolean", default: false },
       repo: { type: "string" },
+      python: { type: "string" },
+      ruff: { type: "string" },
     },
     strict: true,
   });
@@ -111,7 +119,10 @@ export async function runRunnerCommand(
 
   const testJobs =
     values.combined || values.repo !== undefined
-      ? await testJobsPass(registration, bridgeToken, values.repo ?? join(stateDir, "combined"), stateDir, keyStore, fetchImpl)
+      ? await testJobsPass(registration, bridgeToken, values.repo ?? join(stateDir, "combined"), stateDir, keyStore, fetchImpl, {
+          python: values.python,
+          ruff: values.ruff,
+        })
       : undefined;
 
   if (values.once) {
@@ -176,6 +187,7 @@ async function testJobsPass(
   stateDir: string,
   keyStore: KeyStore,
   fetchImpl: Fetch | undefined,
+  programs: { readonly python?: string; readonly ruff?: string },
 ): Promise<() => Promise<TestJobsResult>> {
   const repo = resolve(repoPath);
   if (!existsSync(repo)) {
@@ -184,6 +196,12 @@ async function testJobsPass(
   }
   const { server } = registration;
   const runner = new TestRunner({ repoPath: repo, consent: () => true });
+  const impact = pythonImpactAnalyzer({ repoPath: repo, python: programs.python });
+  const checks = new BlockChecker({
+    repoPath: repo,
+    tools: checkTools({ ruff: programs.ruff }),
+    dependencies: pythonDependencyAnalyzer({ repoPath: repo, python: programs.python }),
+  });
   const readRemotes = bridgeRemotes(stateDir, keyStore, fetchImpl, "read");
   const writeRemotes = bridgeRemotes(stateDir, keyStore, fetchImpl, "write");
   const verifier = new VerificationRunner({ repoPath: repo, runner, readRemotes, writeRemotes });
@@ -197,6 +215,8 @@ async function testJobsPass(
         fetchForks: forkFetcher(readRemotes, repo),
         repoPath: repo,
         runner,
+        impact,
+        checks,
       }),
     ),
     verification: await settle(() =>

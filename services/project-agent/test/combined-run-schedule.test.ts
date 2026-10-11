@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 
-import type { CombinedRunEvent } from "@penguin/protocol";
+import type { BlockCheck, CombinedRunEvent } from "@penguin/protocol";
 
 import { changedPaths, CombinedRunStore } from "../src/combined-run-schedule.ts";
 import { gitHistory, HuddleProject } from "./huddle-project.ts";
@@ -219,6 +219,79 @@ describe("claiming and completing runs", () => {
       results: [result("jun", "analytics", ownerCheckpoint, "passed"), result("jun", "reports", ownerCheckpoint, "failed")],
     });
     assert.deepEqual(completed.map((run) => run.status), ["failed"]);
+  });
+
+  test("a not-affected result completes the owner's claimed run, and the block checks are kept", async () => {
+    const project = await scheduled();
+    project.runs.claim({ bridgeId: "bridge-runner", role: "runner" });
+    const notAffected = {
+      ownerId: "sam",
+      scopeId: "messaging",
+      commandId: "test:messaging",
+      status: "not-affected" as const,
+      ownerCheckpoint: checkpoint("sam"),
+      fingerprint: null,
+      failingTests: [],
+    };
+    const typecheck: BlockCheck = {
+      planId: null,
+      target: "sam",
+      check: "typecheck",
+      result: "not-affected",
+      tool: { name: "pyright", version: null, commandId: "check:pyright" },
+      input: { origin: checkpoint("priya"), target: checkpoint("sam"), merged: "d".repeat(40), paths: null },
+      findings: [],
+      findingCount: 0,
+      summary: "the impact graph shows no use of the change",
+      fingerprint: null,
+      logRef: null,
+      durationMs: 0,
+    };
+    const dependencies: BlockCheck = {
+      ...typecheck,
+      target: "jun",
+      check: "dependencies",
+      result: "failed",
+      tool: { name: "python-dependencies", version: null, commandId: "analysis:python-dependencies" },
+      input: { ...typecheck.input, target: checkpoint("jun") },
+      findings: [{ path: "requirements.txt", line: null, code: "requirements", message: "wire 1.4.0 -> 2.0.0" }],
+      findingCount: 1,
+      summary: "wire changed version; jun imports it in 1 place",
+    };
+    const outcome = await project.open({
+      trigger: { ownerId: "priya", sha: checkpoint("priya"), baselineSha: main },
+      changedScopes: ["identity-map"],
+      unmapped: [],
+      results: [result("jun", "analytics", checkpoint("jun"), "passed"), notAffected],
+      checks: [typecheck, dependencies],
+    });
+    assert.equal(outcome.status, "no_failures");
+    assert.deepEqual(
+      project.runs.byTrigger("priya", checkpoint("priya")).map((run) => [run.ownerId, run.status]),
+      [
+        ["jun", "passed"],
+        ["sam", "not-affected"],
+      ],
+    );
+    const claim = project.runs.claim({ bridgeId: "bridge-runner", role: "runner" });
+    assert.deepEqual(claim.status === "ok" ? claim.runs : undefined, []);
+    assert.deepEqual(project.runs.checks("priya", checkpoint("priya")), [dependencies, typecheck]);
+
+    // An affected scope's result outranks an unaffected scope of the same owner.
+    const runs = new CombinedRunStore(sqlite().sql);
+    const trigger = { ownerId: "priya", sha: "a".repeat(40), baselineSha: "b".repeat(40) };
+    const ownerCheckpoint = "c".repeat(40);
+    runs.schedule({ trigger, ownerId: "jun", ownerCheckpoint, commandIds: ["test:analytics", "test:reports"] });
+    const completed = runs.complete({
+      trigger,
+      changedScopes: ["identity-map"],
+      unmapped: [],
+      results: [
+        { ...notAffected, ownerId: "jun", scopeId: "reports", commandId: "test:reports", ownerCheckpoint },
+        result("jun", "analytics", ownerCheckpoint, "passed"),
+      ],
+    });
+    assert.deepEqual(completed.map((run) => run.status), ["passed"]);
   });
 
   test("scheduling, claiming and completing make no network call, so no model call", async () => {

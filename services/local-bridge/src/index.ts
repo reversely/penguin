@@ -9,7 +9,13 @@ export {
   UnknownCommandError,
 } from "./command-allowlist.ts";
 export type { AnalysisCommand, ResolvedCommand } from "./command-allowlist.ts";
-export { formatImpactReport, ImpactAnalysisError, pythonImpactAnalyzer } from "./impact-analysis.ts";
+export {
+  AnalysisError,
+  formatImpactReport,
+  ImpactAnalysisError,
+  pythonImpactAnalyzer,
+  runPythonAnalysis,
+} from "./impact-analysis.ts";
 export type { ImpactAnalyzer, ImpactForkRequest, ImpactRequest, PythonImpactOptions } from "./impact-analysis.ts";
 export { loadReviewConfig, readCommittedFile, runSideBySide, SideBySideError } from "./side-by-side.ts";
 export type { SideBySideOptions, SideBySideRequest } from "./side-by-side.ts";
@@ -136,7 +142,29 @@ export {
 } from "./key-store.ts";
 export type { BridgeSigningKey, KeyStore } from "./key-store.ts";
 export { hashPath, worktreeId, WorktreeRegistry } from "./registry.ts";
-export { combinedRunEvent, CombinedRunner, parseFailingTests } from "./combined-run.ts";
+export { combinedRunEvent, CombinedRunner, parseFailingTests, testChecks } from "./combined-run.ts";
+export {
+  BlockChecker,
+  formatBlockChecks,
+  pythonDependencyAnalyzer,
+  type BlockCheckerOptions,
+  type BlockCheckRequest,
+  type BlockCheckRun,
+  type BlockTarget,
+  type DependencyAnalyzer,
+  type TargetMerge,
+} from "./block-checks.ts";
+export {
+  checkTools,
+  defaultRuff,
+  installedPyright,
+  newFindings,
+  parseFormatCheck,
+  runProgram,
+  type CheckToolOptions,
+  type CheckTools,
+  type ToolRun,
+} from "./check-tools.ts";
 export { batchRuns, combinedRunPass, forkFetcher, formatCombinedPass } from "./combined-run-pass.ts";
 export type {
   CombinedBatchResult,
@@ -152,6 +180,7 @@ export type {
   ConflictResult,
   FailingTest,
   MissingCheckpointResult,
+  NotAffectedResult,
   TestedResult,
 } from "./combined-run.ts";
 export { fingerprint, LOCKFILE_NAMES, lockfileHash } from "./fingerprint.ts";
@@ -171,7 +200,13 @@ export type {
 } from "./verification-run.ts";
 export type { ResultFingerprint } from "./fingerprint.ts";
 export type { WorktreeRecord, WorktreeRegistryOptions } from "./registry.ts";
-export { childEnvironment, ConsentRefusedError, TestRunner } from "./test-runner.ts";
+export {
+  childEnvironment,
+  ConsentRefusedError,
+  DEFAULT_TIMEOUT_MS,
+  inDetachedWorktree,
+  TestRunner,
+} from "./test-runner.ts";
 export type {
   ConsentPrompt,
   ConsentRequest,

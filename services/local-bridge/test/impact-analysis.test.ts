@@ -90,9 +90,13 @@ describe("on the helpful-fix fixture", () => {
     });
     assert.equal(report.impactError, null);
     assert.deepEqual(report.notAffected, scopesOf("sam"));
+    // Sam's run still completes: merged, not tested, reported as not affected.
     assert.deepEqual(
       report.results.map((result) => [result.ownerId, result.status]),
-      [["jun", "failed"]],
+      [
+        ["jun", "failed"],
+        ["sam", "not-affected"],
+      ],
     );
     assert.deepEqual(report.impact?.forks.map((fork) => fork.id), ["jun", "sam"]);
   });

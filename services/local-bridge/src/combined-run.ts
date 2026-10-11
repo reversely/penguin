@@ -1,9 +1,19 @@
+import { createHash } from "node:crypto";
 import { basename } from "node:path";
 
 import { changedPathsBetween, commitMergedTree, isObjectId, simulateMerge } from "@penguin/git-analysis";
-import { selectAffectedForks, type CombinedRunEvent, type ImpactReport } from "@penguin/protocol";
+import {
+  BLOCK_CHECK_LIMITS,
+  MAIN_TARGET,
+  selectAffectedForks,
+  type BlockCheck,
+  type CombinedRunEvent,
+  type DependencyReport,
+  type ImpactReport,
+} from "@penguin/protocol";
 import { affectedOwners } from "@penguin/scope-map";
 
+import type { BlockChecker, BlockTarget } from "./block-checks.ts";
 import { loadScopeMap, testCommandId } from "./command-allowlist.ts";
 import { fingerprint, type ResultFingerprint } from "./fingerprint.ts";
 import type { ImpactAnalyzer } from "./impact-analysis.ts";
@@ -21,6 +31,11 @@ export interface CombinedRunRequest {
    * them. A scheduled run names the commands Penguin asked for this way.
    */
   readonly commandIds?: readonly string[];
+  /**
+   * Main's commit, the `main` target of the block checks. Defaults to the baseline. Used only when
+   * the runner has a block checker.
+   */
+  readonly mainSha?: string;
 }
 
 /** One failed test from the runner's log. */
@@ -49,6 +64,18 @@ export interface TestedResult extends DependentTarget {
   /** Tests the log names as failed; empty for a pass or for a runner whose log has no pytest summary. */
   readonly failingTests: readonly FailingTest[];
   readonly log: string;
+  /** Wall time of the test run, from adding its worktree to removing it. */
+  readonly durationMs: number;
+}
+
+/**
+ * The merge was clean but the impact graph shows the owner's checkpoint uses nothing the change
+ * touches, so the scope's tests did not run. It completes the owner's claimed run.
+ */
+export interface NotAffectedResult extends DependentTarget {
+  readonly status: "not-affected";
+  readonly ownerCheckpoint: string;
+  readonly mergedCommit: string;
 }
 
 /** The merge conflicted, so no tests ran. A conflict is never reported as a pass. */
@@ -63,7 +90,7 @@ export interface MissingCheckpointResult extends DependentTarget {
   readonly status: "no-checkpoint";
 }
 
-export type CombinedResult = TestedResult | ConflictResult | MissingCheckpointResult;
+export type CombinedResult = TestedResult | ConflictResult | MissingCheckpointResult | NotAffectedResult;
 
 export interface CombinedRunReport {
   readonly checkpointSha: string;
@@ -83,6 +110,17 @@ export interface CombinedRunReport {
   readonly impactError?: string | null;
   /** Dependent scopes the impact graph marks as unaffected; their tests did not run. */
   readonly notAffected?: readonly string[];
+  /**
+   * The section 5.1 checks on `main` and on each dependent owner's merged tree, with the tests'
+   * results as `tests` checks; absent when the runner has no block checker.
+   */
+  readonly checks?: readonly BlockCheck[];
+  /** Each check tool's raw output, by the `logRef` its check names. */
+  readonly checkLogs?: ReadonlyMap<string, string>;
+  /** The dependency diff the checks used, or null when it failed. */
+  readonly dependencies?: DependencyReport | null;
+  /** Wall time of the whole run: analysis, merges, checks and tests. */
+  readonly durationMs?: number;
 }
 
 export interface CombinedRunnerOptions {
@@ -95,6 +133,11 @@ export interface CombinedRunnerOptions {
    * checkpoint imports, calls or references a changed symbol in a dependent scope.
    */
   impact?: ImpactAnalyzer;
+  /**
+   * When given, the section 5.1 checks run on `main` and on each dependent owner's merged tree; the
+   * type check only on the owners the impact graph selects.
+   */
+  checks?: BlockChecker;
 }
 
 // pytest's short test summary (on by default through `-r fE`) names each failure on a line of
@@ -131,14 +174,67 @@ export function combinedRunEvent(report: CombinedRunReport, triggerOwner: string
       if (result.status === "no-checkpoint") {
         return { ...target, status: result.status, ownerCheckpoint: null, fingerprint: null, failingTests: [] };
       }
-      if (result.status === "conflict") {
+      if (result.status === "conflict" || result.status === "not-affected") {
         const { ownerCheckpoint } = result;
         return { ...target, status: result.status, ownerCheckpoint, fingerprint: null, failingTests: [] };
       }
       const { status, ownerCheckpoint, fingerprint, failingTests } = result;
       return { ...target, status, ownerCheckpoint, fingerprint: { ...fingerprint }, failingTests };
     }),
+    ...(report.checks === undefined ? {} : { checks: report.checks.slice(0, BLOCK_CHECK_LIMITS.checks) }),
   };
+}
+
+/** One `tests` check per dependent scope with a checkpoint, from the combined run's results. */
+export function testChecks(results: readonly CombinedResult[], origin: string): BlockCheck[] {
+  const checks: BlockCheck[] = [];
+  for (const result of results) {
+    if (result.status === "no-checkpoint") continue;
+    const base = {
+      planId: null,
+      target: result.ownerId,
+      check: "tests" as const,
+      tool: { name: "test", version: null, commandId: result.commandId },
+      input: {
+        origin,
+        target: result.ownerCheckpoint,
+        merged: result.status === "conflict" ? null : result.mergedCommit,
+        paths: null,
+      },
+      fingerprint: null,
+      logRef: null,
+      durationMs: 0,
+    };
+    if (result.status === "conflict") {
+      checks.push({ ...base, result: "not-run", findings: [], findingCount: 0, summary: "the merge conflicts" });
+    } else if (result.status === "not-affected") {
+      const summary = "the impact graph shows no use of the change";
+      checks.push({ ...base, result: "not-affected", findings: [], findingCount: 0, summary });
+    } else {
+      const findings = result.failingTests.map((test) => {
+        const separator = test.nodeId.indexOf("::");
+        return {
+          path: separator > 0 ? test.nodeId.slice(0, separator).slice(0, BLOCK_CHECK_LIMITS.pathLength) : null,
+          line: null,
+          code: null,
+          message: `fails: ${test.nodeId.slice(separator + 2)}`.slice(0, BLOCK_CHECK_LIMITS.messageLength),
+        };
+      });
+      const ended = result.exitCode === null ? `ended by ${result.signal}` : `exited with ${result.exitCode}`;
+      const failed = result.failingTests.length;
+      checks.push({
+        ...base,
+        result: result.status,
+        findings: findings.slice(0, BLOCK_CHECK_LIMITS.findingsPerCheck),
+        findingCount: findings.length,
+        summary: result.status === "passed" ? "tests pass" : `${failed} failing test${failed === 1 ? "" : "s"}; the command ${ended}`,
+        fingerprint: { ...result.fingerprint },
+        logRef: `sha256:${createHash("sha256").update(result.log).digest("hex")}`,
+        durationMs: Math.round(result.durationMs),
+      });
+    }
+  }
+  return checks;
 }
 
 /**
@@ -180,20 +276,18 @@ export class CombinedRunner {
       }
       targets.push({ ownerId, scopeId, commandId, ownerCheckpoint });
     }
+    const started = performance.now();
     const { impact, impactError, selected } = await this.#impact(baselineSha, checkpointSha, targets);
 
     const results: CombinedResult[] = [];
     const notAffected: string[] = [];
     // An owner with several dependent scopes is merged once; the merged commit serves each scope.
+    // An unaffected owner is merged too: a conflict is a fact whatever the impact graph says.
     const merges = new Map<string, MergeOutcome>();
     for (const { ownerCheckpoint, ...target } of targets) {
       const { ownerId } = target;
       if (ownerCheckpoint === undefined) {
         results.push({ ...target, status: "no-checkpoint" });
-        continue;
-      }
-      if (selected !== undefined && !selected.has(ownerId)) {
-        notAffected.push(target.scopeId);
         continue;
       }
       const merge = merges.get(ownerId) ?? (await this.#merge(checkpointSha, ownerCheckpoint));
@@ -202,9 +296,14 @@ export class CombinedRunner {
         results.push({ ...target, status: "conflict", ownerCheckpoint, conflictedPaths: merge.conflictedPaths });
         continue;
       }
+      if (selected !== undefined && !selected.has(ownerId)) {
+        notAffected.push(target.scopeId);
+        results.push({ ...target, status: "not-affected", ownerCheckpoint, mergedCommit: merge.commit });
+        continue;
+      }
       results.push(await this.#test(target, ownerCheckpoint, merge));
     }
-    return {
+    const report = {
       checkpointSha,
       baselineSha,
       changedScopes: affected.changedScopes,
@@ -214,6 +313,34 @@ export class CombinedRunner {
       impactError,
       notAffected,
     };
+    const checker = this.#options.checks;
+    if (checker === undefined) return { ...report, durationMs: Math.round(performance.now() - started) };
+
+    const mainSha = request.mainSha ?? baselineSha;
+    if (!isObjectId(mainSha)) throw new Error(`main must be a full object ID, got ${JSON.stringify(mainSha)}`);
+    const blockTargets: BlockTarget[] = [
+      { id: MAIN_TARGET, commit: mainSha, scopes: [], affected: true, ...(await this.#timedMerge(checkpointSha, mainSha)) },
+    ];
+    for (const [ownerId, merge] of merges) {
+      const owned = targets.filter((target) => target.ownerId === ownerId);
+      const commit = owned[0]?.ownerCheckpoint as string;
+      const scopes = owned.map((target) => target.scopeId);
+      const affectedOwner = selected === undefined || selected.has(ownerId);
+      blockTargets.push({ id: ownerId, commit, scopes, affected: affectedOwner, merge: mergeOf(merge), mergeMs: merge.ms });
+    }
+    const block = await checker.check({ planId: null, origin: checkpointSha, baseline: baselineSha, targets: blockTargets });
+    return {
+      ...report,
+      checks: [...block.checks, ...testChecks(results, checkpointSha)],
+      checkLogs: block.logs,
+      dependencies: block.dependencies,
+      durationMs: Math.round(performance.now() - started),
+    };
+  }
+
+  async #timedMerge(checkpointSha: string, other: string): Promise<Pick<BlockTarget, "merge" | "mergeMs">> {
+    const merge = await this.#merge(checkpointSha, other);
+    return { merge: mergeOf(merge), mergeMs: merge.ms };
   }
 
   /**
@@ -246,14 +373,18 @@ export class CombinedRunner {
 
   async #merge(checkpointSha: string, ownerCheckpoint: string): Promise<MergeOutcome> {
     const { repoPath } = this.#options;
+    const started = performance.now();
     const merge = await simulateMerge(repoPath, checkpointSha, ownerCheckpoint);
-    if (merge.kind === "conflict") return merge;
+    if (merge.kind === "conflict") {
+      return { kind: "conflict", conflictedPaths: merge.conflictedPaths, ms: performance.now() - started };
+    }
     const commit = await commitMergedTree(repoPath, merge.tree, [checkpointSha, ownerCheckpoint]);
-    return { kind: "clean", tree: merge.tree, commit };
+    return { kind: "clean", tree: merge.tree, commit, ms: performance.now() - started };
   }
 
   async #test(target: DependentTarget, ownerCheckpoint: string, merge: CleanOutcome): Promise<TestedResult> {
     const { repoPath, runner } = this.#options;
+    const started = performance.now();
     const outcome = await runner.run({ commandId: target.commandId, sha: merge.commit });
     const passed = outcome.exitCode === 0 && outcome.signal === null;
     return {
@@ -267,6 +398,7 @@ export class CombinedRunner {
       signal: outcome.signal,
       failingTests: passed ? [] : parseFailingTests(outcome.log),
       log: outcome.log,
+      durationMs: performance.now() - started,
     };
   }
 }
@@ -275,6 +407,15 @@ interface CleanOutcome {
   readonly kind: "clean";
   readonly tree: string;
   readonly commit: string;
+  readonly ms: number;
 }
 
-type MergeOutcome = CleanOutcome | { readonly kind: "conflict"; readonly conflictedPaths: readonly string[] };
+type MergeOutcome =
+  | CleanOutcome
+  | { readonly kind: "conflict"; readonly conflictedPaths: readonly string[]; readonly ms: number };
+
+function mergeOf(merge: MergeOutcome): BlockTarget["merge"] {
+  return merge.kind === "conflict"
+    ? { kind: "conflict", conflictedPaths: merge.conflictedPaths }
+    : { kind: "clean", tree: merge.tree, commit: merge.commit };
+}

@@ -30,6 +30,8 @@ export interface TestRunnerOptions {
   env?: NodeJS.ProcessEnv;
   /** Directory that holds the temporary worktrees. Defaults to the OS temp directory. */
   scratchDir?: string;
+  /** A command still running after this long is stopped with its process group. Defaults to 30 minutes. */
+  timeoutMs?: number;
 }
 
 export interface TestRunResult extends ResolvedCommand {
@@ -91,41 +93,55 @@ export class TestRunner {
       throw new ConsentRefusedError(resolved.commandId);
     }
 
-    const dir = await realpath(await mkdtemp(join(scratchDir, "penguin-run-")));
-    const worktree = join(dir, "tree");
-    const started = performance.now();
-    let created = started;
-    let finished = started;
-    let added = false;
-    let outcome: ShellOutcome;
-    try {
-      // Hooks off: a post-checkout hook would run code that is not an allowlisted command.
-      await runGit(repoPath, [
-        "-c",
-        "core.hooksPath=/dev/null",
-        "worktree",
-        "add",
-        "--detach",
-        "--quiet",
-        worktree,
-        resolved.sha,
-      ]);
-      added = true;
-      created = performance.now();
-      outcome = await runShell(resolved.command, worktree, childEnvironment(env));
-    } finally {
-      finished = performance.now();
-      // --force: the command may leave untracked files (caches, reports) in the worktree.
-      if (added) await runGit(repoPath, ["worktree", "remove", "--force", worktree]);
-      await rm(dir, { recursive: true, force: true });
-    }
-    const timings = {
-      createMs: created - started,
-      runMs: finished - created,
-      removeMs: performance.now() - finished,
-    };
+    const timeoutMs = this.#options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const { value: outcome, timings } = await inDetachedWorktree(repoPath, resolved.sha, scratchDir, (worktree) =>
+      runShell(resolved.command, worktree, childEnvironment(env), timeoutMs),
+    );
     return { ...resolved, ...outcome, timings };
   }
+}
+
+/** How long one command may run before it is stopped: 30 minutes. */
+export const DEFAULT_TIMEOUT_MS = 30 * 60_000;
+
+export interface WorktreeTimings {
+  readonly createMs: number;
+  readonly runMs: number;
+  readonly removeMs: number;
+}
+
+/**
+ * Adds a detached worktree at `sha` in a new temporary directory under `scratchDir`, runs `body` in
+ * it and removes it, so no worktree of the owner's is read from or written to. Git hooks are off
+ * while the worktree is added: a post-checkout hook would run code that is not an allowlisted
+ * command.
+ */
+export async function inDetachedWorktree<T>(
+  repoPath: string,
+  sha: string,
+  scratchDir: string,
+  body: (worktree: string) => Promise<T>,
+): Promise<{ value: T; timings: WorktreeTimings }> {
+  const dir = await realpath(await mkdtemp(join(scratchDir, "penguin-run-")));
+  const worktree = join(dir, "tree");
+  const started = performance.now();
+  let created = started;
+  let finished = started;
+  let added = false;
+  let value: T;
+  try {
+    await runGit(repoPath, ["-c", "core.hooksPath=/dev/null", "worktree", "add", "--detach", "--quiet", worktree, sha]);
+    added = true;
+    created = performance.now();
+    value = await body(worktree);
+  } finally {
+    finished = performance.now();
+    // --force: the command may leave untracked files (caches, reports) in the worktree.
+    if (added) await runGit(repoPath, ["worktree", "remove", "--force", worktree]);
+    await rm(dir, { recursive: true, force: true });
+  }
+  const timings = { createMs: created - started, runMs: finished - created, removeMs: performance.now() - finished };
+  return { value, timings };
 }
 
 interface ShellOutcome {
@@ -134,15 +150,36 @@ interface ShellOutcome {
   log: string;
 }
 
-function runShell(command: string, cwd: string, env: NodeJS.ProcessEnv): Promise<ShellOutcome> {
+function runShell(command: string, cwd: string, env: NodeJS.ProcessEnv, timeoutMs: number): Promise<ShellOutcome> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, { cwd, env, shell: true, stdio: ["ignore", "pipe", "pipe"] });
+    // detached: the shell leads its own process group, so a timeout stops every process it started.
+    const child = spawn(command, { cwd, env, shell: true, detached: true, stdio: ["ignore", "pipe", "pipe"] });
     const chunks: Buffer[] = [];
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      killGroup(child.pid);
+    }, timeoutMs);
     child.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
     child.stderr.on("data", (chunk: Buffer) => chunks.push(chunk));
-    child.on("error", reject);
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
     child.on("close", (exitCode, signal) => {
-      resolve({ exitCode, signal, log: Buffer.concat(chunks).toString("utf8") });
+      clearTimeout(timer);
+      const note = timedOut ? `\nStopped after ${timeoutMs} ms.\n` : "";
+      resolve({ exitCode, signal, log: Buffer.concat(chunks).toString("utf8") + note });
     });
   });
+}
+
+/** Sends SIGKILL to a child's whole process group; a group that already exited is ignored. */
+export function killGroup(pid: number | undefined): void {
+  if (pid === undefined) return;
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch {
+    // The group exited between the timer firing and the signal.
+  }
 }

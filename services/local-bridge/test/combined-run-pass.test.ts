@@ -20,9 +20,10 @@ import {
   RemoteUnavailableError,
   runCli,
   type ClaimedCombinedRun,
+  type ImpactAnalyzer,
   type TestRunner,
 } from "@penguin/local-bridge";
-import type { CombinedRunEvent } from "@penguin/protocol";
+import type { CombinedRunEvent, ImpactReport } from "@penguin/protocol";
 
 import { FakePenguin } from "./fake-penguin.ts";
 
@@ -94,6 +95,47 @@ test("a command ID the repository config does not define is refused and never ru
   assert.match(batch?.refused[0]?.reason ?? "", /defines no such scope/);
   assert.equal(batch?.reply, null);
   assert.equal(batch?.error, null);
+});
+
+test("an owner the impact graph leaves out is reported as not affected, so the claimed run completes", async () => {
+  const started: string[] = [];
+  const reported: CombinedRunEvent[] = [];
+  const runner = {
+    run: async (request: { commandId: string; sha: string }) => {
+      started.push(request.commandId);
+      return { commandId: request.commandId, exitCode: 0, signal: null, log: "", timings: { createMs: 0, runMs: 0, removeMs: 0 } };
+    },
+  } as unknown as TestRunner;
+  // Jun's checkpoint calls a changed symbol; Sam's uses nothing the change touches.
+  const impact: ImpactAnalyzer = async (request) =>
+    ({
+      complete: true,
+      forks: request.forks.map((fork) => ({
+        ...fork,
+        uses: fork.id === "jun" ? [{ path: "analytics/models.py", line: 1, kind: "import", symbol: "x", name: "x", scope: "analytics" }] : [],
+        errors: [],
+      })),
+    }) as unknown as ImpactReport;
+  const result = await combinedRunPass({
+    claim: async () => [run("run-1", "jun", ["test:analytics"]), run("run-2", "sam", ["test:messaging"])],
+    report: async (event) => {
+      reported.push(event);
+      return { status: "no_failures" };
+    },
+    fetchForks: async () => undefined,
+    repoPath: repo,
+    runner,
+    impact,
+  });
+  assert.deepEqual(started, ["test:analytics"]);
+  assert.deepEqual(
+    reported[0]?.results.map((entry) => [entry.ownerId, entry.status, entry.ownerCheckpoint]),
+    [
+      ["jun", "passed", tags["owner-jun-checkpoint"]],
+      ["sam", "not-affected", tags["owner-sam-checkpoint"]],
+    ],
+  );
+  assert.deepEqual(result.batches[0]?.results.map((entry) => entry.status), ["passed", "not-affected"]);
 });
 
 test("runs of one trigger share a batch, with one checkpoint per owner in each", () => {

@@ -111,6 +111,7 @@ import {
   parseCombinedRunEvent,
   type ApprovalSpec,
   type Author,
+  type BlockCheck,
   type Board,
   type IdentitiesPage,
   type IdentityWriteOutcome,
@@ -1134,6 +1135,11 @@ export class ProjectAgent extends Agent {
    */
   claimCombinedRuns(caller: BridgeCaller): ClaimListing {
     return this.#combinedRunStore().claim(caller);
+  }
+
+  /** The section 5.1 checks the runner reported for one trigger checkpoint, by target. */
+  blockChecks(ownerId: string, sha: string): BlockCheck[] {
+    return this.#combinedRunStore().checks(ownerId, sha);
   }
 
   /**

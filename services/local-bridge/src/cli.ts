@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 import { CheckpointPublisher, type ConsentScope } from "./checkpoint.ts";
+import { CHECK_USAGE, runCheckCommand } from "./check-cli.ts";
 import { bridgeReporter } from "./checkpoint-report.ts";
 import { CONSENT_USAGE, runConsentCommand } from "./consent-cli.ts";
 import { bridgeConsent } from "./consent-store.ts";
@@ -71,8 +72,19 @@ export async function runCli(argv: readonly string[], io: CliIo, deps: CliDepend
   if (command === "consent") return runConsentCommand(rest, io, stateDir);
   if (command === "impact") return runImpactCommand(rest, io);
   if (command === "review") return runReviewCommand(rest, io);
+  if (command === "check") return runCheckCommand(rest, io);
   if (command !== "checkpoint") {
-    io.write(USAGE + CONSENT_USAGE + ISSUE_USAGE + SPOOL_USAGE + RUNNER_USAGE + SESSION_CHECKPOINT_USAGE + IMPACT_USAGE + REVIEW_USAGE);
+    io.write(
+      USAGE +
+        CONSENT_USAGE +
+        ISSUE_USAGE +
+        SPOOL_USAGE +
+        RUNNER_USAGE +
+        SESSION_CHECKPOINT_USAGE +
+        IMPACT_USAGE +
+        REVIEW_USAGE +
+        CHECK_USAGE,
+    );
     return 2;
   }
   const { values } = parseArgs({

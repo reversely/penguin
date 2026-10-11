@@ -64,3 +64,53 @@ test("a combined-run event is checked field by field", () => {
   assert.deepEqual(fields({ ...event, results: [{ ...result, commandId: "python -m pytest" }] }), ["results[0].commandId"]);
   assert.deepEqual(fields({ ...event, unmapped: [""] }), ["unmapped[0]"]);
 });
+
+test("a not-affected result carries its checkpoint and no fingerprint, and checks are validated", () => {
+  const notAffected = {
+    ownerId: "sam",
+    scopeId: "messaging",
+    commandId: "test:messaging",
+    status: "not-affected",
+    ownerCheckpoint: sha("d"),
+    fingerprint: null,
+    failingTests: [],
+  };
+  const check = {
+    planId: null,
+    target: "sam",
+    check: "typecheck",
+    result: "not-affected",
+    tool: { name: "pyright", version: "1.1.414", commandId: "check:pyright" },
+    input: { origin: sha("a"), target: sha("d"), merged: sha("e"), paths: null },
+    findings: [],
+    findingCount: 0,
+    summary: "the impact graph shows no use of the change",
+    fingerprint: null,
+    logRef: null,
+    durationMs: 0,
+  };
+  const event = {
+    trigger: { ownerId: "priya", sha: sha("a"), baselineSha: sha("b") },
+    changedScopes: ["identity-map"],
+    unmapped: [],
+    results: [notAffected],
+    checks: [check],
+  };
+  const parsed = parseCombinedRunEvent(event);
+  assert.ok(parsed.ok, JSON.stringify(parsed));
+  assert.deepEqual(parsed.event.checks, [check]);
+  const withoutChecks = parseCombinedRunEvent({ ...event, checks: undefined });
+  assert.equal(withoutChecks.ok && "checks" in withoutChecks.event, false);
+
+  const fields = (value: unknown) => {
+    const result = parseCombinedRunEvent(value);
+    return result.ok ? [] : result.issues.map((issue) => issue.field);
+  };
+  assert.deepEqual(fields({ ...event, results: [{ ...notAffected, ownerCheckpoint: null }] }), ["results[0]"]);
+  assert.deepEqual(fields({ ...event, checks: [{ ...check, check: "vibes" }] }), ["checks[0].check"]);
+  assert.deepEqual(fields({ ...event, checks: [{ ...check, tool: { ...check.tool, commandId: "rm -rf /" } }] }), [
+    "checks[0].tool.commandId",
+  ]);
+  assert.deepEqual(fields({ ...event, checks: [{ ...check, log: "raw output" }] }), ["checks[0].log"]);
+  assert.deepEqual(fields({ ...event, checks: "all good" }), ["checks"]);
+});

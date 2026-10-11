@@ -5,7 +5,7 @@
 
 import { spawn } from "node:child_process";
 
-import { checkImpactReport, IMPACT_COMMAND_ID, type ImpactReport } from "@penguin/protocol";
+import { checkImpactReport, IMPACT_COMMAND_ID, type ImpactReport, type SchemaError } from "@penguin/protocol";
 
 import { resolveAnalysisCommand } from "./command-allowlist.ts";
 import { childEnvironment } from "./test-runner.ts";
@@ -41,40 +41,67 @@ export interface PythonImpactOptions {
   readonly maxOutputBytes?: number;
 }
 
-/** The analysis did not produce a valid report; the message says why. */
-export class ImpactAnalysisError extends Error {
+/** An analysis did not produce a valid report; the message says why. */
+export class AnalysisError extends Error {
+  constructor(commandId: string, message: string) {
+    super(`${commandId}: ${message}`);
+    this.name = "AnalysisError";
+  }
+}
+
+/** The impact analysis did not produce a valid report. */
+export class ImpactAnalysisError extends AnalysisError {
   constructor(message: string) {
-    super(`${IMPACT_COMMAND_ID}: ${message}`);
+    super(IMPACT_COMMAND_ID, message);
     this.name = "ImpactAnalysisError";
   }
 }
 
 /** An analyzer that runs `analysis:python-impact` in `repoPath` and checks its report. */
 export function pythonImpactAnalyzer(options: PythonImpactOptions): ImpactAnalyzer {
-  const { script } = resolveAnalysisCommand(IMPACT_COMMAND_ID);
-  return async (request) => {
-    const argv = ["-I", script, "--repo", options.repoPath];
-    const output = await runAnalysis(options.python ?? "python3", argv, JSON.stringify(request), options);
-    let report: unknown;
-    try {
-      report = JSON.parse(output);
-    } catch {
-      throw new ImpactAnalysisError("the report is not JSON");
-    }
-    const errors = checkImpactReport(report);
-    if (errors.length > 0) {
-      const first = errors.slice(0, 5).map((error) => `${error.path || "/"} ${error.message}`);
-      throw new ImpactAnalysisError(`the report breaks its schema: ${first.join("; ")}`);
-    }
-    const checked = report as ImpactReport;
-    if (checked.base !== request.base || checked.head !== request.head) {
-      throw new ImpactAnalysisError("the report describes other commits than the request");
-    }
-    return checked;
-  };
+  return (request) =>
+    runPythonAnalysis<ImpactReport>(IMPACT_COMMAND_ID, checkImpactReport, options, request, (message) => new ImpactAnalysisError(message));
 }
 
-function runAnalysis(program: string, argv: string[], input: string, options: PythonImpactOptions): Promise<string> {
+/**
+ * Runs one of the bridge's Python analyses on a request and checks its report against `check`. The
+ * report must describe the request's base and head commits.
+ */
+export async function runPythonAnalysis<T extends { readonly base: string; readonly head: string }>(
+  commandId: string,
+  check: (value: unknown) => SchemaError[],
+  options: PythonImpactOptions,
+  request: { readonly base: string; readonly head: string },
+  fail: (message: string) => Error = (message) => new AnalysisError(commandId, message),
+): Promise<T> {
+  const { script } = resolveAnalysisCommand(commandId);
+  const argv = ["-I", script, "--repo", options.repoPath];
+  const output = await runAnalysis(options.python ?? "python3", argv, JSON.stringify(request), options, fail);
+  let report: unknown;
+  try {
+    report = JSON.parse(output);
+  } catch {
+    throw fail("the report is not JSON");
+  }
+  const errors = check(report);
+  if (errors.length > 0) {
+    const first = errors.slice(0, 5).map((error) => `${error.path || "/"} ${error.message}`);
+    throw fail(`the report breaks its schema: ${first.join("; ")}`);
+  }
+  const checked = report as T;
+  if (checked.base !== request.base || checked.head !== request.head) {
+    throw fail("the report describes other commits than the request");
+  }
+  return checked;
+}
+
+function runAnalysis(
+  program: string,
+  argv: string[],
+  input: string,
+  options: PythonImpactOptions,
+  fail: (message: string) => Error,
+): Promise<string> {
   const { env = process.env, timeoutMs = 600_000, maxOutputBytes = 64 * 1024 * 1024 } = options;
   return new Promise((resolve, reject) => {
     const child = spawn(program, argv, { env: childEnvironment(env), shell: false, stdio: ["pipe", "pipe", "pipe"] });
@@ -95,14 +122,14 @@ function runAnalysis(program: string, argv: string[], input: string, options: Py
     child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
     child.on("error", (error) => {
       clearTimeout(timer);
-      reject(new ImpactAnalysisError(`could not start ${program}: ${error.message}`));
+      reject(fail(`could not start ${program}: ${error.message}`));
     });
     child.on("close", (code) => {
       clearTimeout(timer);
-      if (failure !== undefined) return reject(new ImpactAnalysisError(failure));
+      if (failure !== undefined) return reject(fail(failure));
       if (code !== 0) {
         const message = Buffer.concat(stderr).toString("utf8").trim().split("\n").slice(-3).join(" ");
-        return reject(new ImpactAnalysisError(`exited with ${code}: ${message}`));
+        return reject(fail(`exited with ${code}: ${message}`));
       }
       resolve(Buffer.concat(stdout).toString("utf8"));
     });
