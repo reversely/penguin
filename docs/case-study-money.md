@@ -87,9 +87,10 @@ Each agreed fix goes where its code lives:
 
 - **Code already on main**, in the nine scopes: Ines's agent and Penguin's codemods write these fixes
   into Ines's feature fork, next to the change itself.
-- **Unfinished work** in the 23 running features: Penguin mints a short write token on each of those
-  features' forks, and the fix for that feature's unfinished code is written straight into its fork,
-  under the plan its owner approved.
+- **Unfinished work** in the 23 running features: as soon as an owner approves the plan, Penguin mints
+  a short write token on that feature's existing fork, and Ines's agent writes the fix straight into
+  it. No new branch or fork is made. Each running feature then keeps building on code that already
+  fits the new money type, so the merge conflict never forms.
 
 The other 23 agents carry on in their own forks, now carrying the adaptation.
 
@@ -108,8 +109,8 @@ overlapping forks. It is checked as one set and lands as one set.
    - the type checker
    - the contract diff
    - each affected scope's tests
-2. **Owners try it.** Jun gets a read-only fork of the feature to clone and checks the protected file
-   before confirming. There is no branch to check out or rebuild.
+2. **Owners try it.** Jun gets an expiring read token on Ines's feature fork, clones it and checks the
+   protected file before confirming. Nothing new is created.
 3. **Promote.** When everything is green, Penguin moves main to the feature's commit in one push, with a
    write token on main that only Penguin holds, for minutes. Main changes once, never in pieces, and
    every overlapping fork already carries its adaptation, so none of them breaks when it next takes
