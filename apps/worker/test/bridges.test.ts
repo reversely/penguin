@@ -7,10 +7,12 @@ import { DatabaseSync } from "node:sqlite";
 import { generateSigningKeyPair } from "@penguin/issues";
 // The registry module directly: the package entry point loads the Agents SDK, which needs workerd.
 import { BridgeRegistry } from "../../../services/project-agent/src/bridge-registry.ts";
+import type { Huddle } from "../../../services/project-agent/src/huddle-store.ts";
 import { IssueIndex } from "../../../services/project-agent/src/issue-index.ts";
 import type { SqlDatabase } from "../../../services/project-agent/src/issue-index.ts";
 import { OwnerForkStore, recordReportedCheckpoint } from "../../../services/project-agent/src/owner-forks.ts";
 
+import type { HuddleDirectory } from "../src/bridges.ts";
 import { type GatewayHandlers, handleRequest } from "../src/gateway.ts";
 import { RepoNames } from "../src/repos.ts";
 import {
@@ -87,6 +89,7 @@ function gateway(artifacts = fakeArtifacts(PROJECT_REPOS)) {
   /** The commits each fork holds, by prefixed repo name, as `readCommit` would find them. */
   const commits = new Map<string, Set<string>>();
   const commitExists = async (repo: string, sha: string) => commits.get(repo)?.has(sha) ?? false;
+  const huddles = fakeHuddles();
   const handlers: GatewayHandlers = {
     routeAgents: async () => null,
     setUpProject: async () => {
@@ -102,6 +105,7 @@ function gateway(artifacts = fakeArtifacts(PROJECT_REPOS)) {
       reportBridgeCheckpoint: (owner, sha, fork) => recordReportedCheckpoint({ forks, commitExists }, owner, sha, fork, null),
     }),
     ownerForkRepo: (owner) => names.owner(owner),
+    huddles: () => huddles,
     mintToken: (repo, scope, ttl) => {
       const parsed = parseProjectRepo(repo);
       assert.ok(parsed);
@@ -118,7 +122,51 @@ function gateway(artifacts = fakeArtifacts(PROJECT_REPOS)) {
       options,
       handlers,
     );
-  return { artifacts, call, registry, db, forks, commits };
+  return { artifacts, call, registry, db, forks, commits, huddles };
+}
+
+/**
+ * The ProjectAgent's Huddle opening as the route sees it: the first report of a trigger opens issue
+ * 31, later ones find it. Forks are recorded; `failForks` makes the next fork calls throw.
+ */
+function fakeHuddles() {
+  let huddle: Huddle | undefined;
+  const opened: { event: unknown; triggerFork: string }[] = [];
+  const forked: string[] = [];
+  const state = { failForks: 0 };
+  const directory: HuddleDirectory = {
+    async open(event, triggerFork) {
+      opened.push({ event, triggerFork });
+      if (huddle !== undefined) return { status: "existing", huddle };
+      huddle = {
+        triggerCommit: "owner-priya@" + "a".repeat(40),
+        triggerOwner: "priya",
+        triggerSha: "a".repeat(40),
+        baselineSha: "b".repeat(40),
+        triggerScopes: ["identity-map"],
+        event: event as Huddle["event"],
+        issueId: "31",
+        status: "open",
+        huddleRepo: null,
+        openedAt: "2026-10-11T00:00:00.000Z",
+      };
+      return { status: "opened", huddle, operations: 20 };
+    },
+    async recordRepo(triggerCommit, huddleRepo) {
+      assert.equal(triggerCommit, huddle?.triggerCommit);
+      huddle = { ...(huddle as Huddle), huddleRepo };
+      return huddle;
+    },
+    async forkRepo(huddleId) {
+      if (state.failForks > 0) {
+        state.failForks -= 1;
+        throw new ArtifactsError("FORK_IN_PROGRESS", "fork in progress");
+      }
+      forked.push(huddleId);
+      return { name: names.huddle(huddleId) };
+    },
+  };
+  return Object.assign(directory, { opened, forked, state });
 }
 
 type Call = ReturnType<typeof gateway>["call"];
@@ -318,4 +366,57 @@ test("a bridge report records its owner's latest checkpoint with no agent sessio
   assert.equal((await report(DEPLOYER_TOKEN, { sha, fork: "owner-jun" })).status, 401);
   assert.equal((await call("/checkpoints", { method: "GET", token: jun.bridgeToken })).status, 405);
   assert.equal(forks.get("jun")?.latestCheckpointSha, sha);
+});
+
+test("a runner's combined-run report opens a Huddle and forks its repo once", async () => {
+  const { call, huddles } = gateway();
+  const event = { trigger: { ownerId: "priya", sha: "a".repeat(40), baselineSha: "b".repeat(40) } };
+  const report = (token: string | undefined, body: unknown = event) =>
+    call("/combined-runs", { ...(token ? { token } : {}), body });
+
+  const runner = await registerBridge(call, "sam", "runner");
+  huddles.state.failForks = 1;
+  // The issue opens, but the fork fails: the route says so and a later report forks again.
+  const failed = await report(runner.bridgeToken);
+  assert.equal(failed.status, 502);
+  assert.deepEqual(await failed.json(), {
+    status: "opened",
+    issueId: "31",
+    triggerCommit: `owner-priya@${"a".repeat(40)}`,
+    baselineSha: "b".repeat(40),
+    huddleRepo: null,
+    openedAt: "2026-10-11T00:00:00.000Z",
+    forkError: "FORK_IN_PROGRESS",
+  });
+
+  const retried = await report(runner.bridgeToken);
+  assert.equal(retried.status, 200);
+  assert.deepEqual(
+    { ...((await retried.json()) as Record<string, unknown>), openedAt: undefined },
+    {
+      status: "existing",
+      issueId: "31",
+      triggerCommit: `owner-priya@${"a".repeat(40)}`,
+      baselineSha: "b".repeat(40),
+      huddleRepo: "test-huddle-031",
+      openedAt: undefined,
+    },
+  );
+  const third = await report(runner.bridgeToken);
+  assert.equal(third.status, 200);
+  assert.deepEqual(huddles.forked, ["031"]);
+  // The trigger owner's fork is named by the Worker from the owner id.
+  assert.deepEqual(
+    huddles.opened.map((entry) => entry.triggerFork),
+    ["test-owner-priya", "test-owner-priya", "test-owner-priya"],
+  );
+
+  // Only a runner bridge may report; the owner id must be one.
+  const jun = await registerBridge(call, "jun");
+  assert.equal((await report(jun.bridgeToken)).status, 403);
+  assert.equal((await report(undefined)).status, 401);
+  assert.equal((await report(DEPLOYER_TOKEN)).status, 401);
+  assert.equal((await report(runner.bridgeToken, { trigger: { ownerId: "../x" } })).status, 400);
+  assert.equal((await call("/combined-runs", { method: "GET", token: runner.bridgeToken })).status, 405);
+  assert.equal(huddles.opened.length, 3);
 });

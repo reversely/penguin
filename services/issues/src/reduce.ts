@@ -87,6 +87,8 @@ export interface Check {
   readonly test: string | null;
   readonly result: "pass" | "fail" | "error";
   readonly logRef: string | null;
+  /** The result's fingerprint (tested commit, lockfiles and command ID), or null when none was given. */
+  readonly fingerprint: string | null;
 }
 
 export interface SubIssue {
@@ -297,12 +299,13 @@ function apply(issue: IssueRecord, operation: Operation, context: ReduceContext)
       return { ...issue, linkedCommits: withEntry(issue.linkedCommits, opId, link) };
     }
     case "attach_check": {
-      const { command_id, commit, test, result, log_ref } = p as {
+      const { command_id, commit, test, result, log_ref, fingerprint } = p as {
         command_id: string;
         commit: string;
         test?: string;
         result: Check["result"];
         log_ref?: string;
+        fingerprint?: string;
       };
       const check: Check = {
         opId,
@@ -311,6 +314,7 @@ function apply(issue: IssueRecord, operation: Operation, context: ReduceContext)
         test: test ?? null,
         result,
         logRef: log_ref ?? null,
+        fingerprint: fingerprint ?? null,
       };
       return { ...issue, checks: withEntry(issue.checks, opId, check) };
     }

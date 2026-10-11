@@ -14,6 +14,15 @@ export const MAX_OPERATION_FILE_BYTES = 65_536;
  */
 export const SEGMENT_PATTERN = "[a-z0-9]+(?:[.-][a-z0-9]+)*";
 
+/**
+ * An allowlisted command ID: segments of lowercase letters and digits joined by single dots, hyphens
+ * or colons, such as `test:analytics` for a scope's test command.
+ */
+export const COMMAND_ID_PATTERN = "[a-z0-9]+(?:[.:-][a-z0-9]+)*";
+
+/** A check result's fingerprint: a SHA-256 in lowercase hexadecimal. */
+export const FINGERPRINT_PATTERN = "[0-9a-f]{64}";
+
 /** A person ID or one half of an identity handle: lowercase letters and digits, joined by single hyphens. */
 const NAME_PATTERN = "[a-z0-9]+(?:-[a-z0-9]+)*";
 
@@ -110,14 +119,20 @@ export const PAYLOAD_SCHEMAS: Readonly<Record<OperationType, JsonSchema>> = {
   ),
   attach_check: payload(
     {
-      command_id: { type: "string", pattern: `^${SEGMENT_PATTERN}$`, maxLength: 64 },
+      command_id: { type: "string", pattern: `^${COMMAND_ID_PATTERN}$`, maxLength: 64 },
       commit: { $ref: "#/$defs/commit" },
       test: { type: "string", minLength: 1, maxLength: 256 },
       result: { type: "string", enum: ["pass", "fail", "error"] },
       log_ref: { type: "string", minLength: 1, maxLength: 512 },
+      fingerprint: { type: "string", pattern: `^${FINGERPRINT_PATTERN}$` },
     },
     ["command_id", "commit", "result"],
-    { description: "`command_id` is an allowlisted command ID from the repository config." },
+    {
+      description:
+        "`command_id` is an allowlisted command ID from the repository config, such as `test:analytics`. " +
+        "`fingerprint` is the SHA-256 of the tested commit, its lockfiles and the command ID, so the " +
+        "result applies only to the inputs it ran against.",
+    },
   ),
   open_sub_issue: payload({ sub_issue: { $ref: "#/$defs/issue" } }, ["sub_issue"], {
     description: "Records an issue, created by its own create operation, as a sub-issue of this one.",

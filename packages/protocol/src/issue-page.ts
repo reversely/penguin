@@ -41,6 +41,8 @@ export interface IssuePageCheck {
   readonly test: string | null;
   readonly result: "pass" | "fail" | "error";
   readonly logRef: string | null;
+  /** What the result applies to: the SHA-256 of the tested commit, its lockfiles and the command ID. */
+  readonly fingerprint: string | null;
 }
 
 export interface IssuePageReview {

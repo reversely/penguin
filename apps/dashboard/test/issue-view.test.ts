@@ -40,6 +40,7 @@ function check(fields: Partial<IssuePageCheck>): IssuePageCheck {
     test: "test_retention::dau_stable",
     result: "fail",
     logRef: null,
+    fingerprint: null,
     ...fields,
   };
 }

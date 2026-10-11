@@ -1,6 +1,7 @@
 import { basename } from "node:path";
 
 import { changedPathsBetween, commitMergedTree, isObjectId, simulateMerge } from "@penguin/git-analysis";
+import type { CombinedRunEvent } from "@penguin/protocol";
 import { affectedOwners } from "@penguin/scope-map";
 
 import { loadScopeMap, testCommandId } from "./command-allowlist.ts";
@@ -89,6 +90,31 @@ export function parseFailingTests(log: string): FailingTest[] {
     const test = nodeId.slice(separator + 2).replace(/^test_/, "");
     return { nodeId, testId: `${module}::${test}` };
   });
+}
+
+/**
+ * The typed event Penguin opens a Huddle issue from: the report without its test logs, with the
+ * owner of the checkpoint that triggered the run. Only the failing tests and the fingerprints leave
+ * the runner (PRD section 14, decision 2).
+ */
+export function combinedRunEvent(report: CombinedRunReport, triggerOwner: string): CombinedRunEvent {
+  return {
+    trigger: { ownerId: triggerOwner, sha: report.checkpointSha, baselineSha: report.baselineSha },
+    changedScopes: report.changedScopes,
+    unmapped: report.unmapped,
+    results: report.results.map((result) => {
+      const target = { ownerId: result.ownerId, scopeId: result.scopeId, commandId: result.commandId };
+      if (result.status === "no-checkpoint") {
+        return { ...target, status: result.status, ownerCheckpoint: null, fingerprint: null, failingTests: [] };
+      }
+      if (result.status === "conflict") {
+        const { ownerCheckpoint } = result;
+        return { ...target, status: result.status, ownerCheckpoint, fingerprint: null, failingTests: [] };
+      }
+      const { status, ownerCheckpoint, fingerprint, failingTests } = result;
+      return { ...target, status, ownerCheckpoint, fingerprint: { ...fingerprint }, failingTests };
+    }),
+  };
 }
 
 /**

@@ -434,6 +434,11 @@ export async function setUpProject(
   };
 }
 
+/** The id of a Huddle issue's repo: the issue number zero-padded to three digits, as in `huddle-031` for #31. */
+export function huddleRepoId(issueId: string): string {
+  return issueId.padStart(3, "0");
+}
+
 /**
  * Forks `huddle-<id>` from the base repo. The Huddle repo receives the integration result and the
  * approved candidate. Returns `existing` when the Huddle repo is already there.

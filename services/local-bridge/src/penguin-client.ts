@@ -5,6 +5,8 @@
 import { mkdir, open, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
+import type { CombinedRunEvent } from "@penguin/protocol";
+
 import {
   artifactsRemote,
   localRemote,
@@ -290,4 +292,47 @@ export async function fetchPendingOperations(
     }
     return { opId, path, file };
   });
+}
+
+/** The route a runner reports a combined run to. */
+export const COMBINED_RUN_ROUTE = "/combined-runs";
+
+/** Penguin's answer to a combined-run report. */
+export interface CombinedRunReply {
+  /** `opened` for a new Huddle issue, `existing` when one is open for the trigger, else `no_failures`. */
+  readonly status: "opened" | "existing" | "no_failures";
+  /** The Huddle issue's number; absent when nothing failed. */
+  readonly issueId?: string;
+  readonly huddleRepo?: string | null;
+}
+
+/**
+ * Reports a combined run to Penguin, which opens a Huddle issue when its tests failed on a
+ * published checkpoint. Penguin answers only a bridge registered with the runner role.
+ */
+export async function reportCombinedRun(
+  server: string,
+  bridgeToken: string,
+  event: CombinedRunEvent,
+  fetchImpl: Fetch = fetch,
+): Promise<CombinedRunReply> {
+  const origin = checkedOrigin(server, "the Penguin server").origin;
+  let response: Response;
+  try {
+    response = await fetchImpl(`${origin}${COMBINED_RUN_ROUTE}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${bridgeToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify(event),
+    });
+  } catch (error) {
+    throw new RemoteUnavailableError(`Penguin at ${origin} is unreachable: ${(error as Error).message}`);
+  }
+  const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+  if (response.status === 200 || response.status === 201) return body as unknown as CombinedRunReply;
+  if (response.status === 401) throw new RemoteUnavailableError("Penguin refused the bridge token; register the bridge again");
+  const message = typeof body["message"] === "string" ? `: ${body["message"]}` : "";
+  if ([400, 403, 409, 422].includes(response.status)) {
+    throw new RemoteRefusedError(`Penguin refused the combined run (HTTP ${response.status})${message}`);
+  }
+  throw new RemoteUnavailableError(`Penguin could not take the combined run (HTTP ${response.status})${message}`);
 }

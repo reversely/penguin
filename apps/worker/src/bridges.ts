@@ -13,6 +13,9 @@
  * - POST /checkpoints, bridge token: records a checkpoint the bridge pushed to its owner's fork as
  *   that fork's latest checkpoint. The owner comes from the token; the body carries only the SHA
  *   and the fork, which must be the owner's own.
+ * - POST /combined-runs, bridge token of a runner bridge: reports a combined run. When its tests
+ *   failed on a published checkpoint, the ProjectAgent opens a Huddle issue and the Worker forks the
+ *   Huddle repo. A second report of the same trigger opens nothing.
  *
  * Responses that carry a code or token are marked `Cache-Control: no-store`.
  */
@@ -22,13 +25,15 @@ import type {
   BridgeIdentity,
   BridgeRole,
   CheckpointOutcome,
+  Huddle,
+  HuddleOpenOutcome,
   PendingListing,
   RegisterOutcome,
   RegistrationCode,
 } from "@penguin/project-agent";
 
 import { bearerToken, isDeployer } from "./auth.ts";
-import { artifactsErrorCode, isValidRepoName } from "./repos.ts";
+import { artifactsErrorCode, huddleRepoId, isValidRepoName } from "./repos.ts";
 import {
   allowedScope,
   isPermitted,
@@ -53,6 +58,16 @@ export interface BridgeDirectory {
   reportBridgeCheckpoint(owner: string, sha: string, fork: string): Promise<CheckpointOutcome>;
 }
 
+/** Opening Huddle issues: the ProjectAgent's side over Durable Object RPC, and the Huddle repo fork. */
+export interface HuddleDirectory {
+  /** Opens the Huddle issue for a combined run; `triggerFork` is the trigger owner's fork. */
+  open(event: unknown, triggerFork: string): Promise<HuddleOpenOutcome>;
+  /** Records the Huddle repo forked for the Huddle opened by `triggerCommit`. */
+  recordRepo(triggerCommit: string, huddleRepo: string): Promise<Huddle | undefined>;
+  /** Forks `huddle-<id>` from the base repo (`forkHuddleRepo` in repos.ts); an existing repo is kept. */
+  forkRepo(huddleId: string): Promise<{ readonly name: string }>;
+}
+
 /** Mints a token on a repo named without the deployment's prefix, such as `owner-jun`. */
 export type TokenMinter = (repo: string, scope: TokenScope, ttlSeconds: number) => Promise<MintedToken>;
 
@@ -61,6 +76,7 @@ export interface BridgeHandlers {
   readonly mintToken: TokenMinter;
   /** The Artifacts repo name of an owner's fork, with the deployment's repo prefix. */
   readonly ownerForkRepo: (ownerId: string) => string;
+  readonly huddles: () => HuddleDirectory | Promise<HuddleDirectory>;
 }
 
 export interface BridgeOptions {
@@ -221,6 +237,65 @@ async function reportCheckpoint(request: Request, handlers: BridgeHandlers): Pro
   return json({ fork: own, ownerId, latestCheckpointSha, reportedAt }, 200);
 }
 
+/**
+ * Opens a Huddle issue from a combined run the runner reports, then forks the Huddle repo when the
+ * Huddle has none yet. The fork runs again on a later report of the same trigger until it succeeds;
+ * an existing repo counts as forked.
+ */
+async function reportCombinedRun(request: Request, handlers: BridgeHandlers): Promise<Response> {
+  const token = bearerToken(request);
+  const directory = await handlers.bridges();
+  const bridge = token === undefined ? undefined : await directory.authenticateBridge(token);
+  if (bridge === undefined) return unauthorized();
+  if (request.method !== "POST") return methodNotAllowed("POST");
+  if (bridge.role !== "runner") {
+    return json({ error: "forbidden", message: `bridge ${bridge.bridgeId} does not hold the runner role` }, 403);
+  }
+
+  const body = await readObject(request);
+  if (body === undefined) return invalid("", "must be a JSON object");
+  const trigger = body.trigger;
+  const owner =
+    typeof trigger === "object" && trigger !== null ? (trigger as Record<string, unknown>).ownerId : undefined;
+  if (typeof owner !== "string" || !isValidRepoName(owner)) return invalid("trigger.ownerId", "must be an owner id");
+
+  const huddles = await handlers.huddles();
+  let outcome: HuddleOpenOutcome;
+  try {
+    // The fork the trigger must be in is named from the owner id, never taken from the request.
+    outcome = await huddles.open(body, handlers.ownerForkRepo(owner));
+  } catch (error) {
+    return json({ error: "artifacts", code: artifactsErrorCode(error) ?? null }, 502);
+  }
+  switch (outcome.status) {
+    case "rejected": {
+      const status = outcome.reason === "invalid" ? 400 : outcome.reason === "unpublished" ? 422 : 409;
+      return json({ error: outcome.reason, message: outcome.message }, status);
+    }
+    case "no_failures":
+      return json({ status: outcome.status, message: outcome.message }, 200);
+    case "opened":
+    case "existing": {
+      let huddle = outcome.huddle;
+      if (huddle.huddleRepo === null && huddle.issueId !== null) {
+        try {
+          const forked = await huddles.forkRepo(huddleRepoId(huddle.issueId));
+          huddle = (await huddles.recordRepo(huddle.triggerCommit, forked.name)) ?? huddle;
+        } catch (error) {
+          // The issue is open; the next report of the trigger forks the repo again.
+          return json({ ...huddleBody(outcome.status, huddle), forkError: artifactsErrorCode(error) ?? "failed" }, 502);
+        }
+      }
+      return json(huddleBody(outcome.status, huddle), outcome.status === "opened" ? 201 : 200);
+    }
+  }
+}
+
+function huddleBody(status: "opened" | "existing", huddle: Huddle): Record<string, unknown> {
+  const { issueId, triggerCommit, baselineSha, huddleRepo, openedAt } = huddle;
+  return { status, issueId, triggerCommit, baselineSha, huddleRepo, openedAt };
+}
+
 /** Answers a bridge route, or returns null when the path is not one. */
 export async function handleBridgeRoute(
   request: Request,
@@ -231,6 +306,7 @@ export async function handleBridgeRoute(
   if (url.pathname === "/tokens") return issueToken(request, options, handlers);
   if (url.pathname === "/operations/pending") return listPending(request, handlers);
   if (url.pathname === "/checkpoints") return reportCheckpoint(request, handlers);
+  if (url.pathname === "/combined-runs") return reportCombinedRun(request, handlers);
   if (url.pathname === "/bridges/codes") return issueCode(request, options, handlers);
   if (url.pathname === "/bridges") return register(request, handlers);
   const bridgeId = /^\/bridges\/([A-Za-z0-9_-]+)$/.exec(url.pathname)?.[1];

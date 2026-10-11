@@ -5,7 +5,7 @@ import { LIVE_OWNER_HEADER, type InboxReason } from "@penguin/project-agent";
 import { handleRequest } from "./gateway.ts";
 import { parseOwnerMap } from "./github-oauth.ts";
 import { consumePushEvents } from "./push-events.ts";
-import { RepoNames, setUpProject } from "./repos.ts";
+import { forkHuddleRepo, RepoNames, setUpProject } from "./repos.ts";
 import { artifactsRepoName, mintRepoToken, parseProjectRepo, parseTokenTtl } from "./tokens.ts";
 
 export { HuddleAgent } from "@penguin/huddle-agent";
@@ -85,6 +85,14 @@ export default {
         },
         // One ProjectAgent per repo prefix, so a test run's bridges stay apart from production's.
         bridges: () => getAgentByName(env.ProjectAgent, projectAgentName(names)),
+        huddles: async () => {
+          const agent = await getAgentByName(env.ProjectAgent, projectAgentName(names));
+          return {
+            open: (event, triggerFork) => agent.openHuddle(event, triggerFork, repos),
+            recordRepo: async (triggerCommit, huddleRepo) => agent.recordHuddleRepo(triggerCommit, huddleRepo),
+            forkRepo: (huddleId) => forkHuddleRepo(env.ARTIFACTS, huddleId, names),
+          };
+        },
         mcpTokens: () => getAgentByName(env.ProjectAgent, projectAgentName(names)),
         // The owner's fork is named from the authenticated owner, never from the request.
         serveMcp: (mcpRequest, owner) =>

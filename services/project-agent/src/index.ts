@@ -30,6 +30,8 @@ import {
   type OwnerFork,
 } from "./owner-forks.ts";
 import { postSessionUpdate, type SessionUpdate, type SessionUpdateOutcome } from "./session-updates.ts";
+import { openHuddle, type HuddleOpenOutcome } from "./huddle-open.ts";
+import { HuddleStore, type Huddle } from "./huddle-store.ts";
 import { IngestLedger, ingestPush, type IngestReport } from "./push-ingest.ts";
 import { rebuildIndex, type RebuildReport } from "./rebuild.ts";
 import { parseScopeFile, SCOPE_MAP_PATH } from "./scope-file.ts";
@@ -137,6 +139,18 @@ export {
 } from "./session-updates.ts";
 export { importServiceKey, type ServiceKey } from "./service-key.ts";
 export {
+  fixAssignee,
+  fixesOf,
+  HUDDLE_LABEL,
+  openHuddle,
+  UNASSIGNED_IMPACT_ANCHOR,
+  type Fix,
+  type HuddleDraft,
+  type HuddleOpenDeps,
+  type HuddleOpenOutcome,
+} from "./huddle-open.ts";
+export { HuddleStore, ownerCommit, type Huddle, type HuddleStatus } from "./huddle-store.ts";
+export {
   INBOX_REASONS,
   InboxStore,
   type InboxItem,
@@ -225,6 +239,9 @@ export class ProjectAgent extends Agent {
   #live: LiveFeed | undefined;
   /** Ingests run one at a time, so two pushes never interleave their walks and applies. */
   #ingests: Promise<unknown> = Promise.resolve();
+  #huddles: HuddleStore | undefined;
+  /** Huddle openings run one at a time; see `openHuddle`. */
+  #huddleOpenings: Promise<unknown> = Promise.resolve();
 
   override onStart(): void {
     this.sql`CREATE TABLE IF NOT EXISTS counter (id INTEGER PRIMARY KEY CHECK (id = 1), value INTEGER NOT NULL)`;
@@ -261,6 +278,47 @@ export class ProjectAgent extends Agent {
    */
   async submitFromDashboard(owner: string, operation: unknown, repos: ProjectRepos): Promise<SubmitOutcome> {
     return this.submit(operation, { person: owner }, "dashboard", await this.#scopeMap(repos));
+  }
+
+  /**
+   * Opens the Huddle issue for a combined run the integration runner reports (see huddle-open.ts),
+   * or answers `existing` when one is already open for the same trigger. `triggerFork` is the
+   * Artifacts repo name of the trigger owner's fork, named by the Worker; the trigger commit must be
+   * there. Openings run one at a time, so two reports of one trigger never open two issues.
+   */
+  openHuddle(event: unknown, triggerFork: string, repos: ProjectRepos): Promise<HuddleOpenOutcome> {
+    const run = this.#huddleOpenings.then(async () => {
+      const scopeMap = await this.#scopeMap(repos);
+      const index = this.#index();
+      const sessions = this.#sessionStore();
+      return openHuddle(
+        {
+          huddles: this.#huddleStore(),
+          scopeMap,
+          issue: (issueId) => index.issue(issueId),
+          issueIds: () => index.ids(),
+          submit: (operation) => this.submit(operation, { penguin: true }, "penguin", scopeMap),
+          ownerFork: (ownerId) => this.#ownerForks().get(ownerId),
+          session: (sessionId) => sessions.get(sessionId),
+          identities: () => this.#identityStore().list(),
+          triggerPublished: ({ trigger }) =>
+            withRepo(this.env.ARTIFACTS, triggerFork, async (repo) => (await repo.readCommit(trigger.sha)) !== null),
+        },
+        event,
+      );
+    });
+    this.#huddleOpenings = run.catch(() => undefined);
+    return run;
+  }
+
+  /** Records the Huddle repo the Worker forked for the Huddle opened by `triggerCommit`. */
+  recordHuddleRepo(triggerCommit: string, huddleRepo: string): Huddle | undefined {
+    return this.#huddleStore().setRepo(triggerCommit, huddleRepo);
+  }
+
+  /** The Huddle whose issue has this number or temporary ID, or undefined. */
+  readHuddle(issueId: string): Huddle | undefined {
+    return this.#huddleStore().byIssue(this.#index().resolve(issueId));
   }
 
   /**
@@ -701,6 +759,11 @@ export class ProjectAgent extends Agent {
       return blob === null ? null : new Uint8Array(await blob.arrayBuffer());
     });
     return parseScopeFile(scopeFile);
+  }
+
+  #huddleStore(): HuddleStore {
+    this.#huddles ??= new HuddleStore(this.#database());
+    return this.#huddles;
   }
 
   #ownerForks(): OwnerForkStore {
