@@ -21,3 +21,22 @@ export {
   type ValidationContext,
   type Verdict,
 } from "./validate.ts";
+export {
+  issueKey,
+  reduce,
+  REDUCE_REJECT_REASONS,
+  type Assignment,
+  type Check,
+  type Comment,
+  type CommentRevision,
+  type IssueRecord,
+  type IssueStateName,
+  type LinkedCommit,
+  type Mention,
+  type ReduceContext,
+  type ReduceRejectReason,
+  type ReduceResult,
+  type Review,
+  type SubIssue,
+  type Thread,
+} from "./reduce.ts";

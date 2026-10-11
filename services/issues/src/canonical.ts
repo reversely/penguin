@@ -21,5 +21,6 @@ export function canonicalJson(value: unknown): string {
 }
 
 export function canonicalBytes(value: unknown): Uint8Array<ArrayBuffer> {
-  return new TextEncoder().encode(canonicalJson(value));
+  // TextEncoder always returns a fresh ArrayBuffer; the Workers typings widen it to ArrayBufferLike.
+  return new TextEncoder().encode(canonicalJson(value)) as Uint8Array<ArrayBuffer>;
 }
