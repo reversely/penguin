@@ -33,6 +33,7 @@ import {
   type EntryKind,
   type NeedsYouItem,
 } from "./issue-view.ts";
+import { useArrivals, type Arrival } from "./motion.tsx";
 import { useOperation } from "./use-operation.ts";
 
 interface ThreadProps {
@@ -49,6 +50,8 @@ export function IssueThread(props: ThreadProps) {
   const fixes = approvalFixes(page.subIssues);
   const ids = entryIds(page.issue);
   const replies = threadEntries(page.timeline);
+  // Posts, replies and approval cards a live change adds slide in, staggered when several arrive.
+  const arrival = useArrivals([...page.timeline.map((entry) => entry.opId), ...fixes.map((fix) => `fix:${fix.id}`)]);
   return (
     <section className="thread-pane" aria-labelledby="issue-thread">
       <h2 id="issue-thread" className="visually-hidden">
@@ -58,7 +61,9 @@ export function IssueThread(props: ThreadProps) {
       <ol className="thread">
         {page.timeline.map((entry) => {
           const kind = entryKind(entry, viewer, ids);
-          return kind === "in-thread" ? null : <ThreadEntry key={entry.opId} entry={entry} kind={kind} replies={replies} {...props} />;
+          return kind === "in-thread" ? null : (
+            <ThreadEntry key={entry.opId} entry={entry} kind={kind} replies={replies} arrival={arrival} {...props} />
+          );
         })}
       </ol>
       {fixes.length === 0 ? null : (
@@ -68,7 +73,7 @@ export function IssueThread(props: ThreadProps) {
           </h2>
           <ul className="thread">
             {fixes.map((fix) => (
-              <li key={fix.id} id={fixAnchor(fix.id)} tabIndex={-1} className="entry entry-card">
+              <li key={fix.id} id={fixAnchor(fix.id)} tabIndex={-1} className="entry entry-card" data-arrival={arrival(`fix:${fix.id}`)}>
                 <FixApprovalCard
                   fix={fix}
                   viewer={viewer}
@@ -92,6 +97,8 @@ export function IssueThread(props: ThreadProps) {
  * waiting for their review, linking to its card. The activity keeps its order below.
  */
 function NeedsYou({ items }: { items: readonly NeedsYouItem[] }) {
+  const key = (item: NeedsYouItem) => (item.kind === "thread" ? `thread:${item.thread.id}` : `fix:${item.fix.id}`);
+  const arrival = useArrivals(items.map(key));
   if (items.length === 0) return null;
   return (
     <section className="card-raised needs-you" aria-labelledby="issue-needs-you">
@@ -101,14 +108,14 @@ function NeedsYou({ items }: { items: readonly NeedsYouItem[] }) {
       <ul className="needs-you-list">
         {items.map((item) =>
           item.kind === "thread" ? (
-            <li key={`thread:${item.thread.id}`}>
+            <li key={key(item)} data-arrival={arrival(key(item))}>
               <CardLink target={threadAnchor(item.thread.id)}>
                 <span className="needs-you-title">Thread from {authorName(item.opener)}</span>
                 <span className="tag approval-status approval-attention">{WAITING_PREVIEW.reply}</span>
               </CardLink>
             </li>
           ) : (
-            <li key={`fix:${item.fix.id}`}>
+            <li key={key(item)} data-arrival={arrival(key(item))}>
               <CardLink target={fixAnchor(item.fix.id)}>
                 <span className="needs-you-title">
                   <span className="issue-number">#{item.fix.id}</span> {item.fix.title}
@@ -147,18 +154,24 @@ function ThreadEntry({
   entry,
   kind,
   replies,
+  arrival,
   page,
   authors,
   navigate,
   onSignedOut,
   onWritten,
-}: ThreadProps & { entry: IssuePageTimelineEntry; kind: EntryKind; replies: ReadonlyMap<string, readonly IssuePageTimelineEntry[]> }) {
+}: ThreadProps & {
+  entry: IssuePageTimelineEntry;
+  kind: EntryKind;
+  replies: ReadonlyMap<string, readonly IssuePageTimelineEntry[]>;
+  arrival: Arrival;
+}) {
   const { issue } = page;
   const { summary, text } = describeEntry(entry);
   switch (kind) {
     case "opened":
       return (
-        <li className="entry entry-comment">
+        <li className="entry entry-comment" data-arrival={arrival(entry.opId)}>
           <Byline segment={entry.author} authors={authors}>
             <span className="byline-meta">opened the issue</span>
           </Byline>
@@ -168,7 +181,7 @@ function ThreadEntry({
     case "comment":
     case "own-comment":
       return (
-        <li className="entry entry-comment">
+        <li className="entry entry-comment" data-arrival={arrival(entry.opId)}>
           <Byline segment={entry.author} authors={authors}>
             {entry.type === "edit_comment" ? <span className="byline-meta">{summary}</span> : null}
           </Byline>
@@ -177,7 +190,7 @@ function ThreadEntry({
       );
     case "system":
       return (
-        <li className="entry entry-system">
+        <li className="entry entry-system" data-arrival={arrival(entry.opId)}>
           <p className="system-line">
             <PenguinMark className="system-mark" />
             <span>
@@ -190,7 +203,7 @@ function ThreadEntry({
     case "check": {
       const check = issue.checks.find((candidate) => candidate.opId === entry.opId)!;
       return (
-        <li className="entry entry-card">
+        <li className="entry entry-card" data-arrival={arrival(entry.opId)}>
           <CheckCard check={check} author={entry.author} fixedIn={fixedIn(check, page.subIssues)} authors={authors} navigate={navigate} />
         </li>
       );
@@ -198,7 +211,7 @@ function ThreadEntry({
     case "review": {
       const review = issue.reviews.find((candidate) => candidate.opId === entry.opId)!;
       return (
-        <li className="entry entry-card">
+        <li className="entry entry-card" data-arrival={arrival(entry.opId)}>
           <ReviewCard review={review} authors={authors} />
         </li>
       );
@@ -206,11 +219,12 @@ function ThreadEntry({
     case "thread": {
       const thread = issue.threads.find((candidate) => candidate.id === entry.opId)!;
       return (
-        <li className="entry entry-card">
+        <li className="entry entry-card" data-arrival={arrival(entry.opId)}>
           <ThreadCard
             page={page}
             thread={thread}
             replies={replies.get(thread.id) ?? []}
+            arrival={arrival}
             authors={authors}
             onSignedOut={onSignedOut}
             onWritten={onWritten}
@@ -220,7 +234,7 @@ function ThreadEntry({
     }
     case "rejected":
       return (
-        <li className="entry entry-rejected">
+        <li className="entry entry-rejected" data-arrival={arrival(entry.opId)}>
           <p className="event-line">
             <AuthorName segment={entry.author} authors={authors} className="event-author" />
             <s className="event-summary">{summary}</s>
@@ -235,7 +249,7 @@ function ThreadEntry({
     case "event":
     case "in-thread":
       return (
-        <li className={`entry entry-${kind === "claim" ? "claim" : "event"}`}>
+        <li className={`entry entry-${kind === "claim" ? "claim" : "event"}`} data-arrival={arrival(entry.opId)}>
           <p className="event-line">
             {kind === "claim" ? <AuthorAvatar segment={entry.author} authors={authors} /> : null}
             <AuthorName segment={entry.author} authors={authors} className="event-author" />
@@ -257,12 +271,14 @@ function ThreadCard({
   page,
   thread,
   replies,
+  arrival,
   authors,
   onSignedOut,
   onWritten,
 }: {
   page: IssuePage;
   thread: IssuePageThread;
+  arrival: Arrival;
   replies: readonly IssuePageTimelineEntry[];
   authors: Authors;
   onSignedOut: () => void;
@@ -289,7 +305,7 @@ function ThreadCard({
       {answers.length === 0 ? null : (
         <ol className="thread-replies">
           {answers.map((reply) => (
-            <li key={reply.opId} className="thread-reply">
+            <li key={reply.opId} className="thread-reply" data-arrival={arrival(reply.opId)}>
               <Byline segment={reply.author} authors={authors} />
               {describeEntry(reply).text === undefined ? null : <p className="thread-reply-text">{describeEntry(reply).text}</p>}
             </li>

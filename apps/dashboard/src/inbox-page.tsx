@@ -31,6 +31,7 @@ import {
 } from "./inbox-view.ts";
 import { STATE_LABEL } from "./issue-view.ts";
 import { linkHandler } from "./links.ts";
+import { useArrivals } from "./motion.tsx";
 import { NewIssueLink } from "./new-issue-page.tsx";
 import { INBOX_ALL_PATH, type Route } from "./routes.ts";
 import { SIDEBAR_LIST, SidebarList } from "./sidebar-slot.tsx";
@@ -225,6 +226,8 @@ interface ListProps extends ListOptions {
 /** The five lists under their noun headings, with their counts. */
 export function InboxList({ inbox, facts, viewer, now, showAll, openIssue, navigate }: ListProps) {
   const { load } = inbox;
+  // Rows a live change adds slide in; Show all widens the list without motion.
+  const arrival = useArrivals(load.kind === "ready" ? load.items.map(itemKey) : undefined, showAll ? "all" : "newest");
   if (load.kind === "loading") return <div className="inbox-list" aria-busy="true" />;
   if (load.kind === "failed") {
     return (
@@ -260,6 +263,7 @@ export function InboxList({ inbox, facts, viewer, now, showAll, openIssue, navig
                     viewer={viewer}
                     now={now}
                     open={item.issueId === openIssue}
+                    arrival={arrival(itemKey(item))}
                     marking={inbox.marking.has(itemKey(item))}
                     onMarkRead={inbox.markRead}
                     navigate={navigate}
@@ -286,6 +290,8 @@ interface RowProps {
   readonly viewer: string;
   readonly now: Date;
   readonly open: boolean;
+  /** The row's stagger index when a live change just added it. */
+  readonly arrival: string | undefined;
   readonly marking: boolean;
   readonly onMarkRead: (item: InboxEntry) => void;
   readonly navigate: (path: string) => void;
@@ -299,7 +305,7 @@ const RAISED_FULL = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", ti
  * time. The dot at the right is the Mark read control on an unread item; it takes the attention
  * colour while the item waits on the person, whose preview then says so in words.
  */
-function InboxRow({ item, facts, viewer, now, open, marking, onMarkRead, navigate }: RowProps) {
+function InboxRow({ item, facts, viewer, now, open, arrival, marking, onMarkRead, navigate }: RowProps) {
   const path = `/issues/${item.issueId}`;
   const titleId = `inbox-item-${itemKey(item)}`;
   const numberId = `${titleId}-number`;
@@ -309,7 +315,7 @@ function InboxRow({ item, facts, viewer, now, open, marking, onMarkRead, navigat
   const online = isOnline(identity);
   const raisedTime = Date.parse(item.raisedAt);
   return (
-    <li className="inbox-row" data-waiting={waiting === null ? undefined : true}>
+    <li className="inbox-row" data-waiting={waiting === null ? undefined : true} data-arrival={arrival}>
       <a className="inbox-row-link" href={path} aria-current={open ? "page" : undefined} onClick={linkHandler(navigate, path)}>
         <span className="avatar-slot">
           {handle === undefined ? (

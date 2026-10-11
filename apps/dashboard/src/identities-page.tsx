@@ -52,6 +52,7 @@ import {
 import { useRead } from "./inbox-page.tsx";
 import { describeEntry, shortSha, STATE_LABEL } from "./issue-view.ts";
 import { linkHandler } from "./links.ts";
+import { useArrivals } from "./motion.tsx";
 import { identityPath, personPath } from "./routes.ts";
 import { SidebarList } from "./sidebar-slot.tsx";
 import { agentWork, sessionIssue } from "./team-view.ts";
@@ -241,13 +242,14 @@ interface ListProps {
 
 /** Every identity as a row: its avatar with a dot while a session runs, its handle and its name. */
 export function IdentityList({ identities, selectedId, onChoose }: ListProps) {
+  const arrival = useArrivals(identities.map((identity) => identity.id));
   return (
     <ul className="identity-rows">
       {identities.map((identity) => {
         const path = identityPath(identity.id);
         const online = isOnline(identity);
         return (
-          <li key={identity.id}>
+          <li key={identity.id} data-arrival={arrival(identity.id)}>
             <a
               className="identity-row"
               href={path}
@@ -495,6 +497,11 @@ function OverviewTab({ identity, board, navigate }: OverviewProps) {
   const work = board === undefined ? undefined : agentWork(board, identity.handle);
   const titles = new Map(board?.issues.map((issue) => [issue.issue.id, issue.issue.title]) ?? []);
   const checkpoint = identity.lastCheckpoint;
+  // Operations and sessions a live change adds slide in.
+  const arrival = useArrivals([
+    ...identity.recentOperations.map((operation) => operation.opId),
+    ...identity.sessions.map((session) => `session:${session.id}`),
+  ]);
   return (
     <>
       {board === undefined ? (
@@ -542,7 +549,7 @@ function OverviewTab({ identity, board, navigate }: OverviewProps) {
         ) : (
           <ul className="identity-card identity-operations">
             {identity.recentOperations.map((operation) => (
-              <li key={operation.opId} className="identity-operation">
+              <li key={operation.opId} className="identity-operation" data-arrival={arrival(operation.opId)}>
                 <span className="identity-operation-text">{describeEntry(timelineEntry(operation)).summary}</span>
                 <IssueLink id={operation.issueId} navigate={navigate} />
               </li>
@@ -558,7 +565,7 @@ function OverviewTab({ identity, board, navigate }: OverviewProps) {
         {identity.sessions.map((session) => {
           const current = sessionIssue(board, identity.handle, session);
           return (
-            <div key={session.id} className="identity-card">
+            <div key={session.id} className="identity-card" data-arrival={arrival(`session:${session.id}`)}>
               <h3 className="identity-session-head">
                 {session.vendor}
                 <span className={`session-state session-${session.status}`}>

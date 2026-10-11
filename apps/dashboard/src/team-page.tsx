@@ -22,6 +22,7 @@ import { useRead, type Read } from "./inbox-page.tsx";
 import { PenguinIndicator } from "./issue-page.tsx";
 import { STATE_LABEL } from "./issue-view.ts";
 import { linkHandler } from "./links.ts";
+import { Reorder, useArrivals } from "./motion.tsx";
 import { NewIssueLink } from "./new-issue-page.tsx";
 import { identityPath, personPath } from "./routes.ts";
 import {
@@ -116,7 +117,7 @@ export function TeamMapView({ board, page, viewer, navigate }: ViewProps) {
           <h2 id="team-unassigned" className="team-section-heading">
             Unassigned <span className="tab-count">{map.unassigned.length}</span>
           </h2>
-          <IssueList rows={map.unassigned.map((issue) => ({ issue, involvement: [] }))} navigate={navigate} />
+          <IssueList scope="unassigned" rows={map.unassigned.map((issue) => ({ issue, involvement: [] }))} navigate={navigate} />
         </section>
       )}
     </div>
@@ -169,16 +170,22 @@ interface BoxesProps {
   readonly navigate: (path: string) => void;
 }
 
+/**
+ * The person's agents. A session going online or offline reorders them, so each box slides to its new
+ * place; a box a live change adds slides in.
+ */
 function AgentBoxes({ owner, agents, navigate }: BoxesProps) {
+  const handles = agents.map((agent) => agent.identity.handle);
+  const arrival = useArrivals(handles, owner);
   if (agents.length === 0) return <p className="muted person-empty">No agents</p>;
   return (
-    <ul className="agent-boxes">
+    <Reorder className="agent-boxes" order={handles.join(" ")}>
       {agents.map((agent) => (
-        <li key={agent.identity.handle}>
+        <li key={agent.identity.handle} data-key={agent.identity.handle} data-arrival={arrival(agent.identity.handle)}>
           <AgentBox owner={owner} agent={agent} navigate={navigate} />
         </li>
       ))}
-    </ul>
+    </Reorder>
   );
 }
 
@@ -278,28 +285,30 @@ export function PersonView({ board, page, viewer, navigate, person }: ViewProps 
         <h2 id="person-issues" className="team-section-heading">
           Issues <span className="tab-count">{issues.length}</span>
         </h2>
-        {issues.length === 0 ? <p className="muted">None</p> : <IssueList rows={issues} navigate={navigate} />}
+        {issues.length === 0 ? <p className="muted">None</p> : <IssueList scope={person} rows={issues} navigate={navigate} />}
       </section>
     </article>
   );
 }
 
 /** Issues as rows: number and title, then the state and why the issue is on the list. */
-function IssueList({ rows, navigate }: { rows: readonly PersonIssue[]; navigate: (path: string) => void }) {
+function IssueList({ scope, rows, navigate }: { scope: string; rows: readonly PersonIssue[]; navigate: (path: string) => void }) {
+  // The scope is the person or the unassigned list, so moving between people adds no arrival.
+  const arrival = useArrivals(rows.map(({ issue }) => issue.issue.id), scope);
   return (
     <ul className="team-issues">
       {rows.map(({ issue, involvement }) => (
-        <IssueRow key={issue.issue.id} issue={issue} involvement={involvement} navigate={navigate} />
+        <IssueRow key={issue.issue.id} issue={issue} involvement={involvement} arrival={arrival(issue.issue.id)} navigate={navigate} />
       ))}
     </ul>
   );
 }
 
-function IssueRow({ issue, involvement, navigate }: PersonIssue & { navigate: (path: string) => void }) {
+function IssueRow({ issue, involvement, arrival, navigate }: PersonIssue & { arrival: string | undefined; navigate: (path: string) => void }) {
   const { id, title, state } = issue.issue;
   const path = `/issues/${id}`;
   return (
-    <li className="team-issue">
+    <li className="team-issue" data-arrival={arrival}>
       <a className="team-issue-title" href={path} onClick={linkHandler(navigate, path)}>
         <span className="issue-number">#{id}</span> {title}
       </a>
