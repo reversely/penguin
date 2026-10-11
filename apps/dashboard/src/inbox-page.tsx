@@ -8,9 +8,11 @@ import type { InboxEntry } from "@penguin/protocol";
 import { useCallback, useEffect, useState } from "react";
 
 import { fetchInbox, markInboxRead, SignedOut } from "./api.ts";
-import { INBOX_GROUPS, groupInbox, itemKey, markedRead, REASON_TAG } from "./inbox-view.ts";
+import { CLOSED_WINDOW, INBOX_GROUPS, groupInbox, itemKey, markedRead, newest, REASON_TAG } from "./inbox-view.ts";
 import { STATE_LABEL } from "./issue-view.ts";
 import { linkHandler } from "./links.ts";
+import { NewIssueLink } from "./new-issue-page.tsx";
+import { INBOX_ALL_PATH } from "./routes.ts";
 import type { Live } from "./use-live.ts";
 
 export type InboxLoad =
@@ -86,15 +88,23 @@ export function useInbox(live: Live, onSignedOut: () => void): InboxState {
 
 interface Props {
   readonly inbox: InboxState;
+  /** Whether the Closed issues list shows every item rather than the newest. */
+  readonly showAll: boolean;
   readonly navigate: (path: string) => void;
 }
 
-export function InboxPage({ inbox, navigate }: Props) {
+export function InboxPage({ inbox, showAll, navigate }: Props) {
   const { load } = inbox;
+  const header = (
+    <header className="page-header">
+      <h1>Inbox</h1>
+      <NewIssueLink navigate={navigate} />
+    </header>
+  );
   if (load.kind === "failed") {
     return (
       <div className="inbox">
-        <h1>Inbox</h1>
+        {header}
         <p className="notice" role="alert">
           Please reload the page
         </p>
@@ -106,7 +116,7 @@ export function InboxPage({ inbox, navigate }: Props) {
   const groups = groupInbox(load.items);
   return (
     <div className="inbox">
-      <h1>Inbox</h1>
+      {header}
       {inbox.markFailed ? (
         <p className="notice" role="alert">
           Please try marking it read again
@@ -114,6 +124,7 @@ export function InboxPage({ inbox, navigate }: Props) {
       ) : null}
       {INBOX_GROUPS.map((group) => {
         const items = groups[group.id];
+        const shown = group.id === "closed" ? newest(items, CLOSED_WINDOW, showAll) : items;
         const headingId = `inbox-${group.id}`;
         return (
           <section key={group.id} className="panel" aria-labelledby={headingId}>
@@ -124,7 +135,7 @@ export function InboxPage({ inbox, navigate }: Props) {
               <p className="muted">None</p>
             ) : (
               <ol className="inbox-items">
-                {items.map((item) => (
+                {shown.map((item) => (
                   <InboxRow
                     key={itemKey(item)}
                     item={item}
@@ -135,6 +146,11 @@ export function InboxPage({ inbox, navigate }: Props) {
                 ))}
               </ol>
             )}
+            {shown.length < items.length ? (
+              <a className="show-all" href={INBOX_ALL_PATH} aria-describedby={headingId} onClick={linkHandler(navigate, INBOX_ALL_PATH)}>
+                Show all
+              </a>
+            ) : null}
           </section>
         );
       })}

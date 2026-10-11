@@ -42,6 +42,14 @@ export function groupInbox(items: readonly InboxEntry[]): Record<InboxGroupId, I
   return groups;
 }
 
+/** How many closed issues the inbox lists until "Show all" lists every one. */
+export const CLOSED_WINDOW = 10;
+
+/** The first `size` items of a newest-first list, or all of them. */
+export function newest<T>(items: readonly T[], size: number, showAll: boolean): readonly T[] {
+  return showAll ? items : items.slice(0, size);
+}
+
 export function unreadCount(items: readonly InboxEntry[]): number {
   return items.filter((item) => !item.read).length;
 }

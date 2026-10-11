@@ -192,6 +192,24 @@ export function columnCounts(board: Board): Record<Column, number> {
   return counts;
 }
 
+/** How many cards a lane's Done column shows until "Show all" shows every one. */
+export const DONE_WINDOW = 5;
+
+/** A number orders issues by age; a temporary ID belongs to an issue created offline and not yet numbered. */
+function issueAge(card: Card): number {
+  const { id } = card.issue.issue;
+  return /^\d+$/.test(id) ? Number(id) : Number.POSITIVE_INFINITY;
+}
+
+/**
+ * A lane's Done cards, newest issue first: the first DONE_WINDOW, or all of them. The board carries no
+ * close time, so the issue number stands in for it.
+ */
+export function doneCards(cards: readonly Card[], showAll: boolean): readonly Card[] {
+  const sorted = [...cards].sort((a, b) => issueAge(b) - issueAge(a));
+  return showAll ? sorted : sorted.slice(0, DONE_WINDOW);
+}
+
 /** The order in which a state calls for attention: the first one any open issue is in is the board's. */
 const ATTENTION: readonly PenguinState[] = [
   "verification failed",

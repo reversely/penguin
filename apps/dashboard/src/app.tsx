@@ -52,16 +52,20 @@ function SignIn({ problem }: { problem: SignInProblem | undefined }) {
   );
 }
 
+function currentRoute(): Route | undefined {
+  return parseRoute(window.location.pathname, window.location.search);
+}
+
 function useRoute(): [Route | undefined, (path: string) => void] {
-  const [route, setRoute] = useState(() => parseRoute(window.location.pathname));
+  const [route, setRoute] = useState(currentRoute);
   useEffect(() => {
-    const onPop = () => setRoute(parseRoute(window.location.pathname));
+    const onPop = () => setRoute(currentRoute());
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
   }, []);
   const navigate = useCallback((path: string) => {
     window.history.pushState(null, "", path);
-    setRoute(parseRoute(path));
+    setRoute(currentRoute());
   }, []);
   return [route, navigate];
 }
@@ -115,9 +119,9 @@ function Shell({ session, onSignedOut }: { session: Session; onSignedOut: () => 
         {route?.page === "issue" ? (
           <IssuePageView key={route.issueId} issueId={route.issueId} live={live} navigate={navigate} onSignedOut={onSignedOut} />
         ) : route?.page === "board" ? (
-          <BoardPage viewer={session.owner} live={live} navigate={navigate} onSignedOut={onSignedOut} />
+          <BoardPage viewer={session.owner} showAll={route.showAll} live={live} navigate={navigate} onSignedOut={onSignedOut} />
         ) : route?.page === "inbox" ? (
-          <InboxPage inbox={inbox} navigate={navigate} />
+          <InboxPage inbox={inbox} showAll={route.showAll} navigate={navigate} />
         ) : route?.page === "new-issue" ? (
           <NewIssuePage live={live} navigate={navigate} onSignedOut={onSignedOut} />
         ) : route?.page === "identities" ? (

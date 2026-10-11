@@ -14,6 +14,7 @@ import {
   boardPenguinState,
   COLUMNS,
   columnCounts,
+  doneCards,
   initial,
   SESSION_STATUS_LABEL,
   type Card,
@@ -22,18 +23,22 @@ import {
 import { PenguinIndicator, SignalTag } from "./issue-page.tsx";
 import { authorName } from "./issue-view.ts";
 import { linkHandler } from "./links.ts";
+import { NewIssueLink } from "./new-issue-page.tsx";
+import { BOARD_ALL_PATH } from "./routes.ts";
 import type { Live } from "./use-live.ts";
 
 type Load = { readonly kind: "loading" } | { readonly kind: "ready"; readonly board: Board } | { readonly kind: "failed" };
 
 interface Props {
   readonly viewer: string;
+  /** Whether each lane's Done column shows every card rather than the newest. */
+  readonly showAll: boolean;
   readonly live: Live;
   readonly navigate: (path: string) => void;
   readonly onSignedOut: () => void;
 }
 
-export function BoardPage({ viewer, live, navigate, onSignedOut }: Props) {
+export function BoardPage({ viewer, showAll, live, navigate, onSignedOut }: Props) {
   const [load, setLoad] = useState<Load>({ kind: "loading" });
   const connected = live.status === "live";
 
@@ -73,12 +78,10 @@ export function BoardPage({ viewer, live, navigate, onSignedOut }: Props) {
   const lanes = boardLanes(board, viewer);
   return (
     <div className="board">
-      <header className="board-header">
+      <header className="page-header">
         <h1>Board</h1>
         <PenguinIndicator state={boardPenguinState(board)} />
-        <a className="button primary board-new" href="/issues/new" onClick={linkHandler(navigate, "/issues/new")}>
-          New issue
-        </a>
+        <NewIssueLink navigate={navigate} />
       </header>
       {lanes.length === 0 ? <p className="muted">No issues yet</p> : null}
       {lanes.length === 0 ? null : (
@@ -91,13 +94,13 @@ export function BoardPage({ viewer, live, navigate, onSignedOut }: Props) {
         </div>
       )}
       {lanes.map((lane) => (
-        <LaneView key={lane.owner ?? ""} lane={lane} navigate={navigate} />
+        <LaneView key={lane.owner ?? ""} lane={lane} showAll={showAll} navigate={navigate} />
       ))}
     </div>
   );
 }
 
-function LaneView({ lane, navigate }: { lane: Lane; navigate: (path: string) => void }) {
+function LaneView({ lane, showAll, navigate }: { lane: Lane; showAll: boolean; navigate: (path: string) => void }) {
   const id = `lane-${lane.owner ?? "unassigned"}`;
   return (
     <section className="lane" aria-labelledby={id}>
@@ -114,6 +117,7 @@ function LaneView({ lane, navigate }: { lane: Lane; navigate: (path: string) => 
       <div className="lane-grid">
         {COLUMNS.map((column) => {
           const cards = lane.columns[column.id];
+          const shown = column.id === "done" ? doneCards(cards, showAll) : cards;
           const headingId = `${id}-${column.id}`;
           return (
             <section
@@ -125,10 +129,20 @@ function LaneView({ lane, navigate }: { lane: Lane; navigate: (path: string) => 
                 {column.label} <span className="muted">{cards.length}</span>
               </h3>
               <ol className="cards">
-                {cards.map((card) => (
+                {shown.map((card) => (
                   <CardView key={card.key} card={card} navigate={navigate} />
                 ))}
               </ol>
+              {shown.length < cards.length ? (
+                <a
+                  className="show-all"
+                  href={BOARD_ALL_PATH}
+                  aria-describedby={headingId}
+                  onClick={linkHandler(navigate, BOARD_ALL_PATH)}
+                >
+                  Show all
+                </a>
+              ) : null}
             </section>
           );
         })}

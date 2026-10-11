@@ -2,18 +2,23 @@
 // PAGE_PATH in apps/worker/src/dashboard.ts); the pages themselves are built by later tickets.
 
 export type Route =
-  | { readonly page: "inbox" }
-  | { readonly page: "board" }
+  | { readonly page: "inbox"; readonly showAll: boolean }
+  | { readonly page: "board"; readonly showAll: boolean }
   | { readonly page: "identities" }
   | { readonly page: "new-issue" }
   | { readonly page: "issue"; readonly issueId: string };
 
 export type Page = Route["page"];
 
-/** The route for a path, or undefined for a path the dashboard does not serve. */
-export function parseRoute(pathname: string): Route | undefined {
-  if (pathname === "/" || pathname === "/inbox") return { page: "inbox" };
-  if (pathname === "/board") return { page: "board" };
+/** The inbox with every closed issue and the board with every Done issue; each lists only the newest by default. */
+export const INBOX_ALL_PATH = "/inbox?closed=all";
+export const BOARD_ALL_PATH = "/board?done=all";
+
+/** The route for a path and its query, or undefined for a path the dashboard does not serve. */
+export function parseRoute(pathname: string, search = ""): Route | undefined {
+  const query = new URLSearchParams(search);
+  if (pathname === "/" || pathname === "/inbox") return { page: "inbox", showAll: query.get("closed") === "all" };
+  if (pathname === "/board") return { page: "board", showAll: query.get("done") === "all" };
   if (pathname === "/identities") return { page: "identities" };
   // No issue takes this id: a number is digits and a temporary ID is an op_id, which has hyphens.
   if (pathname === "/issues/new") return { page: "new-issue" };

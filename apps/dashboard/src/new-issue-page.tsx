@@ -12,6 +12,15 @@ import { BODY_MAX_LENGTH, newIssueProblem, openIssue, TITLE_MAX_LENGTH } from ".
 import { useIdentityHandles } from "./use-identity-handles.ts";
 import type { Live } from "./use-live.ts";
 
+/** The header's link to the New issue form, on the board and the inbox. */
+export function NewIssueLink({ navigate }: { navigate: (path: string) => void }) {
+  return (
+    <a className="button primary page-header-action" href="/issues/new" onClick={linkHandler(navigate, "/issues/new")}>
+      New issue
+    </a>
+  );
+}
+
 interface Props {
   readonly live: Live;
   readonly navigate: (path: string) => void;

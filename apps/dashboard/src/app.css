@@ -663,15 +663,25 @@ a.row-title {
   gap: 1.25rem;
 }
 
-.board-header {
+/* A page's heading row, with its action at the right edge (the board and the inbox). */
+.page-header {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 0.5rem 1rem;
 }
 
-.board-new {
+.page-header-action {
   margin-left: auto;
+}
+
+/* The link under a windowed list to its full form; its height keeps a phone's tap target. */
+.show-all {
+  display: inline-flex;
+  align-items: center;
+  justify-self: start;
+  min-height: 1.5rem;
+  font-size: 0.875rem;
 }
 
 .board-columns,
@@ -1296,6 +1306,12 @@ a.row-title {
   flex: none;
   margin: 0;
   accent-color: var(--accent);
+}
+
+/* The New issue form's assignee boxes are a phone's minimum tap target, 24px. */
+.issue-form .check input {
+  width: 1.5rem;
+  height: 1.5rem;
 }
 
 .check .muted {

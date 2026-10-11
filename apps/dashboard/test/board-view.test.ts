@@ -17,6 +17,8 @@ import {
   boardPenguinState,
   checkCounts,
   columnCounts,
+  DONE_WINDOW,
+  doneCards,
   initial,
   latestReviews,
   sessionStatus,
@@ -227,6 +229,16 @@ test("an identity assignment with no known owner lands in the unowned lane", () 
     lanes.map((lane) => [lane.owner, lane.columns.fixing.length]),
     [[null, 1]],
   );
+});
+
+test("a lane's Done column shows its newest issues first, the window by default and every one on request", () => {
+  const closed = ["3", "12", "op-offline", "7", "40", "9", "21"].map((id) => issue(id, "closed"));
+  const [lane] = boardLanes({ owners: [], issues: closed }, "jun");
+  const ids = (cards: ReturnType<typeof doneCards>) => cards.map((card) => card.issue.issue.id);
+  assert.equal(DONE_WINDOW, 5);
+  assert.deepEqual(ids(doneCards(lane.columns.done, false)), ["op-offline", "40", "21", "12", "9"]);
+  assert.deepEqual(ids(doneCards(lane.columns.done, true)), ["op-offline", "40", "21", "12", "9", "7", "3"]);
+  assert.deepEqual(ids(doneCards(lane.columns.done.slice(0, 2), false)), ["12", "3"]);
 });
 
 test("the board's Penguin state is the most pressing state of any issue", () => {
