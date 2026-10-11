@@ -6,6 +6,8 @@
   "type": "module",
   "exports": "./src/index.ts",
   "dependencies": {
-    "@penguin/protocol": "0.0.0"
+    "@penguin/policies": "0.0.0",
+    "@penguin/protocol": "0.0.0",
+    "@penguin/scope-map": "0.0.0"
   }
 }

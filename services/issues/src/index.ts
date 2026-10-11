@@ -11,3 +11,13 @@ export {
   toBase64Url,
   verifyOperation,
 } from "./signature.ts";
+export {
+  REJECT_REASONS,
+  validate,
+  type BridgeKey,
+  type IssueState,
+  type RejectReason,
+  type Signer,
+  type ValidationContext,
+  type Verdict,
+} from "./validate.ts";
