@@ -1,6 +1,7 @@
 # Use-case walkthrough
 
-`npm run walkthrough` runs the three use cases of PRD section 1 through the real system and records
+`npm run walkthrough` runs the three use cases ([huddle-flow.md](huddle-flow.md#worked-examples))
+through the real system and records
 what each owner sees on the dashboard. Each use case gets its own local Worker under `wrangler dev`.
 The Worker's Artifacts binding points at the real namespace under a repo prefix unique to the run.
 Owners sign in through the loopback GitHub OAuth test double (`apps/worker/test/github-double.ts`).

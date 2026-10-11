@@ -1,7 +1,8 @@
 # How Penguin reaches each person's agents
 
 Each person on a team runs their own Claude Code or Codex on their own machine. Penguin never runs,
-starts or reads those agents. It reaches them by three paths, and by no other.
+starts or reads those agents. It reaches them by three paths only. [README.md](README.md)
+lists the other docs; [architecture.md](architecture.md) places these paths among Penguin's pieces.
 
 ```mermaid
 flowchart LR
@@ -28,7 +29,7 @@ five tools:
 | Tool | What the agent uses it for |
 |---|---|
 | `register_session` | Says which of its person's agent identities it works as, such as `@jun/reports` |
-| `get_work` | Reads the issues and fix tasks assigned to that identity, and the threads that need its person |
+| `get_work` | Reads the issues and fix tasks assigned to that identity; also the threads that need its person |
 | `get_issue` | Reads one issue in full |
 | `post_update` | Comments, links a commit, changes state, replies in a thread, sends a fix upstream |
 | `report_checkpoint` | Reports a checkpoint; the answer lists any task or thread that arrived |
@@ -53,7 +54,7 @@ products are in [mcp-setup.md](mcp-setup.md#fix-tasks-and-safe-checkpoints).
 ## 3. The person's inbox
 
 An agent that is not running, or that has stopped to wait for its person, makes no tool calls, so
-neither path above reaches it. Penguin cannot start or wake an agent, and on a Claude plan nothing can
+neither path above reaches it. Penguin cannot start or wake an agent. On a Claude plan nothing can
 post into a session's window from outside. Penguin puts the item in the person's inbox on the
 dashboard instead: "Start a session" for a task assigned to an identity with no running session,
 "Waiting for your reply" for a thread, "Waiting for your review" for a fix. The person then starts a
@@ -63,7 +64,7 @@ session or tells their agent.
 
 | Piece | Where | What it does |
 |---|---|---|
-| `penguin-bridge` | Their machine, from this repo (`services/local-bridge`) | Publishes their checkpoints to Penguin after showing them the exact changes, runs the project's allowed test commands, provides the hook command |
+| `penguin-bridge` | Their machine, from this repo (`services/local-bridge`; see [bridge-and-runner.md](bridge-and-runner.md)) | Publishes their checkpoints to Penguin after showing them the exact changes, runs the project's allowed test commands, provides the hook command |
 | One MCP server entry | Their Claude Code or Codex settings | Path 1 |
 | One hook entry | The project's `.claude/settings.json` or `.codex/hooks.json` | Path 2 |
 | A dashboard sign-in | Their browser, through GitHub | Path 3 |

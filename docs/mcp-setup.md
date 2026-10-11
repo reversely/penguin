@@ -2,9 +2,9 @@
 
 An owner's Claude Code or Codex session reads the issues assigned to one of the owner's identities and
 writes comments, linked commits and state changes back to them. The session reaches Penguin's MCP
-endpoint, `<worker-url>/mcp`, with the owner's MCP token (setup inventory K3). The token decides whose
-identities the session may use. This page covers issuing a token, connecting each agent product,
-registering a session and running the Phase 3 exit check by hand and as a script.
+endpoint, `<worker-url>/mcp`, with the owner's MCP token. The token decides whose identities the
+session may use. This page covers issuing a token, connecting each agent product, registering a
+session and running the agent-session exit check by hand and as a script.
 
 For how the three connection paths fit together (MCP tools, the hook, the inbox), read
 [how-agents-connect.md](how-agents-connect.md) first.
@@ -16,13 +16,15 @@ For how the three connection paths fit together (MCP tools, the hook, the inbox)
 | The Worker URL | The deployer | The deployed Worker, such as `https://penguin.example.workers.dev` |
 | An MCP token per owner | The deployer | `POST /mcp/tokens` with the deployer token (below) |
 | The identity the session works as, such as `@jun/reports` | The owner | The dashboard's Identities page, signed in as that owner |
-| Dashboard sign-in for each owner | The deployer | `PENGUIN_DASHBOARD_OWNERS` in `apps/worker/wrangler.jsonc` maps each GitHub login to an owner id |
+| Dashboard sign-in for each owner | The deployer | `PENGUIN_DASHBOARD_OWNERS` in `apps/worker/wrangler.jsonc` maps each GitHub login to an owner id ([deploy.md](deploy.md#dashboard-sign-in)) |
 
 An identity's handle starts with its owner's id, so only Jun can create `@jun/reports`. Jun needs a
 GitHub login in `PENGUIN_DASHBOARD_OWNERS` to sign in and create it.
 
 A session registered for an identity receives that identity's assigned issues through `get_work` only
-when the identity accepts assignments automatically. Otherwise the owner accepts each assignment first.
+when the identity has "Auto-accept assignments" checked. Otherwise each assignment waits for the
+owner's acceptance. No route or dashboard control accepts one yet, so check Auto-accept on every
+identity a session works as.
 
 ## Issuing an MCP token
 
@@ -115,8 +117,9 @@ identity in the first prompt, for example:
 
 `register_session` returns a `sessionId`. The agent passes it to `get_work`, `get_issue`, `post_update`
 and `report_checkpoint`. Each of those calls keeps the session running. After about 90 seconds without
-one, Penguin marks the session offline and the agent registers again. A registered session appears on
-the board in its owner's lane under the identity, with its vendor and branch.
+one, Penguin marks the session offline and the agent registers again. Once a session registers, the
+identity's agent box in its owner's square on the team map leaves "No session". The identity's agent
+card lists the session with its vendor, branch and worktree ([dashboard.md](dashboard.md#team-map)).
 
 Penguin refuses `register_session` for an identity the token's owner does not own. The refusal reads
 `forbidden` and names the identity's owner.
@@ -171,9 +174,9 @@ the sub-issue stays open and assigned. The next session of the identity receives
 ## Threads that need the developer
 
 An owner's request for changes on a fix opens a thread on the fix sub-issue. The thread carries the
-reviewer's reason and needs the owners of the fix's assignees. Penguin adds it to each needed
+reviewer's reason and needs the owners of the fix's assignees other than the reviewer. Penguin adds it to each needed
 person's inbox. Each running session of that person hears of it once, at its next safe checkpoint:
-the hook answer says which issue has the thread, and `report_checkpoint` lists it under `newThreads`.
+the hook answer says which issue has the thread; `report_checkpoint` lists it under `newThreads`.
 `get_work` lists every open thread that needs the session's developer under `threadsNeedingYou`. The
 agent tells its developer about each one in its own conversation and replies with `post_update`
 (`reply_thread`). A person in the thread resolves it on the issue page: the reviewer, a person it
@@ -183,10 +186,11 @@ needs or a person who replied.
 
 A session can find that its fix task belongs in the scope the trigger changed, outside its identity's
 charter. The session then calls `post_update` with `{"type": "send_upstream", "reason": "..."}` on
-the fix sub-issue. Penguin records the note on the issue's timeline. Penguin then assigns the
-sub-issue to an identity of the changing scope's owner whose charter holds that scope. Penguin also
-unassigns the sender. An identity with a running session comes first. The tool's answer names the new assignee
-under `reassignment`. The new session receives the task at its next safe checkpoint. With no session
+the fix sub-issue. Penguin records the note on the issue's timeline. Penguin then labels the
+sub-issue with the changing scope, so that scope's owner's review counts on it. It assigns the
+sub-issue to an identity of the changing scope's owner whose charter holds that scope, preferring one
+with a running session. Last, it unassigns the sender. The tool's answer names the new assignee under
+`reassignment`. The new session receives the task at its next safe checkpoint. With no session
 of that identity running, the owner's inbox asks for one.
 
 Penguin refuses a send-upstream in three cases and records each refusal on the issue's timeline. The
@@ -200,7 +204,7 @@ tool's answer gives the recorded operation as `recordedAs`:
 
 ## Manual exit check with live sessions
 
-These steps run the Phase 3 exit check with a live Claude Code session and a live Codex session. They
+These steps run the agent-session exit check with a live Claude Code session and a live Codex session. They
 need Priya and Jun signed in to the dashboard in two browsers, plus an integration runner.
 
 1. The deployer issues MCP tokens for Jun and for Sam, then a runner registration code with
@@ -209,26 +213,29 @@ need Priya and Jun signed in to the dashboard in two browsers, plus an integrati
    `penguin-bridge register --server https://<worker-url> --owner runner --code <code>`
    and starts `penguin-bridge runner`, which pushes pending operations every 10 seconds.
 3. Jun signs in to the dashboard. On the Identities page, Jun creates `@jun/reports` with
-   "Accept assignments automatically" checked.
+   "Auto-accept assignments" checked.
 4. Jun connects a Claude Code session with Jun's token (Claude Code section) and registers it as
    `@jun/reports` with vendor `claude-code`. Jun connects a Codex session with Jun's token (Codex
-   section) and registers it as `@jun/reports` with vendor `codex`. Priya's board shows both sessions
-   under `@jun/reports` in Jun's lane without a reload.
+   section) and registers it as `@jun/reports` with vendor `codex`. On Priya's team map, the
+   `reports` box in Jun's square changes from "No session" to "Working" without a reload. The
+   identity's agent card lists both sessions.
 5. Security: a Codex session started with Sam's token in `PENGUIN_TOKEN` asks to register as
-   `@jun/reports`. The tool answers `forbidden`. No new session appears on the board.
-6. Priya opens an issue and assigns `@jun/reports`. On the Board, Priya selects New issue, enters the
-   title "Retention dashboard counts merged users twice", checks `@jun/reports` under Assignees and
+   `@jun/reports`. The tool answers `forbidden`. The agent card of `@jun/reports` lists no new session.
+6. Priya opens an issue and assigns `@jun/reports`. On the team map, Priya selects New issue, enters
+   the title "Retention dashboard counts merged users twice", checks `@jun/reports` under Assignees and
    selects Create. The dashboard opens the new issue's page with `@jun/reports` under Assignees.
-   Priya's board shows the card in Jun's lane without a reload. Jun's inbox lists the issue under
+   On Priya's team map, the `reports` box in Jun's square shows the issue's number without a reload.
+   Jun's inbox lists the issue under
    Assignments without a reload. The issue page's Assignees panel also assigns an identity to an
    existing issue with Assign and removes an assignee with Unassign.
 7. Jun asks either session to call `get_work`. The issue is in the result.
 8. Jun asks the session to comment on the issue with `post_update` and to link a commit, such as
-   `owner-jun@4acb1bf94cf8753569e0af7bb26955812e3aa4c6` with kind `fix`. The issue page and the board
-   card show the comment and the commit without a reload.
+   `owner-jun@4acb1bf94cf8753569e0af7bb26955812e3aa4c6` with kind `fix`. The issue page shows the
+   comment and the commit without a reload.
 9. On its next pass the runner prints `N pending: N pushed in commit <sha>`. The four operation files
-   appear under `issues/<number>/ops/` in the issues repo. Once the push event reaches Penguin, the
-   issue page stops marking those operations as waiting for the Git log.
+   appear under `issues/<number>/ops/` in the issues repo. Once the push event reaches Penguin,
+   `get_issue` reports `waitingForGitLog: false` for each. The issue page header shows no
+   "waiting for the Git log" line ([issues.md](issues.md#pending-push)).
 
 ## Scripted exit check
 
