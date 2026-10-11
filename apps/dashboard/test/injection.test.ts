@@ -205,3 +205,106 @@ test("markup in an owner, a handle, a session, an issue title, a reviewer and a 
   assert.match(html, /Reply from &lt;kbd&gt;/);
   assert.doesNotMatch(html, /<img|<script|<b>|<i>|<em>|<s>|<u>|<q>|<kbd>|onerror="/);
 });
+
+test("markup in an issue title, body, comment, thread, check, review and identity renders as text on the issue page", async () => {
+  const { render } = await load<{ render: (page: unknown, handle: string) => string }>(`
+    import { renderToStaticMarkup } from "react-dom/server";
+    import { createElement } from "react";
+    import { IssueContent } from "./src/issue-page.tsx";
+    export function render(page, handle) {
+      const identities = { kind: "ready", handles: [handle], known: new Map([[handle, { id: "<b>identity-1</b>", avatar: null }]]) };
+      const noop = () => {};
+      return renderToStaticMarkup(createElement(IssueContent, { page, viewer: "jun", identities, phone: false, navigate: noop, onSignedOut: noop, onWritten: noop }));
+    }`);
+  const handle = "@jun/reports";
+  const entry = (opId: string, author: string, type: string, payload: unknown) => ({
+    seq: 1,
+    opId,
+    author,
+    type,
+    payload,
+    status: "applied",
+    rejectReason: null,
+    message: null,
+    gitCommit: null,
+    waitingForGitLog: false,
+  });
+  const html = render(
+    {
+      issue: {
+        id: "16",
+        alias: null,
+        title: "<script>globalThis.pwned = 2</script>",
+        body: MARKUP,
+        state: "in_review",
+        stateReason: null,
+        labels: ["<u>scope</u>"],
+        parentId: null,
+        version: 9,
+        assignees: [{ kind: "identity", id: handle, session: { id: "s1", vendor: "<b>codex</b>", branch: "<i>main</i>", status: "running" }, waitingFor: null }],
+        commits: [],
+        checks: [{ opId: "c1", commandId: "test:a", repo: "huddle-016", sha: "1a2b3c4d", test: "<em>dau</em>", result: "fail", logRef: "<s>log</s>", fingerprint: null, supersededBy: null }],
+        reviews: [{ opId: "r1", reviewer: "sam", verdict: "request_changes", reason: "<q>no</q>", repo: "r", sha: "1a2b3c", counts: false, uncountedReason: "<kbd>why</kbd>" }],
+        threads: [
+          { id: "t1", status: "open", needsPersonIds: ["<mark>jun</mark>"], body: "<b>thread</b>", anchor: null, openedBy: "priya", participants: ["priya"], resolvedBy: null, resolveReason: null },
+        ],
+        closeOut: { waitingOn: ["<small>waits</small>"], approvedCommit: null, resolution: null },
+      },
+      subIssues: [
+        {
+          id: "17",
+          title: "<code>fix</code>",
+          state: "in_review",
+          assignees: [{ kind: "identity", id: handle, session: null, waitingFor: null }],
+          reviews: [],
+          checks: [],
+          approval: {
+            head: "owner-jun@c3d4e5f6",
+            owners: [
+              { owner: "priya", state: "changes_requested", reviewer: "priya", reviewOpId: "x", reason: "<cite>reason</cite>" },
+              { owner: "jun", state: "pending", reviewer: null, reviewOpId: null, reason: null },
+            ],
+            approved: false,
+          },
+        },
+      ],
+      timeline: [
+        entry("o1", "priya", "create", { title: "t" }),
+        entry("o2", "jun.reports", "comment", { body: '<img src=x onerror="globalThis.pwned = 3">' }),
+        entry("c1", "penguin", "attach_check", { result: "fail" }),
+        entry("r1", "sam", "review", { verdict: "request_changes" }),
+        entry("t1", "priya", "open_thread", { body: "<b>thread</b>" }),
+        entry("o3", "jun", "reply_thread", { thread: "t1", body: "<strong>reply</strong>" }),
+        { ...entry("o4", "sam", "comment", { body: "<sup>late</sup>" }), status: "rejected", rejectReason: "superseded_version", message: "<sub>based on 1</sub>" },
+      ],
+    },
+    handle,
+  );
+  for (const text of [
+    "&lt;script&gt;globalThis.pwned = 2&lt;/script&gt;",
+    "&lt;img src=x onerror=&quot;globalThis.pwned = 1&quot;&gt;",
+    "&lt;img src=x onerror=&quot;globalThis.pwned = 3&quot;&gt;",
+    "&lt;em&gt;dau&lt;/em&gt;",
+    "&lt;s&gt;log&lt;/s&gt;",
+    "&lt;q&gt;no&lt;/q&gt;",
+    "&lt;kbd&gt;why&lt;/kbd&gt;",
+    "&lt;b&gt;thread&lt;/b&gt;",
+    "&lt;strong&gt;reply&lt;/strong&gt;",
+    "&lt;mark&gt;jun&lt;/mark&gt;",
+    "&lt;sup&gt;late&lt;/sup&gt;",
+    "&lt;sub&gt;based on 1&lt;/sub&gt;",
+    "&lt;code&gt;fix&lt;/code&gt;",
+    "&lt;cite&gt;reason&lt;/cite&gt;",
+    "&lt;small&gt;waits&lt;/small&gt;",
+    "&lt;u&gt;scope&lt;/u&gt;",
+    "&lt;b&gt;codex&lt;/b&gt;",
+    "&lt;i&gt;main&lt;/i&gt;",
+  ]) {
+    assert.ok(html.includes(text), text);
+  }
+  // The agent's name links to its agent card, with its id encoded into the query.
+  assert.match(html, /href="\/identities\?identity=%3Cb%3Eidentity-1%3C%2Fb%3E"/);
+  // Only the fix waiting for the viewer carries an ink primary.
+  assert.equal(html.match(/class="button primary/g)?.length, 1);
+  assert.doesNotMatch(html, /<img|<script|<b>|<i>|<em>|<s>|<u>|<q>|<kbd>|<mark>|<strong>|<sup>|<sub>|<cite>|<small>|<code>fix|onerror="/);
+});

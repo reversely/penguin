@@ -3,7 +3,9 @@ import { test } from "node:test";
 
 import type {
   IssuePage,
+  IssuePageApproval,
   IssuePageCheck,
+  IssuePageOwnerApproval,
   IssuePageReview,
   IssuePageThread,
   IssuePageTimelineEntry,
@@ -11,6 +13,18 @@ import type {
 
 import {
   APPROVAL_LABEL,
+  APPROVAL_STATUS_LABEL,
+  approvalFixes,
+  approvalStatus,
+  assigneeSegment,
+  authorKind,
+  checkSummary,
+  composerRows,
+  entryIds,
+  entryKind,
+  shortCommit,
+  threadEntries,
+  threadOf,
   authorName,
   checkSignal,
   describeEntry,
@@ -250,6 +264,100 @@ test("the page reads again when its issue, its temporary ID or a sub-issue chang
   changes = recordChange(changes, ["jun-b3f2-0001"]);
   assert.equal(latestChange(changes, watched), 3);
   assert.deepEqual(watchedIssues(undefined, "31"), ["31"]);
+});
+
+test("each timeline entry takes the activity's treatment for its kind and its author", () => {
+  const read = page({
+    checks: [check({ opId: "penguin-web-0002" })],
+    reviews: [review({ opId: "jun-web-0003" })],
+    threads: [thread({ id: "priya-web-0004" })],
+  });
+  const ids = entryIds(read.issue);
+  const kind = (fields: Partial<IssuePageTimelineEntry>) => entryKind(entry(fields), "jun", ids);
+  assert.equal(kind({ type: "create", author: "penguin" }), "opened");
+  assert.equal(kind({ type: "comment", author: "jun" }), "own-comment");
+  assert.equal(kind({ type: "comment", author: "priya" }), "comment");
+  assert.equal(kind({ type: "edit_comment", author: "jun.reports" }), "comment");
+  assert.equal(kind({ type: "comment", author: "penguin" }), "system");
+  assert.equal(kind({ type: "change_state", author: "penguin" }), "system");
+  assert.equal(kind({ type: "change_state", author: "jun.reports" }), "claim");
+  assert.equal(kind({ type: "assign", author: "priya" }), "event");
+  assert.equal(kind({ type: "attach_check", opId: "penguin-web-0002", author: "penguin" }), "check");
+  assert.equal(kind({ type: "attach_check", opId: "penguin-web-0009", author: "penguin", payload: { result: "pass" } }), "event");
+  assert.equal(kind({ type: "review", opId: "jun-web-0003" }), "review");
+  assert.equal(kind({ type: "open_thread", opId: "priya-web-0004" }), "thread");
+  assert.equal(kind({ type: "reply_thread", payload: { thread: "priya-web-0004", body: "yes" } }), "in-thread");
+  assert.equal(kind({ type: "resolve_thread", payload: { thread: "priya-web-0004" } }), "in-thread");
+  assert.equal(kind({ type: "reply_thread", payload: { thread: "elsewhere", body: "yes" } }), "event");
+  assert.equal(kind({ type: "comment", status: "rejected", rejectReason: "superseded_version" }), "rejected");
+});
+
+test("a thread card holds its applied replies and resolution in order, and no rejected one", () => {
+  const timeline = [
+    entry({ opId: "a", type: "reply_thread", payload: { thread: "t1", body: "one" } }),
+    entry({ opId: "b", type: "reply_thread", payload: { thread: "t2", body: "other" } }),
+    entry({ opId: "c", type: "reply_thread", payload: { thread: "t1", body: "late" }, status: "rejected" }),
+    entry({ opId: "d", type: "comment", payload: { thread: "t1", body: "not a reply" } }),
+    entry({ opId: "e", type: "resolve_thread", payload: { thread: "t1" } }),
+  ];
+  const byThread = threadEntries(timeline);
+  assert.deepEqual(
+    byThread.get("t1")?.map((e) => e.opId),
+    ["a", "e"],
+  );
+  assert.deepEqual(
+    byThread.get("t2")?.map((e) => e.opId),
+    ["b"],
+  );
+  assert.equal(byThread.get("t3"), undefined);
+  assert.equal(threadOf(entry({ payload: null })), undefined);
+});
+
+test("an approval card waits for the viewer only while a head is linked and the viewer's review is pending", () => {
+  const owners = (jun: IssuePageOwnerApproval["state"], priya: IssuePageOwnerApproval["state"]) => [
+    { owner: "jun", state: jun, reviewer: jun === "pending" ? null : "jun", reviewOpId: null, reason: null },
+    { owner: "priya", state: priya, reviewer: priya === "pending" ? null : "priya", reviewOpId: null, reason: null },
+  ];
+  const approval = (fields: Partial<IssuePageApproval>): IssuePageApproval => ({ head: "owner-jun@c3d4e5f6", owners: [], approved: false, ...fields });
+  assert.equal(approvalStatus(approval({ owners: owners("pending", "approved") }), "jun"), "waiting-for-you");
+  assert.equal(approvalStatus(approval({ owners: owners("pending", "approved") }), "priya"), "waiting");
+  assert.equal(approvalStatus(approval({ head: null, owners: owners("pending", "pending") }), "jun"), "waiting");
+  assert.equal(approvalStatus(approval({ owners: owners("changes_requested", "pending") }), "sam"), "changes-requested");
+  assert.equal(approvalStatus(approval({ owners: owners("approved", "approved"), approved: true }), "jun"), "approved");
+  assert.equal(APPROVAL_STATUS_LABEL["waiting-for-you"], "Waiting for your review");
+  const fixes = approvalFixes([sub("32"), sub("33", { approval: approval({}) })]);
+  assert.deepEqual(
+    fixes.map((fix) => fix.id),
+    ["33"],
+  );
+});
+
+test("the checks summary counts current results by signal and superseded ones apart", () => {
+  const summary = checkSummary([
+    check({ opId: "1", result: "pass" }),
+    check({ opId: "2", result: "fail" }),
+    check({ opId: "3", result: "error" }),
+    check({ opId: "4", result: "fail", supersededBy: "penguin-web-0009" }),
+    check({ opId: "5", result: "pass", supersededBy: "penguin-web-0009" }),
+  ]);
+  assert.deepEqual(summary, { verified: 1, failure: 1, warning: 1, superseded: 2 });
+});
+
+test("the composer takes one row per line of its draft, up to six", () => {
+  assert.equal(composerRows(""), 1);
+  assert.equal(composerRows("one\ntwo\nthree"), 3);
+  assert.equal(composerRows("\n".repeat(20)), 6);
+});
+
+test("authors and assignees read as Penguin, an identity or a person", () => {
+  assert.equal(authorKind("penguin"), "penguin");
+  assert.equal(authorKind("jun.reports"), "identity");
+  assert.equal(authorKind("jun"), "person");
+  assert.equal(authorKind(null), "unknown");
+  assert.equal(assigneeSegment({ kind: "identity", id: "@jun/reports" }), "jun.reports");
+  assert.equal(assigneeSegment({ kind: "person", id: "priya" }), "priya");
+  assert.equal(authorName(assigneeSegment({ kind: "identity", id: "@jun/reports" })), "@jun/reports");
+  assert.equal(shortCommit("owner-jun@c3d4e5f6a7b8"), "owner-jun@c3d4e5f");
 });
 
 test("a thread Penguin opened for a request for changes speaks for the reviewer", () => {

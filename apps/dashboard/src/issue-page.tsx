@@ -1,53 +1,46 @@
-// The issue page (PRD section 8): title, body, labels, assignees, the trigger, attached checks,
-// sub-issues with their sessions and reviews, the timeline with rejected operations and their
-// reasons, the comment box, the threads with a reply box and Resolve, and controls to assign an
-// identity or unassign anyone. Every value from the issue renders as React text, so markup in an
-// issue body or comment shows as text and runs nothing.
+// The issue page (PRD section 8; identity plan sections 4 and 5). The centre holds the issue's
+// activity (issue-thread.tsx): the description, the timeline with rejected operations and their
+// reasons, checks as evidence cards, reviews and fix approvals as approval cards, the threads with a
+// reply box and Resolve, and the comment composer. The details panel holds Penguin's state, the
+// labels, the assignees with their sessions and controls to assign an identity or unassign anyone,
+// a summary of the checks, the sub-issues with their reviews, the close-out, the trigger and the
+// commits. From 1100px the panel docks beside the activity; below, it is the shell's drawer; on a
+// phone an Activity and Details control switches the page between the two. Every value from the issue
+// renders as React text, so markup in an issue body or comment shows as text and runs nothing.
 //
 // The page shows no diff. Another owner's unfinished work appears only as linked commits and checks;
 // the diff viewer, which shows the affected hunks only (open decision 2), is a later ticket.
 
-import type {
-  IssuePage,
-  IssuePageAssignee,
-  IssuePageCloseOut,
-  IssuePageCheck,
-  IssuePageReview,
-  IssuePageSubIssue,
-  IssuePageThread,
-  IssuePageTimelineEntry,
-} from "@penguin/protocol";
-import { useEffect, useState, type ChangeEvent, type FormEvent } from "react";
+import type { IssuePage, IssuePageAssignee, IssuePageCloseOut, IssuePageReview, IssuePageSubIssue } from "@penguin/protocol";
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore, type ChangeEvent, type FormEvent } from "react";
 
 import { fetchIssue, SignedOut, submitOperation } from "./api.ts";
-import { EYE } from "./character.ts";
+import { IdentityAvatar, PersonAvatar } from "./avatar.tsx";
 import { DetailsPanel, DetailsToggle } from "./details-pane.tsx";
 import { Icon } from "./icon.tsx";
+import { AuthorName, PenguinIndicator, SignalTag, type Authors } from "./issue-marks.tsx";
+import { IssueThread } from "./issue-thread.tsx";
 import {
   APPROVAL_LABEL,
+  assigneeSegment,
   authorName,
-  checkSignal,
-  describeEntry,
-  entrySignal,
-  fixedIn,
+  checkSummary,
   penguinState,
-  reasonLabel,
   RESOLUTION_LABEL,
   reviewSuperseded,
   shortSha,
   showsCloseOut,
-  SIGNAL_LABEL,
   STATE_LABEL,
-  threadOpener,
   watchedIssues,
-  type PenguinState,
-  type Signal,
 } from "./issue-view.ts";
 import { latestChange } from "./live-changes.ts";
 import { linkHandler } from "./links.ts";
 import { assignChoices, assignOperation } from "./new-issue-view.ts";
-import { useIdentityHandles, type IdentityHandles } from "./use-identity-handles.ts";
+import { useIdentityHandles, type IdentityHandles, type KnownIdentities } from "./use-identity-handles.ts";
 import type { Live } from "./use-live.ts";
+import { useOperation } from "./use-operation.ts";
+
+export { PenguinIndicator, SignalTag } from "./issue-marks.tsx";
 
 type Load =
   | { readonly kind: "loading" }
@@ -57,18 +50,39 @@ type Load =
 
 interface Props {
   readonly issueId: string;
+  /** The signed-in person, whose comments show in ink and whose pending reviews take actions. */
+  readonly viewer: string;
   readonly live: Live;
   readonly navigate: (path: string) => void;
   readonly onSignedOut: () => void;
 }
 
-export function IssuePageView({ issueId, live, navigate, onSignedOut }: Props) {
+/** The width below which the shell shows its phone layout; matches app.css. */
+const PHONE = "(max-width: 759.98px)";
+
+function usePhone(): boolean {
+  const subscribe = useCallback((onChange: () => void) => {
+    const list = window.matchMedia(PHONE);
+    list.addEventListener("change", onChange);
+    return () => list.removeEventListener("change", onChange);
+  }, []);
+  return useSyncExternalStore(
+    subscribe,
+    () => window.matchMedia(PHONE).matches,
+    () => false,
+  );
+}
+
+const NO_IDENTITIES: KnownIdentities = new Map();
+
+export function IssuePageView({ issueId, viewer, live, navigate, onSignedOut }: Props) {
   const [load, setLoad] = useState<Load>({ kind: "loading" });
   const [reload, setReload] = useState(0);
   const page = load.kind === "ready" && routeMatches(load.page, issueId) ? load.page : undefined;
   const change = latestChange(live, watchedIssues(page, issueId));
   const connected = live.status === "live";
   const identities = useIdentityHandles(live, onSignedOut);
+  const phone = usePhone();
 
   useEffect(() => {
     let current = true;
@@ -108,14 +122,16 @@ export function IssuePageView({ issueId, live, navigate, onSignedOut }: Props) {
   if (page === undefined) {
     return (
       <div className="issue" aria-busy="true">
-        <DetailsPanel />
+        {phone ? null : <DetailsPanel />}
       </div>
     );
   }
   return (
     <IssueContent
       page={page}
+      viewer={viewer}
       identities={identities}
+      phone={phone}
       navigate={navigate}
       onSignedOut={onSignedOut}
       onWritten={() => setReload((value: number) => value + 1)}
@@ -127,15 +143,82 @@ function routeMatches(page: IssuePage, issueId: string): boolean {
   return page.issue.id === issueId || page.issue.alias === issueId;
 }
 
-function IssueContent({
+export function IssueContent({
+  page,
+  viewer,
+  identities,
+  phone,
+  navigate,
+  onSignedOut,
+  onWritten,
+}: {
+  page: IssuePage;
+  viewer: string;
+  identities: IdentityHandles;
+  phone: boolean;
+  navigate: (path: string) => void;
+  onSignedOut: () => void;
+  onWritten: () => void;
+}) {
+  const { issue } = page;
+  const [view, setView] = useState<"thread" | "details">("thread");
+  const known = identities.kind === "ready" ? identities.known : NO_IDENTITIES;
+  const authors = useMemo<Authors>(() => ({ known, navigate }), [known, navigate]);
+  const details = <IssueDetails page={page} identities={identities} authors={authors} navigate={navigate} onSignedOut={onSignedOut} onWritten={onWritten} />;
+  return (
+    <article className="issue">
+      <header className="issue-header">
+        <h1>
+          <span className="issue-number">#{issue.id}</span> {issue.title}
+        </h1>
+        {phone ? null : <DetailsToggle />}
+        <div className="issue-status">
+          <span className={`tag state state-${issue.state}`}>{STATE_LABEL[issue.state]}</span>
+          {issue.parentId === null ? null : (
+            <a className="tag" href={`/issues/${issue.parentId}`} onClick={linkHandler(navigate, `/issues/${issue.parentId}`)}>
+              <Icon name="back" />
+              Sub-issue of #{issue.parentId}
+            </a>
+          )}
+        </div>
+        {phone ? (
+          <div className="segmented issue-views" role="group" aria-label="View">
+            <button type="button" aria-pressed={view === "thread"} onClick={() => setView("thread")}>
+              Activity
+            </button>
+            <button type="button" aria-pressed={view === "details"} onClick={() => setView("details")}>
+              Details
+            </button>
+          </div>
+        ) : null}
+      </header>
+
+      {/* On a phone both views stay mounted, so a draft in the composer survives a switch. */}
+      <div hidden={phone && view !== "thread"}>
+        <IssueThread page={page} viewer={viewer} authors={authors} navigate={navigate} onSignedOut={onSignedOut} onWritten={onWritten} />
+      </div>
+      {phone ? (
+        <div className="issue-side issue-details-inline" hidden={view !== "details"}>
+          {details}
+        </div>
+      ) : (
+        <DetailsPanel>{details}</DetailsPanel>
+      )}
+    </article>
+  );
+}
+
+function IssueDetails({
   page,
   identities,
+  authors,
   navigate,
   onSignedOut,
   onWritten,
 }: {
   page: IssuePage;
   identities: IdentityHandles;
+  authors: Authors;
   navigate: (path: string) => void;
   onSignedOut: () => void;
   onWritten: () => void;
@@ -144,138 +227,103 @@ function IssueContent({
   const trigger = issue.commits.filter((commit) => commit.kind === "trigger");
   const otherCommits = issue.commits.filter((commit) => commit.kind !== "trigger");
   return (
-    <article className="issue">
-      <header className="issue-header">
-        <h1>
-          <span className="issue-number">#{issue.id}</span> {issue.title}
-        </h1>
-        <DetailsToggle />
-        <div className="issue-status">
-          <span className={`tag state state-${issue.state}`}>{STATE_LABEL[issue.state]}</span>
+    <>
+      <section className="panel" aria-labelledby="issue-penguin">
+        <h2 id="issue-penguin">Penguin</h2>
+        <p className="row">
           <PenguinIndicator state={penguinState(page)} />
-          {issue.parentId === null ? null : (
-            <a className="tag" href={`/issues/${issue.parentId}`} onClick={linkHandler(navigate, `/issues/${issue.parentId}`)}>
-              <Icon name="back" />
-              Sub-issue of #{issue.parentId}
-            </a>
-          )}
-        </div>
-      </header>
+        </p>
+      </section>
 
-      <div className="issue-layout">
-        <div className="issue-main">
-          <section className="panel" aria-labelledby="issue-body">
-            <h2 id="issue-body" className="visually-hidden">
-              Description
-            </h2>
-            {issue.body === "" ? <p className="muted">No description</p> : <p className="body-text">{issue.body}</p>}
-          </section>
+      <section className="panel" aria-labelledby="issue-labels">
+        <h2 id="issue-labels">Labels</h2>
+        {issue.labels.length === 0 ? (
+          <p className="muted">No labels</p>
+        ) : (
+          <ul className="tags">
+            {issue.labels.map((label) => (
+              <li key={label} className="tag tag-data">
+                {label}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
 
-          <section className="panel" aria-labelledby="issue-checks">
-            <h2 id="issue-checks">Checks</h2>
-            {issue.checks.length === 0 ? (
-              <p className="muted">No checks yet</p>
-            ) : (
-              <ul className="rows">
-                {issue.checks.map((check) => (
-                  <CheckRow key={check.opId} check={check} fixedIn={fixedIn(check, page.subIssues)} navigate={navigate} />
-                ))}
-              </ul>
-            )}
-          </section>
+      <AssigneesPanel issue={issue} identities={identities} authors={authors} onSignedOut={onSignedOut} onWritten={onWritten} />
 
-          <section className="panel" aria-labelledby="issue-sub-issues">
-            <h2 id="issue-sub-issues">Sub-issues</h2>
-            {page.subIssues.length === 0 ? (
-              <p className="muted">No sub-issues</p>
-            ) : (
-              <ul className="rows">
-                {page.subIssues.map((sub) => (
-                  <SubIssueRow key={sub.id} sub={sub} navigate={navigate} />
-                ))}
-              </ul>
-            )}
-          </section>
+      <ChecksSummary checks={issue.checks} />
 
-          {issue.threads.length === 0 ? null : (
-            <section className="panel" aria-labelledby="issue-threads">
-              <h2 id="issue-threads">Threads</h2>
-              <ul className="rows">
-                {issue.threads.map((thread) => (
-                  <ThreadRow key={thread.id} issue={issue} thread={thread} onSignedOut={onSignedOut} onWritten={onWritten} />
-                ))}
-              </ul>
-            </section>
-          )}
+      <section className="panel" aria-labelledby="issue-sub-issues">
+        <h2 id="issue-sub-issues">Sub-issues</h2>
+        {page.subIssues.length === 0 ? (
+          <p className="muted">No sub-issues</p>
+        ) : (
+          <ul className="rows">
+            {page.subIssues.map((sub) => (
+              <SubIssueRow key={sub.id} sub={sub} authors={authors} navigate={navigate} />
+            ))}
+          </ul>
+        )}
+      </section>
 
-          <section className="panel" aria-labelledby="issue-timeline">
-            <h2 id="issue-timeline">Timeline</h2>
-            <ol className="timeline">
-              {page.timeline.map((entry) => (
-                <TimelineRow key={entry.opId} entry={entry} />
-              ))}
-            </ol>
-            <CommentBox issue={issue} onSignedOut={onSignedOut} onWritten={onWritten} />
-          </section>
-        </div>
+      {showsCloseOut(issue.closeOut) ? <CloseOutPanel closeOut={issue.closeOut} /> : null}
 
-        <DetailsPanel>
-          <section className="panel" aria-labelledby="issue-labels">
-            <h2 id="issue-labels">Labels</h2>
-            {issue.labels.length === 0 ? (
-              <p className="muted">No labels</p>
-            ) : (
-              <ul className="tags">
-                {issue.labels.map((label) => (
-                  <li key={label} className="tag">
-                    {label}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
+      <section className="panel" aria-labelledby="issue-trigger">
+        <h2 id="issue-trigger">Trigger</h2>
+        {trigger.length === 0 ? (
+          <p className="muted">No trigger commit</p>
+        ) : (
+          <ul className="rows">
+            {trigger.map((commit) => (
+              <li key={commit.opId} className="row">
+                <code className="revision">
+                  {commit.repo}@{shortSha(commit.sha)}
+                </code>
+                <span className="muted">{authorName(commit.linkedBy)}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
 
-          <AssigneesPanel issue={issue} identities={identities} onSignedOut={onSignedOut} onWritten={onWritten} />
+      {otherCommits.length === 0 ? null : (
+        <section className="panel" aria-labelledby="issue-commits">
+          <h2 id="issue-commits">Commits</h2>
+          <ul className="rows">
+            {otherCommits.map((commit) => (
+              <li key={commit.opId} className="row">
+                {commit.kind === null ? null : <span className="tag tag-data">{commit.kind}</span>}
+                <code className="revision">
+                  {commit.repo}@{shortSha(commit.sha)}
+                </code>
+                <span className="muted">{authorName(commit.linkedBy)}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+    </>
+  );
+}
 
-          {showsCloseOut(issue.closeOut) ? <CloseOutPanel closeOut={issue.closeOut} /> : null}
-
-          <section className="panel" aria-labelledby="issue-trigger">
-            <h2 id="issue-trigger">Trigger</h2>
-            {trigger.length === 0 ? (
-              <p className="muted">No trigger commit</p>
-            ) : (
-              <ul className="rows">
-                {trigger.map((commit) => (
-                  <li key={commit.opId} className="row">
-                    <code className="revision">
-                      {commit.repo}@{shortSha(commit.sha)}
-                    </code>
-                    <span className="muted">{authorName(commit.linkedBy)}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-
-          {otherCommits.length === 0 ? null : (
-            <section className="panel" aria-labelledby="issue-commits">
-              <h2 id="issue-commits">Commits</h2>
-              <ul className="rows">
-                {otherCommits.map((commit) => (
-                  <li key={commit.opId} className="row">
-                    {commit.kind === null ? null : <span className="tag">{commit.kind}</span>}
-                    <code className="revision">
-                      {commit.repo}@{shortSha(commit.sha)}
-                    </code>
-                    <span className="muted">{authorName(commit.linkedBy)}</span>
-                  </li>
-                ))}
-              </ul>
-            </section>
-          )}
-        </DetailsPanel>
-      </div>
-    </article>
+/** The current checks counted by signal, and the superseded ones; each check's card is in the thread. */
+function ChecksSummary({ checks }: { checks: IssuePage["issue"]["checks"] }) {
+  const summary = checkSummary(checks);
+  return (
+    <section className="panel" aria-labelledby="issue-checks">
+      <h2 id="issue-checks">Checks</h2>
+      {checks.length === 0 ? (
+        <p className="muted">No checks yet</p>
+      ) : (
+        <p className="row check-summary">
+          {summary.verified === 0 ? null : <SignalTag signal="verified">{`${summary.verified} Verified`}</SignalTag>}
+          {summary.failure === 0 ? null : <SignalTag signal="failure">{`${summary.failure} Failed`}</SignalTag>}
+          {summary.warning === 0 ? null : <SignalTag signal="warning">{`${summary.warning} Warning`}</SignalTag>}
+          {summary.superseded === 0 ? null : <span className="tag tag-data tag-superseded">{`${summary.superseded} Superseded`}</span>}
+        </p>
+      )}
+    </section>
   );
 }
 
@@ -288,14 +336,14 @@ function CloseOutPanel({ closeOut }: { closeOut: IssuePageCloseOut }) {
       {closeOut.resolution === null ? null : <p>{RESOLUTION_LABEL[closeOut.resolution]}</p>}
       {closeOut.approvedCommit === null ? null : (
         <p className="row">
-          <span className="tag">approved</span>
+          <span className="tag signal signal-verified">approved</span>
           <code className="revision">
             {closeOut.approvedCommit.slice(0, at)}@{shortSha(closeOut.approvedCommit.slice(at + 1))}
           </code>
         </p>
       )}
       {closeOut.waitingOn.length === 0 ? null : (
-        <ul className="rows">
+        <ul className="rows close-out-waiting">
           {closeOut.waitingOn.map((line) => (
             <li key={line} className="row">
               {line}
@@ -307,76 +355,9 @@ function CloseOutPanel({ closeOut }: { closeOut: IssuePageCloseOut }) {
   );
 }
 
-export function SignalTag({ signal, children }: { signal: Signal; children?: string }) {
-  return <span className={`tag signal signal-${signal}`}>{children ?? SIGNAL_LABEL[signal]}</span>;
-}
-
-export function PenguinIndicator({ state }: { state: PenguinState }) {
-  const slug = state.replaceAll(" ", "-");
+function SubIssueRow({ sub, authors, navigate }: { sub: IssuePageSubIssue; authors: Authors; navigate: (path: string) => void }) {
   return (
-    <span className={`penguin penguin-${slug}`} role="status">
-      <PenguinMark />
-      <span>Penguin {state}</span>
-    </span>
-  );
-}
-
-/** Penguin's own mark in the character style: a flat body with flippers, a two-lobed face, the
-    characters' eye ovals and a beak, with no outline. */
-function PenguinMark() {
-  return (
-    <svg className="penguin-mark" viewBox="0 0 40 40" focusable="false" aria-hidden="true">
-      <path className="penguin-body" d={PENGUIN_BODY} />
-      <path className="penguin-face" d={PENGUIN_FACE} />
-      <ellipse className="penguin-eye" cx="16" cy="16" rx={EYE.rx} ry={EYE.ry} />
-      <ellipse className="penguin-eye" cx="24" cy="16" rx={EYE.rx} ry={EYE.ry} />
-      <path className="penguin-beak" d={PENGUIN_BEAK} />
-    </svg>
-  );
-}
-
-const PENGUIN_BODY =
-  "M20 2.5C28 2.5 33 10 33.5 19C37 24 37.5 30 35 33C32 37 26 38 20 38C14 38 8 37 5 33C2.5 30 3 24 6.5 19C7 10 12 2.5 20 2.5Z";
-const PENGUIN_FACE =
-  "M20 13.2C21.3 9.8 24 8.6 26.4 9.6C29.6 11 30.2 15.6 28.4 19.6C30 24 29.6 30 26.6 33.4C24.8 35.4 22.4 36 20 36C17.6 36 15.2 35.4 13.4 33.4C10.4 30 10 24 11.6 19.6C9.8 15.6 10.4 11 13.6 9.6C16 8.6 18.7 9.8 20 13.2Z";
-const PENGUIN_BEAK = "M18.2 22.2h3.6a.6.6 0 0 1 .5.9l-1.8 2.6a.6.6 0 0 1-1 0l-1.8-2.6a.6.6 0 0 1 .5-.9Z";
-
-function CheckRow({
-  check,
-  fixedIn,
-  navigate,
-}: {
-  check: IssuePageCheck;
-  fixedIn: string | undefined;
-  navigate: (path: string) => void;
-}) {
-  return (
-    <li className={`row signal-row signal-row-${checkSignal(check)}`}>
-      <SignalTag signal={checkSignal(check)} />
-      <span className="row-title">{check.test ?? check.commandId}</span>
-      <span className="tag" title="Command">
-        {check.commandId}
-      </span>
-      <code className="revision" title="Revision">
-        {check.repo}@{shortSha(check.sha)}
-      </code>
-      {check.logRef === null ? null : (
-        <code className="muted" title="Log">
-          {check.logRef}
-        </code>
-      )}
-      {fixedIn === undefined ? null : (
-        <a className="tag signal signal-verified" href={`/issues/${fixedIn}`} onClick={linkHandler(navigate, `/issues/${fixedIn}`)}>
-          Fixed in #{fixedIn}
-        </a>
-      )}
-    </li>
-  );
-}
-
-function SubIssueRow({ sub, navigate }: { sub: IssuePageSubIssue; navigate: (path: string) => void }) {
-  return (
-    <li className="row sub-issue">
+    <li className="sub-issue">
       <div className="sub-issue-head">
         <a className="row-title" href={`/issues/${sub.id}`} onClick={linkHandler(navigate, `/issues/${sub.id}`)}>
           #{sub.id} {sub.title}
@@ -384,19 +365,19 @@ function SubIssueRow({ sub, navigate }: { sub: IssuePageSubIssue; navigate: (pat
         <span className={`tag state state-${sub.state}`}>{STATE_LABEL[sub.state]}</span>
       </div>
       {sub.assignees.length === 0 ? null : (
-        <ul className="rows nested">
+        <ul className="rows">
           {sub.assignees.map((assignee) => (
             <li key={`${assignee.kind}:${assignee.id}`} className="row">
-              <Assignee assignee={assignee} />
+              <Assignee assignee={assignee} authors={authors} />
             </li>
           ))}
         </ul>
       )}
       {sub.approval === null || sub.approval.owners.length === 0 ? null : (
-        <ul className="rows nested">
+        <ul className="rows">
           {sub.approval.owners.map((owner) => (
             <li key={owner.owner} className="row">
-              <span className="tag">{APPROVAL_LABEL[owner.state]}</span>
+              <span className={`tag approval-owner-state owner-${owner.state}`}>{APPROVAL_LABEL[owner.state]}</span>
               <span className="row-title">{authorName(owner.owner)}</span>
               {owner.reviewer === null || owner.reviewer === owner.owner ? null : (
                 <span className="muted">by delegate {authorName(owner.reviewer)}</span>
@@ -406,7 +387,7 @@ function SubIssueRow({ sub, navigate }: { sub: IssuePageSubIssue; navigate: (pat
         </ul>
       )}
       {sub.reviews.length === 0 ? null : (
-        <ul className="rows nested">
+        <ul className="rows">
           {sub.reviews.map((review) => (
             <li key={review.opId} className="row">
               <ReviewTags review={review} superseded={reviewSuperseded(review, sub.approval)} />
@@ -418,21 +399,26 @@ function SubIssueRow({ sub, navigate }: { sub: IssuePageSubIssue; navigate: (pat
   );
 }
 
-function Assignee({ assignee, nameId }: { assignee: IssuePageAssignee; nameId?: string }) {
+function Assignee({ assignee, authors, nameId }: { assignee: IssuePageAssignee; authors: Authors; nameId?: string }) {
   return (
     <>
-      <span className="row-title" id={nameId}>
-        {assignee.id}
+      {assignee.kind === "identity" ? (
+        <IdentityAvatar handle={assignee.id} image={authors.known.get(assignee.id)?.avatar ?? null} size="card" />
+      ) : (
+        <PersonAvatar id={assignee.id} size="card" />
+      )}
+      <span id={nameId} className="row-title">
+        <AuthorName segment={assigneeSegment(assignee)} authors={authors} className="assignee-name" />
       </span>
       {assignee.session === null ? null : (
         <>
           <span className={`tag session-${assignee.session.status}`}>{assignee.session.status}</span>
-          <span className="tag">{assignee.session.vendor}</span>
+          <span className="tag tag-data">{assignee.session.vendor}</span>
           <code className="muted">{assignee.session.branch}</code>
         </>
       )}
       {assignee.waitingFor === null ? null : (
-        <span className="tag">{assignee.waitingFor === "acceptance" ? "Awaiting acceptance" : "Awaiting a session"}</span>
+        <span className="tag tag-data">{assignee.waitingFor === "acceptance" ? "Awaiting acceptance" : "Awaiting a session"}</span>
       )}
     </>
   );
@@ -444,12 +430,12 @@ function ReviewTags({ review, superseded = false }: { review: IssuePageReview; s
       <SignalTag signal="review">{review.verdict === "approve" ? "Approved" : "Changes requested"}</SignalTag>
       <span className="row-title">{authorName(review.reviewer)}</span>
       {review.counts ? null : (
-        <span className="tag" title={review.uncountedReason ?? undefined}>
+        <span className="tag tag-data" title={review.uncountedReason ?? undefined}>
           Not counted
         </span>
       )}
       {superseded ? (
-        <span className="tag" title={`Reviewed ${review.repo}@${shortSha(review.sha)}, an older commit than the fix's head`}>
+        <span className="tag tag-data" title={`Reviewed ${review.repo}@${shortSha(review.sha)}, an older commit than the fix's head`}>
           Older commit
         </span>
       ) : null}
@@ -457,76 +443,33 @@ function ReviewTags({ review, superseded = false }: { review: IssuePageReview; s
   );
 }
 
-function TimelineRow({ entry }: { entry: IssuePageTimelineEntry }) {
-  const signal = entrySignal(entry);
-  const { summary, text } = describeEntry(entry);
-  const rejected = entry.status === "rejected";
-  const review = entry.type === "review" ? (entry.payload as { verdict?: unknown } | null) : null;
-  const classes = ["timeline-entry", signal === undefined ? "" : `signal-row signal-row-${signal}`, rejected ? "rejected" : ""];
-  return (
-    <li className={classes.filter((name) => name !== "").join(" ")}>
-      <div className="timeline-head">
-        <span className="timeline-author">{authorName(entry.author)}</span>
-        <span className="timeline-summary">{summary}</span>
-        <span className="timeline-tags">
-          {signal === undefined ? null : (
-            <SignalTag signal={signal}>
-              {review === null ? undefined : review.verdict === "approve" ? "Approved" : "Changes requested"}
-            </SignalTag>
-          )}
-          {rejected ? <span className="tag rejected-tag">Rejected</span> : null}
-          {entry.waitingForGitLog ? <span className="tag waiting">Waiting for Git log</span> : null}
-        </span>
-      </div>
-      {text === undefined ? null : <p className="body-text timeline-text">{text}</p>}
-      {rejected ? (
-        <p className="reject-reason">
-          <span className="tag rejected-tag">{reasonLabel(entry.rejectReason)}</span>
-          {entry.message === null ? null : <span className="muted">{entry.message}</span>}
-        </p>
-      ) : null}
-    </li>
-  );
-}
-
 /** The assignees, each with Unassign, and a choice of identity to assign. */
 function AssigneesPanel({
   issue,
   identities,
+  authors,
   onSignedOut,
   onWritten,
 }: {
   issue: IssuePage["issue"];
   identities: IdentityHandles;
+  authors: Authors;
   onSignedOut: () => void;
   onWritten: () => void;
 }) {
   const [chosen, setChosen] = useState("");
-  const [sending, setSending] = useState(false);
-  const [problem, setProblem] = useState<string | undefined>(undefined);
+  const operation = useOperation(onSignedOut, onWritten);
+  const sending = operation.sending !== undefined;
   const choices = identities.kind === "ready" ? assignChoices(identities.handles, issue.assignees) : [];
 
-  const write = (type: "assign" | "unassign", assignee: Pick<IssuePageAssignee, "kind" | "id">) => {
-    if (sending) return;
-    setSending(true);
-    setProblem(undefined);
-    submitOperation(assignOperation(issue.id, issue.version, type, assignee)).then(
-      (outcome) => {
-        setSending(false);
-        if (outcome.status === "applied") {
-          if (type === "assign") setChosen("");
-        } else {
-          setProblem(`Rejected for ${reasonLabel(outcome.reason)}`);
-        }
-        onWritten();
-      },
-      (error: unknown) => {
-        setSending(false);
-        if (error instanceof SignedOut) onSignedOut();
-        else setProblem("Please try again");
+  const write = (type: "assign" | "unassign", assignee: Pick<IssuePageAssignee, "kind" | "id">) =>
+    operation.send(
+      type,
+      () => submitOperation(assignOperation(issue.id, issue.version, type, assignee)),
+      () => {
+        if (type === "assign") setChosen("");
       },
     );
-  };
 
   const assign = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -544,7 +487,7 @@ function AssigneesPanel({
             const key = `${assignee.kind}:${assignee.id}`;
             return (
               <li key={key} className="row assignee">
-                <Assignee assignee={assignee} nameId={`assignee-${key}`} />
+                <Assignee assignee={assignee} authors={authors} nameId={`assignee-${key}`} />
                 <button
                   type="button"
                   className="button assignee-remove"
@@ -564,11 +507,7 @@ function AssigneesPanel({
           <label htmlFor="assign-identity" className="visually-hidden">
             Identity
           </label>
-          <select
-            id="assign-identity"
-            value={chosen}
-            onChange={(event: ChangeEvent<HTMLSelectElement>) => setChosen(event.target.value)}
-          >
+          <select id="assign-identity" value={chosen} onChange={(event: ChangeEvent<HTMLSelectElement>) => setChosen(event.target.value)}>
             <option value="">Choose an identity</option>
             {choices.map((handle) => (
               <option key={handle} value={handle}>
@@ -576,164 +515,16 @@ function AssigneesPanel({
               </option>
             ))}
           </select>
-          <button type="submit" className="button primary" disabled={sending || chosen === ""}>
+          <button type="submit" className="button" disabled={sending || chosen === ""}>
             Assign
           </button>
         </form>
       )}
-      {problem === undefined ? null : (
+      {operation.problem === undefined ? null : (
         <p className="notice" role="alert">
-          {problem}
+          {operation.problem}
         </p>
       )}
     </section>
-  );
-}
-
-/** One thread: who opened it, its text, whom it needs and, while open, a reply box and Resolve. */
-function ThreadRow({
-  issue,
-  thread,
-  onSignedOut,
-  onWritten,
-}: {
-  issue: IssuePage["issue"];
-  thread: IssuePageThread;
-  onSignedOut: () => void;
-  onWritten: () => void;
-}) {
-  const [body, setBody] = useState("");
-  const [sending, setSending] = useState(false);
-  const [problem, setProblem] = useState<string | undefined>(undefined);
-  const open = thread.status === "open";
-
-  const write = (type: "reply_thread" | "resolve_thread") => {
-    if (sending || (type === "reply_thread" && body.trim() === "")) return;
-    setSending(true);
-    setProblem(undefined);
-    const payload = type === "reply_thread" ? { thread: thread.id, body } : { thread: thread.id };
-    submitOperation({ issue: Number(issue.id), type, base_version: issue.version, payload }).then(
-      (outcome) => {
-        setSending(false);
-        if (outcome.status === "applied") setBody("");
-        else setProblem(`Rejected for ${reasonLabel(outcome.reason)}`);
-        onWritten();
-      },
-      (error: unknown) => {
-        setSending(false);
-        if (error instanceof SignedOut) onSignedOut();
-        else setProblem("Please try again");
-      },
-    );
-  };
-
-  const reply = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    write("reply_thread");
-  };
-
-  const bodyId = `thread-reply-${thread.id}`;
-  return (
-    <li className="sub-issue">
-      <div className="sub-issue-head">
-        <span className="tag">{open ? "Open" : "Resolved"}</span>
-        <span className="row-title">{authorName(threadOpener(thread, issue.reviews))}</span>
-        {thread.needsPersonIds.length === 0 ? null : (
-          <span className="muted">Needs {thread.needsPersonIds.map(authorName).join(", ")}</span>
-        )}
-        {thread.resolvedBy === null ? null : <span className="muted">Resolved by {authorName(thread.resolvedBy)}</span>}
-      </div>
-      <p className="body-text">{thread.body}</p>
-      {open ? (
-        <form className="comment-box" onSubmit={reply}>
-          <label htmlFor={bodyId} className="visually-hidden">
-            Reply
-          </label>
-          <textarea
-            id={bodyId}
-            rows={2}
-            maxLength={32768}
-            placeholder="Reply"
-            value={body}
-            onChange={(event: ChangeEvent<HTMLTextAreaElement>) => setBody(event.target.value)}
-          />
-          <div className="comment-actions">
-            {problem === undefined ? null : (
-              <p className="notice" role="alert">
-                {problem}
-              </p>
-            )}
-            <button type="button" className="button" disabled={sending} onClick={() => write("resolve_thread")}>
-              Resolve
-            </button>
-            <button type="submit" className="button primary icon-end" disabled={sending || body.trim() === ""}>
-              Reply
-              <Icon name="send" />
-            </button>
-          </div>
-        </form>
-      ) : null}
-    </li>
-  );
-}
-
-function CommentBox({
-  issue,
-  onSignedOut,
-  onWritten,
-}: {
-  issue: IssuePage["issue"];
-  onSignedOut: () => void;
-  onWritten: () => void;
-}) {
-  const [body, setBody] = useState("");
-  const [sending, setSending] = useState(false);
-  const [problem, setProblem] = useState<string | undefined>(undefined);
-
-  const submit = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (body.trim() === "" || sending) return;
-    setSending(true);
-    setProblem(undefined);
-    submitOperation({ issue: Number(issue.id), type: "comment", base_version: issue.version, payload: { body } }).then(
-      (outcome) => {
-        setSending(false);
-        if (outcome.status === "applied") setBody("");
-        else setProblem(`Rejected for ${reasonLabel(outcome.reason)}`);
-        onWritten();
-      },
-      (error: unknown) => {
-        setSending(false);
-        if (error instanceof SignedOut) onSignedOut();
-        else setProblem("Please try again");
-      },
-    );
-  };
-
-  return (
-    <form className="comment-box" onSubmit={submit}>
-      <label htmlFor="comment-body" className="visually-hidden">
-        Comment
-      </label>
-      <textarea
-        id="comment-body"
-        rows={4}
-        maxLength={32768}
-        placeholder="Comment"
-        value={body}
-        onChange={(event: ChangeEvent<HTMLTextAreaElement>) => setBody(event.target.value)}
-      />
-      <div className="comment-actions">
-        {problem === undefined ? null : (
-          <p className="notice" role="alert">
-            {problem}
-          </p>
-        )}
-        <button type="submit" className="button primary icon-end" disabled={sending || body.trim() === ""}>
-          Comment
-          <Icon name="send" />
-        </button>
-      </div>
-    </form>
   );
 }

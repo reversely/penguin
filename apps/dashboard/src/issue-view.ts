@@ -10,6 +10,7 @@
 import {
   anchoredReview,
   type IssuePage,
+  type IssuePageApproval,
   type IssuePageCheck,
   type IssuePageCloseOut,
   type IssuePageOwnerApproval,
@@ -278,4 +279,169 @@ export function reasonLabel(reason: string | null): string {
 export function watchedIssues(page: IssuePage | undefined, routeId: string): string[] {
   if (page === undefined) return [routeId];
   return [routeId, page.issue.id, ...(page.issue.alias === null ? [] : [page.issue.alias]), ...page.subIssues.map((sub) => sub.id)];
+}
+
+/** An assignee as an author segment: "@jun/reports" as "jun.reports", a person as their id. */
+export function assigneeSegment(assignee: { readonly kind: "person" | "identity"; readonly id: string }): string {
+  return assignee.kind === "identity" ? assignee.id.replace(/^@/, "").replace("/", ".") : assignee.id;
+}
+
+/** Who wrote an operation, as the thread draws them: Penguin's mark, an identity's character or a person's initial. */
+export type AuthorKind = "penguin" | "identity" | "person" | "unknown";
+
+export function authorKind(segment: string | null): AuthorKind {
+  if (segment === null) return "unknown";
+  if (segment === PENGUIN_SEGMENT) return "penguin";
+  return isIdentity(segment) ? "identity" : "person";
+}
+
+/**
+ * How the thread draws a timeline entry (identity plan section 5): the opening as the issue's
+ * description; a comment as a post under its author, the viewer's own in ink; Penguin's alerts as centred
+ * system lines; a claim as a compact line with a dashed edge; a check as an evidence card; a review
+ * as a settled approval card; a thread as a card holding its replies; a rejected operation struck
+ * through with its reason; anything else as a compact event line. A reply or resolution of a thread
+ * on the page renders inside the thread's card, so the thread skips it at the top level.
+ */
+export type EntryKind =
+  | "opened"
+  | "comment"
+  | "own-comment"
+  | "system"
+  | "claim"
+  | "check"
+  | "review"
+  | "thread"
+  | "in-thread"
+  | "rejected"
+  | "event";
+
+/** The op_ids of the issue's checks, reviews and threads, read once per render so each entry looks them up in a set. */
+export interface EntryIds {
+  readonly checks: ReadonlySet<string>;
+  readonly reviews: ReadonlySet<string>;
+  readonly threads: ReadonlySet<string>;
+}
+
+export function entryIds(issue: Pick<IssuePage["issue"], "checks" | "reviews" | "threads">): EntryIds {
+  return {
+    checks: new Set(issue.checks.map((check) => check.opId)),
+    reviews: new Set(issue.reviews.map((review) => review.opId)),
+    threads: new Set(issue.threads.map((thread) => thread.id)),
+  };
+}
+
+export function entryKind(entry: IssuePageTimelineEntry, viewer: string, ids: EntryIds): EntryKind {
+  if (entry.status === "rejected") return "rejected";
+  switch (entry.type) {
+    case "create":
+      return "opened";
+    case "attach_check":
+      if (ids.checks.has(entry.opId)) return "check";
+      break;
+    case "review":
+      if (ids.reviews.has(entry.opId)) return "review";
+      break;
+    case "open_thread":
+      if (ids.threads.has(entry.opId)) return "thread";
+      break;
+    case "reply_thread":
+    case "resolve_thread": {
+      const thread = threadOf(entry);
+      if (thread !== undefined && ids.threads.has(thread)) return "in-thread";
+      break;
+    }
+    case "comment":
+    case "edit_comment":
+      if (entry.author === PENGUIN_SEGMENT) return "system";
+      return entry.author === viewer ? "own-comment" : "comment";
+  }
+  const signal = entrySignal(entry);
+  if (signal === "alert") return "system";
+  if (signal === "claim") return "claim";
+  return "event";
+}
+
+/** The thread a reply or resolution names, or undefined. */
+export function threadOf(entry: Pick<IssuePageTimelineEntry, "payload">): string | undefined {
+  const thread = (entry.payload as { thread?: unknown } | null)?.thread;
+  return typeof thread === "string" ? thread : undefined;
+}
+
+/** Each thread's applied replies and resolution, in timeline order, by thread id, in one pass. */
+export function threadEntries(timeline: readonly IssuePageTimelineEntry[]): ReadonlyMap<string, readonly IssuePageTimelineEntry[]> {
+  const byThread = new Map<string, IssuePageTimelineEntry[]>();
+  for (const entry of timeline) {
+    if (entry.status !== "applied" || (entry.type !== "reply_thread" && entry.type !== "resolve_thread")) continue;
+    const thread = threadOf(entry);
+    if (thread === undefined) continue;
+    const entries = byThread.get(thread);
+    if (entries === undefined) byThread.set(thread, [entry]);
+    else entries.push(entry);
+  }
+  return byThread;
+}
+
+/** Where a fix's approval card stands for the viewer (identity plan section 5, Approval card). */
+export type ApprovalStatus = "waiting-for-you" | "approved" | "changes-requested" | "waiting";
+
+export const APPROVAL_STATUS_LABEL: Readonly<Record<ApprovalStatus, string>> = {
+  "waiting-for-you": "Waiting for your review",
+  approved: "Approved",
+  "changes-requested": "Changes requested",
+  waiting: "Waiting for review",
+};
+
+/**
+ * The card's status: approved once every owner approved the head; waiting for the viewer while a
+ * head is linked and the viewer is an owner whose review is pending; changes requested while an
+ * owner's standing review asks for changes; waiting for review otherwise.
+ */
+export function approvalStatus(approval: IssuePageApproval, viewer: string): ApprovalStatus {
+  if (approval.approved) return "approved";
+  if (approval.head !== null && approval.owners.some((owner) => owner.owner === viewer && owner.state === "pending")) {
+    return "waiting-for-you";
+  }
+  if (approval.owners.some((owner) => owner.state === "changes_requested")) return "changes-requested";
+  return "waiting";
+}
+
+/** A fix sub-issue whose approval Penguin collects. */
+export type ApprovalFix = IssuePageSubIssue & { readonly approval: IssuePageApproval };
+
+/** The fix sub-issues whose approval Penguin collects, which the thread shows as approval cards. */
+export function approvalFixes(subIssues: readonly IssuePageSubIssue[]): ApprovalFix[] {
+  return subIssues.flatMap((sub) => (sub.approval === null ? [] : [{ ...sub, approval: sub.approval }]));
+}
+
+/** The number of current checks per signal, and of superseded checks, for the details panel's summary row. */
+export interface CheckSummary {
+  readonly verified: number;
+  readonly failure: number;
+  readonly warning: number;
+  readonly superseded: number;
+}
+
+export function checkSummary(checks: readonly IssuePageCheck[]): CheckSummary {
+  const summary = { verified: 0, failure: 0, warning: 0, superseded: 0 };
+  for (const check of checks) {
+    if (check.supersededBy !== null) summary.superseded += 1;
+    else summary[checkSignal(check) as "verified" | "failure" | "warning"] += 1;
+  }
+  return summary;
+}
+
+/** A `<repo>@<sha>` commit with its SHA shortened, as the cards print it. */
+export function shortCommit(commit: string): string {
+  return commitText(commit);
+}
+
+/**
+ * The composer's height in rows: one per line of the draft, up to six (identity plan section 5,
+ * Composer). Browsers that size a field to its content also grow it for wrapped lines.
+ */
+export function composerRows(draft: string): number {
+  let lines = 1;
+  for (const char of draft) if (char === "\n") lines += 1;
+  return Math.min(6, lines);
 }

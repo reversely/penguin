@@ -141,7 +141,7 @@ interface PageProps {
 
 function Page({ route, session, live, inbox, navigate, onSignedOut }: PageProps) {
   if (route?.page === "issue") {
-    return <IssuePageView key={route.issueId} issueId={route.issueId} live={live} navigate={navigate} onSignedOut={onSignedOut} />;
+    return <IssuePageView key={route.issueId} issueId={route.issueId} viewer={session.owner} live={live} navigate={navigate} onSignedOut={onSignedOut} />;
   }
   if (route?.page === "board") {
     return <BoardPage viewer={session.owner} showAll={route.showAll} live={live} navigate={navigate} onSignedOut={onSignedOut} />;
