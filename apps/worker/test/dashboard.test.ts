@@ -6,6 +6,7 @@ import {
   type DashboardBackend,
   type DashboardOptions,
   type DashboardWriteOutcome,
+  type InboxReadOutcome,
 } from "../src/dashboard.ts";
 import { type GatewayHandlers, handleRequest } from "../src/gateway.ts";
 import { parseOwnerMap } from "../src/github-oauth.ts";
@@ -43,8 +44,17 @@ class Backend implements DashboardBackend {
   async board() {
     return { owners: [{ id: "jun", identities: [] }], issues: [...this.issues.values()] };
   }
+  readonly reads: { owner: string; issueId: string; reason: string }[] = [];
+
   async inbox(owner: string) {
-    return [{ personId: owner, issueId: "40", reason: "mentioned", read: false, raisedAt: "2026-10-10T12:00:00.000Z" }];
+    return {
+      items: [{ personId: owner, issueId: "40", reason: "mentioned", read: false, raisedAt: "2026-10-10T12:00:00.000Z" }],
+    };
+  }
+  async markInboxRead(owner: string, issueId: string, reason: string): Promise<InboxReadOutcome> {
+    this.reads.push({ owner, issueId, reason });
+    if (issueId === "41") return { status: "rejected", reason: "not_found", message: "no item" };
+    return { status: "ok", item: { personId: owner, issueId, reason, read: true } };
   }
   async submit(owner: string, operation: unknown): Promise<DashboardWriteOutcome> {
     this.writes.push({ owner, operation });
@@ -139,6 +149,7 @@ describe("an unauthenticated visit", () => {
     const calls: [string, RequestInit?][] = [
       ["/api/session"],
       ["/api/inbox"],
+      ["/api/inbox/read", { method: "POST", headers: { Origin: ORIGIN }, body: '{"issueId":"40","reason":"mentioned"}' }],
       ["/api/issues/40"],
       ["/api/board"],
       ["/api/live", { headers: { Upgrade: "websocket" } }],
@@ -151,6 +162,7 @@ describe("an unauthenticated visit", () => {
       assert.ok(response.headers.get("Content-Security-Policy"), path);
     }
     assert.deepEqual(browser.backend.writes, []);
+    assert.deepEqual(browser.backend.reads, []);
     assert.deepEqual(browser.backend.live, []);
   });
 
@@ -313,6 +325,29 @@ describe("a signed-in person", () => {
       inbox.items.map((item) => item.personId),
       ["jun"],
     );
+  });
+
+  test("marks only their own inbox items read, from the dashboard's origin", async () => {
+    const browser = new Browser();
+    await browser.signIn("jun-gh");
+    const marked = await browser.post("/api/inbox/read", { issueId: "40", reason: "mentioned", owner: "priya" });
+    assert.equal(marked.status, 200);
+    assert.deepEqual(((await marked.json()) as { status: string }).status, "ok");
+    assert.equal((await browser.post("/api/inbox/read", { issueId: "41", reason: "mentioned" })).status, 404);
+    assert.deepEqual(browser.backend.reads, [
+      { owner: "jun", issueId: "40", reason: "mentioned" },
+      { owner: "jun", issueId: "41", reason: "mentioned" },
+    ]);
+
+    assert.equal((await browser.post("/api/inbox/read", { issueId: "40", reason: "mentioned" }, "https://evil.example")).status, 403);
+    for (const body of [{ issueId: "40" }, { reason: "mentioned" }, { issueId: "../40", reason: "mentioned" }, { issueId: 40, reason: "mentioned" }, [1]]) {
+      assert.equal((await browser.post("/api/inbox/read", body)).status, 400, JSON.stringify(body));
+    }
+    assert.equal((await browser.request("/api/inbox/read")).status, 405);
+    assert.equal(browser.backend.reads.length, 2);
+
+    const signedOut = new Browser();
+    assert.equal((await signedOut.post("/api/inbox/read", { issueId: "40", reason: "mentioned" })).status, 401);
   });
 
   test("opens the live connection as themselves, and only as a WebSocket upgrade", async () => {

@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 
-import { fetchInbox, fetchSession, SignedOut, type Session } from "./api.ts";
+import { fetchSession, type Session } from "./api.ts";
 import { BoardPage } from "./board-page.tsx";
+import { InboxPage, useInbox } from "./inbox-page.tsx";
+import { unreadCount } from "./inbox-view.ts";
 import { IssuePageView } from "./issue-page.tsx";
 import { linkHandler } from "./links.ts";
 import { NAVIGATION, parseRoute, signInProblem, type Route, type SignInProblem } from "./routes.ts";
@@ -65,7 +67,9 @@ function useRoute(): [Route | undefined, (path: string) => void] {
 function Shell({ session, onSignedOut }: { session: Session; onSignedOut: () => void }) {
   const [route, navigate] = useRoute();
   const live = useLive();
-  const unread = useUnreadCount(live.revision, onSignedOut);
+  // The shell holds the inbox, so the header's unread count and the inbox page read it once.
+  const inbox = useInbox(live, onSignedOut);
+  const unread = inbox.load.kind === "ready" ? unreadCount(inbox.load.items) : 0;
 
   return (
     <div className="shell">
@@ -110,6 +114,8 @@ function Shell({ session, onSignedOut }: { session: Session; onSignedOut: () => 
           <IssuePageView key={route.issueId} issueId={route.issueId} live={live} navigate={navigate} onSignedOut={onSignedOut} />
         ) : route?.page === "board" ? (
           <BoardPage viewer={session.owner} live={live} navigate={navigate} onSignedOut={onSignedOut} />
+        ) : route?.page === "inbox" ? (
+          <InboxPage inbox={inbox} navigate={navigate} />
         ) : (
           <h1>{pageTitle(route)}</h1>
         )}
@@ -129,24 +135,4 @@ function LiveTag({ status }: { status: LiveStatus }) {
 function pageTitle(route: Route | undefined): string {
   if (route === undefined) return "Page not found";
   return NAVIGATION.find((entry) => entry.page === route.page)?.label ?? "";
-}
-
-/** The signed-in person's unread inbox items, read again on each index change. */
-function useUnreadCount(revision: number, onSignedOut: () => void): number {
-  const [unread, setUnread] = useState(0);
-  useEffect(() => {
-    let current = true;
-    fetchInbox().then(
-      (items) => {
-        if (current) setUnread(items.filter((item) => !item.read).length);
-      },
-      (error: unknown) => {
-        if (error instanceof SignedOut) onSignedOut();
-      },
-    );
-    return () => {
-      current = false;
-    };
-  }, [revision, onSignedOut]);
-  return unread;
 }

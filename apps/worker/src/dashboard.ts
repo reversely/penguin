@@ -11,6 +11,8 @@
  *   - GET /api/issues/<id>: the issue page: one issue, its sub-issues and its timeline.
  *   - GET /api/board: every issue without its timeline, and each owner's identities and sessions.
  *   - GET /api/inbox: the signed-in person's inbox.
+ *   - POST /api/inbox/read: marks one of the signed-in person's inbox items read, named by its
+ *     `issueId` and `reason`. Another person's item is never found.
  *   - POST /api/operations: one issue operation, applied with the signed-in person as author. An
  *     operation that carries `author` is refused: only the session names the author.
  *   - GET /api/live: the WebSocket to the ProjectAgent, which sends a message on each index change.
@@ -45,13 +47,21 @@ export type DashboardWriteOutcome =
   | { readonly status: "applied"; readonly opId: string; readonly issueId: string; readonly version: number }
   | { readonly status: "rejected"; readonly reason: string; readonly message: string };
 
+/** What marking an inbox item read returns: the ProjectAgent's outcome. */
+export type InboxReadOutcome =
+  | { readonly status: "ok"; readonly item: unknown }
+  | { readonly status: "rejected"; readonly reason: "invalid" | "not_found"; readonly message: string };
+
 /** The ProjectAgent's dashboard surface, reached over Durable Object RPC in the Worker. */
 export interface DashboardBackend {
   /** The issue page as plain JSON (IssuePage in @penguin/protocol), or undefined for no such issue. */
   readIssue(issueId: string): Promise<unknown>;
   /** The board as plain JSON (Board in @penguin/protocol). */
   board(): Promise<unknown>;
+  /** The person's inbox as plain JSON (Inbox in @penguin/protocol). */
   inbox(owner: string): Promise<unknown>;
+  /** Marks one of the person's own inbox items read. */
+  markInboxRead(owner: string, issueId: string, reason: string): Promise<InboxReadOutcome>;
   submit(owner: string, operation: unknown): Promise<DashboardWriteOutcome>;
   /** Forwards the WebSocket upgrade to the ProjectAgent with `owner` as the connection's person. */
   connectLive(request: Request, owner: string): Promise<Response>;
@@ -96,6 +106,7 @@ const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]"]);
 const PAGE_PATH = /^\/(?:|board|inbox|identities|issues\/[A-Za-z0-9_-]+)$/;
 const ASSET_PATH = /^\/app\.(?:js|css)$/;
 const GITHUB_LOGIN = /^[A-Za-z0-9-]{1,39}$/;
+const ISSUE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
 function secured(response: Response): Response {
   const headers = new Headers(response.headers);
@@ -220,6 +231,24 @@ async function writeOperation(
   return json(outcome, outcome.status === "applied" ? 201 : 422);
 }
 
+async function markInboxRead(
+  request: Request,
+  url: URL,
+  session: DashboardSession,
+  handlers: DashboardHandlers,
+): Promise<Response> {
+  if (request.method !== "POST") return methodNotAllowed("POST");
+  if (!isSameOrigin(request, url)) return json({ error: "cross-origin request" }, 403);
+  const body = await readJsonObject(request);
+  const { issueId, reason } = body ?? {};
+  if (typeof issueId !== "string" || !ISSUE_ID.test(issueId) || typeof reason !== "string") {
+    return json({ error: "invalid request", message: "send the item's issueId and reason" }, 400);
+  }
+  const outcome = await (await handlers.dashboard()).markInboxRead(session.owner, issueId, reason);
+  const status = outcome.status === "ok" ? 200 : outcome.reason === "not_found" ? 404 : 400;
+  return json(outcome, status);
+}
+
 async function handleApi(
   request: Request,
   url: URL,
@@ -236,8 +265,9 @@ async function handleApi(
   if (url.pathname === "/api/operations") return writeOperation(request, url, session, handlers);
   if (url.pathname === "/api/inbox") {
     if (request.method !== "GET") return methodNotAllowed("GET");
-    return json({ items: await (await handlers.dashboard()).inbox(session.owner) });
+    return json(await (await handlers.dashboard()).inbox(session.owner));
   }
+  if (url.pathname === "/api/inbox/read") return markInboxRead(request, url, session, handlers);
   if (url.pathname === "/api/board") {
     if (request.method !== "GET") return methodNotAllowed("GET");
     return json(await (await handlers.dashboard()).board());

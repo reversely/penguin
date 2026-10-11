@@ -8,7 +8,9 @@ import type { Author } from "@penguin/protocol";
 import { parseScopeMap } from "@penguin/scope-map";
 
 import { IdentityStore, type IdentityOutcome } from "../src/identity-store.ts";
+import { buildInbox } from "../src/inbox-page.ts";
 import { InboxStore, type InboxReason } from "../src/inbox-store.ts";
+import { sendToOwner } from "../src/live-feed.ts";
 import { IssueIndex, type IndexListener, type IssueChange, type OperationKeys } from "../src/issue-index.ts";
 import { IngestLedger, ingestPush } from "../src/push-ingest.ts";
 import { rebuildIndex } from "../src/rebuild.ts";
@@ -380,5 +382,66 @@ describe("inbox: time", () => {
     );
     assert.equal(project.inbox.items("jun").length, 500);
     assert.equal(project.inbox.items("sam").length, 500);
+  });
+});
+
+describe("inbox: the dashboard's inbox", () => {
+  const inboxOf = (project: Project, person: string) =>
+    buildInbox({ items: (caller) => project.inbox.items(caller), issue: (id) => project.index.issue(id) }, person);
+
+  test("carries each of the person's items with its issue's title and state, newest first", async () => {
+    const project = new Project();
+    await workedIssue(project);
+    project.now += 1_000;
+    await project.close(40);
+
+    assert.deepEqual(inboxOf(project, "jun"), {
+      items: [
+        { issueId: "40", reason: "closed", read: false, raisedAt: new Date(START + 3_000).toISOString(), title: "Issue 40", state: "closed" },
+        { issueId: "40", reason: "assigned", read: false, raisedAt: new Date(START + 1_000).toISOString(), title: "Issue 40", state: "closed" },
+      ],
+    });
+    assert.deepEqual(inboxOf(project, "lee"), { items: [] });
+  });
+
+  test("shows a read item as read among the person's own items only", async () => {
+    const project = new Project();
+    await workedIssue(project);
+    project.markRead("jun", 40, "assigned");
+    assert.deepEqual(
+      inboxOf(project, "jun").items.map((item) => [item.reason, item.read]),
+      [["assigned", true]],
+    );
+    assert.deepEqual(
+      inboxOf(project, "sam").items.map((item) => [item.reason, item.read]),
+      [["mentioned", false]],
+    );
+  });
+
+  test("leaves out an item whose issue the index does not hold", () => {
+    const item = { personId: "jun", issueId: "99", reason: "assigned" as const, read: false, raisedAt: "2026-10-10T12:00:00.000Z" };
+    assert.deepEqual(buildInbox({ items: () => [item], issue: () => undefined }, "jun"), { items: [] });
+  });
+});
+
+describe("inbox: telling only the person's dashboards", () => {
+  test("sends to each connection of the person and to no one else's", () => {
+    const sent: string[] = [];
+    const connection = (name: string, state: { owner?: unknown } | null) => ({
+      state,
+      send: (message: string) => sent.push(`${name} ${message}`),
+    });
+    const closed = {
+      state: { owner: "jun" },
+      send: () => {
+        throw new Error("closed");
+      },
+    };
+    sendToOwner(
+      [connection("jun-a", { owner: "jun" }), closed, connection("priya", { owner: "priya" }), connection("none", null), connection("jun-b", { owner: "jun" })],
+      "jun",
+      "hello",
+    );
+    assert.deepEqual(sent, ["jun-a hello", "jun-b hello"]);
   });
 });

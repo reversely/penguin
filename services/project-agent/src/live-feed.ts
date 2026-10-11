@@ -11,6 +11,9 @@
 // announce its issue; the message carries no data, and the dashboard reads the issue again. The
 // session router reports the same way when a session goes online or offline and when an issue's
 // route changes (SessionListener in session-store.ts).
+//
+// Marking an inbox item read changes no issue, so the agent tells that person's own connections only,
+// with an inbox-changed message (sendToOwner).
 
 import { indexChangedMessage } from "@penguin/protocol";
 
@@ -20,6 +23,27 @@ export const LIVE_OWNER_HEADER = "X-Penguin-Owner";
 export function liveOwner(request: Request): string | undefined {
   const owner = request.headers.get(LIVE_OWNER_HEADER);
   return owner === null || owner === "" ? undefined : owner;
+}
+
+/** A dashboard connection as the agent keeps it: its person is in its state (ProjectAgent.onConnect). */
+export interface OwnedConnection {
+  readonly state: { readonly owner?: unknown } | null | undefined;
+  send(message: string): void;
+}
+
+/**
+ * Sends a message to one person's dashboards only, such as an inbox change no other person may hear
+ * of. A connection that closed meanwhile is skipped.
+ */
+export function sendToOwner(connections: Iterable<OwnedConnection>, owner: string, message: string): void {
+  for (const connection of connections) {
+    if (connection.state?.owner !== owner) continue;
+    try {
+      connection.send(message);
+    } catch (error) {
+      console.warn("a dashboard connection closed before the inbox message", error);
+    }
+  }
 }
 
 export class LiveFeed {

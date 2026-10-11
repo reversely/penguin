@@ -10,6 +10,15 @@ export {
   type OperationCommit,
   type OperationFileRef,
 } from "./order.ts";
-export { INDEX_CHANGED, indexChangedMessage, parseIndexChanged, type IndexChangedMessage } from "./live.ts";
+export {
+  INBOX_CHANGED,
+  inboxChangedMessage,
+  INDEX_CHANGED,
+  indexChangedMessage,
+  isInboxChanged,
+  parseIndexChanged,
+  type IndexChangedMessage,
+} from "./live.ts";
 export type * from "./issue-page.ts";
 export type * from "./board.ts";
+export type * from "./inbox.ts";

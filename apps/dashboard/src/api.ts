@@ -1,17 +1,10 @@
 // The dashboard API client. Every call sends the session cookie; a 401 means the session ended.
 
-import type { Board, IssuePage } from "@penguin/protocol";
+import type { Board, Inbox, InboxEntry, IssuePage } from "@penguin/protocol";
 
 export interface Session {
   readonly owner: string;
   readonly login: string;
-}
-
-export interface InboxItem {
-  readonly issueId: string;
-  readonly reason: string;
-  readonly read: boolean;
-  readonly raisedAt: string;
 }
 
 export class SignedOut extends Error {
@@ -47,8 +40,26 @@ export async function fetchSession(): Promise<Session | undefined> {
   }
 }
 
-export async function fetchInbox(): Promise<InboxItem[]> {
-  return (await getJson<{ items: InboxItem[] }>("/api/inbox")).items;
+export async function fetchInbox(): Promise<readonly InboxEntry[]> {
+  return (await getJson<Inbox>("/api/inbox")).items;
+}
+
+/**
+ * Marks one of the signed-in person's inbox items read. Resolves false when the inbox no longer holds
+ * the item.
+ */
+export async function markInboxRead(item: Pick<InboxEntry, "issueId" | "reason">): Promise<boolean> {
+  const response = await fetch("/api/inbox/read", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ issueId: item.issueId, reason: item.reason }),
+  });
+  await response.arrayBuffer();
+  if (response.status === 401) throw new SignedOut();
+  if (response.status === 404) return false;
+  if (!response.ok) throw new Error(`/api/inbox/read answered ${response.status}`);
+  return true;
 }
 
 export async function fetchBoard(): Promise<Board> {

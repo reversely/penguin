@@ -1,6 +1,6 @@
 import { getAgentByName, routeAgentRequest } from "agents";
 import { serveMcp } from "@penguin/mcp";
-import { LIVE_OWNER_HEADER } from "@penguin/project-agent";
+import { LIVE_OWNER_HEADER, type InboxReason } from "@penguin/project-agent";
 
 import { handleRequest } from "./gateway.ts";
 import { parseOwnerMap } from "./github-oauth.ts";
@@ -61,7 +61,9 @@ export default {
           return {
             readIssue: async (issueId) => agent.issuePage(issueId),
             board: async () => agent.board(),
-            inbox: async (owner) => agent.inbox(owner),
+            inbox: async (owner) => agent.inboxPage(owner),
+            markInboxRead: async (owner, issueId, reason) =>
+              agent.markInboxRead(owner, issueId, reason as InboxReason),
             submit: (owner, operation) => agent.submitFromDashboard(owner, operation, repos),
             connectLive: (liveRequest, owner) => {
               // The browser cannot name the owner: the header is replaced with the session's.

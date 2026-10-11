@@ -16,7 +16,8 @@ import {
 } from "./issue-index.ts";
 import { buildBoard } from "./board.ts";
 import { buildIssuePage } from "./issue-page.ts";
-import { LiveFeed, liveOwner } from "./live-feed.ts";
+import { LiveFeed, liveOwner, sendToOwner } from "./live-feed.ts";
+import { buildInbox } from "./inbox-page.ts";
 import { InboxStore, type InboxItem, type InboxOutcome, type InboxReason } from "./inbox-store.ts";
 import { McpTokenStore, type IssuedMcpToken, type McpCaller } from "./mcp-tokens.ts";
 import {
@@ -53,7 +54,7 @@ import {
   type SessionWork,
 } from "./session-store.ts";
 import type { IssueRecord } from "@penguin/issues";
-import type { Author, Board, IssuePage } from "@penguin/protocol";
+import { inboxChangedMessage, type Author, type Board, type Inbox, type IssuePage } from "@penguin/protocol";
 import type { ScopeMap } from "@penguin/scope-map";
 
 import {
@@ -96,7 +97,8 @@ export {
 } from "./identity-store.ts";
 export { buildBoard, type BoardSources } from "./board.ts";
 export { buildIssuePage, issueView, type IssuePageSources } from "./issue-page.ts";
-export { LIVE_OWNER_HEADER, LiveFeed, liveOwner } from "./live-feed.ts";
+export { LIVE_OWNER_HEADER, LiveFeed, liveOwner, sendToOwner, type OwnedConnection } from "./live-feed.ts";
+export { buildInbox, type InboxPageSources } from "./inbox-page.ts";
 export { McpTokenStore, type IssuedMcpToken, type McpCaller } from "./mcp-tokens.ts";
 export {
   CHECKPOINT_SHA_PATTERN,
@@ -428,9 +430,23 @@ export class ProjectAgent extends Agent {
     return this.#inboxStore().items(caller);
   }
 
-  /** Marks one of the caller's inbox items read. A person can mark only their own items. */
+  /** The dashboard's inbox for the caller: their items, newest first, with each issue's title and state. */
+  inboxPage(caller: string): Inbox {
+    const index = this.#index();
+    const inbox = this.#inboxStore();
+    return buildInbox({ items: (person) => inbox.items(person), issue: (issueId) => index.issue(issueId) }, caller);
+  }
+
+  /**
+   * Marks one of the caller's inbox items read. A person can mark only their own items. The caller's
+   * other dashboards hear of it; nobody else's do.
+   */
   markInboxRead(caller: string, issueId: string, reason: InboxReason): InboxOutcome {
-    return this.#inboxStore().markRead(caller, this.#index().resolve(issueId), reason);
+    const outcome = this.#inboxStore().markRead(caller, this.#index().resolve(issueId), reason);
+    if (outcome.status === "ok") {
+      sendToOwner(this.getConnections<{ owner?: string }>(), caller, inboxChangedMessage());
+    }
+    return outcome;
   }
 
   /**
