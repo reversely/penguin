@@ -12,6 +12,19 @@ The team, from `examples/identity-unification/base/penguin/`:
 | Jun | Analytics models, which read the identity map | `@jun/reports` |
 | Sam | Messaging and CRM sync, which read the identity map | `@sam/campaigns` |
 
+## Who does what
+
+- **People** own scopes and decide: each one reviews the fixes that touch what they own.
+- **Their agents** write the fixes, each inside its person's scope.
+- **Penguin** coordinates and never writes or decides a fix. It notices when a change breaks someone
+  else's work, pulls everyone affected into one Huddle at once, routes each fix to the right agent,
+  runs everyone's tests together, and closes the Huddle when every owner has approved. On screen its
+  posts read as notices of fact and it says what the Huddle is waiting on.
+
+A Huddle is one task. Everyone it pulls in works on it at the same time, in one shared conversation,
+each with a role: the person whose change started it, the people whose work broke, and anyone a fix
+is sent to.
+
 ## Frames
 
 | # | The viewer's question | What Priya's screen shows |
