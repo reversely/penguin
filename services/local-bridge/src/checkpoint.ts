@@ -123,9 +123,10 @@ export class CheckpointPublisher {
   /**
    * Builds the checkpoint for one registered worktree, prints the preview, asks for consent and
    * on consent pushes it to the fork branch named after the worktree's branch. With an identity,
-   * a commit the bridge builds carries that identity's `Penguin-Agent` trailer (see `agentTrailer`),
-   * and an identity that belongs to another owner than the fork's is refused with an error before
-   * the fork is read (see `refuseForeignIdentity`).
+   * a commit the bridge builds carries that identity's `Penguin-Agent` trailer unless the project's
+   * `agent_trailer` is off (see `agentTrailer`). Whether or not a trailer is stamped, an identity
+   * that belongs to another owner than the fork's is refused with an error before the fork is read
+   * (see `refuseForeignIdentity`).
    */
   async publish(id: string, { remote, identity }: PublishOptions = {}): Promise<PublishResult> {
     const { registry, fork, confirm, write, spool } = this.#options;
@@ -138,12 +139,12 @@ export class CheckpointPublisher {
     const worktree = registry.pathOf(id);
     const forkRef = `refs/heads/${record.branch}`;
 
-    // The identity's owner is checked before the fork is read or anything is built. The check runs
-    // only when a trailer would be stamped: the recorded decision covers that case alone.
+    // The identity's owner is checked before the fork is read or anything is built, on every
+    // publish that names an identity, whether or not the project's agent_trailer stamps a trailer.
     const stamping = identity !== undefined && fork.agent_trailer !== false;
     let head: string | undefined;
     let identities: unknown[] | null = null;
-    if (stamping && isHandle(identity)) {
+    if (identity !== undefined && isHandle(identity)) {
       head = await revParse(worktree, "HEAD^{commit}");
       identities = await committedIdentities(worktree, head);
       refuseForeignIdentity(identity, identities, fork.owner_id, head);

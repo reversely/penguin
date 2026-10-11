@@ -315,19 +315,25 @@ test("a team identity is accepted when its committed owners include the fork own
   assert.equal(await trailersOf(result.preview.checkpoint_sha), "Penguin-Agent: @jun/pair (codex)\n");
 });
 
-test("with the project's agent trailer off, the checkpoint carries no trailer and the identity's owner is not checked", async () => {
+test("with the project's agent trailer off, the checkpoint carries no trailer and an identity of another owner is still refused", async () => {
   await identitiesInWorktreeA("trailer off");
-  const h = await harness([true, true]);
+  const h = await harness([true]);
   h.fork.agent_trailer = false;
   const result = await h.publisher.publish(h.idOf("feature-a"), { identity: "@priya/merge-rules" });
   assert.ok(result.status === "published");
   assert.equal(await trailersOf(result.preview.checkpoint_sha), "");
 
-  // The recorded decision to refuse covers only a checkpoint that would carry the trailer.
+  // The owner check runs on every publish that names an identity, whether or not a trailer is stamped.
   await repo.write(repo.worktreeA, "a.txt", "trailer off, other owner\n");
-  const other = await h.publisher.publish(h.idOf("feature-a"), { identity: "@jun/reports" });
-  assert.ok(other.status === "published");
-  assert.equal(await trailersOf(other.preview.checkpoint_sha), "");
+  const before = await forkRefs();
+  const printed = h.output.length;
+  await assert.rejects(
+    h.publisher.publish(h.idOf("feature-a"), { identity: "@jun/reports" }),
+    /^Error: refusing to publish as @jun\/reports: the identity belongs to @jun, not to priya, the fork owner$/,
+  );
+  assert.equal(await forkRefs(), before);
+  assert.equal(h.output.length, printed);
+  assert.equal(h.asked.length, 1);
 });
 
 test("an identity absent from the registry publishes without a trailer and logs a warning", async () => {
