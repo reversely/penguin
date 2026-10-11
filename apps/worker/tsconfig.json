@@ -15,6 +15,7 @@
     "src",
     "../../services/project-agent/src",
     "../../services/huddle-agent/src",
+    "../../services/mcp/src",
     "worker-configuration.d.ts"
   ]
 }

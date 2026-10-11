@@ -15,6 +15,7 @@ import {
   type TimelineEntry,
 } from "./issue-index.ts";
 import { InboxStore, type InboxItem, type InboxOutcome, type InboxReason } from "./inbox-store.ts";
+import { McpTokenStore, type IssuedMcpToken, type McpCaller } from "./mcp-tokens.ts";
 import { IngestLedger, ingestPush, type IngestReport } from "./push-ingest.ts";
 import { rebuildIndex, type RebuildReport } from "./rebuild.ts";
 import { parseScopeFile, SCOPE_MAP_PATH } from "./scope-file.ts";
@@ -80,6 +81,7 @@ export {
   type IdentityRejectReason,
   type TeamIdentityInput,
 } from "./identity-store.ts";
+export { McpTokenStore, type IssuedMcpToken, type McpCaller } from "./mcp-tokens.ts";
 export { importServiceKey, type ServiceKey } from "./service-key.ts";
 export {
   INBOX_REASONS,
@@ -163,6 +165,7 @@ export class ProjectAgent extends Agent {
   #inbox: InboxStore | undefined;
   #serviceKey: Promise<ServiceKey> | undefined;
   #bridges: BridgeRegistry | undefined;
+  #mcpTokens: McpTokenStore | undefined;
   #ledger: IngestLedger | undefined;
   /** Ingests run one at a time, so two pushes never interleave their walks and applies. */
   #ingests: Promise<unknown> = Promise.resolve();
@@ -357,6 +360,21 @@ export class ProjectAgent extends Agent {
     return this.#registry().revoke(bridgeId);
   }
 
+  /** Issues an MCP token (K3) for `ownerId`. The plaintext is returned only here; the agent keeps its hash. */
+  issueMcpToken(ownerId: string): Promise<IssuedMcpToken> {
+    return this.#mcpTokenStore().issue(ownerId);
+  }
+
+  /** The owner holding this unrevoked MCP token, or undefined. */
+  authenticateMcpToken(token: string): Promise<McpCaller | undefined> {
+    return this.#mcpTokenStore().authenticate(token);
+  }
+
+  /** Revokes an MCP token. Returns false when no unrevoked token has that id. */
+  revokeMcpToken(tokenId: string): boolean {
+    return this.#mcpTokenStore().revoke(tokenId);
+  }
+
   async #ingest(push: IssuesPush, repos: ProjectRepos): Promise<IngestResult> {
     const started = Date.now();
     const keys = await this.#operationKeys(repos);
@@ -410,6 +428,11 @@ export class ProjectAgent extends Agent {
   #registry(): BridgeRegistry {
     this.#bridges ??= new BridgeRegistry(this.#database());
     return this.#bridges;
+  }
+
+  #mcpTokenStore(): McpTokenStore {
+    this.#mcpTokens ??= new McpTokenStore(this.#database());
+    return this.#mcpTokens;
   }
 
   #index(): IssueIndex {

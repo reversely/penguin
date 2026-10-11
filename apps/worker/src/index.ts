@@ -1,4 +1,5 @@
 import { getAgentByName, routeAgentRequest } from "agents";
+import { serveMcp } from "@penguin/mcp";
 
 import { handleRequest } from "./gateway.ts";
 import { consumePushEvents } from "./push-events.ts";
@@ -46,6 +47,9 @@ export default {
         },
         // One ProjectAgent per repo prefix, so a test run's bridges stay apart from production's.
         bridges: () => getAgentByName(env.ProjectAgent, projectAgentName(names)),
+        mcpTokens: () => getAgentByName(env.ProjectAgent, projectAgentName(names)),
+        serveMcp: (mcpRequest, owner) =>
+          serveMcp(mcpRequest, owner, () => getAgentByName(env.ProjectAgent, projectAgentName(names))),
         mintToken: (repo, scope, ttl) => {
           const parsed = parseProjectRepo(repo);
           if (parsed === undefined) throw new Error(`not a project repo: ${repo}`);

@@ -13,13 +13,15 @@
  * tables and returns their comparison with the live tables.
  *
  * The bridge routes (/bridges, /bridges/codes, /bridges/<id>, /tokens and /operations/pending)
- * carry their own credentials; see bridges.ts.
+ * carry their own credentials; see bridges.ts. So do the MCP routes (/mcp, /mcp/tokens and
+ * /mcp/tokens/<id>); see mcp.ts. /mcp requires an MCP token in local development too.
  */
 
 import type { RebuildReport } from "@penguin/project-agent";
 
 import { isDeployer } from "./auth.ts";
 import { handleBridgeRoute, type BridgeHandlers } from "./bridges.ts";
+import { handleMcpRoute, type McpHandlers } from "./mcp.ts";
 import {
   artifactsErrorCode,
   parseSetupRequest,
@@ -31,7 +33,7 @@ export type AgentRouter = (request: Request) => Promise<Response | null>;
 export type ProjectSetup = (request: ProjectSetupRequest) => Promise<ProjectSetupReport>;
 export type IndexRebuild = () => Promise<RebuildReport>;
 
-export interface GatewayHandlers extends BridgeHandlers {
+export interface GatewayHandlers extends BridgeHandlers, McpHandlers {
   readonly routeAgents: AgentRouter;
   readonly setUpProject: ProjectSetup;
   readonly rebuildIndex: IndexRebuild;
@@ -131,6 +133,9 @@ export async function handleRequest(
   if (url.pathname === "/index/rebuild") {
     return handleRebuild(request, options, handlers.rebuildIndex);
   }
+
+  const mcpResponse = await handleMcpRoute(request, url, { deployerToken: options.deployerToken }, handlers);
+  if (mcpResponse) return mcpResponse;
 
   const bridgeResponse = await handleBridgeRoute(
     request,

@@ -4,5 +4,12 @@
   "private": true,
   "description": "MCP tools served through createMcpHandler",
   "type": "module",
-  "exports": "./src/index.ts"
+  "exports": "./src/index.ts",
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.0.0",
+    "@penguin/issues": "0.0.0",
+    "@penguin/protocol": "0.0.0",
+    "agents": "0.28.0",
+    "zod": "4.6.5"
+  }
 }
