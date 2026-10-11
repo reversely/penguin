@@ -12,7 +12,6 @@
 import type { Board, IdentitiesPage, IdentityEntry, IdentityScope, IssuePageTimelineEntry } from "@penguin/protocol";
 import {
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -21,7 +20,6 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from "react";
-import { createPortal } from "react-dom";
 
 import { fetchBoard, fetchIdentities, SignedOut, writeIdentity } from "./api.ts";
 import { IdentityAvatar, PersonAvatar } from "./avatar.tsx";
@@ -55,6 +53,7 @@ import { useRead } from "./inbox-page.tsx";
 import { describeEntry, shortSha, STATE_LABEL } from "./issue-view.ts";
 import { linkHandler } from "./links.ts";
 import { identityPath, personPath } from "./routes.ts";
+import { SidebarList } from "./sidebar-slot.tsx";
 import { agentWork, sessionIssue } from "./team-view.ts";
 import type { Live } from "./use-live.ts";
 
@@ -78,19 +77,11 @@ function chosenFromAddress(): string | null {
 /** The history state of an entry this page pushed, so its back link can return through history. */
 const PUSHED = "penguin-identities";
 
-/** The shell's sidebar list slot, which the shell renders before the page's effects run. */
-function useSidebarSlot(): HTMLElement | null {
-  const [slot, setSlot] = useState<HTMLElement | null>(null);
-  useLayoutEffect(() => setSlot(document.querySelector<HTMLElement>(".sidebar-list")), []);
-  return slot;
-}
-
 export function IdentitiesPageView({ viewer, live, navigate, onSignedOut }: Props) {
   const [load, setLoad] = useState<Load>({ kind: "loading" });
   const [chosen, setChosen] = useState<string | null>(chosenFromAddress);
   const [form, setForm] = useState<IdentityForm | null>(null);
   const phone = useMediaQuery(PHONE);
-  const slot = useSidebarSlot();
   const connected = live.status === "live";
   // The board says which issue each agent holds and what it waits on; a session going online or
   // offline reads it again.
@@ -220,23 +211,20 @@ export function IdentitiesPageView({ viewer, live, navigate, onSignedOut }: Prop
   return (
     <div className="identities">
       {centre}
-      {!phone && slot !== null
-        ? createPortal(
-            <section className="identity-list" aria-labelledby="identity-list-heading">
-              <div className="identity-list-head">
-                <h2 id="identity-list-heading">
-                  All identities <span className="tab-count">{page.identities.length}</span>
-                </h2>
-                {/* Disabled rather than removed while the create form is open, so the list keeps its place. */}
-                <button type="button" className="button" disabled={form?.kind === "create"} onClick={create}>
-                  Create
-                </button>
-              </div>
-              {list}
-            </section>,
-            slot,
-          )
-        : null}
+      <SidebarList>
+        <section className="identity-list" aria-labelledby="identity-list-heading">
+          <div className="identity-list-head">
+            <h2 id="identity-list-heading">
+              All identities <span className="tab-count">{page.identities.length}</span>
+            </h2>
+            {/* Disabled rather than removed while the create form is open, so the list keeps its place. */}
+            <button type="button" className="button" disabled={form?.kind === "create"} onClick={create}>
+              Create
+            </button>
+          </div>
+          {list}
+        </section>
+      </SidebarList>
     </div>
   );
 }

@@ -55,6 +55,11 @@
   --surface-raised: #ffffff;
   --selected: #e6e8e8;
   --line: #d6d8d8; /* 1.39:1 on field: a divider, never text */
+  /* A selected list row, raised by --elevation-raised. On it the dots and every character hue keep
+     3:1: light (#ffffff) unread 3.65, attention dot 3.34, online 3.42, hues 3.42 to 4.11; dark
+     (#1e283f) unread 4.02, attention dot 6.81, online 6.71, hues 3.57 to 4.29. On --selected the
+     light dots and the green, teal and blue hues fall to 2.72 to 2.97:1. */
+  --row-selected: var(--surface-raised);
 
   /* Text tiers */
   --ink: #151515; /* 17.77:1 on field, 16.43 surface, 18.26 raised, 14.85 selected */
@@ -119,6 +124,13 @@
   --radius-bubble: 14px;
   --radius-float: 20px;
   --radius-full: 999px;
+
+  /* Pane widths. Grok Bot's sidebar measures 538 image px: 245px at the plan's 2.2 scale, 269px at
+     2x. The sidebar is 248px, and from 1440px 304px, where a row's title line holds 28 characters
+     of a typical title beside the avatar and the dot, as Grok Bot's row holds 28 of its preview. */
+  --sidebar-width: 248px;
+  --sidebar-width-wide: 304px;
+  --details-width: 280px;
 
   /* Spacing on a 4px base */
   --space-1: 4px;
@@ -310,10 +322,10 @@ time {
   color: var(--offline);
 }
 
-/* Shell (identity plan section 4). From 760px: the sidebar (248px) beside the centre pane. From
-   1100px: the details panel (280px) docks as a third pane; below 1100px it opens as a drawer. Below
-   760px the sidebar becomes the phone header. Panes differ by one surface step with a hairline
-   between them and carry no shadow. */
+/* Shell (identity plan section 4). From 760px: the sidebar (248px, 304px from 1440px) beside the
+   centre pane. From 1100px: the details panel (280px) docks as a third pane; below 1100px it opens
+   as a drawer. Below 760px the sidebar becomes the phone header. Panes differ by one surface step
+   with a hairline between them and carry no shadow. */
 
 .sidebar {
   display: flex;
@@ -506,10 +518,20 @@ time {
   border-top: 0;
 }
 
+.shell {
+  --sidebar: var(--sidebar-width);
+}
+
+@media (min-width: 1440px) {
+  .shell {
+    --sidebar: var(--sidebar-width-wide);
+  }
+}
+
 @media (min-width: 760px) {
   .shell {
     display: grid;
-    grid-template-columns: 248px minmax(0, 1fr);
+    grid-template-columns: var(--sidebar) minmax(0, 1fr);
     min-height: 100vh;
   }
 
@@ -525,7 +547,7 @@ time {
 
 @media (min-width: 1100px) {
   .shell[data-details="docked"] {
-    grid-template-columns: 248px minmax(0, 1fr) 280px;
+    grid-template-columns: var(--sidebar) minmax(0, 1fr) var(--details-width);
   }
 
   .details-pane {
@@ -548,7 +570,7 @@ time {
     position: fixed;
     inset: 0 0 0 auto;
     z-index: var(--z-drawer);
-    width: min(280px, 100% - 2.75rem);
+    width: min(var(--details-width), 100% - 2.75rem);
     overflow-y: auto;
     overscroll-behavior: contain;
     box-shadow: var(--elevation-float);
@@ -2400,6 +2422,7 @@ span.agent-box {
   border-radius: var(--radius-row);
   transition:
     background-color var(--dur-hover) var(--ease-out),
+    box-shadow var(--dur-hover) var(--ease-out),
     scale var(--dur-press) var(--ease-out);
 }
 
@@ -2407,14 +2430,19 @@ span.agent-box {
   --row-base: var(--field);
 }
 
-.inbox-row:has(> [aria-current="page"]) {
-  --row-fill: var(--selected);
+/* One rule for the selected row of both sidebar lists, the inbox's and the identities': the raised
+   fill and shadow, on which every dot and character hue keeps 3:1 (see --row-selected). */
+.inbox-row:has(> [aria-current="page"]),
+.identity-row[aria-current="page"] {
+  --row-fill: var(--row-selected);
   background: var(--row-fill);
+  box-shadow: var(--elevation-raised);
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .inbox-row:not(:has(> [aria-current="page"])):hover {
-    --row-fill: color-mix(in oklab, var(--selected) 60%, var(--row-base));
+  .inbox-row:not(:has(> [aria-current="page"])):hover,
+  .identity-row:not([aria-current="page"]):hover {
+    --row-fill: color-mix(in oklab, var(--row-selected) 60%, var(--row-base));
     background: var(--row-fill);
   }
 }
@@ -2440,7 +2468,8 @@ span.agent-box {
   min-width: 0;
 }
 
-.inbox-row-top {
+/* The second line: the number with the state or wait, then the raised time at the right. */
+.inbox-row-meta {
   display: flex;
   align-items: baseline;
   gap: var(--space-2);
@@ -2457,9 +2486,12 @@ span.agent-box {
 }
 
 .inbox-row-title {
+  font-weight: 500;
+}
+
+.inbox-row-preview {
   flex: 1;
   min-width: 0;
-  font-weight: 500;
 }
 
 .inbox-row time {
@@ -2695,10 +2727,9 @@ span.agent-box {
   list-style: none;
 }
 
-/* A row (Grok Bot's list row): 48px, its avatar 4px from the edge and 8px from the text. A selected
-   row takes the raised fill, on which every character hue keeps 3:1 (light 3.42 to 4.11, dark 3.57 to
-   4.29); on --selected the green, teal and blue hues fall to 2.78:1 in light. --row-base is the pane
-   under the row and --row-fill the row's own, which rings the online dot. */
+/* A row (Grok Bot's list row): 48px, its avatar 4px from the edge and 8px from the text. Its
+   selected and hover fills share the inbox row's rule. --row-base is the pane under the row and
+   --row-fill the row's own, which rings the online dot. */
 .identity-row {
   --row-base: var(--surface);
   --row-fill: var(--row-base);
@@ -2723,17 +2754,6 @@ span.agent-box {
 
 .identity-row:active {
   scale: 0.96;
-}
-
-.identity-row[aria-current="page"] {
-  --row-fill: var(--surface-raised);
-  box-shadow: var(--elevation-raised);
-}
-
-@media (hover: hover) and (pointer: fine) {
-  .identity-row:not([aria-current="page"]):hover {
-    --row-fill: color-mix(in oklab, var(--surface-raised) 60%, var(--row-base));
-  }
 }
 
 .identity-row-avatar {

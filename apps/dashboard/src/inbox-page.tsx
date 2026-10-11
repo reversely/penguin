@@ -33,10 +33,8 @@ import { STATE_LABEL } from "./issue-view.ts";
 import { linkHandler } from "./links.ts";
 import { NewIssueLink } from "./new-issue-page.tsx";
 import { INBOX_ALL_PATH, type Route } from "./routes.ts";
+import { SIDEBAR_LIST, SidebarList } from "./sidebar-slot.tsx";
 import type { Live } from "./use-live.ts";
-
-/** The width from which the rows sit in the sidebar; matches the shell's breakpoint in app.css. */
-const SIDEBAR = "(min-width: 760px)";
 
 export type InboxLoad =
   | { readonly kind: "loading" }
@@ -153,15 +151,16 @@ interface HostProps {
 
 /** The rows in the shell's sidebar from 760px, on the inbox and beside an open issue. */
 export function InboxSidebar({ route, ...props }: HostProps & { readonly route: Route | undefined }) {
-  const wide = useMediaQuery(SIDEBAR);
-  if (!wide || (route?.page !== "inbox" && route?.page !== "issue")) return null;
+  if (route?.page !== "inbox" && route?.page !== "issue") return null;
   // One element in both routes, so opening a row keeps the list, its board and its scroll.
   return (
-    <SidebarInbox
-      {...props}
-      showAll={route.page === "inbox" && route.showAll}
-      openIssue={route.page === "issue" ? route.issueId : undefined}
-    />
+    <SidebarList>
+      <SidebarInbox
+        {...props}
+        showAll={route.page === "inbox" && route.showAll}
+        openIssue={route.page === "issue" ? route.issueId : undefined}
+      />
+    </SidebarList>
   );
 }
 
@@ -173,7 +172,7 @@ function SidebarInbox({ inbox, viewer, live, showAll, openIssue, navigate, onSig
 
 /** The inbox page: from 760px an empty state beside the sidebar's rows; below it the rows themselves. */
 export function InboxPage({ inbox, viewer, live, showAll, navigate, onSignedOut }: HostProps & { readonly showAll: boolean }) {
-  const wide = useMediaQuery(SIDEBAR);
+  const wide = useMediaQuery(SIDEBAR_LIST);
   const { load } = inbox;
   if (load.kind === "loading") return <div className="inbox" aria-busy="true" />;
   return (
@@ -296,13 +295,14 @@ const RAISED_FULL = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", ti
 
 /**
  * One item as a sidebar row (identity plan section 5): the first assignee's character, the issue
- * number and title, the state or what the item waits on the person for and the raised time. The dot
- * at the right is the Mark read control on an unread item; it takes the attention colour while the
- * item waits on the person, whose preview then says so in words.
+ * title, then the issue number, the state or what the item waits on the person for and the raised
+ * time. The dot at the right is the Mark read control on an unread item; it takes the attention
+ * colour while the item waits on the person, whose preview then says so in words.
  */
 function InboxRow({ item, facts, viewer, now, open, marking, onMarkRead, navigate }: RowProps) {
   const path = `/issues/${item.issueId}`;
   const titleId = `inbox-item-${itemKey(item)}`;
+  const numberId = `${titleId}-number`;
   const waiting = waitingFor(item, facts?.issues.get(item.issueId), viewer);
   const handle = item.assigneeHandles[0];
   const identity = handle === undefined ? undefined : facts?.identities.get(handle);
@@ -319,16 +319,23 @@ function InboxRow({ item, facts, viewer, now, open, marking, onMarkRead, navigat
           )}
           {online ? <span className="dot dot-online" /> : null}
         </span>
+        {/* The title has the first line to itself; the number, the state or wait and the time share
+            the second, so a sidebar row shows enough of the title to tell the issue. */}
         <span className="inbox-row-text">
-          <span className="inbox-row-top">
-            <span id={titleId} className="inbox-row-title">
-              <span className="issue-number">#{item.issueId}</span> {item.title}
+          <span id={titleId} className="inbox-row-title">
+            {item.title}
+          </span>
+          <span className="inbox-row-meta">
+            <span className="inbox-row-preview">
+              <span id={numberId} className="issue-number">
+                #{item.issueId}
+              </span>{" "}
+              {waiting === null ? (STATE_LABEL[item.state] ?? item.state) : WAITING_PREVIEW[waiting]}
             </span>
             <time dateTime={item.raisedAt} title={Number.isNaN(raisedTime) ? undefined : RAISED_FULL.format(raisedTime)}>
               {raisedLabel(item.raisedAt, now)}
             </time>
           </span>
-          <span className="inbox-row-preview">{waiting === null ? (STATE_LABEL[item.state] ?? item.state) : WAITING_PREVIEW[waiting]}</span>
         </span>
         {/* The character and the dots are drawn, so their meaning is also given as text. */}
         {handle === undefined ? null : <span className="visually-hidden">{online ? `${handle} online` : handle}</span>}
@@ -342,7 +349,7 @@ function InboxRow({ item, facts, viewer, now, open, marking, onMarkRead, navigat
           className="inbox-row-mark"
           title="Mark read"
           aria-label="Mark read"
-          aria-describedby={titleId}
+          aria-describedby={`${numberId} ${titleId}`}
           disabled={marking}
           onClick={() => onMarkRead(item)}
         >
