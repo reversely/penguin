@@ -16,5 +16,10 @@
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["ProjectAgent", "HuddleAgent"] }
-  ]
+  ],
+
+  // One Artifacts namespace holds the base repo, the owner forks, the issues repo and the Huddle
+  // repos. Artifacts creates the namespace on the first repo create. Artifacts has no local
+  // simulator, so `remote` points `wrangler dev` at the real service.
+  "artifacts": [{ "binding": "ARTIFACTS", "namespace": "penguin", "remote": true }]
 }
