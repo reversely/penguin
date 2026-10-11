@@ -1,4 +1,7 @@
+import { fileURLToPath } from "node:url";
+
 import { isObjectId, runGit } from "@penguin/git-analysis";
+import { IMPACT_COMMAND_ID } from "@penguin/protocol";
 import { parseScopeMap, type ScopeMap } from "@penguin/scope-map";
 
 /** The repository config that maps command IDs to shell commands, relative to the repo root. */
@@ -52,6 +55,34 @@ export async function resolveCommand(
     throw new UnknownCommandError(commandId, `${SCOPES_FILE} at ${sha} defines no such scope`);
   }
   return { commandId, scopeId, sha, command: scope.testCommand };
+}
+
+// Penguin's own analysis commands. Unlike a test command, the program is part of the bridge, never
+// the repository: an ID maps to a script shipped beside this file, which reads the repository's Git
+// objects as data.
+const ANALYSIS_SCRIPTS: Readonly<Record<string, string>> = {
+  [IMPACT_COMMAND_ID]: "../analysis/python_impact.py",
+};
+
+/** One of the bridge's own analysis commands, resolved to the script it runs. */
+export interface AnalysisCommand {
+  readonly commandId: string;
+  /** Absolute path of the script, inside the bridge's own folder. */
+  readonly script: string;
+}
+
+/**
+ * Resolves an analysis command ID, such as `analysis:python-impact`, to the bridge's script.
+ *
+ * Raises:
+ *   UnknownCommandError: when the ID names no analysis the bridge ships.
+ */
+export function resolveAnalysisCommand(commandId: string): AnalysisCommand {
+  if (!Object.hasOwn(ANALYSIS_SCRIPTS, commandId)) {
+    throw new UnknownCommandError(commandId, "the bridge ships no such analysis");
+  }
+  const script = fileURLToPath(new URL(ANALYSIS_SCRIPTS[commandId] as string, import.meta.url));
+  return { commandId, script };
 }
 
 /** The command ID of a scope's test command. */

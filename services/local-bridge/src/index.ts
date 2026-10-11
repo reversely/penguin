@@ -2,12 +2,15 @@ export const packageName: string = "@penguin/local-bridge";
 
 export {
   loadScopeMap,
+  resolveAnalysisCommand,
   resolveCommand,
   SCOPES_FILE,
   testCommandId,
   UnknownCommandError,
 } from "./command-allowlist.ts";
-export type { ResolvedCommand } from "./command-allowlist.ts";
+export type { AnalysisCommand, ResolvedCommand } from "./command-allowlist.ts";
+export { formatImpactReport, ImpactAnalysisError, pythonImpactAnalyzer } from "./impact-analysis.ts";
+export type { ImpactAnalyzer, ImpactForkRequest, ImpactRequest, PythonImpactOptions } from "./impact-analysis.ts";
 
 export {
   AGENT_TRAILER_KEY,

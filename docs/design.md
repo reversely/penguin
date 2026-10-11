@@ -171,6 +171,43 @@ Each check is a mechanical fact about code. No check calls a model.
 
 Penguin runs tests and type checks only for forks the impact graph marks as affected.
 
+#### Impact graph and contract diff for Python
+
+The check runner builds the impact graph and the contract diff of a Python change with the
+allowlisted command `analysis:python-impact`. The command reads the change's base and head commits
+plus one commit per fork. It uses only the Python standard library: `git ls-tree` lists the paths,
+`git cat-file` reads the bytes and `ast.parse` reads the code. It never imports or runs the code.
+[bridge-and-runner.md](bridge-and-runner.md#impact-analysis) describes the command and its limits.
+
+One run records a structured report: the tool, the command ID, the base and head commits, each fork
+with its commit and scopes, then what the analysis found.
+
+| Finding | Contents |
+|---|---|
+| Changes | Each function, method, class and module-level value the change modifies, adds, removes, renames or moves, with its file, line, scope and the declared contract that covers it. A docstring edit is no change |
+| Signatures | Before and after of each changed signature with the parameters added or removed. It says whether a call that worked before can now fail, with the reason |
+| Removed exports | Each name a module exported at base that an import of the module at head can no longer reach |
+| Stored data shapes | Field lists before and after for each dataclass, `NamedTuple`, `TypedDict` and `Enum` whose fields change |
+| Uses | Each import, call or reference of a changed symbol, with its file and line. Head uses lie outside the changed files. Fork uses lie inside the fork's scopes |
+
+Names resolve through imports and re-exports. A re-export in `__all__` that points at another
+definition counts as a change to the re-exported name. In the dependency bump, `shared/http.py`
+re-exports the client from a newer vendored version, so the report lists `shared.http.Client` as
+modified with its new constructor signature. A method call resolves when the variable's class comes
+from a parameter annotation, a constructor call or an annotated return type.
+
+Scope paths and contracts come from `penguin/scopes.json` at head. A contract is a `path::symbol`
+entry in a scope's `contracts` list. A contract that names a class covers its methods.
+
+The selection function `selectAffectedForks` (`packages/protocol`) returns the forks whose scopes
+import, call or reference a changed symbol, plus any fork with an unreadable file in its scopes.
+Every fork is selected when the report is incomplete: a changed file other than an importable
+Python module, a changed file that did not parse, or a list cut at its limit. On the helpful fix the
+report lists `start_of_day()` as modified with an unchanged signature. It lists Jun's call in
+`analytics/weekly.py` and Sam's call in `messaging/reminders.py`, so both forks run tests. On
+identity unification it lists the `Profile` field change and the new required `identity` parameter
+of `Profile.set`. It lists every analytics and messaging file that imports the identity map.
+
 ### Tools for agents
 
 Agents call these tools through MCP. Each tool answers with facts or applies one deterministic change.

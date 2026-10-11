@@ -10,6 +10,7 @@ import { bridgeReporter } from "./checkpoint-report.ts";
 import { CONSENT_USAGE, runConsentCommand } from "./consent-cli.ts";
 import { bridgeConsent } from "./consent-store.ts";
 import { isPenguinRemote, penguinRemote } from "./git-remote.ts";
+import { IMPACT_USAGE, runImpactCommand } from "./impact-cli.ts";
 import { ISSUE_USAGE, runIssueCommand, runKeyCommand } from "./issue-cli.ts";
 import { KeychainStore, type KeyStore } from "./key-store.ts";
 import { bridgeRemotes, registerBridge, type Fetch } from "./penguin-client.ts";
@@ -67,8 +68,9 @@ export async function runCli(argv: readonly string[], io: CliIo, deps: CliDepend
   if (command === "session-checkpoint") return runSessionCheckpointCommand(rest, io, keyStore, stateDir, deps.fetch);
   if (command === "worktree-id") return runWorktreeIdCommand(rest, io);
   if (command === "consent") return runConsentCommand(rest, io, stateDir);
+  if (command === "impact") return runImpactCommand(rest, io);
   if (command !== "checkpoint") {
-    io.write(USAGE + CONSENT_USAGE + ISSUE_USAGE + SPOOL_USAGE + RUNNER_USAGE + SESSION_CHECKPOINT_USAGE);
+    io.write(USAGE + CONSENT_USAGE + ISSUE_USAGE + SPOOL_USAGE + RUNNER_USAGE + SESSION_CHECKPOINT_USAGE + IMPACT_USAGE);
     return 2;
   }
   const { values } = parseArgs({

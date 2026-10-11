@@ -232,6 +232,50 @@ The command's environment leaves out every `PENGUIN_*` and `ARTIFACTS_*` variabl
 `CLOUDFLARE_API_TOKEN`, so no Penguin, Artifacts or Cloudflare credential reaches a command the
 repository defines.
 
+### Impact analysis
+
+The bridge also ships Penguin's own analysis commands. An analysis ID such as
+`analysis:python-impact` resolves to a script in `services/local-bridge/analysis/`, never to text
+from the repository. Any other `analysis:` ID is refused (`command-allowlist.ts`). The runner
+starts the script as `python3 -I python_impact.py --repo <path>` with an argument vector and no
+shell, in the scrubbed environment described above (`impact-analysis.ts`). Isolated mode keeps the
+working directory and `PYTHON*` variables out of the interpreter's import path. The request goes in
+on standard input as JSON: the base and head commits plus each fork's id, commit and scopes. The
+report comes back on standard output and is checked against `IMPACT_REPORT_SCHEMA` in
+`packages/protocol` before anything reads it. [design.md](design.md#impact-graph-and-contract-diff-for-python)
+lists what the report holds.
+
+The script reads only Git objects. It never checks out a tree or imports the code it reads.
+
+| Input | Handling |
+|---|---|
+| Paths | Taken from `git ls-tree`. A path that is absolute, not normalised or leaves the repository is refused. Symlinks and submodules are skipped |
+| File over 1,000,000 bytes | Not read; reported as `too-large` |
+| Bytes that are not UTF-8 | Reported as `not-utf8` |
+| Syntax error or null byte | Reported as `syntax` with the line |
+| Nesting past the parser's limit or past 100 syntax tree levels | Reported as `too-deep` |
+| More than 50,000 Python files in one commit | The rest are not read; reported as `too-many-files` |
+| A list past 2,000 entries | Cut; the report sets `truncated` and counts as incomplete |
+| Missing commit or malformed request | Exit status 2 with one line on standard error |
+
+A combined run (`CombinedRunner`) given an analyzer runs the analysis first, with one fork per
+dependent owner that has a checkpoint. It then runs tests only for the owners the report selects.
+Each skipped scope is listed under `notAffected` in the run's report. A failed analysis is recorded
+as `impactError`. Every dependent scope's tests then run.
+
+To see the report for any two commits:
+
+```sh
+penguin-bridge impact --repo <path> --base main --head owner-priya-checkpoint \
+  --fork jun=owner-jun-checkpoint:analytics --fork sam=owner-sam-checkpoint:messaging [--json]
+```
+
+The text form lists each finding with its file and line, then each fork's uses and whether its
+tests run. `--json` prints the full report. `--python <path>` names another interpreter.
+
+On a test repository of 1,000 modules with 50 changed, the analysis of base, head and three forks
+takes about 1.8 seconds on an Apple silicon laptop. 5,000 modules take about 9.8 seconds.
+
 ### Colour handling
 
 The runner finds failing tests from pytest's `FAILED <node id>` summary lines. Coloured output wraps

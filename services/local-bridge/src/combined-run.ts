@@ -1,11 +1,12 @@
 import { basename } from "node:path";
 
 import { changedPathsBetween, commitMergedTree, isObjectId, simulateMerge } from "@penguin/git-analysis";
-import type { CombinedRunEvent } from "@penguin/protocol";
+import { selectAffectedForks, type CombinedRunEvent, type ImpactReport } from "@penguin/protocol";
 import { affectedOwners } from "@penguin/scope-map";
 
 import { loadScopeMap, testCommandId } from "./command-allowlist.ts";
 import { fingerprint, type ResultFingerprint } from "./fingerprint.ts";
+import type { ImpactAnalyzer } from "./impact-analysis.ts";
 import type { TestRunner } from "./test-runner.ts";
 
 export interface CombinedRunRequest {
@@ -73,6 +74,15 @@ export interface CombinedRunReport {
   readonly unmapped: readonly string[];
   /** One result per dependent scope, sorted by scope ID. */
   readonly results: readonly CombinedResult[];
+  /**
+   * The impact graph and contract diff of the checkpoint, with each dependent owner's checkpoint as
+   * a fork; null when no analyzer ran or it failed.
+   */
+  readonly impact?: ImpactReport | null;
+  /** Why the analysis failed, in which case every dependent scope's tests ran; null otherwise. */
+  readonly impactError?: string | null;
+  /** Dependent scopes the impact graph marks as unaffected; their tests did not run. */
+  readonly notAffected?: readonly string[];
 }
 
 export interface CombinedRunnerOptions {
@@ -80,6 +90,11 @@ export interface CombinedRunnerOptions {
   repoPath: string;
   /** Runs each dependent scope's allowlisted tests in a throwaway worktree, with consent. */
   runner: TestRunner;
+  /**
+   * When given, the impact graph selects which dependent owners' tests run: only an owner whose
+   * checkpoint imports, calls or references a changed symbol in a dependent scope.
+   */
+  impact?: ImpactAnalyzer;
 }
 
 // pytest's short test summary (on by default through `-r fE`) names each failure on a line of
@@ -154,20 +169,32 @@ export class CombinedRunner {
     const changed = await changedPathsBetween(repoPath, baselineSha, checkpointSha);
     const affected = affectedOwners(scopeMap, changed);
 
-    const results: CombinedResult[] = [];
-    // An owner with several dependent scopes is merged once; the merged commit serves each scope.
-    const merges = new Map<string, MergeOutcome>();
+    const targets: (DependentTarget & { readonly ownerCheckpoint: string | undefined })[] = [];
     for (const scopeId of affected.dependentScopes) {
       const ownerId = scopeMap.scopes.get(scopeId)?.ownerId as string;
-      const target = { ownerId, scopeId, commandId: testCommandId(scopeId) };
-      if (wanted !== undefined && !wanted.has(target.commandId)) continue;
+      const commandId = testCommandId(scopeId);
+      if (wanted !== undefined && !wanted.has(commandId)) continue;
       const ownerCheckpoint = Object.hasOwn(latestCheckpoints, ownerId) ? latestCheckpoints[ownerId] : undefined;
+      if (ownerCheckpoint !== undefined && !isObjectId(ownerCheckpoint)) {
+        throw new Error(`checkpoint of ${ownerId} must be a full object ID, got ${JSON.stringify(ownerCheckpoint)}`);
+      }
+      targets.push({ ownerId, scopeId, commandId, ownerCheckpoint });
+    }
+    const { impact, impactError, selected } = await this.#impact(baselineSha, checkpointSha, targets);
+
+    const results: CombinedResult[] = [];
+    const notAffected: string[] = [];
+    // An owner with several dependent scopes is merged once; the merged commit serves each scope.
+    const merges = new Map<string, MergeOutcome>();
+    for (const { ownerCheckpoint, ...target } of targets) {
+      const { ownerId } = target;
       if (ownerCheckpoint === undefined) {
         results.push({ ...target, status: "no-checkpoint" });
         continue;
       }
-      if (!isObjectId(ownerCheckpoint)) {
-        throw new Error(`checkpoint of ${ownerId} must be a full object ID, got ${JSON.stringify(ownerCheckpoint)}`);
+      if (selected !== undefined && !selected.has(ownerId)) {
+        notAffected.push(target.scopeId);
+        continue;
       }
       const merge = merges.get(ownerId) ?? (await this.#merge(checkpointSha, ownerCheckpoint));
       merges.set(ownerId, merge);
@@ -183,7 +210,38 @@ export class CombinedRunner {
       changedScopes: affected.changedScopes,
       unmapped: affected.unmapped,
       results,
+      impact,
+      impactError,
+      notAffected,
     };
+  }
+
+  /**
+   * Runs the impact analysis with one fork per dependent owner that has a checkpoint, searched in
+   * that owner's dependent scopes. A failed analysis selects every owner, so no test is skipped on
+   * a guess.
+   */
+  async #impact(
+    baselineSha: string,
+    checkpointSha: string,
+    targets: readonly (DependentTarget & { readonly ownerCheckpoint: string | undefined })[],
+  ): Promise<{ impact: ImpactReport | null; impactError: string | null; selected: Set<string> | undefined }> {
+    const analyzer = this.#options.impact;
+    const scopesByOwner = new Map<string, { sha: string; scopes: string[] }>();
+    for (const { ownerId, scopeId, ownerCheckpoint } of targets) {
+      if (ownerCheckpoint === undefined) continue;
+      const fork = scopesByOwner.get(ownerId) ?? { sha: ownerCheckpoint, scopes: [] };
+      fork.scopes.push(scopeId);
+      scopesByOwner.set(ownerId, fork);
+    }
+    if (analyzer === undefined || scopesByOwner.size === 0) return { impact: null, impactError: null, selected: undefined };
+    const forks = [...scopesByOwner].map(([id, fork]) => ({ id, ...fork }));
+    try {
+      const impact = await analyzer({ base: baselineSha, head: checkpointSha, forks });
+      return { impact, impactError: null, selected: new Set(selectAffectedForks(impact)) };
+    } catch (error) {
+      return { impact: null, impactError: (error as Error).message, selected: undefined };
+    }
   }
 
   async #merge(checkpointSha: string, ownerCheckpoint: string): Promise<MergeOutcome> {
