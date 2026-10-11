@@ -1,0 +1,8 @@
+{
+  "name": "@penguin/issues",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Operation schemas, signatures, validator, reducer, index rebuild",
+  "type": "module",
+  "exports": "./src/index.ts"
+}

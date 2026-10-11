@@ -1,0 +1,8 @@
+{
+  "name": "@penguin/scope-map",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Owners, scopes, declared dependencies, affected-owner lookup",
+  "type": "module",
+  "exports": "./src/index.ts"
+}

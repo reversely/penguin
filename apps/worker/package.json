@@ -1,0 +1,8 @@
+{
+  "name": "@penguin/worker",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Gateway: MCP endpoint, dashboard API, Queue consumer, Artifacts binding",
+  "type": "module",
+  "exports": "./src/index.ts"
+}

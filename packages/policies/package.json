@@ -1,0 +1,8 @@
+{
+  "name": "@penguin/policies",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Charters, review rights, thread rules",
+  "type": "module",
+  "exports": "./src/index.ts"
+}

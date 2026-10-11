@@ -1,0 +1,8 @@
+{
+  "name": "@penguin/local-bridge",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Node daemon: checkpoint publishing, issue command line, tests, runner mode, outbound connection",
+  "type": "module",
+  "exports": "./src/index.ts"
+}
