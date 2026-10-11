@@ -35,6 +35,7 @@ import {
   type BridgeKey,
   type CharterIdentity,
   type Comment,
+  type Delegates,
   type FixLookup,
   type IssueRecord,
   type IssueStateName,
@@ -70,6 +71,8 @@ export interface OperationKeys {
   readonly bridges: readonly BridgeKey[];
   readonly serviceKey: CryptoKey;
   readonly scopeMap: ScopeMap;
+  /** Each owner's delegate, from the base repo's `penguin/owners.json`. None when absent. */
+  readonly delegates?: Delegates;
   /** Finds an identity by handle for the charter check: the ProjectAgent's identity store. */
   readonly identities: IdentitySource;
   /** The Huddle fix sub-issues a send_upstream may name (the Huddle store). Without it, none is a fix. */
@@ -266,11 +269,12 @@ export const ISSUE_INDEX_SCHEMA: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS SubIssue (
     child_id TEXT PRIMARY KEY, parent_id TEXT NOT NULL, op_id TEXT NOT NULL)`,
   // `counts` is 0 for a review from someone without review rights; `uncounted_reason` says why.
-  // Both come last, where REVIEW_COLUMNS adds them to a table created before them.
+  // `counts_for` is the JSON list of owners whose approval the review stands for. The three come last,
+  // where REVIEW_COLUMNS adds them to a table created before them.
   `CREATE TABLE IF NOT EXISTS Review (
     op_id TEXT PRIMARY KEY, issue_id TEXT NOT NULL, reviewer_owner_id TEXT NOT NULL, verdict TEXT NOT NULL,
     reason TEXT, repo TEXT NOT NULL, commit_sha TEXT NOT NULL, counts INTEGER NOT NULL DEFAULT 1,
-    uncounted_reason TEXT)`,
+    uncounted_reason TEXT, counts_for TEXT)`,
   `CREATE TABLE IF NOT EXISTS Thread (
     id TEXT PRIMARY KEY, issue_id TEXT NOT NULL, body TEXT NOT NULL, anchor TEXT, opened_by TEXT NOT NULL,
     participants TEXT NOT NULL, needs_person_ids TEXT NOT NULL, status TEXT NOT NULL, resolved_by TEXT,
@@ -293,11 +297,13 @@ export const ISSUE_INDEX_SCHEMA: readonly string[] = [
 
 /**
  * Review columns added after the table first shipped, with the definition that adds each to an older
- * table. Every review stored before them passed the rights check, so it counts.
+ * table. Every review stored before them passed the rights check, so it counts. A counting review
+ * stored before #42 has no `counts_for`; no delegate existed then, so it stands for its reviewer.
  */
 const REVIEW_COLUMNS: readonly (readonly [string, string])[] = [
   ["counts", "counts INTEGER NOT NULL DEFAULT 1"],
   ["uncounted_reason", "uncounted_reason TEXT"],
+  ["counts_for", "counts_for TEXT"],
 ];
 
 /**
@@ -589,6 +595,7 @@ export class IssueIndex {
       resolve: (other) => this.resolve(other),
       nextIssueNumber: () => this.#highestIssueNumber() + 1,
       scopeMap: keys.scopeMap,
+      ...(keys.delegates === undefined ? {} : { delegates: keys.delegates }),
     });
     if (!result.ok) {
       const rejectedId = issueId ?? this.resolve(issueKey(operation.issue));
@@ -840,8 +847,8 @@ export class IssueIndex {
       upsert: (r) =>
         db.exec(
           `INSERT OR REPLACE INTO Review (op_id, issue_id, reviewer_owner_id, verdict, reason, repo, commit_sha, counts,
-             uncounted_reason)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             uncounted_reason, counts_for)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           r.opId,
           id,
           r.reviewerOwnerId,
@@ -851,6 +858,7 @@ export class IssueIndex {
           r.sha,
           r.counts ? 1 : 0,
           r.uncountedReason,
+          JSON.stringify(r.countsFor),
         ),
     });
     diff(prev?.threads, next.threads, {
@@ -979,6 +987,7 @@ export class IssueIndex {
           sha: text(r, "commit_sha"),
           counts: Number(r["counts"]) === 1,
           uncountedReason: nullable(r, "uncounted_reason"),
+          countsFor: countsFor(r),
         }),
       ),
       threads: keyed(
@@ -1010,6 +1019,13 @@ function addMissingColumns(db: SqlDatabase, table: string, columns: readonly (re
   for (const [name, definition] of columns) {
     if (!present.has(name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${definition}`);
   }
+}
+
+/** A Review row's `counts_for`; a counting row stored before the column stands for its reviewer. */
+function countsFor(row: Row): string[] {
+  const stored = row["counts_for"];
+  if (typeof stored === "string") return JSON.parse(stored) as string[];
+  return Number(row["counts"]) === 1 ? [row["reviewer_owner_id"] as string] : [];
 }
 
 function keyed<V>(rows: Row[], key: (row: Row) => string, value: (row: Row) => V): ReadonlyMap<string, V> {

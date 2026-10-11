@@ -9,6 +9,8 @@
 // - "closed": the issue moved to the closed state; every person with an item for the issue gets one.
 // - "start_session": the session router (session-store.ts) asks the person to start a session of an
 //   identity for the issue. The item goes away once no such request remains.
+// - "review_requested": a Huddle's HuddleAgent asks the person to review a fix sub-issue whose
+//   combined tests pass (huddle-reviews.ts). A request for a newer fix commit marks it unread again.
 //
 // The person who did the thing gets no "assigned", "mentioned" or "closed" item for it. An identity's
 // operation counts as its owner half's doing, as in IssueIndex.assigningOwner.
@@ -17,7 +19,7 @@
 // again and moves it to the top. Assigned and mentioned items stay after an unassign or a deleted
 // mention: the inbox records what happened.
 //
-// "Needs your review" and "threads that need you" wait for review requests in Phase 4.
+// "Threads that need you" wait for thread routing in Phase 4.
 //
 // InboxItem is live state: read flags and session requests have no counterpart in the issues repo, so
 // a rebuild never derives items (rebuild.ts lists the table as live-only).
@@ -29,7 +31,7 @@ import type { IdentityStore } from "./identity-store.ts";
 import type { IssueChange, SqlDatabase } from "./issue-index.ts";
 import { responsibleOwners, type StartRequestListener } from "./session-store.ts";
 
-export const INBOX_REASONS = ["assigned", "mentioned", "closed", "start_session"] as const;
+export const INBOX_REASONS = ["assigned", "mentioned", "closed", "start_session", "review_requested"] as const;
 export type InboxReason = (typeof INBOX_REASONS)[number];
 
 export interface InboxItem {
@@ -126,6 +128,11 @@ export class InboxStore implements StartRequestListener {
 
   startRequested(ownerId: string, issueId: string): void {
     this.#raise(ownerId, issueId, "start_session");
+  }
+
+  /** Asks `ownerId` to review the fix sub-issue `issueId`. */
+  reviewRequested(ownerId: string, issueId: string): void {
+    this.#raise(ownerId, issueId, "review_requested");
   }
 
   startWithdrawn(ownerId: string, issueId: string): void {

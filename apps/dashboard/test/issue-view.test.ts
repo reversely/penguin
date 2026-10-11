@@ -4,6 +4,7 @@ import { test } from "node:test";
 import type { IssuePage, IssuePageCheck, IssuePageReview, IssuePageTimelineEntry } from "@penguin/protocol";
 
 import {
+  APPROVAL_LABEL,
   authorName,
   checkSignal,
   describeEntry,
@@ -12,6 +13,7 @@ import {
   latestChecks,
   penguinState,
   reasonLabel,
+  reviewSuperseded,
   watchedIssues,
 } from "../src/issue-view.ts";
 import { latestChange, recordChange, type LiveChanges } from "../src/live-changes.ts";
@@ -92,6 +94,7 @@ const sub = (id: string, fields: Partial<IssuePage["subIssues"][number]> = {}) =
   assignees: [],
   reviews: [],
   checks: [],
+  approval: null,
   ...fields,
 });
 
@@ -172,6 +175,27 @@ test("the Penguin character follows the issue's state, its checks and its review
   const openThread = { id: "jun-web-0009", status: "open" as const, needsPersonIds: ["priya"] };
   assert.equal(penguinState(page({ state: "in_review", threads: [openThread] }, [approvedFix])), "awaiting review");
   assert.equal(penguinState(page({ state: "in_review", reviews: [review({})] })), "ready to approve");
+});
+
+test("a fix's recorded approval decides its review, and a review of an older commit is marked superseded", () => {
+  const owner = (name: string, state: "approved" | "changes_requested" | "pending") => ({
+    owner: name,
+    state,
+    reviewer: state === "pending" ? null : name,
+    reviewOpId: null,
+    reason: null,
+  });
+  const head = "owner-priya@b2";
+  const older = review({ reviewer: "jun", repo: "owner-priya", sha: "a1" });
+  // Jun's approval of an older commit would pass the review-only rule, but the head still awaits Jun.
+  const awaiting = sub("33", { reviews: [older], approval: { head, owners: [owner("jun", "pending")], approved: false } });
+  assert.equal(penguinState(page({ state: "in_review" }, [awaiting])), "awaiting review");
+  assert.equal(reviewSuperseded(older, awaiting.approval), true);
+  assert.equal(reviewSuperseded(review({ repo: "owner-priya", sha: "b2" }), awaiting.approval), false);
+  assert.equal(reviewSuperseded(older, null), false);
+  const done = sub("33", { approval: { head, owners: [owner("jun", "approved"), owner("priya", "approved")], approved: true } });
+  assert.equal(penguinState(page({ state: "in_review" }, [done])), "ready to approve");
+  assert.equal(APPROVAL_LABEL.pending, "Awaiting review");
 });
 
 test("the page reads again when its issue, its temporary ID or a sub-issue changes, and only then", () => {

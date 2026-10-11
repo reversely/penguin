@@ -20,6 +20,7 @@ import { fetchIssue, SignedOut, submitOperation } from "./api.ts";
 import { EYE } from "./character.ts";
 import { Icon } from "./icon.tsx";
 import {
+  APPROVAL_LABEL,
   authorName,
   checkSignal,
   describeEntry,
@@ -27,6 +28,7 @@ import {
   fixedIn,
   penguinState,
   reasonLabel,
+  reviewSuperseded,
   shortSha,
   SIGNAL_LABEL,
   STATE_LABEL,
@@ -335,11 +337,24 @@ function SubIssueRow({ sub, navigate }: { sub: IssuePageSubIssue; navigate: (pat
           ))}
         </ul>
       )}
+      {sub.approval === null || sub.approval.owners.length === 0 ? null : (
+        <ul className="rows nested">
+          {sub.approval.owners.map((owner) => (
+            <li key={owner.owner} className="row">
+              <span className="tag">{APPROVAL_LABEL[owner.state]}</span>
+              <span className="row-title">{authorName(owner.owner)}</span>
+              {owner.reviewer === null || owner.reviewer === owner.owner ? null : (
+                <span className="muted">by delegate {authorName(owner.reviewer)}</span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
       {sub.reviews.length === 0 ? null : (
         <ul className="rows nested">
           {sub.reviews.map((review) => (
             <li key={review.opId} className="row">
-              <ReviewTags review={review} />
+              <ReviewTags review={review} superseded={reviewSuperseded(review, sub.approval)} />
             </li>
           ))}
         </ul>
@@ -368,7 +383,7 @@ function Assignee({ assignee, nameId }: { assignee: IssuePageAssignee; nameId?: 
   );
 }
 
-function ReviewTags({ review }: { review: IssuePageReview }) {
+function ReviewTags({ review, superseded = false }: { review: IssuePageReview; superseded?: boolean }) {
   return (
     <>
       <SignalTag signal="review">{review.verdict === "approve" ? "Approved" : "Changes requested"}</SignalTag>
@@ -378,6 +393,11 @@ function ReviewTags({ review }: { review: IssuePageReview }) {
           Not counted
         </span>
       )}
+      {superseded ? (
+        <span className="tag" title={`Reviewed ${review.repo}@${shortSha(review.sha)}, an older commit than the fix's head`}>
+          Older commit
+        </span>
+      ) : null}
     </>
   );
 }

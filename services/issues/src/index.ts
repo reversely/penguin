@@ -1,6 +1,17 @@
 export const packageName: string = "@penguin/issues";
 
-export { withinCharter, type CharterIdentity } from "@penguin/policies";
+export {
+  fixApproval,
+  fixHead,
+  reviewOwners,
+  SCOPE_LABEL_PREFIX,
+  withinCharter,
+  type CharterIdentity,
+  type Delegates,
+  type FixApproval,
+  type OwnerApproval,
+  type OwnerApprovalState,
+} from "@penguin/policies";
 
 export { canonicalBytes, canonicalJson } from "./canonical.ts";
 export {

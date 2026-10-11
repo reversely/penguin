@@ -63,6 +63,29 @@ export interface IssuePageReview {
   readonly uncountedReason: string | null;
 }
 
+/** Where one owner whose review counts on a fix stands on the fix's head. */
+export interface IssuePageOwnerApproval {
+  readonly owner: string;
+  readonly state: "approved" | "changes_requested" | "pending";
+  /** Who wrote the standing review: the owner, or the owner's delegate; null while pending. */
+  readonly reviewer: string | null;
+  readonly reviewOpId: string | null;
+  readonly reason: string | null;
+}
+
+/**
+ * Where approval of a Huddle fix stands, as its HuddleAgent last reported it. Only a review of the
+ * head counts; one of an older commit was superseded.
+ */
+export interface IssuePageApproval {
+  /** The fix commit under review, `<repo>@<sha>`, or null while none is linked. */
+  readonly head: string | null;
+  /** The owner of each scope labelled on the fix, sorted. */
+  readonly owners: readonly IssuePageOwnerApproval[];
+  /** True when every owner approved the head. */
+  readonly approved: boolean;
+}
+
 export interface IssuePageThread {
   readonly id: string;
   readonly status: "open" | "resolved";
@@ -76,6 +99,8 @@ export interface IssuePageSubIssue {
   readonly assignees: readonly IssuePageAssignee[];
   readonly reviews: readonly IssuePageReview[];
   readonly checks: readonly IssuePageCheck[];
+  /** Where approval stands, for a Huddle fix whose reviews are being collected; null otherwise. */
+  readonly approval: IssuePageApproval | null;
 }
 
 /** One operation recorded against the issue, applied or rejected, in apply order. */

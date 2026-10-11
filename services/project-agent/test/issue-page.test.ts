@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { before, test } from "node:test";
 
-import { generateSigningKeyPair, signOperation } from "@penguin/issues";
+import { generateSigningKeyPair, signOperation, type FixApproval } from "@penguin/issues";
 import { operationPath, type Author, type Operation } from "@penguin/protocol";
 import { parseScopeMap } from "@penguin/scope-map";
 
@@ -48,6 +48,7 @@ function project() {
   });
   const keys: OperationKeys = { bridges: [], serviceKey: service.publicKey, scopeMap, identities };
   const store = sessions;
+  const approvals = new Map<string, FixApproval>();
   const page = (id: string) =>
     buildIssuePage(
       {
@@ -55,6 +56,7 @@ function project() {
         issue: (issueId) => index.issue(issueId),
         routes: (issueId) => store.routes(issueId),
         session: (sessionId) => store.get(sessionId),
+        approval: (issueId) => approvals.get(issueId),
       },
       id,
     );
@@ -68,7 +70,7 @@ function project() {
     });
     assert.equal(outcome.status, "applied", JSON.stringify(outcome));
   };
-  return { index, identities, sessions: store, keys, page, submit, timelineChanges };
+  return { index, identities, sessions: store, keys, page, submit, timelineChanges, approvals };
 }
 
 test("the page carries the issue, its sub-issues with sessions and reviews, and its timeline as plain JSON", async () => {
@@ -135,6 +137,8 @@ test("the page carries the issue, its sub-issues with sessions and reviews, and 
     child?.checks.map((check) => check.result),
     ["pass"],
   );
+  // No HuddleAgent reported an approval for this sub-issue.
+  assert.equal(child?.approval, null);
   assert.deepEqual(
     read.timeline.map((entry) => [entry.type, entry.status, entry.waitingForGitLog]),
     [
@@ -187,4 +191,21 @@ test("a rejected file and a pushed pending operation each change the timeline an
       ["comment", "rejected", "bad_signature", false],
     ],
   );
+});
+
+test("a sub-issue carries the approval its HuddleAgent recorded", async () => {
+  const { page, submit, approvals } = project();
+  await submit(penguin, 31, "create", { title: "Identity map change breaks analytics" });
+  await submit(penguin, 32, "create", { title: "Shared-device merge" });
+  await submit(penguin, 31, "open_sub_issue", { sub_issue: 32 });
+  const approval: FixApproval = {
+    head: "owner-priya@9b2f10",
+    owners: [
+      { owner: "jun", state: "approved", reviewer: "jun", reviewOpId: "jun-web-0001", reason: null },
+      { owner: "priya", state: "pending", reviewer: null, reviewOpId: null, reason: null },
+    ],
+    approved: false,
+  };
+  approvals.set("32", approval);
+  assert.deepEqual(page("31")?.subIssues[0]?.approval, approval);
 });

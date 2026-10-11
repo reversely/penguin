@@ -421,7 +421,7 @@ describe("IssueIndex", () => {
     assert.equal(new IssueIndex(sql).issue("33")?.reviews.get(ownerReview.operation.op_id)?.counts, true);
   });
 
-  test("a Review table from before #49 gains the counts columns, and its reviews count", () => {
+  test("a Review table from before #49 gains the counts columns, and its reviews count for their reviewer", () => {
     const { db, sql } = sqlite();
     sql.exec(`CREATE TABLE Review (
       op_id TEXT PRIMARY KEY, issue_id TEXT NOT NULL, reviewer_owner_id TEXT NOT NULL, verdict TEXT NOT NULL,
@@ -439,8 +439,13 @@ describe("IssueIndex", () => {
     new IssueIndex(sql);
     new IssueIndex(sql);
     const columns = rows(db, `PRAGMA table_info(Review)`).map((column) => column["name"]);
-    assert.deepEqual(columns.slice(-2), ["counts", "uncounted_reason"]);
-    assert.deepEqual(rows(db, `SELECT counts, uncounted_reason FROM Review`), [{ counts: 1, uncounted_reason: null }]);
+    assert.deepEqual(columns.slice(-3), ["counts", "uncounted_reason", "counts_for"]);
+    assert.deepEqual(rows(db, `SELECT counts, uncounted_reason, counts_for FROM Review`), [
+      { counts: 1, uncounted_reason: null, counts_for: null },
+    ]);
+    // No delegate existed before #42, so a counting review stands for the person who wrote it.
+    sql.exec(`INSERT INTO Issue (id, kind, title, body, state, labels, version) VALUES ('33', 'issue', 't', '', 'open', '[]', 1)`);
+    assert.deepEqual(new IssueIndex(sql).issue("33")?.reviews.get("priya-b3f2-0001")?.countsFor, ["priya"]);
     // A fresh table has the same columns in the same order, so a rebuild compares them row for row.
     const fresh = sqlite();
     new IssueIndex(fresh.sql);

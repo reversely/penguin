@@ -6,11 +6,19 @@
 // for one of those reasons is recorded on the issue (`UPSTREAM_RECORDED_REJECTIONS`).
 //
 // Once the send_upstream applies, Penguin reassigns the sub-issue, as itself and from templates
-// only: it assigns an identity of the changing scope's owner, then unassigns the sender. Session
+// only: it labels the sub-issue with the changing scope, so that scope's owner may review the fix
+// (PRD section 5), assigns an identity of the changing scope's owner, then unassigns the sender. Session
 // routing (session-store.ts) then delivers the fix to that identity's running session at its next
 // safe checkpoint, or asks the owner to start one.
 
-import { withinCharter, type CharterIdentity, type IssueRecord, type ReduceRejectReason, type RejectReason } from "@penguin/issues";
+import {
+  SCOPE_LABEL_PREFIX,
+  withinCharter,
+  type CharterIdentity,
+  type IssueRecord,
+  type ReduceRejectReason,
+  type RejectReason,
+} from "@penguin/issues";
 import type { Party } from "@penguin/protocol";
 import type { ScopeMap } from "@penguin/scope-map";
 
@@ -28,12 +36,29 @@ export const UPSTREAM_RECORDED_REJECTIONS: readonly (RejectReason | ReduceReject
 const REASSIGN_ATTEMPTS = 5;
 
 /**
- * Picks the assignee for a fix sent upstream by `sender`. The upstream scopes are the scopes the
- * trigger changed outside the sender's charter. Their owner is the trigger's owner when that owner
- * holds any of them, else the first such owner by id; a trigger that changed no mapped scope leaves
- * the trigger's owner. Of that owner's personal identities whose charter holds every upstream scope
- * of the owner, the one with the most recently seen running session is chosen, else the first by
- * handle, else the owner in person.
+ * Where a fix sent upstream by `sender` goes. The upstream scopes are the scopes the trigger changed
+ * outside the sender's charter. Their owner is the trigger's owner when that owner holds any of them,
+ * else the first such owner by id; a trigger that changed no mapped scope leaves the trigger's owner.
+ * `scopes` are the upstream scopes that owner holds.
+ */
+export function upstreamOwner(
+  huddle: Pick<Huddle, "triggerOwner" | "triggerScopes">,
+  sender: CharterIdentity | undefined,
+  scopeMap: ScopeMap,
+): { readonly owner: string; readonly scopes: readonly string[] } {
+  const outside = huddle.triggerScopes.filter(
+    (scope) => sender === undefined || !withinCharter(sender, undefined, [scope], [], scopeMap).allowed,
+  );
+  const ownerOf = (scope: string): string | undefined => scopeMap.scopes.get(scope)?.ownerId;
+  const owners = new Set(outside.flatMap((scope) => ownerOf(scope) ?? []));
+  const owner = owners.size === 0 || owners.has(huddle.triggerOwner) ? huddle.triggerOwner : [...owners].sort()[0]!;
+  return { owner, scopes: outside.filter((scope) => ownerOf(scope) === owner) };
+}
+
+/**
+ * Picks the assignee for a fix sent upstream by `sender`: of the upstream owner's personal identities
+ * (see `upstreamOwner`) whose charter holds every upstream scope of the owner, the one with the most
+ * recently seen running session is chosen, else the first by handle, else the owner in person.
  */
 export function upstreamAssignee(
   huddle: Pick<Huddle, "triggerOwner" | "triggerScopes">,
@@ -42,13 +67,7 @@ export function upstreamAssignee(
   identities: readonly CharterIdentity[],
   runningHandles: readonly string[],
 ): Party {
-  const outside = huddle.triggerScopes.filter(
-    (scope) => sender === undefined || !withinCharter(sender, undefined, [scope], [], scopeMap).allowed,
-  );
-  const ownerOf = (scope: string): string | undefined => scopeMap.scopes.get(scope)?.ownerId;
-  const owners = new Set(outside.flatMap((scope) => ownerOf(scope) ?? []));
-  const owner = owners.size === 0 || owners.has(huddle.triggerOwner) ? huddle.triggerOwner : [...owners].sort()[0]!;
-  const scopes = outside.filter((scope) => ownerOf(scope) === owner);
+  const { owner, scopes } = upstreamOwner(huddle, sender, scopeMap);
   const chartered = new Set(
     identities
       .filter(
@@ -79,51 +98,55 @@ export type Reassignment =
   | { readonly status: "reassigned"; readonly assignee: Party }
   | { readonly status: "failed"; readonly message: string };
 
+/** One reassignment step: the operation, and whether the issue already shows its effect. */
+interface Step {
+  readonly type: "add_label" | "assign" | "unassign";
+  readonly payload: Readonly<Record<string, unknown>>;
+  readonly done: (issue: IssueRecord) => boolean;
+}
+
 /**
- * Penguin's reassignment of a fix sub-issue `sender` sent upstream: it assigns the upstream assignee
- * and unassigns the sender. Each step first reads the issue and skips what is already there.
+ * Penguin's reassignment of a fix sub-issue `sender` sent upstream: it labels the sub-issue with each
+ * upstream scope of the new owner, assigns the upstream assignee and unassigns the sender. Each step
+ * first reads the issue and skips what is already there.
  */
 export async function reassignUpstream(deps: ReassignDeps, issueId: string, sender: string): Promise<Reassignment> {
   const huddle = deps.huddleOf(issueId);
   if (huddle === undefined) return { status: "failed", message: `issue ${issueId} is not a fix sub-issue` };
   const identities = deps.identities();
-  const assignee = upstreamAssignee(
-    huddle,
-    identities.find((identity) => identity.handle === sender),
-    deps.scopeMap,
-    identities,
-    deps.runningHandles(),
-  );
-  const steps: [type: "assign" | "unassign", party: Party, wanted: boolean][] = [
-    ["assign", assignee, true],
-    ["unassign", { identity: sender }, false],
+  const senderIdentity = identities.find((identity) => identity.handle === sender);
+  const { scopes } = upstreamOwner(huddle, senderIdentity, deps.scopeMap);
+  const assignee = upstreamAssignee(huddle, senderIdentity, deps.scopeMap, identities, deps.runningHandles());
+  const steps: Step[] = [
+    ...scopes.map((scope): Step => {
+      const label = `${SCOPE_LABEL_PREFIX}${scope}`;
+      return { type: "add_label", payload: { label }, done: (issue) => issue.labels.includes(label) };
+    }),
+    { type: "assign", payload: { assignee }, done: (issue) => issue.assignments.has(assignmentKey(assignee)) },
+    {
+      type: "unassign",
+      payload: { assignee: { identity: sender } },
+      done: (issue) => !issue.assignments.has(assignmentKey({ identity: sender })),
+    },
   ];
-  for (const [type, party, wanted] of steps) {
-    const failure = await ensureAssignment(deps, issueId, type, party, wanted);
+  for (const step of steps) {
+    const failure = await ensureStep(deps, issueId, step);
     if (failure !== undefined) return { status: "failed", message: failure };
   }
   return { status: "reassigned", assignee };
 }
 
-/** Writes the assign or unassign unless the issue already has `party` assigned as `wanted`. */
-async function ensureAssignment(
-  deps: ReassignDeps,
-  issueId: string,
-  type: "assign" | "unassign",
-  party: Party,
-  wanted: boolean,
-): Promise<string | undefined> {
-  const key = "identity" in party ? `identity:${party.identity}` : `person:${party.person}`;
+function assignmentKey(party: Party): string {
+  return "identity" in party ? `identity:${party.identity}` : `person:${party.person}`;
+}
+
+/** Writes the step's operation unless the issue already shows its effect. */
+async function ensureStep(deps: ReassignDeps, issueId: string, { type, payload, done }: Step): Promise<string | undefined> {
   for (let attempt = 1; ; attempt += 1) {
     const issue = deps.issue(issueId);
     if (issue === undefined) return `issue ${issueId} is missing from the index`;
-    if (issue.assignments.has(key) === wanted) return undefined;
-    const outcome = await deps.submit({
-      issue: Number(issueId),
-      type,
-      base_version: issue.version,
-      payload: { assignee: party },
-    });
+    if (done(issue)) return undefined;
+    const outcome = await deps.submit({ issue: Number(issueId), type, base_version: issue.version, payload });
     if (outcome.status === "applied") return undefined;
     // Another writer moved the issue between the read and the write: read it again.
     if (outcome.reason !== "superseded_version" || attempt === REASSIGN_ATTEMPTS) {

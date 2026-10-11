@@ -2,7 +2,7 @@
 // issue, each sub-issue with its sessions, reviews and checks, and the timeline of applied and rejected
 // operations. The result is plain JSON, so the Worker can send it as it comes from Durable Object RPC.
 
-import type { Assignment, Check, IssueRecord, Review } from "@penguin/issues";
+import type { Assignment, Check, FixApproval, IssueRecord, Review } from "@penguin/issues";
 import type {
   IssuePage,
   IssuePageAssignee,
@@ -20,6 +20,8 @@ export interface IssuePageSources {
   issue(id: string): IssueRecord | undefined;
   routes(issueId: string): readonly AssignmentRoute[];
   session(id: string): Session | undefined;
+  /** Where approval of a Huddle fix stands (approval-store.ts), or undefined for any other issue. */
+  approval?(issueId: string): FixApproval | undefined;
 }
 
 /** The issue page for an issue number or temporary ID, or undefined when no such issue exists. */
@@ -77,6 +79,7 @@ export function issueView(
           assignees: assignees(sources, child),
           reviews: [...child.reviews.values()].map(review),
           checks: [...child.checks.values()].map(check),
+          approval: sources.approval?.(child.id) ?? null,
         },
       ];
     }),

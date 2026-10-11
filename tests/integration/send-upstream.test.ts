@@ -125,8 +125,13 @@ function timeline(project: HuddleProject, issueId: string, fromSeq: number): str
     .read(issueId)
     .timeline.filter((entry) => entry.seq >= fromSeq)
     .map((entry) => {
-      const payload = entry.payload as { assignee?: { identity?: string; person?: string }; reason?: string };
-      const detail = payload.assignee?.identity ?? payload.assignee?.person ?? entry.rejectReason ?? payload.reason;
+      const payload = entry.payload as {
+        assignee?: { identity?: string; person?: string };
+        label?: string;
+        reason?: string;
+      };
+      const detail =
+        payload.assignee?.identity ?? payload.assignee?.person ?? payload.label ?? entry.rejectReason ?? payload.reason;
       return `${entry.status} ${entry.author} ${entry.type} ${detail}`;
     });
 }
@@ -161,12 +166,15 @@ test("@jun/reports sends the shared-device sub-issue upstream and it is reassign
   assert.equal(isError, false, JSON.stringify(value));
   assert.deepEqual(value.reassignment, { status: "reassigned", assignee: { identity: "@priya/merge-rules" } });
 
-  // Both steps are on the timeline: the session's upstream note, then Penguin's reassignment.
+  // Both steps are on the timeline: the session's upstream note, then Penguin's reassignment. The
+  // changing scope's label comes first, so Priya, its owner, may review the fix beside Jun.
   assert.deepEqual(timeline(project, "2", from), [
     `applied jun.reports send_upstream ${REASON}`,
+    "applied penguin add_label scope:identity-map",
     "applied penguin assign @priya/merge-rules",
     "applied penguin unassign @jun/reports",
   ]);
+  assert.deepEqual(project.index.issue("2")?.labels, ["scope:analytics", "scope:identity-map"]);
   assert.deepEqual([...(project.index.issue("2")?.assignments.keys() ?? [])], ["identity:@priya/merge-rules"]);
 
   // Priya's running session holds it and receives it at its next safe checkpoint; Jun's no longer does.

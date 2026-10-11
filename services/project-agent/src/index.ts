@@ -6,6 +6,7 @@ import {
   type ApplyOutcome,
   type BridgeCaller,
   type IndexListener,
+  type IssueChange,
   type OperationKeys,
   type PendingListing,
   type PendingSource,
@@ -48,7 +49,9 @@ import { dropProjectVerificationTable, huddleIssueOfRun } from "./verification-s
 import { reassignUpstream } from "./upstream.ts";
 import { IngestLedger, ingestPush, type IngestReport } from "./push-ingest.ts";
 import { rebuildIndex, type RebuildReport } from "./rebuild.ts";
-import { parseScopeFile, SCOPE_MAP_PATH } from "./scope-file.ts";
+import { OWNERS_PATH, parseOwnersFile, parseScopeFile, SCOPE_MAP_PATH } from "./scope-file.ts";
+import { FixApprovalStore } from "./approval-store.ts";
+import type { HuddleReviewer, HuddleReviewPort, ReviewCollection } from "./huddle-reviews.ts";
 import {
   IdentityStore,
   type Identity,
@@ -71,7 +74,7 @@ import {
   type SessionOutcome,
   type SessionWork,
 } from "./session-store.ts";
-import type { FixLookup, IssueRecord, ReduceRejectReason, RejectReason } from "@penguin/issues";
+import type { Delegates, FixLookup, IssueRecord, ReduceRejectReason, RejectReason } from "@penguin/issues";
 import {
   identitiesChangedMessage,
   inboxChangedMessage,
@@ -199,6 +202,17 @@ export {
   type VerificationPlan,
 } from "./huddle-verify.ts";
 export {
+  collectReviews,
+  FIX_REVIEW_SCHEMA,
+  FixReviewStore,
+  type FixReview,
+  type HuddleReviewDeps,
+  type HuddleReviewer,
+  type HuddleReviewPort,
+  type ReviewCollection,
+} from "./huddle-reviews.ts";
+export { FIX_APPROVAL_SCHEMA, FixApprovalStore } from "./approval-store.ts";
+export {
   dropProjectVerificationTable,
   huddleIssueOfRun,
   runIdBaseOf,
@@ -212,6 +226,7 @@ export {
 export {
   reassignUpstream,
   upstreamAssignee,
+  upstreamOwner,
   UPSTREAM_RECORDED_REJECTIONS,
   type Reassignment,
   type ReassignDeps,
@@ -266,11 +281,17 @@ export {
   type RegistrationCode,
 } from "./bridge-registry.ts";
 
+/** What review rights are judged by: the base repo's scope map and each owner's delegate. */
+export interface ReviewRules {
+  readonly scopeMap: ScopeMap;
+  readonly delegates: Delegates;
+}
+
 /** The project's repos the agent reads, named by the Worker from its configuration. */
 export interface ProjectRepos {
   /** The issues repo, which holds the operation log. */
   readonly issues: string;
-  /** The base repo, whose `penguin/scopes.json` decides review rights. */
+  /** The base repo, whose `penguin/scopes.json` and `penguin/owners.json` decide review rights. */
   readonly base: string;
 }
 
@@ -312,6 +333,12 @@ export class ProjectAgent extends Agent {
   #combinedRuns: CombinedRunStore | undefined;
   /** Huddle openings and verification steps run one at a time, so no two interleave their writes. */
   #huddleSteps: Promise<unknown> = Promise.resolve();
+  #approvals: FixApprovalStore | undefined;
+  /**
+   * Fix sub-issues whose reviews, linked commits or labels an applied operation changed since their
+   * Huddles last collected reviews; see `#collectChangedReviews`.
+   */
+  #reviewsChanged = new Set<string>();
 
   override onStart(): void {
     this.sql`CREATE TABLE IF NOT EXISTS counter (id INTEGER PRIMARY KEY CHECK (id = 1), value INTEGER NOT NULL)`;
@@ -351,7 +378,9 @@ export class ProjectAgent extends Agent {
    * `owner` is the person the Worker's session names; the operation cannot name anyone else.
    */
   async submitFromDashboard(owner: string, operation: unknown, repos: ProjectRepos): Promise<SubmitOutcome> {
-    return this.submit(operation, { person: owner }, "dashboard", await this.#scopeMap(repos));
+    const outcome = await this.submit(operation, { person: owner }, "dashboard", await this.#reviewRules(repos));
+    await this.#collectChangedReviews(repos);
+    return outcome;
   }
 
   /**
@@ -365,16 +394,16 @@ export class ProjectAgent extends Agent {
    */
   openHuddle(event: unknown, triggerFork: string, repos: ProjectRepos): Promise<HuddleOpenOutcome> {
     return this.#huddleStep(async () => {
-      const scopeMap = await this.#scopeMap(repos);
+      const rules = await this.#reviewRules(repos);
       const index = this.#index();
       const sessions = this.#sessionStore();
       const outcome = await openHuddle(
         {
           huddles: this.#huddleStore(),
-          scopeMap,
+          scopeMap: rules.scopeMap,
           issue: (issueId) => index.issue(issueId),
           issueIds: () => index.ids(),
-          submit: (operation) => this.submit(operation, { penguin: true }, "penguin", scopeMap),
+          submit: (operation) => this.submit(operation, { penguin: true }, "penguin", rules),
           ownerFork: (ownerId) => this.#ownerForks().get(ownerId),
           session: (sessionId) => sessions.get(sessionId),
           identities: () => this.#identityStore().list(),
@@ -445,24 +474,73 @@ export class ProjectAgent extends Agent {
   }
 
   /** The HuddleAgent of the Huddle whose issue has this number: one instance per Huddle in this project. */
-  async #huddleAgent(issueId: string): Promise<HuddleVerifier> {
+  async #huddleAgent(issueId: string): Promise<HuddleVerifier & HuddleReviewer> {
     // The binding's generated stub type refers back to this package, so the stub is typed here by
-    // the interface HuddleAgent implements.
-    return (await getAgentByName(this.env.HuddleAgent, `${this.name}-huddle-${issueId}`)) as unknown as HuddleVerifier;
+    // the interfaces HuddleAgent implements.
+    const agent = await getAgentByName(this.env.HuddleAgent, `${this.name}-huddle-${issueId}`);
+    return agent as unknown as HuddleVerifier & HuddleReviewer;
   }
 
   /**
    * What a HuddleAgent reads and writes here, passed to it over RPC: the issue index, the owner forks,
-   * and operations signed with the service key, which never leaves this agent.
+   * the scope map, operations signed with the service key, which never leaves this agent, review
+   * requests in owners' inboxes and each fix's approval for the issue page.
    */
-  async #huddlePort(repos: ProjectRepos): Promise<HuddleProjectPort> {
-    const scopeMap = await this.#scopeMap(repos);
+  async #huddlePort(repos: ProjectRepos): Promise<HuddleReviewPort> {
+    const rules = await this.#reviewRules(repos);
     const index = this.#index();
     return {
       issue: (issueId) => index.issue(issueId),
-      submit: (operation) => this.submit(operation, { penguin: true }, "penguin", scopeMap),
+      submit: (operation) => this.submit(operation, { penguin: true }, "penguin", rules),
       ownerFork: (ownerId) => this.#ownerForks().get(ownerId),
+      scopeMap: () => rules.scopeMap,
+      requestReview: (ownerId, issueId) => {
+        this.#inboxStore().reviewRequested(ownerId, issueId);
+        sendToOwner(this.getConnections<{ owner?: string }>(), ownerId, inboxChangedMessage());
+      },
+      recordApproval: (issueId, approval) => {
+        if (!this.#approvalStore().set(issueId, approval)) return;
+        this.#liveFeed().issueChanged(issueId);
+        const parent = index.issue(issueId)?.parentId;
+        if (parent != null) this.#liveFeed().issueChanged(parent);
+      },
     };
+  }
+
+  /**
+   * Has each Huddle's HuddleAgent collect the reviews of its fixes (huddle-reviews.ts), for the
+   * Huddles of the fix sub-issues `#reviewsChanged` names. A failure is logged and never fails the
+   * operation that changed the fix: the next change collects again.
+   */
+  async #collectChangedReviews(repos: ProjectRepos): Promise<void> {
+    if (this.#reviewsChanged.size === 0) return;
+    const changed = [...this.#reviewsChanged];
+    this.#reviewsChanged.clear();
+    const huddles = new Set<string>();
+    for (const issueId of changed) {
+      const huddleIssue = this.#huddleStore().fixOf(issueId)?.huddle.issueId;
+      if (huddleIssue != null) huddles.add(huddleIssue);
+    }
+    for (const huddleIssue of huddles) {
+      try {
+        await this.collectReviews(huddleIssue, repos);
+      } catch (error) {
+        console.error(JSON.stringify({ event: "review_collection_failed", issue: huddleIssue, error: String(error) }));
+      }
+    }
+  }
+
+  /**
+   * Has the HuddleAgent of the Huddle whose issue has this number collect its fixes' reviews; see
+   * huddle-reviews.ts. Undefined when no open Huddle has this issue.
+   */
+  collectReviews(issueId: string, repos: ProjectRepos): Promise<ReviewCollection | undefined> {
+    return this.#huddleStep(async () => {
+      const huddle = this.#huddleStore().byIssue(this.#index().resolve(issueId));
+      if (huddle?.issueId == null || huddle.status !== "open") return undefined;
+      const agent = await this.#huddleAgent(huddle.issueId);
+      return agent.collectReviews(huddle, await this.#huddlePort(repos));
+    });
   }
 
   /**
@@ -496,7 +574,9 @@ export class ProjectAgent extends Agent {
    * file that matches a pending operation instead records its commit and clears the PendingOp row.
    */
   async applyOperation(input: OperationInput, repos: ProjectRepos): Promise<ApplyOutcome> {
-    return this.#index().apply({ ...input, keys: await this.#operationKeys(repos) });
+    const outcome = await this.#index().apply({ ...input, keys: await this.#operationKeys(repos) });
+    await this.#collectChangedReviews(repos);
+    return outcome;
   }
 
   /**
@@ -546,6 +626,7 @@ export class ProjectAgent extends Agent {
         issue: (issueId) => index.issue(issueId),
         routes: (issueId) => sessions.routes(issueId),
         session: (sessionId) => sessions.get(sessionId),
+        approval: (issueId) => this.#approvalStore().get(issueId),
       },
       id,
     );
@@ -566,6 +647,7 @@ export class ProjectAgent extends Agent {
       running: () => sessions.running(),
       routes: (issueId) => sessions.routes(issueId),
       session: (sessionId) => sessions.get(sessionId),
+      approval: (issueId) => this.#approvalStore().get(issueId),
       assigningOwner: (issueId, handle) => index.assigningOwner(issueId, handle),
     });
   }
@@ -582,13 +664,13 @@ export class ProjectAgent extends Agent {
    * Applies an operation from MCP, the dashboard or Penguin at once and queues it for the Git log.
    * `author` is the caller the gateway authenticated; the operation cannot name anyone else. The
    * operation is signed here with the service key (K5), which never leaves the Worker. A rejection
-   * whose reason is in `recordRejections` is recorded on the issue.
+   * whose reason is in `recordRejections` is recorded on the issue. `rules` judge a review's rights.
    */
   async submit(
     operation: unknown,
     author: Author,
     source: PendingSource,
-    scopeMap: ScopeMap,
+    rules: ReviewRules,
     recordRejections?: readonly (RejectReason | ReduceRejectReason)[],
   ): Promise<SubmitOutcome> {
     const serviceKey = await this.#loadServiceKey();
@@ -601,7 +683,8 @@ export class ProjectAgent extends Agent {
       keys: {
         bridges: [],
         serviceKey: serviceKey.publicKey,
-        scopeMap,
+        scopeMap: rules.scopeMap,
+        delegates: rules.delegates,
         identities: this.#identityStore(),
         fixes: this.#fixLookup(),
       },
@@ -801,8 +884,8 @@ export class ProjectAgent extends Agent {
   ): Promise<SessionUpdateOutcome> {
     const index = this.#index();
     const sessions = this.#sessionStore();
-    const scopeMap = await this.#scopeMap(repos);
-    return postSessionUpdate(
+    const rules = await this.#reviewRules(repos);
+    const outcome = await postSessionUpdate(
       {
         // Routes are kept under the issue number, so a temporary ID resolves to it first.
         sessions: {
@@ -810,16 +893,16 @@ export class ProjectAgent extends Agent {
           routes: (issueId) => sessions.routes(index.resolve(issueId)),
         },
         issueVersion: (issueId) => index.issue(issueId)?.version,
-        submit: (operation, author, record) => this.submit(operation, author, "mcp", scopeMap, record),
+        submit: (operation, author, record) => this.submit(operation, author, "mcp", rules, record),
         reassignUpstream: (issueId, sender) =>
           reassignUpstream(
             {
               huddleOf: (id) => this.#huddleStore().fixOf(id)?.huddle,
-              scopeMap,
+              scopeMap: rules.scopeMap,
               issue: (id) => index.issue(id),
               identities: () => this.#identityStore().list(),
               runningHandles: () => sessions.running().map((session) => session.handle),
-              submit: (operation) => this.submit(operation, { penguin: true }, "penguin", scopeMap),
+              submit: (operation) => this.submit(operation, { penguin: true }, "penguin", rules),
             },
             issueId,
             sender,
@@ -829,6 +912,8 @@ export class ProjectAgent extends Agent {
       sessionId,
       update,
     );
+    await this.#collectChangedReviews(repos);
+    return outcome;
   }
 
   /**
@@ -1003,6 +1088,7 @@ export class ProjectAgent extends Agent {
         index.apply({ file: file.bytes, gitCommit: commit, path: file.path, keys }),
       ),
     );
+    await this.#collectChangedReviews(repos);
     return { ...report, durationMs: Date.now() - started };
   }
 
@@ -1021,15 +1107,16 @@ export class ProjectAgent extends Agent {
    * The identity store supplies the charters of identity-authored operations.
    */
   async #operationKeys(repos: ProjectRepos): Promise<OperationKeys> {
-    const [serviceKey, bridges, scopeMap] = await Promise.all([
+    const [serviceKey, bridges, rules] = await Promise.all([
       this.#loadServiceKey(),
       this.#registry().bridgeKeys(),
-      this.#scopeMap(repos),
+      this.#reviewRules(repos),
     ]);
     return {
       serviceKey: serviceKey.publicKey,
       bridges,
-      scopeMap,
+      scopeMap: rules.scopeMap,
+      delegates: rules.delegates,
       identities: this.#identityStore(),
       fixes: this.#fixLookup(),
     };
@@ -1042,11 +1129,32 @@ export class ProjectAgent extends Agent {
 
   /** The scope map in the base repo's `penguin/scopes.json` at HEAD, read fresh for each call. */
   async #scopeMap(repos: ProjectRepos): Promise<ScopeMap> {
-    const scopeFile = await withRepo(this.env.ARTIFACTS, repos.base, async (repo) => {
-      const blob = await repo.readFile({ ref: "HEAD", path: SCOPE_MAP_PATH });
+    return parseScopeFile(await this.#baseFile(repos, SCOPE_MAP_PATH));
+  }
+
+  /**
+   * The scope map and each owner's delegate, from the base repo's `penguin/scopes.json` and
+   * `penguin/owners.json` at HEAD, read fresh for each call.
+   */
+  async #reviewRules(repos: ProjectRepos): Promise<ReviewRules> {
+    const [scopes, owners] = await Promise.all([
+      this.#baseFile(repos, SCOPE_MAP_PATH),
+      this.#baseFile(repos, OWNERS_PATH),
+    ]);
+    return { scopeMap: parseScopeFile(scopes), delegates: parseOwnersFile(owners) };
+  }
+
+  /** A file in the base repo at HEAD, or null when there is none. */
+  #baseFile(repos: ProjectRepos, path: string): Promise<Uint8Array | null> {
+    return withRepo(this.env.ARTIFACTS, repos.base, async (repo) => {
+      const blob = await repo.readFile({ ref: "HEAD", path });
       return blob === null ? null : new Uint8Array(await blob.arrayBuffer());
     });
-    return parseScopeFile(scopeFile);
+  }
+
+  #approvalStore(): FixApprovalStore {
+    this.#approvals ??= new FixApprovalStore(this.#database());
+    return this.#approvals;
   }
 
   #huddleStore(): HuddleStore {
@@ -1089,6 +1197,9 @@ export class ProjectAgent extends Agent {
         issueChanged: (change) => {
           this.#inboxStore().issueChanged(change);
           this.#liveFeed().issueChanged(change.issueId);
+          if (reviewsMayHaveMoved(change) && this.#huddleStore().isFix(change.issueId)) {
+            this.#reviewsChanged.add(change.issueId);
+          }
         },
         timelineChanged: (issueId) => this.#liveFeed().issueChanged(issueId),
       };
@@ -1133,6 +1244,14 @@ export class ProjectAgent extends Agent {
     this.#identities ??= new IdentityStore(this.#database());
     return this.#identities;
   }
+}
+
+/** True when the operation changed what a fix's approval is read from: its reviews, commits or labels. */
+function reviewsMayHaveMoved({ previous, next }: IssueChange): boolean {
+  return (
+    previous !== undefined &&
+    (previous.reviews !== next.reviews || previous.linkedCommits !== next.linkedCommits || previous.labels !== next.labels)
+  );
 }
 
 /** Opens a repo through the binding, runs `use` with it and releases the RPC stub afterwards. */

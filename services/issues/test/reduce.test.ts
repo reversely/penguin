@@ -183,12 +183,24 @@ describe("reduce", () => {
       sha: "9b2f10",
       counts: true,
       uncountedReason: null,
+      countsFor: ["priya"],
     });
     assert.equal(issue.reviews.get(other.op_id)?.counts, false);
+    assert.deepEqual(issue.reviews.get(other.op_id)?.countsFor, []);
     assert.match(issue.reviews.get(other.op_id)?.uncountedReason ?? "", /jun owns no scope labelled/u);
     assert.equal(issue.reviews.get(identity.op_id)?.counts, false);
     const identityReason = issue.reviews.get(identity.op_id)?.uncountedReason ?? "";
     assert.match(identityReason, /identity @priya\/merge-rules cannot review/u);
+  });
+
+  test("a delegate's review counts for the owner who named the delegate", () => {
+    const issue = ok(reduce(created(), op(jun, "add_label", { label: "scope:identity-map" }), noIssues));
+    const review = op({ person: "lee" }, "review", { verdict: "approve", commit: "owner-priya@9b2f10" });
+    const delegated = { ...noIssues, delegates: new Map([["priya", "lee"]]) };
+    const counted = ok(reduce(issue, review, delegated)).reviews.get(review.op_id);
+    assert.deepEqual([counted?.reviewerOwnerId, counted?.counts, counted?.countsFor], ["lee", true, ["priya"]]);
+    const uncounted = ok(reduce(issue, review, noIssues)).reviews.get(review.op_id);
+    assert.deepEqual([uncounted?.counts, uncounted?.countsFor], [false, []]);
   });
 
   test("a link from Penguin marks the checks it names superseded; nobody else may, and each must exist", () => {

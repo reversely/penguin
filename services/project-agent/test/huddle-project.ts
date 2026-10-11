@@ -1,12 +1,14 @@
 // Test support for opening Huddle issues: one ProjectAgent's stores over one in-memory database,
-// wired the way the agent wires them, with `openHuddle` called through the same dependencies.
+// wired the way the agent wires them, with `openHuddle` called through the same dependencies. Each
+// Huddle's verification runs and review standing are kept apart, as each Huddle's HuddleAgent keeps
+// them in its own SQLite.
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { generateSigningKeyPair, type ReduceRejectReason, type RejectReason } from "@penguin/issues";
+import { generateSigningKeyPair, type FixApproval, type ReduceRejectReason, type RejectReason } from "@penguin/issues";
 import type { Author, CombinedRunEvent, VerificationRunSpec } from "@penguin/protocol";
 import { parseScopeMap, type ScopeMap } from "@penguin/scope-map";
 
@@ -19,6 +21,8 @@ import {
   type ScheduleOutcome,
 } from "../src/combined-run-schedule.ts";
 import { openHuddle, type HuddleOpenDeps, type HuddleOpenOutcome } from "../src/huddle-open.ts";
+import { FixApprovalStore } from "../src/approval-store.ts";
+import { collectReviews, FixReviewStore, type HuddleReviewDeps, type ReviewCollection } from "../src/huddle-reviews.ts";
 import { HuddleStore, type Huddle } from "../src/huddle-store.ts";
 import {
   huddlesOf,
@@ -97,6 +101,12 @@ export class HuddleProject {
    * own range (`runIdBaseOf`).
    */
   readonly huddleRuns = new Map<string, VerificationStore>();
+  /** Each Huddle's review standing, by trigger commit, each over its own database as its HuddleAgent keeps it. */
+  readonly huddleReviews = new Map<string, FixReviewStore>();
+  /** Each fix's approval as the ProjectAgent keeps it for the issue page. */
+  readonly approvals: FixApprovalStore;
+  /** Each owner's delegate, as the base repo's `penguin/owners.json` names them. */
+  delegates = new Map<string, string>();
   /** Commits in each owner's fork, by owner id, as the Artifacts binding's readCommit would find them. */
   readonly published = new Map<string, Set<string>>();
   /** The sessions' clock in epoch milliseconds; the real clock while undefined. */
@@ -126,6 +136,7 @@ export class HuddleProject {
     [this.index, this.sessions, this.inbox] = [index, sessions, inbox];
     this.forks = new OwnerForkStore(this.sql);
     this.huddles = new HuddleStore(this.sql);
+    this.approvals = new FixApprovalStore(this.sql);
     let nextRun = 0;
     this.runs = new CombinedRunStore(this.sql, { newId: () => `run-${++nextRun}` });
     if (options.seedIdentities ?? true) {
@@ -160,6 +171,7 @@ export class HuddleProject {
       bridges: [],
       serviceKey: key.publicKey,
       scopeMap: this.scopeMap,
+      delegates: this.delegates,
       identities: this.identities,
       fixes: { upstreamScopes: (issueId) => this.huddles.fixOf(this.index.resolve(issueId))?.huddle.triggerScopes },
     };
@@ -255,11 +267,67 @@ export class HuddleProject {
     return this.huddles.open().flatMap((huddle) => verificationSpecs(this.runsOf(huddle.triggerCommit), huddle));
   }
 
-  /** Records a report with the Huddle whose HuddleAgent holds run `runId`. */
+  /**
+   * Records a report with the Huddle whose HuddleAgent holds run `runId`, then collects the Huddle's
+   * reviews when the report moved it to IN_REVIEW, as the HuddleAgent does.
+   */
   async reportVerification(runId: string, report: unknown, runnerId = "runner-1"): Promise<VerificationOutcome> {
     const huddle = this.huddles.open().find((open) => this.runsOf(open.triggerCommit).get(runId) !== undefined);
     if (huddle === undefined) return unknownVerification(runId, report);
-    return recordVerification(await this.verifyDeps(huddle), huddle, runId, runnerId, report);
+    const outcome = await recordVerification(await this.verifyDeps(huddle), huddle, runId, runnerId, report);
+    if (outcome.status === "recorded" && outcome.state === "in_review") await this.collectReviews(huddle);
+    return outcome;
+  }
+
+  /** The review standing of the Huddle opened by `triggerCommit`, kept as its HuddleAgent keeps it. */
+  reviewsOf(triggerCommit: string): FixReviewStore {
+    let reviews = this.huddleReviews.get(triggerCommit);
+    if (reviews === undefined) {
+      reviews = new FixReviewStore(sqlite().sql);
+      this.huddleReviews.set(triggerCommit, reviews);
+    }
+    return reviews;
+  }
+
+  /** The dependencies a HuddleAgent's review steps have: its runs and reviews, and the ProjectAgent's side. */
+  async reviewDeps(huddle: Huddle): Promise<HuddleReviewDeps> {
+    return {
+      ...(await this.verifyDeps(huddle)),
+      reviews: this.reviewsOf(huddle.triggerCommit),
+      scopeMap: () => this.scopeMap,
+      requestReview: (ownerId, issueId) => this.inbox.reviewRequested(ownerId, issueId),
+      recordApproval: (issueId, approval) => {
+        this.approvals.set(issueId, approval);
+      },
+    };
+  }
+
+  /** Collects the reviews of a Huddle's fixes, by default the one open Huddle's, as its HuddleAgent does. */
+  async collectReviews(huddle?: Huddle): Promise<ReviewCollection | undefined> {
+    const target = huddle ?? this.huddles.open()[0];
+    assert.ok(target !== undefined, "an open Huddle");
+    return collectReviews(await this.reviewDeps(target), target);
+  }
+
+  /**
+   * `person` reviews the fix sub-issue `issueId` from the dashboard; the fix's Huddle then collects its
+   * reviews, as the ProjectAgent has it do after an operation changes a fix.
+   */
+  async review(
+    person: string,
+    issueId: string,
+    payload: { verdict: "approve" | "request_changes"; commit: string; reason?: string },
+  ): Promise<SubmitOutcome> {
+    const version = this.index.issue(issueId)?.version ?? 0;
+    const outcome = await this.submit({ issue: Number(issueId), type: "review", base_version: version, payload }, { person }, "dashboard");
+    const huddle = this.huddles.fixOf(issueId)?.huddle;
+    if (huddle !== undefined) await this.collectReviews(huddle);
+    return outcome;
+  }
+
+  /** Where approval of the fix sub-issue stands, as the issue page shows it. */
+  approval(issueId: string): FixApproval | undefined {
+    return this.approvals.get(issueId);
   }
 
   /** Opens the Huddle for a combined-run report and completes the runs it answers, as the agent does. */

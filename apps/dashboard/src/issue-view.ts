@@ -7,7 +7,15 @@
 // review is its own kind. A failed test is a failure and a test that errored is a warning, and the two
 // look different. Penguin's bookkeeping (labels, assignments, sub-issue links) is not an alert.
 
-import type { IssuePage, IssuePageCheck, IssuePageReview, IssuePageState, IssuePageTimelineEntry } from "@penguin/protocol";
+import type {
+  IssuePage,
+  IssuePageCheck,
+  IssuePageOwnerApproval,
+  IssuePageReview,
+  IssuePageState,
+  IssuePageSubIssue,
+  IssuePageTimelineEntry,
+} from "@penguin/protocol";
 
 export type PenguinState =
   | "observing"
@@ -36,6 +44,21 @@ export const STATE_LABEL: Readonly<Record<IssuePageState, string>> = {
   in_review: "In review",
   closed: "Closed",
 };
+
+/** Where an owner whose review counts on a fix stands on the fix's head. */
+export const APPROVAL_LABEL: Readonly<Record<IssuePageOwnerApproval["state"], string>> = {
+  approved: "Approved",
+  changes_requested: "Changes requested",
+  pending: "Awaiting review",
+};
+
+/**
+ * True when a counting review is of a commit other than the fix's head, so it no longer counts. A
+ * fix without a recorded approval has no head to compare with.
+ */
+export function reviewSuperseded(review: IssuePageReview, approval: IssuePageSubIssue["approval"]): boolean {
+  return review.counts && approval?.head != null && `${review.repo}@${review.sha}` !== approval.head;
+}
 
 const PENGUIN_SEGMENT = "penguin";
 
@@ -110,7 +133,9 @@ export function penguinState(page: Pick<IssuePage, "issue" | "subIssues">): Peng
     case "verifying":
       return failing ? "verification failed" : "coordinating";
     case "in_review": {
-      const reviewed = subIssues.length > 0 ? subIssues.every((sub) => approved(sub.reviews)) : approved(issue.reviews);
+      // A Huddle fix's recorded approval judges only reviews of its head by the owners whose review counts.
+      const fixApproved = (sub: IssuePageSubIssue) => sub.approval?.approved ?? approved(sub.reviews);
+      const reviewed = subIssues.length > 0 ? subIssues.every(fixApproved) : approved(issue.reviews);
       const threadsOpen = issue.threads.some((thread) => thread.status === "open");
       return reviewed && !threadsOpen && !failing ? "ready to approve" : "awaiting review";
     }

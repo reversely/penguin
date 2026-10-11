@@ -5,8 +5,8 @@
 //
 // The headings are plain nouns. "Assignments" holds assignments to the person or to an identity they
 // answer for. It also holds the session router's requests to start a session of such an identity for
-// the issue. Review requests and threads have no inbox items until Phase 4, so those lists stay
-// empty.
+// the issue. "Review requests" holds the requests to review a fix whose combined tests pass. Threads
+// have no inbox items until thread routing lands, so that list stays empty.
 
 import type { InboxEntry, InboxReason } from "@penguin/protocol";
 
@@ -25,6 +25,7 @@ const GROUP_OF_REASON: Readonly<Record<InboxReason, InboxGroupId>> = {
   start_session: "assigned",
   mentioned: "mentioned",
   closed: "closed",
+  review_requested: "review",
 };
 
 /** The tag an item carries beside its issue when its list alone does not say why it is there. */

@@ -6,15 +6,16 @@
 // charter. The reducer checks what needs the issue's contents: that the issue exists, and that a
 // referenced comment, thread or sub-issue exists and is in a state that allows the operation, and
 // that a send_upstream comes from an identity assigned to the issue. It also
-// records whether a review counts toward approval, which depends on the issue's scope labels: a review
-// from someone without review rights is kept as a comment that does not count (PRD sections 5 and 14).
+// records whether a review counts toward approval, which depends on the issue's scope labels and the
+// owners' delegates: a review from someone without review rights is kept as a comment that does not
+// count (PRD sections 5 and 14).
 //
 // A create that names its own op_id as the issue (a bridge's create, written without a number) is
 // renumbered: the issue takes the number the context assigns and keeps the op_id as its alias. Every
 // later reference to the alias, as an operation's issue or as a sub-issue, resolves to the number
 // through the context (#48).
 
-import { reviewRight } from "@penguin/policies";
+import { reviewRight, type Delegates } from "@penguin/policies";
 import { authorSegment, isTemporaryIssueId, type IssueId, type Operation, type Party } from "@penguin/protocol";
 import type { ScopeMap } from "@penguin/scope-map";
 
@@ -120,6 +121,11 @@ export interface Review {
   readonly counts: boolean;
   /** Why the review does not count, or null when it counts. */
   readonly uncountedReason: string | null;
+  /**
+   * The owners whose approval the review stands for: the reviewer when they own a labelled scope, and
+   * each labelled scope's owner whose delegate the reviewer is. Empty when the review does not count.
+   */
+  readonly countsFor: readonly string[];
 }
 
 export interface Thread {
@@ -182,6 +188,8 @@ export interface ReduceContext {
   nextIssueNumber(): number;
   /** The scope map a review's rights are judged by. */
   readonly scopeMap: ScopeMap;
+  /** Each owner's delegate, whose review counts in the owner's place. None when absent. */
+  readonly delegates?: Delegates;
 }
 
 export type ReduceResult =
@@ -338,7 +346,7 @@ function apply(issue: IssueRecord, operation: Operation, context: ReduceContext)
     }
     case "review": {
       const { verdict, commit, reason } = p as { verdict: Review["verdict"]; commit: string; reason?: string };
-      const right = reviewRight(operation.author, issue.labels, context.scopeMap);
+      const right = reviewRight(operation.author, issue.labels, context.scopeMap, context.delegates);
       const review: Review = {
         opId,
         reviewerOwnerId: author,
@@ -347,6 +355,7 @@ function apply(issue: IssueRecord, operation: Operation, context: ReduceContext)
         ...splitCommit(commit),
         counts: right.allowed,
         uncountedReason: right.allowed ? null : right.message,
+        countsFor: right.allowed ? right.countsFor : [],
       };
       return { ...issue, reviews: withEntry(issue.reviews, opId, review) };
     }

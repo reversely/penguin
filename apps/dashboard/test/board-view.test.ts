@@ -140,7 +140,7 @@ test("what the issue waits on follows its routing, its threads and its state", (
   assert.equal(on("open", {}, person("jun")), "A fix");
   assert.equal(on("detected", {}, null), "An assignee");
   assert.equal(on("detected"), "A fix");
-  const sub = { id: "2", title: "Fix", state: "fixing" as const, assignees: [], reviews: [], checks: [] };
+  const sub = { id: "2", title: "Fix", state: "fixing" as const, assignees: [], reviews: [], checks: [], approval: null };
   assert.equal(waitsOn(issue("1", "detected", {}, { subIssues: [sub] }), null), "Fix sub-issues");
   assert.equal(on("verifying", { checks: [check("fail")] }), "A passing run");
   assert.equal(on("verifying", { checks: [check("fail"), check("pass")] }), "Combined tests");

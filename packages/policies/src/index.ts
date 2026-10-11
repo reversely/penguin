@@ -7,4 +7,21 @@ export {
   type CharterVerdict,
   type OperationTargets,
 } from "./charter.ts";
-export { labelledScopes, reviewRight, SCOPE_LABEL_PREFIX, type ReviewRight } from "./review-rights.ts";
+export {
+  labelledScopes,
+  reviewOwners,
+  reviewRight,
+  SCOPE_LABEL_PREFIX,
+  type Delegates,
+  type ReviewRight,
+} from "./review-rights.ts";
+export {
+  fixApproval,
+  fixHead,
+  type FixApproval,
+  type FixRecord,
+  type LinkedCommitRecord,
+  type OwnerApproval,
+  type OwnerApprovalState,
+  type ReviewRecord,
+} from "./fix-approval.ts";

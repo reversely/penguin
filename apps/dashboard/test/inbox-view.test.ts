@@ -22,6 +22,7 @@ test("the inbox has the five lists in the PRD's order, under noun headings", () 
 test("each item goes to its reason's list, keeping the inbox's newest-first order", () => {
   const items = [
     entry("42", "closed"),
+    entry("43", "review_requested"),
     entry("41", "start_session"),
     entry("40", "mentioned"),
     entry("41", "assigned", true),
@@ -31,8 +32,8 @@ test("each item goes to its reason's list, keeping the inbox's newest-first orde
   assert.deepEqual(keys(groups.assigned), ["start_session:41", "assigned:41", "assigned:40"]);
   assert.deepEqual(keys(groups.mentioned), ["mentioned:40"]);
   assert.deepEqual(keys(groups.closed), ["closed:42"]);
-  // No reason fills these lists yet; they show with their headings and no items.
-  assert.deepEqual(groups.review, []);
+  assert.deepEqual(keys(groups.review), ["review_requested:43"]);
+  // No reason fills the threads list yet; it shows with its heading and no items.
   assert.deepEqual(groups.threads, []);
 });
 
