@@ -9,6 +9,7 @@ import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
 import { runGit } from "@penguin/git-analysis";
+import { RUNNER_INTERVAL_MS } from "@penguin/protocol";
 
 import { approvalPass, ApprovedBranchWriter, formatApprovalPass, type ApprovalPassResult } from "./approval-run.ts";
 import type { CliIo } from "./cli.ts";
@@ -50,8 +51,6 @@ export const RUNNER_USAGE = `       penguin-bridge runner [--once] [--interval <
          runner operator's consent to those runs and pushes.
 `;
 
-const DEFAULT_INTERVAL_MS = 10_000;
-
 /** One pass of the test jobs: each job's result, or why it did not run. */
 interface TestJobsResult {
   readonly combined: CombinedPassResult | Error;
@@ -82,7 +81,7 @@ export async function runRunnerCommand(
     },
     strict: true,
   });
-  const interval = Number(values.interval ?? DEFAULT_INTERVAL_MS);
+  const interval = Number(values.interval ?? RUNNER_INTERVAL_MS);
   if (!Number.isInteger(interval) || interval <= 0) {
     io.write(RUNNER_USAGE);
     return 2;

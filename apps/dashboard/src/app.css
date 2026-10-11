@@ -1234,9 +1234,73 @@ a.row-title {
   color: var(--failure);
 }
 
+/* The issue's one line for operations past the runner's interval, in the header's status row. */
 .waiting {
   border-style: dashed;
   color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Needs you: a card above the activity, one row per thread or fix waiting for the viewer. Each row
+   links to its card; the rows' 8px corner nests in the card's 20px around its 12px padding. */
+.needs-you-heading {
+  margin: 0;
+  font: var(--text-heading);
+}
+
+.needs-you-list {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0 calc(-1 * var(--space-2));
+  padding: 0;
+  list-style: none;
+}
+
+.needs-you-link {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-1) var(--space-3);
+  min-height: 2.5rem;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  color: var(--ink);
+  font: var(--text-ui);
+  text-decoration: none;
+  transition: background-color var(--dur-hover) var(--ease-out);
+}
+
+.needs-you-title {
+  flex: 1 1 12rem;
+  min-width: 0;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .needs-you-link:hover {
+    background: color-mix(in oklab, var(--selected) 60%, transparent);
+  }
+}
+
+@media (max-width: 759.98px), (pointer: coarse) {
+  .needs-you-link {
+    min-height: 2.75rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .needs-you-link {
+    transition: none;
+  }
+}
+
+/* A card a Needs you row links to stops short of the pane's top edge and takes focus in its own shape. */
+.thread-card[id],
+.entry-card[id] {
+  scroll-margin-top: var(--space-4);
+  border-radius: var(--radius-card);
 }
 
 .entry-card {

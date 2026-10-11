@@ -224,6 +224,8 @@ export interface TimelineEntry {
   readonly gitCommit: string | null;
   /** True while the operation is applied in the index but not yet pushed to the issues repo. */
   readonly waitingForGitLog: boolean;
+  /** When the operation started waiting for the runner, in milliseconds since the epoch; null once pushed. */
+  readonly waitingSince: number | null;
 }
 
 /** A submission's PendingOp fields and the rejections it records. */
@@ -433,7 +435,8 @@ export class IssueIndex {
     const issue = this.issue(id);
     const number = issue?.id ?? id;
     const rows = this.#db.exec(
-      `SELECT a.*, p.op_id IS NOT NULL AS waiting FROM AppliedOp a LEFT JOIN PendingOp p ON p.op_id = a.op_id
+      `SELECT a.*, p.op_id IS NOT NULL AS waiting, p.created_at AS waiting_since
+       FROM AppliedOp a LEFT JOIN PendingOp p ON p.op_id = a.op_id
        WHERE a.issue_id IN (?, ?) ORDER BY a.seq`,
       number,
       issue?.alias ?? number,
@@ -1125,6 +1128,7 @@ function timelineEntry(row: Row): TimelineEntry {
     message: (row["message"] as string | null) ?? null,
     gitCommit: (row["git_commit"] as string | null) ?? null,
     waitingForGitLog: Number(row["waiting"]) === 1,
+    waitingSince: row["waiting_since"] == null ? null : Number(row["waiting_since"]),
   };
 }
 

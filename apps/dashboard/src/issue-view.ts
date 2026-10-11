@@ -414,6 +414,81 @@ export function approvalFixes(subIssues: readonly IssuePageSubIssue[]): Approval
   return subIssues.flatMap((sub) => (sub.approval === null ? [] : [{ ...sub, approval: sub.approval }]));
 }
 
+/**
+ * One reviewer's row on a fix: an owner whose review counts, with where they stand on the head, or
+ * anyone else's latest review, with whether it is of an older commit than the head.
+ */
+export type ReviewRow =
+  | { readonly kind: "owner"; readonly owner: IssuePageOwnerApproval }
+  | { readonly kind: "review"; readonly review: IssuePageReview; readonly superseded: boolean };
+
+/**
+ * A fix's reviews as one row per person: each owner whose review counts, then each other reviewer's
+ * latest review. An owner's own reviews and their delegate's show in the owner's row only. Reviews
+ * come in apply order, so the last one per reviewer is the latest.
+ */
+export function reviewRows(sub: Pick<IssuePageSubIssue, "reviews" | "approval">): ReviewRow[] {
+  const owners = sub.approval?.owners ?? [];
+  const shown = new Set(owners.flatMap((owner) => (owner.reviewer === null ? [owner.owner] : [owner.owner, owner.reviewer])));
+  const latest = new Map<string, IssuePageReview>();
+  for (const review of sub.reviews) if (!shown.has(review.reviewer)) latest.set(review.reviewer, review);
+  return [
+    ...owners.map((owner): ReviewRow => ({ kind: "owner", owner })),
+    ...[...latest.values()].map((review): ReviewRow => ({ kind: "review", review, superseded: reviewSuperseded(review, sub.approval) })),
+  ];
+}
+
+/** The element id of a thread's card and of a fix's approval card, which the "Needs you" links name. */
+export function threadAnchor(threadId: string): string {
+  return `thread-${threadId}`;
+}
+
+export function fixAnchor(fixId: string): string {
+  return `fix-${fixId}`;
+}
+
+/** Something on the page that waits for the viewer: an open thread that needs them, or a fix waiting for their review. */
+export type NeedsYouItem =
+  | { readonly kind: "thread"; readonly thread: IssuePageThread; readonly opener: string }
+  | { readonly kind: "review"; readonly fix: ApprovalFix };
+
+/** What waits for the viewer on the page: open threads that need them, then fixes waiting for their review. */
+export function needsYou(page: Pick<IssuePage, "issue" | "subIssues">, viewer: string): NeedsYouItem[] {
+  const threads = page.issue.threads
+    .filter((thread) => thread.status === "open" && thread.needsPersonIds.includes(viewer))
+    .map((thread): NeedsYouItem => ({ kind: "thread", thread, opener: threadOpener(thread, page.issue.reviews) }));
+  const reviews = approvalFixes(page.subIssues)
+    .filter((fix) => approvalStatus(fix.approval, viewer) === "waiting-for-you")
+    .map((fix): NeedsYouItem => ({ kind: "review", fix }));
+  return [...threads, ...reviews];
+}
+
+/**
+ * The operations that waited longer than the runner's pass interval for the Git log, `elapsed`
+ * milliseconds after the page was read. An operation waiting less than one pass is on its way.
+ */
+export function overduePushes(timeline: readonly IssuePageTimelineEntry[], interval: number, elapsed: number): number {
+  let overdue = 0;
+  for (const entry of timeline) if (entry.waitedMs !== null && entry.waitedMs + elapsed > interval) overdue += 1;
+  return overdue;
+}
+
+/** Milliseconds until the next waiting operation passes the interval, or undefined when none is left to. */
+export function nextOverdueIn(timeline: readonly IssuePageTimelineEntry[], interval: number, elapsed: number): number | undefined {
+  let next: number | undefined;
+  for (const entry of timeline) {
+    if (entry.waitedMs === null) continue;
+    const left = interval - entry.waitedMs - elapsed;
+    if (left >= 0 && (next === undefined || left < next)) next = left;
+  }
+  return next;
+}
+
+/** The pending-push summary, as one line for the issue. */
+export function overdueLabel(count: number): string {
+  return `${count} ${count === 1 ? "update" : "updates"} waiting for the Git log`;
+}
+
 /** The number of current checks per signal, and of superseded checks, for the details panel's summary row. */
 export interface CheckSummary {
   readonly verified: number;

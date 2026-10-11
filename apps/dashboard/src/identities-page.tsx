@@ -623,6 +623,7 @@ function timelineEntry(operation: IdentityEntry["recentOperations"][number]): Is
     message: null,
     gitCommit: null,
     waitingForGitLog: false,
+    waitedMs: null,
   };
 }
 

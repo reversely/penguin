@@ -2,18 +2,20 @@
 // an agent identity or Penguin, in apply order. Each comment shows its author's byline above it, the
 // viewer's own in ink; Penguin's alerts are centred system lines; claims and other operations are
 // compact lines; checks are evidence cards; reviews are approval cards; threads are cards with their
-// replies; rejected operations are struck through with their reasons. Each fix's approval card and
-// the composer, which comments on the issue, follow. An agent's name links to its agent card. Agent
-// sessions are private to their owners, so the page shows only what is posted on the issue. Every
-// value renders as React text.
+// replies; rejected operations are struck through with their reasons. Above them, "Needs you" links to
+// each thread and fix that waits for the viewer. Each fix's approval card and the composer, which
+// comments on the issue, follow. An agent's name links to its agent card. Agent sessions are private
+// to their owners, so the page shows only what is posted on the issue. Every value renders as React
+// text.
 
 import type { IssuePage, IssuePageThread, IssuePageTimelineEntry } from "@penguin/protocol";
-import { useState, type ChangeEvent, type FormEvent, type KeyboardEvent } from "react";
+import { useState, type ChangeEvent, type FormEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 
 import { submitOperation, type WriteOutcome } from "./api.ts";
 import { CheckCard, FixApprovalCard, ReviewCard } from "./issue-cards.tsx";
 import { AuthorAvatar, AuthorName, Byline, PenguinMark, type Authors } from "./issue-marks.tsx";
 import { Icon } from "./icon.tsx";
+import { WAITING_PREVIEW } from "./inbox-view.ts";
 import {
   approvalFixes,
   authorName,
@@ -21,11 +23,15 @@ import {
   describeEntry,
   entryIds,
   entryKind,
+  fixAnchor,
   fixedIn,
+  needsYou,
   reasonLabel,
+  threadAnchor,
   threadEntries,
   threadOpener,
   type EntryKind,
+  type NeedsYouItem,
 } from "./issue-view.ts";
 import { useOperation } from "./use-operation.ts";
 
@@ -48,6 +54,7 @@ export function IssueThread(props: ThreadProps) {
       <h2 id="issue-thread" className="visually-hidden">
         Activity
       </h2>
+      <NeedsYou items={needsYou(page, viewer)} />
       <ol className="thread">
         {page.timeline.map((entry) => {
           const kind = entryKind(entry, viewer, ids);
@@ -61,7 +68,7 @@ export function IssueThread(props: ThreadProps) {
           </h2>
           <ul className="thread">
             {fixes.map((fix) => (
-              <li key={fix.id} className="entry entry-card">
+              <li key={fix.id} id={fixAnchor(fix.id)} tabIndex={-1} className="entry entry-card">
                 <FixApprovalCard
                   fix={fix}
                   viewer={viewer}
@@ -77,6 +84,62 @@ export function IssueThread(props: ThreadProps) {
       )}
       <CommentComposer issue={page.issue} onSignedOut={props.onSignedOut} onWritten={props.onWritten} />
     </section>
+  );
+}
+
+/**
+ * What waits for the viewer, above the activity: each open thread that needs them and each fix
+ * waiting for their review, linking to its card. The activity keeps its order below.
+ */
+function NeedsYou({ items }: { items: readonly NeedsYouItem[] }) {
+  if (items.length === 0) return null;
+  return (
+    <section className="card-raised needs-you" aria-labelledby="issue-needs-you">
+      <h2 id="issue-needs-you" className="needs-you-heading">
+        Needs you
+      </h2>
+      <ul className="needs-you-list">
+        {items.map((item) =>
+          item.kind === "thread" ? (
+            <li key={`thread:${item.thread.id}`}>
+              <CardLink target={threadAnchor(item.thread.id)}>
+                <span className="needs-you-title">Thread from {authorName(item.opener)}</span>
+                <span className="tag approval-status approval-attention">{WAITING_PREVIEW.reply}</span>
+              </CardLink>
+            </li>
+          ) : (
+            <li key={`fix:${item.fix.id}`}>
+              <CardLink target={fixAnchor(item.fix.id)}>
+                <span className="needs-you-title">
+                  <span className="issue-number">#{item.fix.id}</span> {item.fix.title}
+                </span>
+                <span className="tag approval-status approval-attention">{WAITING_PREVIEW.review}</span>
+              </CardLink>
+            </li>
+          ),
+        )}
+      </ul>
+    </section>
+  );
+}
+
+/**
+ * A link to a card on the page. A plain press scrolls the card into view and moves focus to it, so
+ * the keyboard continues from the card; a modified press opens the page at the card the browser's way.
+ */
+function CardLink({ target, children }: { target: string; children: ReactNode }) {
+  const jump = (event: MouseEvent<HTMLAnchorElement>) => {
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    const card = document.getElementById(target);
+    if (card === null) return;
+    event.preventDefault();
+    card.scrollIntoView({ block: "start" });
+    card.focus({ preventScroll: true });
+  };
+  return (
+    <a className="needs-you-link" href={`#${target}`} onClick={jump}>
+      {children}
+    </a>
   );
 }
 
@@ -98,7 +161,6 @@ function ThreadEntry({
         <li className="entry entry-comment">
           <Byline segment={entry.author} authors={authors}>
             <span className="byline-meta">opened the issue</span>
-            <EntryTags entry={entry} />
           </Byline>
           {issue.body === "" ? <p className="entry-meta entry-indent">No description</p> : <p className="bubble">{issue.body}</p>}
         </li>
@@ -109,7 +171,6 @@ function ThreadEntry({
         <li className="entry entry-comment">
           <Byline segment={entry.author} authors={authors}>
             {entry.type === "edit_comment" ? <span className="byline-meta">{summary}</span> : null}
-            <EntryTags entry={entry} />
           </Byline>
           {text === undefined ? null : <p className={kind === "own-comment" ? "bubble bubble-own" : "bubble"}>{text}</p>}
         </li>
@@ -122,7 +183,6 @@ function ThreadEntry({
             <span>
               {authorName(entry.author)} {summary}
             </span>
-            <EntryTags entry={entry} />
           </p>
           {text === undefined ? null : <p className="system-text">{text}</p>}
         </li>
@@ -132,7 +192,6 @@ function ThreadEntry({
       return (
         <li className="entry entry-card">
           <CheckCard check={check} author={entry.author} fixedIn={fixedIn(check, page.subIssues)} authors={authors} navigate={navigate} />
-          <EntryFoot entry={entry} />
         </li>
       );
     }
@@ -141,7 +200,6 @@ function ThreadEntry({
       return (
         <li className="entry entry-card">
           <ReviewCard review={review} authors={authors} />
-          <EntryFoot entry={entry} />
         </li>
       );
     }
@@ -157,7 +215,6 @@ function ThreadEntry({
             onSignedOut={onSignedOut}
             onWritten={onWritten}
           />
-          <EntryFoot entry={entry} />
         </li>
       );
     }
@@ -169,7 +226,6 @@ function ThreadEntry({
             <s className="event-summary">{summary}</s>
             <span className="tag rejected-tag">Rejected</span>
             <span className="tag rejected-tag">{reasonLabel(entry.rejectReason)}</span>
-            <EntryTags entry={entry} />
           </p>
           {entry.message === null ? null : <p className="event-text">{entry.message}</p>}
           {text === undefined ? null : <p className="event-text event-quote">{text}</p>}
@@ -185,25 +241,11 @@ function ThreadEntry({
             <AuthorName segment={entry.author} authors={authors} className="event-author" />
             <span className="event-summary">{summary}</span>
             {kind === "claim" ? <span className="tag signal signal-claim">Claim</span> : null}
-            <EntryTags entry={entry} />
           </p>
           {text === undefined ? null : <p className="event-text">{text}</p>}
         </li>
       );
   }
-}
-
-/** The tag an operation carries while the index holds it before the issues repo's Git log does. */
-function EntryTags({ entry }: { entry: IssuePageTimelineEntry }) {
-  return entry.waitingForGitLog ? <span className="tag waiting">Waiting for Git log</span> : null;
-}
-
-function EntryFoot({ entry }: { entry: IssuePageTimelineEntry }) {
-  return entry.waitingForGitLog ? (
-    <p className="entry-meta">
-      <EntryTags entry={entry} />
-    </p>
-  ) : null;
 }
 
 /**
@@ -230,13 +272,12 @@ function ThreadCard({
   const open = thread.status === "open";
   const operation = useOperation(onSignedOut, onWritten);
   const answers = replies.filter((reply) => reply.type === "reply_thread");
-  const resolution = [...replies].reverse().find((reply) => reply.type === "resolve_thread");
   const resolve = () =>
     operation.send("resolve", () =>
       submitOperation({ issue: Number(issue.id), type: "resolve_thread", base_version: issue.version, payload: { thread: thread.id } }),
     );
   return (
-    <article className="card-raised thread-card" data-open={open || undefined}>
+    <article id={threadAnchor(thread.id)} tabIndex={-1} className="card-raised thread-card" data-open={open || undefined}>
       <div className="thread-card-head">
         <Byline segment={threadOpener(thread, issue.reviews)} authors={authors} />
         <span className={`tag thread-status thread-${thread.status}`}>{open ? "Open" : "Resolved"}</span>
@@ -249,9 +290,7 @@ function ThreadCard({
         <ol className="thread-replies">
           {answers.map((reply) => (
             <li key={reply.opId} className="thread-reply">
-              <Byline segment={reply.author} authors={authors}>
-                <EntryTags entry={reply} />
-              </Byline>
+              <Byline segment={reply.author} authors={authors} />
               {describeEntry(reply).text === undefined ? null : <p className="thread-reply-text">{describeEntry(reply).text}</p>}
             </li>
           ))}
@@ -259,10 +298,7 @@ function ThreadCard({
       )}
       {thread.resolvedBy === null ? null : (
         <div className="thread-resolution">
-          <p className="thread-needs">
-            Resolved by {authorName(thread.resolvedBy)}
-            {resolution === undefined ? null : <EntryTags entry={resolution} />}
-          </p>
+          <p className="thread-needs">Resolved by {authorName(thread.resolvedBy)}</p>
           {thread.resolveReason === null ? null : <p className="approval-quote">{thread.resolveReason}</p>}
         </div>
       )}

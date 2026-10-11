@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { before, test } from "node:test";
 
 import { generateSigningKeyPair, signOperation, type FixApproval } from "@penguin/issues";
-import { operationPath, type Author, type Operation } from "@penguin/protocol";
+import { operationPath, RUNNER_INTERVAL_MS, type Author, type Operation } from "@penguin/protocol";
 import { parseScopeMap } from "@penguin/scope-map";
 
 import { IdentityStore } from "../src/identity-store.ts";
@@ -191,6 +191,46 @@ test("a rejected file and a pushed pending operation each change the timeline an
       ["comment", "rejected", "bad_signature", false],
     ],
   );
+});
+
+test("each unpushed operation carries how long it has waited for the runner", async () => {
+  const { index, keys, page } = project();
+  const at = Date.parse("2026-10-11T09:00:00Z");
+  const write = async (type: string, payload: Record<string, unknown>, now: number) =>
+    index.submit({
+      operation: { issue: 40, type, base_version: index.issue("40")?.version ?? 0, payload },
+      author: jun,
+      source: "dashboard",
+      signingKey: service.privateKey,
+      keys,
+      now,
+    });
+  await write("create", { title: "Board filter drops identities" }, at);
+  await write("comment", { body: "Seen on the tablet too" }, at + 4000);
+  const listing = index.pendingFiles({ bridgeId: "runner", role: "runner" });
+  const created = listing.status === "ok" ? listing.files[0] : undefined;
+  assert.ok(created !== undefined);
+  await index.apply({ file: created.file, gitCommit: "c0ffee", path: created.path, keys });
+
+  const read = buildIssuePage(
+    {
+      read: (issueId) => index.read(issueId),
+      issue: (issueId) => index.issue(issueId),
+      routes: () => [],
+      session: () => undefined,
+      now: () => at + 15_000,
+    },
+    "40",
+  );
+  assert.deepEqual(
+    read?.timeline.map((entry) => [entry.type, entry.waitingForGitLog, entry.waitedMs]),
+    [
+      ["create", false, null],
+      ["comment", true, 11_000],
+    ],
+  );
+  assert.equal(read?.runnerInterval, RUNNER_INTERVAL_MS);
+  assert.equal(page("40")?.runnerInterval, RUNNER_INTERVAL_MS);
 });
 
 test("a sub-issue carries the approval its HuddleAgent recorded", async () => {

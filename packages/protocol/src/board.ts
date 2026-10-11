@@ -31,7 +31,7 @@ export interface BoardOwner {
 }
 
 /** One issue as the issue page shows it, without the timeline. */
-export interface BoardIssue extends Omit<IssuePage, "timeline"> {
+export interface BoardIssue extends Omit<IssuePage, "timeline" | "runnerInterval"> {
   /**
    * For each assignee id (a person id or an identity handle), the owners whose swimlane holds the
    * card: the person; a personal identity's owner; the owner who assigned a team identity, or every

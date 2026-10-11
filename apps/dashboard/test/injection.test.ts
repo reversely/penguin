@@ -1,11 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
+import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { build } from "esbuild";
+import { load } from "./render.ts";
 
 const root = join(import.meta.dirname, "..");
 const MARKUP = '<img src=x onerror="globalThis.pwned = 1">';
@@ -22,28 +20,6 @@ test("no dashboard source writes raw HTML, so every user value renders as React 
     assert.doesNotMatch(source, RAW_HTML_SINKS, file);
   }
 });
-
-/** Bundles `entry` for Node and returns its exports, so a page renders on the server without a browser. */
-async function load<T>(entry: string): Promise<T> {
-  const bundle = await build({
-    stdin: { contents: entry, resolveDir: root, loader: "tsx" },
-    bundle: true,
-    write: false,
-    platform: "node",
-    format: "cjs",
-    jsx: "automatic",
-    define: { "process.env.NODE_ENV": '"production"' },
-    logLevel: "silent",
-  });
-  const dir = await mkdtemp(join(tmpdir(), "penguin-render-"));
-  try {
-    const file = join(dir, "entry.cjs");
-    await writeFile(file, bundle.outputFiles[0]!.text);
-    return createRequire(import.meta.url)(file) as T;
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-}
 
 test("markup in an issue title and an assignee's or identity's handle renders as escaped text in the inbox rows", async () => {
   // The rows and the identity strip take their data as props, so they render on the server without a fetch.
@@ -264,6 +240,7 @@ test("markup in an issue title, body, comment, thread, check, review and identit
     message: null,
     gitCommit: null,
     waitingForGitLog: false,
+    waitedMs: null,
   });
   const html = render(
     {
@@ -313,6 +290,7 @@ test("markup in an issue title, body, comment, thread, check, review and identit
         entry("o3", "jun", "reply_thread", { thread: "t1", body: "<strong>reply</strong>" }),
         { ...entry("o4", "sam", "comment", { body: "<sup>late</sup>" }), status: "rejected", rejectReason: "superseded_version", message: "<sub>based on 1</sub>" },
       ],
+      runnerInterval: 10_000,
     },
     handle,
   );

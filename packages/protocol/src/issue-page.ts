@@ -140,6 +140,11 @@ export interface IssuePageTimelineEntry {
   readonly gitCommit: string | null;
   /** True while the operation is applied in the index but not yet pushed to the issues repo. */
   readonly waitingForGitLog: boolean;
+  /**
+   * How long the operation had waited for the runner to push it when the page was read, in
+   * milliseconds; null once it is pushed.
+   */
+  readonly waitedMs: number | null;
 }
 
 export interface IssuePage {
@@ -169,4 +174,9 @@ export interface IssuePage {
   };
   readonly subIssues: readonly IssuePageSubIssue[];
   readonly timeline: readonly IssuePageTimelineEntry[];
+  /**
+   * The runner's pass interval in milliseconds. An operation that waited longer than this for the
+   * Git log missed a pass.
+   */
+  readonly runnerInterval: number;
 }

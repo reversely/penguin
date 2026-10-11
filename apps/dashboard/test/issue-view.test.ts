@@ -1,14 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import type {
-  IssuePage,
-  IssuePageApproval,
-  IssuePageCheck,
-  IssuePageOwnerApproval,
-  IssuePageReview,
-  IssuePageThread,
-  IssuePageTimelineEntry,
+import {
+  RUNNER_INTERVAL_MS,
+  type IssuePage,
+  type IssuePageApproval,
+  type IssuePageCheck,
+  type IssuePageOwnerApproval,
+  type IssuePageReview,
+  type IssuePageThread,
+  type IssuePageTimelineEntry,
 } from "@penguin/protocol";
 
 import {
@@ -29,12 +30,19 @@ import {
   checkSignal,
   describeEntry,
   entrySignal,
+  fixAnchor,
   fixedIn,
   latestChecks,
+  needsYou,
+  nextOverdueIn,
+  overdueLabel,
+  overduePushes,
   penguinState,
   reasonLabel,
   RESOLUTION_LABEL,
+  reviewRows,
   reviewSuperseded,
+  threadAnchor,
   threadOpener,
   showsCloseOut,
   watchedIssues,
@@ -69,6 +77,7 @@ function entry(fields: Partial<IssuePageTimelineEntry>): IssuePageTimelineEntry 
     message: null,
     gitCommit: null,
     waitingForGitLog: false,
+    waitedMs: null,
     ...fields,
   };
 }
@@ -123,6 +132,7 @@ function page(issue: Partial<IssuePage["issue"]>, subIssues: IssuePage["subIssue
     },
     subIssues,
     timeline: [],
+    runnerInterval: RUNNER_INTERVAL_MS,
   };
 }
 
@@ -365,4 +375,91 @@ test("a thread Penguin opened for a request for changes speaks for the reviewer"
   assert.equal(threadOpener(thread({ openedBy: "penguin", anchor: "review:jun-web-0007" }), [changes]), "jun");
   assert.equal(threadOpener(thread({ openedBy: "penguin", anchor: "review:sam-web-0001" }), [changes]), "penguin");
   assert.equal(threadOpener(thread({ openedBy: "priya", anchor: null }), [changes]), "priya");
+});
+
+test("a fix shows one review row per owner, the latest review counting, then each other reviewer's latest", () => {
+  const approval: IssuePageApproval = {
+    head: "owner-jun@c3d4e5f6",
+    owners: [
+      { owner: "jun", state: "pending", reviewer: null, reviewOpId: null, reason: null },
+      { owner: "priya", state: "approved", reviewer: "priya", reviewOpId: "priya-web-0002", reason: null },
+    ],
+    approved: false,
+  };
+  const reviews = [
+    review({ opId: "priya-web-0001", reviewer: "priya", verdict: "request_changes", sha: "1a2b3c4d" }),
+    review({ opId: "priya-web-0002", reviewer: "priya", sha: "c3d4e5f6" }),
+    review({ opId: "sam-web-0001", reviewer: "sam", verdict: "request_changes", counts: false, uncountedReason: "no review rights" }),
+    review({ opId: "sam-web-0002", reviewer: "sam", counts: false, uncountedReason: "no review rights" }),
+  ];
+  const rows = reviewRows({ reviews, approval });
+  assert.deepEqual(
+    rows.map((row) => (row.kind === "owner" ? `owner ${row.owner.owner} ${row.owner.state}` : `review ${row.review.reviewer} ${row.review.opId}`)),
+    ["owner jun pending", "owner priya approved", "review sam sam-web-0002"],
+  );
+  // A delegate's review shows in the owner's row only.
+  const delegated = { ...approval, owners: [{ owner: "priya", state: "approved" as const, reviewer: "sam", reviewOpId: "sam-web-0003", reason: null }] };
+  assert.deepEqual(
+    reviewRows({ reviews: [review({ opId: "sam-web-0003", reviewer: "sam" })], approval: delegated }).map((row) => row.kind),
+    ["owner"],
+  );
+  // Without a recorded approval, each reviewer's latest review is their one row.
+  const plain = reviewRows({
+    reviews: [review({ opId: "a", reviewer: "priya", verdict: "request_changes" }), review({ opId: "b", reviewer: "priya" })],
+    approval: null,
+  });
+  assert.deepEqual(
+    plain.map((row) => (row.kind === "review" ? `${row.review.reviewer} ${row.review.verdict} ${row.superseded}` : "owner")),
+    ["priya approve false"],
+  );
+});
+
+test("the pending-push summary counts only operations past the runner's pass interval", () => {
+  const interval = RUNNER_INTERVAL_MS;
+  const timeline = [
+    entry({ opId: "pushed" }),
+    entry({ opId: "late", waitingForGitLog: true, waitedMs: interval + 1 }),
+    entry({ opId: "fresh", waitingForGitLog: true, waitedMs: interval - 4000 }),
+    entry({ opId: "newest", waitingForGitLog: true, waitedMs: 0 }),
+  ];
+  assert.equal(overduePushes(timeline, interval, 0), 1);
+  assert.equal(overduePushes(timeline.slice(2), interval, 0), 0, "an operation waiting less than one pass is on its way");
+  assert.equal(overduePushes(timeline, interval, 4000), 1, "an operation exactly one interval old is not yet overdue");
+  assert.equal(overduePushes(timeline, interval, 4001), 2);
+  assert.equal(overduePushes(timeline, interval, interval + 1), 3);
+  // The page re-renders when the next waiting operation passes the interval.
+  assert.equal(nextOverdueIn(timeline, interval, 0), 4000);
+  assert.equal(nextOverdueIn(timeline, interval, 4001), interval - 4001);
+  assert.equal(nextOverdueIn(timeline, interval, interval + 1), undefined);
+  assert.equal(overdueLabel(1), "1 update waiting for the Git log");
+  assert.equal(overdueLabel(3), "3 updates waiting for the Git log");
+});
+
+test("Needs you lists the viewer's open threads and the fixes waiting for their review, each with its card's anchor", () => {
+  const approval = (state: IssuePageOwnerApproval["state"]): IssuePageApproval => ({
+    head: "owner-jun@c3d4e5f6",
+    owners: [{ owner: "jun", state, reviewer: state === "pending" ? null : "jun", reviewOpId: null, reason: null }],
+    approved: state === "approved",
+  });
+  const issuePage = page(
+    {
+      threads: [
+        thread({ id: "t-mine", needsPersonIds: ["jun"], openedBy: "priya" }),
+        thread({ id: "t-resolved", status: "resolved", needsPersonIds: ["jun"] }),
+        thread({ id: "t-other", needsPersonIds: ["sam"] }),
+      ],
+    },
+    [sub("17", { approval: approval("pending") }), sub("18", { approval: approval("approved") }), sub("19")],
+  );
+  assert.deepEqual(
+    needsYou(issuePage, "jun").map((item) => (item.kind === "thread" ? `thread ${item.thread.id} from ${item.opener}` : `review ${item.fix.id}`)),
+    ["thread t-mine from priya", "review 17"],
+  );
+  assert.equal(threadAnchor("t-mine"), "thread-t-mine");
+  assert.equal(fixAnchor("17"), "fix-17");
+  assert.deepEqual(
+    needsYou(issuePage, "sam").map((item) => item.kind),
+    ["thread"],
+  );
+  assert.deepEqual(needsYou(issuePage, "priya"), []);
 });

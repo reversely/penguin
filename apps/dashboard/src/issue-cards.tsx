@@ -18,7 +18,7 @@ import {
   assigneeSegment,
   authorName,
   checkSignal,
-  reviewSuperseded,
+  reviewRows,
   shortCommit,
   shortSha,
   STATE_LABEL,
@@ -201,9 +201,26 @@ export function ReviewCard({ review, authors }: { review: IssuePageReview; autho
   );
 }
 
+/** Why a review does not count toward the fix: its reviewer has no review rights, or it is of an older commit. */
+export function ReviewStanding({ review, superseded }: { review: IssuePageReview; superseded: boolean }) {
+  if (!review.counts) {
+    return (
+      <span className="tag tag-data" title={review.uncountedReason ?? undefined}>
+        Not counted
+      </span>
+    );
+  }
+  return superseded ? (
+    <span className="tag tag-data" title={`Reviewed ${review.repo}@${shortSha(review.sha)}, an older commit than the fix's head`}>
+      Older commit
+    </span>
+  ) : null;
+}
+
 /**
  * A fix sub-issue's approval card: its title and status, the fixing identity, the head under review,
- * each owner whose review counts and every review that does not. While the viewer's review is pending
+ * one row per reviewer (reviewRows): each owner whose review counts, then each other reviewer's latest
+ * review. While the viewer's review is pending
  * it carries the page's one ink primary, Approve, and Request changes.
  */
 export function FixApprovalCard({
@@ -225,7 +242,7 @@ export function FixApprovalCard({
   const status = approvalStatus(approval, viewer);
   const fixer = fix.assignees.find((assignee) => assignee.kind === "identity");
   const titleId = `approval-${fix.id}`;
-  const others = fix.reviews.filter((review) => !review.counts || reviewSuperseded(review, approval));
+  const rows = reviewRows(fix);
   return (
     <ApprovalCard.Root waiting={status === "waiting-for-you"}>
       <ApprovalCard.Header>
@@ -242,45 +259,36 @@ export function FixApprovalCard({
           <span className={`tag state state-${fix.state}`}>{STATE_LABEL[fix.state]}</span>
           {approval.head === null ? null : <code title="Fix commit">{shortCommit(approval.head)}</code>}
         </p>
-        {approval.owners.length === 0 ? null : (
+        {rows.length === 0 ? null : (
           <ul className="approval-owners">
-            {approval.owners.map((owner) => (
-              <li key={owner.owner}>
-                <div className="approval-owner">
-                  <PersonAvatar id={owner.owner} size="card" />
-                  <span className="byline-name">{authorName(owner.owner)}</span>
-                  <span className={`tag approval-owner-state owner-${owner.state}`}>{APPROVAL_LABEL[owner.state]}</span>
-                  {owner.reviewer === null || owner.reviewer === owner.owner ? null : (
-                    <span className="muted">by delegate {authorName(owner.reviewer)}</span>
-                  )}
-                </div>
-                {owner.state === "changes_requested" && owner.reason !== null ? <ApprovalCard.Quote>{owner.reason}</ApprovalCard.Quote> : null}
-              </li>
-            ))}
-          </ul>
-        )}
-        {others.length === 0 ? null : (
-          <ul className="approval-owners">
-            {others.map((review) => (
-              <li key={review.opId}>
-                <div className="approval-owner">
-                  <PersonAvatar id={review.reviewer} size="card" />
-                  <span className="byline-name">{authorName(review.reviewer)}</span>
-                  <span className={`tag approval-owner-state owner-${review.verdict === "approve" ? "approved" : "changes_requested"}`}>
-                    {review.verdict === "approve" ? "Approved" : "Changes requested"}
-                  </span>
-                  {review.counts ? (
-                    <span className="tag tag-data" title={`Reviewed ${review.repo}@${shortSha(review.sha)}, an older commit than the fix's head`}>
-                      Older commit
+            {rows.map((row) =>
+              row.kind === "owner" ? (
+                <li key={`owner:${row.owner.owner}`}>
+                  <div className="approval-owner">
+                    <PersonAvatar id={row.owner.owner} size="card" />
+                    <span className="byline-name">{authorName(row.owner.owner)}</span>
+                    <span className={`tag approval-owner-state owner-${row.owner.state}`}>{APPROVAL_LABEL[row.owner.state]}</span>
+                    {row.owner.reviewer === null || row.owner.reviewer === row.owner.owner ? null : (
+                      <span className="muted">by delegate {authorName(row.owner.reviewer)}</span>
+                    )}
+                  </div>
+                  {row.owner.state === "changes_requested" && row.owner.reason !== null ? (
+                    <ApprovalCard.Quote>{row.owner.reason}</ApprovalCard.Quote>
+                  ) : null}
+                </li>
+              ) : (
+                <li key={`review:${row.review.reviewer}`}>
+                  <div className="approval-owner">
+                    <PersonAvatar id={row.review.reviewer} size="card" />
+                    <span className="byline-name">{authorName(row.review.reviewer)}</span>
+                    <span className={`tag approval-owner-state owner-${row.review.verdict === "approve" ? "approved" : "changes_requested"}`}>
+                      {row.review.verdict === "approve" ? "Approved" : "Changes requested"}
                     </span>
-                  ) : (
-                    <span className="tag tag-data" title={review.uncountedReason ?? undefined}>
-                      Not counted
-                    </span>
-                  )}
-                </div>
-              </li>
-            ))}
+                    <ReviewStanding review={row.review} superseded={row.superseded} />
+                  </div>
+                </li>
+              ),
+            )}
           </ul>
         )}
       </ApprovalCard.Body>

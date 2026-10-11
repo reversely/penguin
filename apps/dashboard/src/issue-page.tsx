@@ -4,20 +4,23 @@
 // reply box and Resolve, and the comment composer. The details panel holds Penguin's state, the
 // labels, the assignees with their sessions and controls to assign an identity or unassign anyone,
 // a summary of the checks, the sub-issues with their reviews, the close-out, the trigger and the
-// commits. From 1100px the panel docks beside the activity; below, it is the shell's drawer; on a
-// phone an Activity and Details control switches the page between the two. Every value from the issue
+// commits. The header carries one line for the operations that waited longer than the runner's pass
+// interval for the Git log; an operation waiting less than one pass shows nothing. From 1100px the
+// panel docks beside the activity; below, it is the shell's drawer; on a phone an Activity and
+// Details control switches the page between the two. Every value from the issue
 // renders as React text, so markup in an issue body or comment shows as text and runs nothing.
 //
 // The page shows no diff. Another owner's unfinished work appears only as linked commits and checks;
 // the diff viewer, which shows the affected hunks only (open decision 2), is a later ticket.
 
 import type { IssuePage, IssuePageAssignee, IssuePageCloseOut, IssuePageReview, IssuePageSubIssue } from "@penguin/protocol";
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore, type ChangeEvent, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useState, useSyncExternalStore, type ChangeEvent, type FormEvent } from "react";
 
 import { fetchIssue, SignedOut, submitOperation } from "./api.ts";
 import { IdentityAvatar, PersonAvatar } from "./avatar.tsx";
 import { DetailsPanel, DetailsToggle } from "./details-pane.tsx";
 import { Icon } from "./icon.tsx";
+import { ReviewStanding } from "./issue-cards.tsx";
 import { AuthorName, PenguinIndicator, SignalTag, type Authors } from "./issue-marks.tsx";
 import { IssueThread } from "./issue-thread.tsx";
 import {
@@ -25,9 +28,12 @@ import {
   assigneeSegment,
   authorName,
   checkSummary,
+  nextOverdueIn,
+  overdueLabel,
+  overduePushes,
   penguinState,
   RESOLUTION_LABEL,
-  reviewSuperseded,
+  reviewRows,
   shortSha,
   showsCloseOut,
   STATE_LABEL,
@@ -139,6 +145,24 @@ export function IssuePageView({ issueId, viewer, live, navigate, onSignedOut }: 
   );
 }
 
+/**
+ * The number of the page's operations that waited longer than the runner's pass interval for the Git
+ * log. Each operation's wait was measured when the page was read, so the count grows as time passes
+ * since: a timer re-renders the page when the next waiting operation passes the interval.
+ */
+function useOverduePushes(page: IssuePage): number {
+  const readAt = useMemo(() => performance.now(), [page]);
+  const [, rerender] = useReducer((count: number) => count + 1, 0);
+  const elapsed = performance.now() - readAt;
+  const next = nextOverdueIn(page.timeline, page.runnerInterval, elapsed);
+  useEffect(() => {
+    if (next === undefined) return;
+    const timer = setTimeout(rerender, next + 1);
+    return () => clearTimeout(timer);
+  }, [next]);
+  return overduePushes(page.timeline, page.runnerInterval, elapsed);
+}
+
 function routeMatches(page: IssuePage, issueId: string): boolean {
   return page.issue.id === issueId || page.issue.alias === issueId;
 }
@@ -165,6 +189,7 @@ export function IssueContent({
   const known = identities.kind === "ready" ? identities.known : NO_IDENTITIES;
   const authors = useMemo<Authors>(() => ({ known, navigate }), [known, navigate]);
   const details = <IssueDetails page={page} identities={identities} authors={authors} navigate={navigate} onSignedOut={onSignedOut} onWritten={onWritten} />;
+  const overdue = useOverduePushes(page);
   return (
     <article className="issue">
       <header className="issue-header">
@@ -180,6 +205,7 @@ export function IssueContent({
               Sub-issue of #{issue.parentId}
             </a>
           )}
+          {overdue === 0 ? null : <span className="tag waiting">{overdueLabel(overdue)}</span>}
         </div>
         {phone ? (
           <div className="segmented issue-views" role="group" aria-label="View">
@@ -356,6 +382,7 @@ function CloseOutPanel({ closeOut }: { closeOut: IssuePageCloseOut }) {
 }
 
 function SubIssueRow({ sub, authors, navigate }: { sub: IssuePageSubIssue; authors: Authors; navigate: (path: string) => void }) {
+  const rows = reviewRows(sub);
   return (
     <li className="sub-issue">
       <div className="sub-issue-head">
@@ -373,26 +400,23 @@ function SubIssueRow({ sub, authors, navigate }: { sub: IssuePageSubIssue; autho
           ))}
         </ul>
       )}
-      {sub.approval === null || sub.approval.owners.length === 0 ? null : (
+      {rows.length === 0 ? null : (
         <ul className="rows">
-          {sub.approval.owners.map((owner) => (
-            <li key={owner.owner} className="row">
-              <span className={`tag approval-owner-state owner-${owner.state}`}>{APPROVAL_LABEL[owner.state]}</span>
-              <span className="row-title">{authorName(owner.owner)}</span>
-              {owner.reviewer === null || owner.reviewer === owner.owner ? null : (
-                <span className="muted">by delegate {authorName(owner.reviewer)}</span>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-      {sub.reviews.length === 0 ? null : (
-        <ul className="rows">
-          {sub.reviews.map((review) => (
-            <li key={review.opId} className="row">
-              <ReviewTags review={review} superseded={reviewSuperseded(review, sub.approval)} />
-            </li>
-          ))}
+          {rows.map((row) =>
+            row.kind === "owner" ? (
+              <li key={`owner:${row.owner.owner}`} className="row">
+                <span className={`tag approval-owner-state owner-${row.owner.state}`}>{APPROVAL_LABEL[row.owner.state]}</span>
+                <span className="row-title">{authorName(row.owner.owner)}</span>
+                {row.owner.reviewer === null || row.owner.reviewer === row.owner.owner ? null : (
+                  <span className="muted">by delegate {authorName(row.owner.reviewer)}</span>
+                )}
+              </li>
+            ) : (
+              <li key={`review:${row.review.reviewer}`} className="row">
+                <ReviewTags review={row.review} superseded={row.superseded} />
+              </li>
+            ),
+          )}
         </ul>
       )}
     </li>
@@ -424,21 +448,12 @@ function Assignee({ assignee, authors, nameId }: { assignee: IssuePageAssignee; 
   );
 }
 
-function ReviewTags({ review, superseded = false }: { review: IssuePageReview; superseded?: boolean }) {
+function ReviewTags({ review, superseded }: { review: IssuePageReview; superseded: boolean }) {
   return (
     <>
       <SignalTag signal="review">{review.verdict === "approve" ? "Approved" : "Changes requested"}</SignalTag>
       <span className="row-title">{authorName(review.reviewer)}</span>
-      {review.counts ? null : (
-        <span className="tag tag-data" title={review.uncountedReason ?? undefined}>
-          Not counted
-        </span>
-      )}
-      {superseded ? (
-        <span className="tag tag-data" title={`Reviewed ${review.repo}@${shortSha(review.sha)}, an older commit than the fix's head`}>
-          Older commit
-        </span>
-      ) : null}
+      <ReviewStanding review={review} superseded={superseded} />
     </>
   );
 }

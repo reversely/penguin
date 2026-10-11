@@ -3,14 +3,15 @@
 // operations. The result is plain JSON, so the Worker can send it as it comes from Durable Object RPC.
 
 import { approvedCommit, type Assignment, type Check, type FixApproval, type IssueRecord, type Review } from "@penguin/issues";
-import type {
-  CloseResolution,
-  IssuePage,
-  IssuePageCloseOut,
-  IssuePageAssignee,
-  IssuePageCheck,
-  IssuePageReview,
-  IssuePageTimelineEntry,
+import {
+  RUNNER_INTERVAL_MS,
+  type CloseResolution,
+  type IssuePage,
+  type IssuePageCloseOut,
+  type IssuePageAssignee,
+  type IssuePageCheck,
+  type IssuePageReview,
+  type IssuePageTimelineEntry,
 } from "@penguin/protocol";
 
 import type { TimelineEntry } from "./issue-index.ts";
@@ -26,6 +27,8 @@ export interface IssuePageSources {
   approval?(issueId: string): FixApproval | undefined;
   /** What a Huddle issue waits on before it may close (approval-store.ts), or undefined for any other issue. */
   waitingOn?(issueId: string): readonly string[] | undefined;
+  /** Milliseconds since the epoch, to measure how long each unpushed operation has waited. */
+  now?(): number;
 }
 
 /** The issue page for an issue number or temporary ID, or undefined when no such issue exists. */
@@ -35,7 +38,13 @@ export function buildIssuePage(sources: IssuePageSources, id: string): IssuePage
   const linkedBy = new Map(timeline.map((entry) => [entry.opId, entry.author]));
   const view = issueView(sources, issue, (opId) => linkedBy.get(opId) ?? null);
   const closeOut = closeOutOf(issue, timeline, sources.waitingOn?.(issue.id));
-  return { ...view, issue: { ...view.issue, closeOut }, timeline: timeline.map(timelineEntry) };
+  const now = sources.now?.() ?? Date.now();
+  return {
+    ...view,
+    issue: { ...view.issue, closeOut },
+    timeline: timeline.map((entry) => timelineEntry(entry, now)),
+    runnerInterval: RUNNER_INTERVAL_MS,
+  };
 }
 
 /** The close-out of a Huddle issue (one with `waitingOn` recorded) or of a closed issue; null otherwise. */
@@ -61,7 +70,7 @@ export function issueView(
   sources: Omit<IssuePageSources, "read">,
   issue: IssueRecord,
   linkedBy: (opId: string) => string | null,
-): Omit<IssuePage, "timeline"> {
+): Omit<IssuePage, "timeline" | "runnerInterval"> {
   return {
     issue: {
       id: issue.id,
@@ -150,7 +159,7 @@ function closeResolution(issue: IssueRecord, timeline: readonly TimelineEntry[])
   return resolution ?? (approvedCommit(issue) === null ? null : "approved");
 }
 
-function timelineEntry(entry: TimelineEntry): IssuePageTimelineEntry {
+function timelineEntry(entry: TimelineEntry, now: number): IssuePageTimelineEntry {
   return {
     seq: entry.seq,
     opId: entry.opId,
@@ -162,5 +171,6 @@ function timelineEntry(entry: TimelineEntry): IssuePageTimelineEntry {
     message: entry.message,
     gitCommit: entry.gitCommit,
     waitingForGitLog: entry.waitingForGitLog,
+    waitedMs: entry.waitingSince === null ? null : Math.max(0, now - entry.waitingSince),
   };
 }
