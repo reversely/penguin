@@ -6,6 +6,9 @@ endpoint, `<worker-url>/mcp`, with the owner's MCP token (setup inventory K3). T
 identities the session may use. This page covers issuing a token, connecting each agent product,
 registering a session and running the Phase 3 exit check by hand and as a script.
 
+For how the three connection paths fit together (MCP tools, the hook, the inbox), read
+[how-agents-connect.md](how-agents-connect.md) first.
+
 ## Prerequisites
 
 | Item | Who provides it | Where it comes from |
