@@ -61,7 +61,10 @@ export interface IssueState {
 export interface IdentityLookup {
   /** The identity with this handle, or undefined when none is stored. */
   identity(handle: string): CharterIdentity | undefined;
-  /** The owner who assigned the identity to the issue, or undefined when it is not assigned there now. */
+  /**
+   * The owner who assigned the identity to the issue, or undefined when it is not assigned there now.
+   * `issueId` is the issue as the operation names it, a number or a temporary ID.
+   */
   assigningOwner(issueId: string, handle: string): string | undefined;
 }
 
@@ -69,7 +72,10 @@ export interface ValidationContext {
   readonly bridges: readonly BridgeKey[];
   /** Penguin's service key, which signs operations from MCP, the dashboard and Penguin itself. */
   readonly serviceKey: CryptoKey;
-  /** The operation's issue, or undefined when the index holds no such issue yet (version 0). */
+  /**
+   * The operation's issue, or undefined when the index holds no such issue yet (version 0). For an
+   * operation that names a temporary ID, the caller passes the numbered issue it resolves to (#48).
+   */
   readonly issue: IssueState | undefined;
   readonly appliedOpIds: ReadonlySet<string>;
   readonly scopeMap: ScopeMap;

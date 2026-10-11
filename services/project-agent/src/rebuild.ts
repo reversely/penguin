@@ -20,6 +20,13 @@
 //   When both are based on the same issue version, the live index applies the pending one and
 //   rejects the bridge one as superseded; Git order, and so the rebuild, does the opposite. The
 //   comparison reports both AppliedOp rows and the issue rows they touch.
+// - An issue created offline takes the next number when its create is applied (#48). The rebuild
+//   applies the same files in the same Git order, so it assigns the same numbers, with one exception
+//   from the order gap above: a pending create that names its own number is in the live index at
+//   once but in the rebuild only from the runner's commit. An offline create applied between the two
+//   takes a different number live than in the rebuild.
+// - An issue created offline and applied before #48 is stored live under its temporary ID; the
+//   rebuild gives it a number and keeps the temporary ID as its alias.
 // - The rebuild judges every operation with today's keys and scope map. An operation from a bridge
 //   revoked since verifies live but not in the rebuild. A review by an owner whose scope has moved
 //   counts live but not in the rebuild, or the other way round: the Review rows differ in `counts`.

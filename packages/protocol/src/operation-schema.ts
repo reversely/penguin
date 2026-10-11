@@ -205,8 +205,9 @@ export const OPERATION_SCHEMA: JsonSchema = {
     },
     issue: {
       description:
-        "The issue's folder name: a display number, or the op_id of the issue's create operation for an " +
-        "issue a writer created before a number was assigned. A string never aliases a number.",
+        "The issue's folder name: its number, or its temporary ID, the op_id of its create operation, for " +
+        "an issue a bridge created without a number. Penguin assigns the next number when it applies such " +
+        "a create, and the temporary ID then resolves to that number.",
       anyOf: [
         { type: "integer", minimum: 1, maximum: 2_147_483_647 },
         { type: "string", maxLength: 128, pattern: OP_ID_PATTERN },

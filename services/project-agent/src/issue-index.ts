@@ -14,6 +14,15 @@
 // An `IndexListener` hears of each assignment an applied operation adds or removes and of each change
 // the operation makes to its issue, inside the operation's transaction, so the session router
 // (session-store.ts) routes and the inbox (inbox-store.ts) derives its items in the same write.
+//
+// An issue a bridge creates offline names its create's op_id as a temporary ID. Applying that create
+// gives the issue the next number, one more than the highest number in the Issue table, and keeps the
+// temporary ID in Issue.alias (#48). The number depends only on the creates applied before it, so a
+// rebuild that applies the same files in the same Git order assigns the same numbers. From then on
+// the temporary ID resolves to the number wherever an issue is named: an operation's issue, a
+// sub-issue link, and every lookup by id. The files stay where they are in the issues repo. A
+// submission to a renumbered issue is written under the temporary ID, so all of the issue's files
+// share one folder and the bridge, which never learns the number, counts them all for its base version.
 
 import {
   canonicalBytes,
@@ -202,10 +211,12 @@ const ISSUE_IN_PATH = /^issues\/([a-z0-9.-]{1,128})\/ops\//u;
 
 /** The index's tables and SQL indexes. The rebuild reads the names here to build its shadow copies. */
 export const ISSUE_INDEX_SCHEMA: readonly string[] = [
+  // `alias` is the temporary ID of an issue created offline. It comes last, where ISSUE_COLUMNS adds
+  // it to a table created before it.
   `CREATE TABLE IF NOT EXISTS Issue (
     id TEXT PRIMARY KEY, kind TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL,
     state TEXT NOT NULL, state_reason TEXT, labels TEXT NOT NULL, parent_id TEXT, huddle_id TEXT,
-    version INTEGER NOT NULL)`,
+    version INTEGER NOT NULL, alias TEXT)`,
   `CREATE TABLE IF NOT EXISTS Assignment (
     issue_id TEXT NOT NULL, assignee_kind TEXT NOT NULL, assignee_id TEXT NOT NULL, session_id TEXT,
     PRIMARY KEY (issue_id, assignee_kind, assignee_id))`,
@@ -240,6 +251,7 @@ export const ISSUE_INDEX_SCHEMA: readonly string[] = [
   // `file` holds the signed operation file the runner pushes; the PRD names the other three columns.
   `CREATE TABLE IF NOT EXISTS PendingOp (
     op_id TEXT PRIMARY KEY, source TEXT NOT NULL, created_at INTEGER NOT NULL, file TEXT NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS Issue_alias ON Issue (alias)`,
   `CREATE INDEX IF NOT EXISTS AppliedOp_issue ON AppliedOp (issue_id, seq)`,
   `CREATE INDEX IF NOT EXISTS AppliedOp_author ON AppliedOp (author)`,
   `CREATE INDEX IF NOT EXISTS Comment_issue ON Comment (issue_id)`,
@@ -258,6 +270,12 @@ const REVIEW_COLUMNS: readonly (readonly [string, string])[] = [
   ["uncounted_reason", "uncounted_reason TEXT"],
 ];
 
+/** Issue columns added after the table first shipped. An issue stored before #48 has no alias. */
+const ISSUE_COLUMNS: readonly (readonly [string, string])[] = [["alias", "alias TEXT"]];
+
+/** An issue number as text. Any other issue id is a temporary ID. */
+const ISSUE_NUMBER = /^[0-9]+$/u;
+
 /** Child tables keyed by issue_id, read back into an IssueRecord's collections. */
 const ISSUE_CHILD_TABLES = ["Assignment", "Comment", "Mention", "LinkedCommit", "IssueCheck", "Review", "Thread"];
 
@@ -272,8 +290,12 @@ export class IssueIndex {
   constructor(db: SqlDatabase, listener?: IndexListener) {
     this.#db = db;
     this.#listener = listener;
-    for (const statement of ISSUE_INDEX_SCHEMA) db.exec(statement);
+    // Tables first, then the columns an older table lacks, then the SQL indexes that may name them.
+    const isTable = (statement: string): boolean => statement.startsWith("CREATE TABLE");
+    for (const statement of ISSUE_INDEX_SCHEMA.filter(isTable)) db.exec(statement);
     addMissingColumns(db, "Review", REVIEW_COLUMNS);
+    addMissingColumns(db, "Issue", ISSUE_COLUMNS);
+    for (const statement of ISSUE_INDEX_SCHEMA.filter((statement) => !isTable(statement))) db.exec(statement);
   }
 
   /** Validates, reduces and records one operation. Calls are applied in the order they are made. */
@@ -308,20 +330,38 @@ export class IssueIndex {
     return { status: "ok", files };
   }
 
-  /** One issue's state, or undefined when it does not exist. */
-  issue(id: string): IssueRecord | undefined {
-    if (!this.#cache.has(id)) this.#cache.set(id, this.#load(id));
-    return this.#cache.get(id);
+  /**
+   * The issue number an id resolves to: a temporary ID resolves to the number its issue was given,
+   * and any other id comes back unchanged.
+   */
+  resolve(id: string): string {
+    if (ISSUE_NUMBER.test(id)) return id;
+    const [row] = this.#db.exec(`SELECT id FROM Issue WHERE alias = ?`, id);
+    return (row?.["id"] as string | undefined) ?? id;
   }
 
-  /** One issue with every operation recorded against it, applied or rejected, in apply order. */
+  /** One issue's state, by its number or its temporary ID, or undefined when it does not exist. */
+  issue(id: string): IssueRecord | undefined {
+    const number = this.resolve(id);
+    if (!this.#cache.has(number)) this.#cache.set(number, this.#load(number));
+    return this.#cache.get(number);
+  }
+
+  /**
+   * One issue, by its number or its temporary ID, with every operation recorded against it, applied
+   * or rejected, in apply order. Operations rejected under the temporary ID before the create was
+   * applied are part of the timeline.
+   */
   read(id: string): { readonly issue: IssueRecord | undefined; readonly timeline: TimelineEntry[] } {
+    const issue = this.issue(id);
+    const number = issue?.id ?? id;
     const rows = this.#db.exec(
       `SELECT a.*, p.op_id IS NOT NULL AS waiting FROM AppliedOp a LEFT JOIN PendingOp p ON p.op_id = a.op_id
-       WHERE a.issue_id = ? ORDER BY a.seq`,
-      id,
+       WHERE a.issue_id IN (?, ?) ORDER BY a.seq`,
+      number,
+      issue?.alias ?? number,
     );
-    return { issue: this.issue(id), timeline: rows.map(timelineEntry) };
+    return { issue, timeline: rows.map(timelineEntry) };
   }
 
   #serially<T>(body: () => Promise<T>): Promise<T> {
@@ -336,7 +376,7 @@ export class IssueIndex {
     const unsigned = withoutUndefined({
       schema_version: 1,
       op_id: formatOpId(author, WEB_WRITER_TAG, this.#lastSeq(author) + 1),
-      issue: draft.issue,
+      issue: draft.type === "create" ? draft.issue : this.#folderOf(draft.issue),
       type: draft.type,
       author,
       base_version: draft.base_version,
@@ -361,7 +401,8 @@ export class IssueIndex {
    * of the first applied assign since the last applied unassign. A person's assign names that person;
    * an identity's names the identity's owner half; Penguin's names no owner.
    */
-  assigningOwner(issueId: string, handle: string): string | undefined {
+  assigningOwner(id: string, handle: string): string | undefined {
+    const issueId = this.resolve(id);
     if (!this.issue(issueId)?.assignments.has(`identity:${handle}`)) return undefined;
     const [row] = this.#db.exec(
       `SELECT author FROM AppliedOp
@@ -380,6 +421,15 @@ export class IssueIndex {
     if (typeof segment !== "string" || segment === authorSegment({ penguin: true })) return undefined;
     // An author segment is a person id or "<owner>.<name>"; person ids contain no dots.
     return segment.split(".")[0];
+  }
+
+  /**
+   * The issue a submission is written under: the temporary ID of an issue created offline, however
+   * the caller named it, so its files share the folder the bridge counts; otherwise the caller's value.
+   */
+  #folderOf(issue: unknown): unknown {
+    if (typeof issue !== "number" && typeof issue !== "string") return issue;
+    return this.issue(issueKey(issue))?.alias ?? issue;
   }
 
   /**
@@ -415,7 +465,8 @@ export class IssueIndex {
     if (parsed !== undefined && gitCommit !== null && this.#confirmPushed(parsed, path, gitCommit)) {
       return { status: "duplicate", opId: parsed.op_id };
     }
-    const issueId = parsed?.issue !== undefined ? issueKey(parsed.issue) : issueFromPath(path);
+    const stated = parsed?.issue !== undefined ? issueKey(parsed.issue) : issueFromPath(path);
+    const issueId = stated === null ? null : this.resolve(stated);
     const current = parsed === undefined ? undefined : this.issue(issueKey(parsed.issue));
     const claimed = parsed !== undefined && this.#recorded(parsed.op_id) ? [parsed.op_id] : [];
 
@@ -443,21 +494,25 @@ export class IssueIndex {
     }
 
     const operation = verdict.operation;
-    const id = issueKey(operation.issue);
     const result = reduce(current, operation, {
       parentOf: (other) => this.issue(other)?.parentId,
+      resolve: (other) => this.resolve(other),
+      nextIssueNumber: () => this.#highestIssueNumber() + 1,
       scopeMap: keys.scopeMap,
     });
     if (!result.ok) {
-      if (pending !== undefined) return unrecorded(id, result.reason, result.message);
-      return this.#reject(operation.op_id, operation, id, result.reason, result.message, gitCommit);
+      const rejectedId = issueId ?? this.resolve(issueKey(operation.issue));
+      if (pending !== undefined) return unrecorded(rejectedId, result.reason, result.message);
+      return this.#reject(operation.op_id, operation, rejectedId, result.reason, result.message, gitCommit);
     }
+    // A renumbered create's issue takes the number the reducer assigned.
+    const id = result.issue.id;
 
     try {
       this.#db.transaction(() => {
         this.#writeIssue(current, result.issue);
         if (operation.type === "open_sub_issue")
-          this.#setParent(issueKey(operation.payload["sub_issue"] as string | number), id);
+          this.#setParent(this.resolve(issueKey(operation.payload["sub_issue"] as string | number)), id);
         this.#record(operation.op_id, operation, id, "applied", null, null, gitCommit);
         // Set before the listener runs, so it reads the new state; the catch below clears it on rollback.
         this.#cache.set(id, result.issue);
@@ -519,6 +574,15 @@ export class IssueIndex {
     return true;
   }
 
+  /**
+   * The highest issue number in the index, or 0 before the first. An issue stored under its temporary
+   * ID before #48 has no number and does not count.
+   */
+  #highestIssueNumber(): number {
+    const [row] = this.#db.exec(`SELECT MAX(CAST(id AS INTEGER)) AS n FROM Issue WHERE id NOT GLOB '*[^0-9]*'`);
+    return Number(row?.["n"] ?? 0);
+  }
+
   #recorded(opId: string): boolean {
     return this.#db.exec(`SELECT 1 FROM AppliedOp WHERE op_id = ?`, opId).length > 0;
   }
@@ -560,8 +624,9 @@ export class IssueIndex {
     const db = this.#db;
     const id = next.id;
     db.exec(
-      `INSERT OR REPLACE INTO Issue (id, kind, title, body, state, state_reason, labels, parent_id, huddle_id, version)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT OR REPLACE INTO Issue (id, kind, title, body, state, state_reason, labels, parent_id, huddle_id, version,
+         alias)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id,
       next.kind,
       next.title,
@@ -572,6 +637,7 @@ export class IssueIndex {
       next.parentId,
       next.huddleId,
       next.version,
+      next.alias,
     );
     diff(prev?.assignments, next.assignments, {
       upsert: (a) =>
@@ -712,6 +778,7 @@ export class IssueIndex {
     const nullable = (row: Row, column: string): string | null => (row[column] as string | null) ?? null;
     return {
       id,
+      alias: nullable(issue, "alias"),
       kind: "issue",
       title: text(issue, "title"),
       body: text(issue, "body"),

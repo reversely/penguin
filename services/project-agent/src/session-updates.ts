@@ -21,7 +21,7 @@ export const SESSION_UPDATE_TYPES = [
 export type SessionUpdateType = (typeof SESSION_UPDATE_TYPES)[number];
 
 export interface SessionUpdate {
-  /** The issue's display number, or the op_id of its create operation. */
+  /** The issue's number, or the temporary ID of an issue created offline, which resolves to it. */
   readonly issue: number | string;
   readonly type: SessionUpdateType;
   readonly payload: Readonly<Record<string, unknown>>;

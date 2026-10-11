@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
-import { bridgeWriterTag, type Author, type IssueId, type Party } from "@penguin/protocol";
+import { bridgeWriterTag, type Author, type IssueId, type Operation, type Party } from "@penguin/protocol";
 
 import type { CliIo } from "./cli.ts";
 import { isPenguinRemote, penguinRemote, unregisteredRemotes, type RemoteResolver } from "./git-remote.ts";
@@ -96,6 +96,7 @@ export async function runIssueCommand(
   switch (result.status) {
     case "pushed":
       io.write(`Pushed ${result.path} in commit ${(result.commit ?? "").slice(0, 12)} (${elapsed} ms).\n`);
+      io.write(numberingNote(result.operation));
       return 0;
     case "queued":
       // Queued is a success: the operation is signed and on disk, and a drain pushes it later.
@@ -103,6 +104,7 @@ export async function runIssueCommand(
         `Queued ${result.path} (${elapsed} ms): ${result.reason}\n` +
           "It is pushed by the next issue command or `penguin-bridge spool drain|watch` once the remote is reachable.\n",
       );
+      io.write(numberingNote(result.operation));
       return 0;
     case "failed":
       io.write(`Not pushed ${result.path}: ${result.reason}\n`);
@@ -157,7 +159,23 @@ function required(value: string | undefined, flag: string): string {
   return value;
 }
 
-/** A display number, or the op_id of the issue's create operation. The schema checks the rest. */
+/**
+ * After a create, how to name the new issue: Penguin gives it a number when it applies the create,
+ * and the temporary ID keeps naming the same issue. Nothing for any other operation.
+ */
+function numberingNote(operation: Operation): string {
+  if (operation.type !== "create") return "";
+  const id = String(operation.issue);
+  return (
+    `Issue ${id} gets a number when Penguin applies the create. ` +
+    `${id} stays an alias of that number; name the issue by ${id} in later issue commands.\n`
+  );
+}
+
+/**
+ * An issue number, or the temporary ID of an issue created offline: the op_id of its create, which
+ * Penguin resolves to the number it assigned. The schema checks the rest.
+ */
 function parseIssue(text: string): IssueId {
   return /^[0-9]+$/u.test(text) ? Number(text) : text;
 }

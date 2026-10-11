@@ -123,7 +123,10 @@ describe("the issue commands", () => {
       timings.push(Number(/\((\d+) ms\)/.exec(out)?.[1]));
       const path = pushedPath(out);
       const operation = await readOp(path);
-      if (command === "create") issue = String(operation.issue);
+      if (command === "create") {
+        issue = String(operation.issue);
+        assert.match(out, new RegExp(`^Issue ${issue} gets a number when Penguin applies the create\\. ${issue} stays an alias`, "m"));
+      }
 
       assert.equal(operation.type, type);
       assert.equal(operation.op_id, await opId(index + 1));

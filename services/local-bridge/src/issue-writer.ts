@@ -156,6 +156,8 @@ export class IssueWriter {
     const ops = spooled.filter((entry): entry is OperationEntry => entry.kind === "operation");
     const seq = (await this.#lastSequence(prefix, ops)) + 1;
     const opId = formatOpId(author, writer, seq);
+    // A create names its own op_id as the issue's temporary ID. Penguin gives the issue a number when
+    // it applies the create and resolves the temporary ID to it, so later operations keep naming it (#48).
     const issue = change.type === "create" ? opId : change.issue;
     const version = change.type === "create" ? 0 : (baseVersion ?? (await this.#operationCount(issue, spooled)));
 

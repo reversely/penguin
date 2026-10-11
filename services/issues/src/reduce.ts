@@ -7,9 +7,14 @@
 // referenced comment, thread or sub-issue exists and is in a state that allows the operation. It also
 // records whether a review counts toward approval, which depends on the issue's scope labels: a review
 // from someone without review rights is kept as a comment that does not count (PRD sections 5 and 14).
+//
+// A create that names its own op_id as the issue (a bridge's create, written without a number) is
+// renumbered: the issue takes the number the context assigns and keeps the op_id as its alias. Every
+// later reference to the alias, as an operation's issue or as a sub-issue, resolves to the number
+// through the context (#48).
 
 import { reviewRight } from "@penguin/policies";
-import { authorSegment, type IssueId, type Operation, type Party } from "@penguin/protocol";
+import { authorSegment, isTemporaryIssueId, type IssueId, type Operation, type Party } from "@penguin/protocol";
 import type { ScopeMap } from "@penguin/scope-map";
 
 export const REDUCE_REJECT_REASONS = [
@@ -123,8 +128,13 @@ export interface Thread {
 
 /** One issue's state. Collections are keyed by the id their table uses. */
 export interface IssueRecord {
-  /** The issue's folder name as text: a display number, or the op_id of its create operation. */
+  /** The issue's number as text. */
   readonly id: string;
+  /**
+   * The temporary ID the issue was created under, the op_id of its create, when a bridge created it
+   * without a number; null otherwise. It resolves to `id`.
+   */
+  readonly alias: string | null;
   readonly kind: "issue";
   readonly title: string;
   readonly body: string;
@@ -151,6 +161,14 @@ export interface IssueRecord {
 export interface ReduceContext {
   /** The parent id of an issue, null when it has none, or undefined when no such issue exists. */
   parentOf(issueId: string): string | null | undefined;
+  /** The number an issue id or temporary ID resolves to, as text; an unknown id comes back unchanged. */
+  resolve(issueId: string): string;
+  /**
+   * The number a create under a temporary ID takes: one more than the highest issue number so far.
+   * It depends only on the issues applied before, so applying the same operations in the same order
+   * assigns the same numbers.
+   */
+  nextIssueNumber(): number;
   /** The scope map a review's rights are judged by. */
   readonly scopeMap: ScopeMap;
 }
@@ -164,9 +182,13 @@ export function issueKey(issue: IssueId): string {
   return String(issue);
 }
 
-/** Applies one validated operation to an issue's state, or undefined for an issue that does not exist yet. */
+/**
+ * Applies one validated operation to an issue's state, or undefined for an issue that does not exist
+ * yet. The caller looks the issue up through `context.resolve`, so an operation that names a
+ * temporary ID reaches the numbered issue.
+ */
 export function reduce(issue: IssueRecord | undefined, operation: Operation, context: ReduceContext): ReduceResult {
-  if (operation.type === "create") return create(issue, operation);
+  if (operation.type === "create") return create(issue, operation, context);
   if (issue === undefined) return reject("no_issue", `issue ${issueKey(operation.issue)} does not exist`);
   const next = apply(issue, operation, context);
   return "reason" in next ? next : { ok: true, issue: { ...next, version: issue.version + 1 } };
@@ -178,17 +200,19 @@ function reject(reason: ReduceRejectReason, message: string): Rejection {
   return { ok: false, reason, message };
 }
 
-function create(issue: IssueRecord | undefined, operation: Operation): ReduceResult {
-  const id = issueKey(operation.issue);
-  if (issue !== undefined) return reject("issue_exists", `issue ${id} already exists`);
-  if (typeof operation.issue === "string" && operation.issue !== operation.op_id) {
-    return reject("create_id_mismatch", `a create may name a string issue id only by its own op_id ${operation.op_id}`);
+function create(issue: IssueRecord | undefined, operation: Operation, context: ReduceContext): ReduceResult {
+  if (issue !== undefined) return reject("issue_exists", `issue ${issueKey(operation.issue)} already exists`);
+  const temporary = isTemporaryIssueId(operation.issue);
+  if (temporary && operation.issue !== operation.op_id) {
+    const message = `a create may name a temporary issue ID only by its own op_id ${operation.op_id}`;
+    return reject("create_id_mismatch", message);
   }
   const payload = operation.payload as { title: string; body?: string };
   return {
     ok: true,
     issue: {
-      id,
+      id: temporary ? String(context.nextIssueNumber()) : issueKey(operation.issue),
+      alias: temporary ? operation.op_id : null,
       kind: "issue",
       title: payload.title,
       body: payload.body ?? "",
@@ -291,7 +315,7 @@ function apply(issue: IssueRecord, operation: Operation, context: ReduceContext)
       return { ...issue, checks: withEntry(issue.checks, opId, check) };
     }
     case "open_sub_issue": {
-      const child = issueKey((p as { sub_issue: IssueId }).sub_issue);
+      const child = context.resolve(issueKey((p as { sub_issue: IssueId }).sub_issue));
       const error = subIssueError(issue, child, context);
       if (error !== undefined) return error;
       return { ...issue, subIssues: withEntry(issue.subIssues, child, { childId: child, opId }) };

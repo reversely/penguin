@@ -27,7 +27,7 @@ const scopeMap = parseScopeMap(
   ),
 );
 
-const noIssues: ReduceContext = { parentOf: () => undefined, scopeMap };
+const noIssues: ReduceContext = { parentOf: () => undefined, resolve: (id) => id, nextIssueNumber: () => 1, scopeMap };
 
 function ok(result: ReduceResult): IssueRecord {
   assert.equal(result.ok, true, JSON.stringify(result));
@@ -55,10 +55,25 @@ describe("reduce", () => {
     rejected(reduce(undefined, op(jun, "comment", { body: "hi" }), noIssues), "no_issue");
   });
 
-  test("a create may use a string issue id only when it is its own op_id", () => {
+  test("a create under a temporary ID must name its own op_id, and takes the next number", () => {
     const create = op(priya, "create", { title: "Offline" }, "x");
     rejected(reduce(undefined, { ...create, issue: "priya-web-9999" }, noIssues), "create_id_mismatch");
-    assert.equal(ok(reduce(undefined, { ...create, issue: create.op_id }, noIssues)).id, create.op_id);
+    const context: ReduceContext = { ...noIssues, nextIssueNumber: () => 34 };
+    const issue = ok(reduce(undefined, { ...create, issue: create.op_id }, context));
+    assert.equal(issue.id, "34");
+    assert.equal(issue.alias, create.op_id);
+    // A create that names its number has no alias.
+    assert.equal(created().alias, null);
+  });
+
+  test("open_sub_issue resolves a temporary ID to the issue's number", () => {
+    const context: ReduceContext = {
+      ...noIssues,
+      parentOf: (id) => (id === "34" ? null : undefined),
+      resolve: (id) => (id === "jun-b3f2-0001" ? "34" : id),
+    };
+    const next = ok(reduce(created(), op(jun, "open_sub_issue", { sub_issue: "jun-b3f2-0001" }), context));
+    assert.deepEqual([...next.subIssues.values()].map((sub) => sub.childId), ["34"]);
   });
 
   test("each applied operation advances the version by one, even when it changes nothing else", () => {
@@ -116,7 +131,7 @@ describe("reduce", () => {
       ["33", "32"],
       ["40", null],
     ]);
-    const context: ReduceContext = { parentOf: (id) => parents.get(id), scopeMap };
+    const context: ReduceContext = { ...noIssues, parentOf: (id) => parents.get(id) };
     const issue = { ...created(), parentId: "32" };
     rejected(reduce(issue, op(jun, "open_sub_issue", { sub_issue: 33 }), context), "sub_issue_self");
     rejected(reduce(issue, op(jun, "open_sub_issue", { sub_issue: 99 }), context), "sub_issue_unknown");

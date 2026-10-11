@@ -246,7 +246,10 @@ export class ProjectAgent extends Agent {
     return run;
   }
 
-  /** One issue's state and its timeline of applied and rejected operations. */
+  /**
+   * One issue's state and its timeline of applied and rejected operations. `id` is the issue's number
+   * or, for an issue created offline, its temporary ID, which stays an alias of the number.
+   */
   readIssue(id: string): { readonly issue: IssueRecord | undefined; readonly timeline: TimelineEntry[] } {
     return this.#index().read(id);
   }
@@ -335,7 +338,7 @@ export class ProjectAgent extends Agent {
 
   /** The owner accepts an identity's assignment to an issue, which then routes to a running session. */
   acceptAssignment(caller: string, issueId: string, handle: string): AcceptOutcome {
-    return this.#sessionStore().accept(caller, issueId, handle);
+    return this.#sessionStore().accept(caller, this.#index().resolve(issueId), handle);
   }
 
   /** The caller's requests: assignments to accept and sessions to start. */
@@ -350,7 +353,7 @@ export class ProjectAgent extends Agent {
 
   /** Marks one of the caller's inbox items read. A person can mark only their own items. */
   markInboxRead(caller: string, issueId: string, reason: InboxReason): InboxOutcome {
-    return this.#inboxStore().markRead(caller, issueId, reason);
+    return this.#inboxStore().markRead(caller, this.#index().resolve(issueId), reason);
   }
 
   /**
@@ -365,9 +368,14 @@ export class ProjectAgent extends Agent {
     repos: ProjectRepos,
   ): Promise<SessionUpdateOutcome> {
     const index = this.#index();
+    const sessions = this.#sessionStore();
     return postSessionUpdate(
       {
-        sessions: this.#sessionStore(),
+        // Routes are kept under the issue number, so a temporary ID resolves to it first.
+        sessions: {
+          heartbeat: (owner, id) => sessions.heartbeat(owner, id),
+          routes: (issueId) => sessions.routes(index.resolve(issueId)),
+        },
         issueVersion: (issueId) => index.issue(issueId)?.version,
         submit: async (operation, author) => this.submit(operation, author, "mcp", await this.#scopeMap(repos)),
       },
@@ -409,7 +417,7 @@ export class ProjectAgent extends Agent {
 
   /** Where each identity assignment of an issue stands: its session, or what it waits for. */
   issueRoutes(issueId: string): AssignmentRoute[] {
-    return this.#sessionStore().routes(issueId);
+    return this.#sessionStore().routes(this.#index().resolve(issueId));
   }
 
   #loadServiceKey(): Promise<ServiceKey> {

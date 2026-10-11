@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { before, describe, test } from "node:test";
 
-import { generateSigningKeyPair } from "@penguin/issues";
+import { generateSigningKeyPair, signOperation } from "@penguin/issues";
 import type { Author } from "@penguin/protocol";
 import { parseScopeMap } from "@penguin/scope-map";
 
@@ -69,13 +69,17 @@ class Project {
       sessionHeartbeat: (caller, id) => this.sessions.heartbeat(caller, id),
       sessionWork: (caller, id) => this.sessions.work(caller, id),
       readIdentity: (id) => this.identities.get(id),
-      issueRoutes: (id) => this.sessions.routes(id),
+      // As the ProjectAgent wires them: a temporary ID resolves to the issue's number.
+      issueRoutes: (id) => this.sessions.routes(this.index.resolve(id)),
       readIssue: (id) => this.index.read(id),
       // As ProjectAgent.sessionUpdate wires it, with the scope map read from the fixture.
       sessionUpdate: (caller, id, update) =>
         postSessionUpdate(
           {
-            sessions: this.sessions,
+            sessions: {
+              heartbeat: (owner, sessionId) => this.sessions.heartbeat(owner, sessionId),
+              routes: (issueId) => this.sessions.routes(this.index.resolve(issueId)),
+            },
             issueVersion: (issueId) => this.index.issue(issueId)?.version,
             submit: (operation, author) =>
               this.index.submit({
@@ -464,6 +468,42 @@ describe("MCP: post_update", () => {
       [last.opId, last.author, last.type, last.waitingForGitLog],
       ["jun.reports-web-0001", "jun.reports", "comment", true],
     );
+  });
+
+  test("an issue created offline is read and written by its number or by its temporary ID", async () => {
+    const { project, sessionId } = await working();
+    const bridge = await generateSigningKeyPair();
+    const offline = await signOperation(
+      {
+        schema_version: 1,
+        op_id: "priya-b3f2-0001",
+        issue: "priya-b3f2-0001",
+        type: "create",
+        author: { person: "priya" },
+        base_version: 0,
+        payload: { title: "Created on a train" },
+      },
+      bridge.privateKey,
+    );
+    const keys = {
+      bridges: [{ bridgeId: "bridge-priya", ownerId: "priya", publicKey: bridge.publicKey }],
+      serviceKey: service.publicKey,
+      scopeMap,
+      identities: project.identities,
+    };
+    const created = await project.index.apply({ file: JSON.stringify(offline), gitCommit: "c0ffee", keys });
+    assert.equal(created.status === "applied" && created.issueId, "33");
+    await project.op("priya", 33, "assign", { assignee: { identity: "@jun/reports" } });
+
+    for (const issue of [33, "priya-b3f2-0001"]) {
+      const { value, isError } = await call(project, "jun", "get_issue", { sessionId, issue });
+      assert.equal(isError, false, JSON.stringify(value));
+      assert.deepEqual([value.id, value.alias], ["33", "priya-b3f2-0001"]);
+    }
+    const update = { type: "comment", body: "Named by the temporary ID." };
+    const { value, isError } = await call(project, "jun", "post_update", { sessionId, issue: "priya-b3f2-0001", update });
+    assert.equal(isError, false, JSON.stringify(value));
+    assert.deepEqual([value.issueId, value.version], ["33", 3]);
   });
 
   test("link_commit, reply_thread and change_state each apply the matching operation", async () => {

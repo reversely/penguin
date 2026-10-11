@@ -158,7 +158,9 @@ const workInput = z.strictObject({ sessionId });
 
 const issueId = z
   .union([z.number().int().positive(), z.string().min(1).max(ISSUE_ID_MAX_LENGTH)])
-  .describe("The issue's id: its number, or the op_id of its create operation.");
+  .describe(
+    "The issue's number. An issue created offline also answers to its temporary ID, the op_id of its create.",
+  );
 
 const issueInput = z.strictObject({ sessionId, issue: issueId });
 
@@ -429,6 +431,7 @@ function threadFields(thread: Thread): Record<string, unknown> {
 function issueDetail(issue: IssueRecord, timeline: readonly OperationView[]): Record<string, unknown> {
   return {
     id: issue.id,
+    alias: issue.alias,
     state: issue.state,
     labels: [...issue.labels],
     parentId: issue.parentId,

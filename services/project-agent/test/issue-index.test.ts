@@ -214,6 +214,7 @@ describe("IssueIndex", () => {
         parent_id: null,
         huddle_id: null,
         version: 2,
+        alias: null,
       },
       {
         id: "33",
@@ -226,6 +227,7 @@ describe("IssueIndex", () => {
         parent_id: "31",
         huddle_id: null,
         version: 18,
+        alias: null,
       },
     ]);
     assert.deepEqual(rows(db, `SELECT * FROM Assignment`), [
@@ -443,6 +445,73 @@ describe("IssueIndex", () => {
     const fresh = sqlite();
     new IssueIndex(fresh.sql);
     assert.deepEqual(rows(fresh.db, `PRAGMA table_info(Review)`), rows(db, `PRAGMA table_info(Review)`));
+  });
+
+  test("an issue created offline takes the next number, and its sub-issue link, mention and later operation resolve to it", async () => {
+    const { db, sql } = sqlite();
+    const index = new IssueIndex(sql);
+    const writer = new Writer(index);
+    applied(await writer.apply(penguin, "create", { title: "Identity map change breaks analytics" }, 31));
+
+    // jun's bridge numbers its first operation jun-b3f2-0001 and names it as the issue's temporary ID.
+    const temporary = formatOpId(jun, BRIDGE_TAG, 1);
+    const create = await writer.apply(jun, "create", { title: "Shared-device merge" }, temporary);
+    assert.deepEqual([create.status, create.status === "applied" && create.issueId], ["applied", "32"]);
+    // Later operations from the same bridge still name the temporary ID.
+    const comment = await writer.apply(jun, "comment", { body: "A limit of two" }, temporary, { base: 1 });
+    applied(comment);
+    const mention = { mentioned: { person: "priya" }, comment: comment.operation.op_id };
+    applied(await writer.apply(jun, "mention", mention, temporary, { base: 2 }));
+    applied(await writer.apply(penguin, "open_sub_issue", { sub_issue: temporary }, 31, { base: 1 }));
+    // A second offline create takes the number after it.
+    const second = await writer.apply(priya, "create", { title: "Retention drops" }, formatOpId(priya, BRIDGE_TAG, 1));
+    assert.equal(second.status === "applied" && second.issueId, "33");
+
+    assert.deepEqual(rows(db, `SELECT id, alias, parent_id, version FROM Issue ORDER BY id`), [
+      { id: "31", alias: null, parent_id: null, version: 2 },
+      { id: "32", alias: temporary, parent_id: "31", version: 3 },
+      { id: "33", alias: formatOpId(priya, BRIDGE_TAG, 1), parent_id: null, version: 1 },
+    ]);
+    assert.deepEqual(rows(db, `SELECT child_id, parent_id FROM SubIssue`), [{ child_id: "32", parent_id: "31" }]);
+    assert.deepEqual(rows(db, `SELECT issue_id, mentioned_id FROM Mention`), [{ issue_id: "32", mentioned_id: "priya" }]);
+    assert.deepEqual(rows(db, `SELECT issue_id FROM Comment`), [{ issue_id: "32" }]);
+    assert.deepEqual(
+      rows(db, `SELECT DISTINCT issue_id FROM AppliedOp WHERE author = 'jun'`),
+      [{ issue_id: "32" }],
+    );
+
+    // The temporary ID stays an alias of the number.
+    assert.equal(index.resolve(temporary), "32");
+    assert.equal(index.issue(temporary), index.issue("32"));
+    assert.deepEqual(index.read(temporary).timeline, index.read("32").timeline);
+    assert.equal(index.read("32").timeline.length, 3);
+    // Another create that names the temporary ID reaches the numbered issue, which exists.
+    const { signature: _, ...unsigned } = create.operation;
+    const op9 = { ...unsigned, op_id: formatOpId(jun, BRIDGE_TAG, 9), base_version: 3 };
+    const again = await signOperation(op9, junBridge.privateKey);
+    const againFile = new TextEncoder().encode(JSON.stringify(again));
+    rejectedFor(await writer.applyFile(againFile, operationPath(again)), "issue_exists");
+
+    // Replaying the same files in the same order assigns the same numbers.
+    const replay = sqlite();
+    const replayed = new IssueIndex(replay.sql);
+    for (const input of writer.inputs) await replayed.apply(input);
+    assert.deepEqual(dump(replay.db), dump(db));
+  });
+
+  test("an Issue table from before #48 gains the alias column", () => {
+    const { db, sql } = sqlite();
+    sql.exec(`CREATE TABLE Issue (
+      id TEXT PRIMARY KEY, kind TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL,
+      state TEXT NOT NULL, state_reason TEXT, labels TEXT NOT NULL, parent_id TEXT, huddle_id TEXT,
+      version INTEGER NOT NULL)`);
+    sql.exec(`INSERT INTO Issue VALUES ('7', 'issue', 'Old', '', 'open', NULL, '[]', NULL, NULL, 1)`);
+    new IssueIndex(sql);
+    new IssueIndex(sql);
+    assert.deepEqual(rows(db, `SELECT id, alias FROM Issue`), [{ id: "7", alias: null }]);
+    const fresh = sqlite();
+    new IssueIndex(fresh.sql);
+    assert.deepEqual(rows(fresh.db, `PRAGMA table_info(Issue)`), rows(db, `PRAGMA table_info(Issue)`));
   });
 
   test("text that looks like SQL is stored as text", async () => {

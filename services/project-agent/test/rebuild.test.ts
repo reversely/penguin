@@ -337,6 +337,46 @@ describe("rebuildIndex", () => {
     assert.equal(report.comparison.equal, false);
   });
 
+  test("issues created offline get the same numbers in the rebuild, and their references resolve the same way", async () => {
+    const project = new Project();
+    const { ops } = project;
+    const junTemp = formatOpId(jun, BRIDGE_TAG, 1);
+    const priyaTemp = formatOpId(priya, BRIDGE_TAG, 1);
+    await project.push([await ops.file(penguin, "create", { title: "Identity map change breaks analytics" }, 31, 0)]);
+    // Two bridges come back online in one commit: path order numbers jun's create before priya's.
+    await project.push([
+      await ops.file(priya, "create", { title: "Messaging sync drops merged users" }, priyaTemp, 0),
+      await ops.file(jun, "create", { title: "Shared-device merge" }, junTemp, 0),
+    ]);
+    const comment = await ops.file(jun, "comment", { body: "A limit of two" }, junTemp, 1);
+    const commentId = (JSON.parse(comment[1]) as Operation).op_id;
+    await project.push([comment]);
+    await project.push([
+      await ops.file(jun, "mention", { mentioned: { person: "priya" }, comment: commentId }, junTemp, 2),
+      await ops.file(penguin, "open_sub_issue", { sub_issue: junTemp }, 31, 1),
+    ]);
+    // The dashboard names the number; the runner writes the file under the temporary ID.
+    await project.submit(sam, { issue: 32, type: "add_label", base_version: 3, payload: { label: "huddle" } });
+    await project.runnerPass();
+
+    const report = await project.rebuild();
+
+    assert.equal(report.comparison.equal, true, JSON.stringify(report.comparison.differences, null, 2));
+    assert.deepEqual(
+      project.sql.exec(`SELECT id, alias, parent_id, version FROM Shadow_Issue ORDER BY id`).map((row) => ({ ...row })),
+      [
+        { id: "31", alias: null, parent_id: null, version: 2 },
+        { id: "32", alias: junTemp, parent_id: "31", version: 4 },
+        { id: "33", alias: priyaTemp, parent_id: null, version: 1 },
+      ],
+    );
+    assert.deepEqual(
+      project.sql.exec(`SELECT DISTINCT issue_id FROM Shadow_Mention`).map((row) => row["issue_id"]),
+      ["32"],
+    );
+    assert.equal(project.index.issue(junTemp)?.labels.includes("huddle"), true);
+  });
+
   test("an issues repo with no commits rebuilds to an empty index equal to an empty live one", async () => {
     const project = new Project();
 

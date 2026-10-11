@@ -90,7 +90,20 @@ export async function bridgeWriterTag(bridgeId: string): Promise<string> {
   return hex.slice(0, BRIDGE_TAG_LENGTH);
 }
 
-/** The repo path of an operation file: issues/<issue>/ops/<op_id>.json. Throws on any unsafe segment. */
+/**
+ * True for an issue's temporary ID: the op_id of the create operation of an issue a bridge created
+ * without a number. When Penguin applies that create it assigns the issue the next number, and the
+ * temporary ID resolves to it from then on. The operation files that name the temporary ID stay in
+ * the folder issues/<temporary ID>/, since a file's path must match the issue it names.
+ */
+export function isTemporaryIssueId(issue: IssueId): issue is string {
+  return typeof issue === "string";
+}
+
+/**
+ * The repo path of an operation file: issues/<issue>/ops/<op_id>.json, where <issue> is the issue as
+ * the operation names it, its number or its temporary ID. Throws on any unsafe segment.
+ */
 export function operationPath(operation: Pick<Operation, "issue" | "op_id">): string {
   const issue = String(operation.issue);
   const issueOk =

@@ -260,6 +260,30 @@ describe("submitted operations", () => {
     assert.equal(next.status === "applied" && next.opId, "jun-web-0008");
   });
 
+  test("a submission to an issue created offline is written under its temporary ID, named either way", async () => {
+    const { index } = sqlite();
+    const offline = await signOperation(
+      { schema_version: 1, op_id: "jun-b3f2-0001", issue: "jun-b3f2-0001", type: "create", author: jun, base_version: 0, payload: { title: "Offline" } },
+      junBridge.privateKey,
+    );
+    const created = await index.apply({
+      file: new TextEncoder().encode(JSON.stringify(offline)),
+      gitCommit: "c0ffee",
+      path: operationPath(offline),
+      keys,
+    });
+    assert.equal(created.status === "applied" && created.issueId, "1");
+
+    const byNumber = await submit(index, { issue: 1, type: "comment", base_version: 1, payload: { body: "By number" } });
+    const byAlias = await submit(index, { issue: "jun-b3f2-0001", type: "comment", base_version: 2, payload: { body: "By alias" } });
+    for (const [outcome, opId] of [[byNumber, "jun-web-0001"], [byAlias, "jun-web-0002"]] as const) {
+      assert.equal(outcome.status, "applied", JSON.stringify(outcome));
+      assert.equal(outcome.status === "applied" && outcome.issueId, "1");
+      assert.equal(outcome.status === "applied" && outcome.path, `issues/jun-b3f2-0001/ops/${opId}.json`);
+    }
+    assert.equal(index.issue("1")?.version, 3);
+  });
+
   test("a rejected submission is returned to the caller and recorded nowhere", async () => {
     const { db, index } = sqlite();
     await submit(index, create("Board filter drops identities"));
