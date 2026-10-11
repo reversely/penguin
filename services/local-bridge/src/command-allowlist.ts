@@ -1,5 +1,5 @@
 import { isObjectId, runGit } from "@penguin/git-analysis";
-import { parseScopeMap } from "@penguin/scope-map";
+import { parseScopeMap, type ScopeMap } from "@penguin/scope-map";
 
 /** The repository config that maps command IDs to shell commands, relative to the repo root. */
 export const SCOPES_FILE = "penguin/scopes.json";
@@ -46,15 +46,31 @@ export async function resolveCommand(
 ): Promise<ResolvedCommand> {
   const match = TEST_COMMAND_ID.exec(commandId);
   if (!match) throw new UnknownCommandError(commandId, "expected the form test:<scope id>");
+  const scopeId = match[1] as string;
+  const scope = (await loadScopeMap(repoPath, sha)).scopes.get(scopeId);
+  if (scope === undefined) {
+    throw new UnknownCommandError(commandId, `${SCOPES_FILE} at ${sha} defines no such scope`);
+  }
+  return { commandId, scopeId, sha, command: scope.testCommand };
+}
+
+/** The command ID of a scope's test command. */
+export function testCommandId(scopeId: string): string {
+  return `test:${scopeId}`;
+}
+
+/**
+ * Reads and validates `penguin/scopes.json` as committed at `sha`, never from a working tree.
+ *
+ * Raises:
+ *   ScopeMapError: when the config at `sha` is invalid.
+ *   Error: when `sha` is not a full object ID or the config is missing at that commit.
+ */
+export async function loadScopeMap(repoPath: string, sha: string): Promise<ScopeMap> {
   if (!isObjectId(sha)) {
     throw new Error(`commit must be a full object ID, got ${JSON.stringify(sha)}`);
   }
   // `cat-file blob` returns the committed bytes as-is; `git show` could apply a textconv filter.
   const text = await runGit(repoPath, ["cat-file", "blob", `${sha}:${SCOPES_FILE}`]);
-  const scopeId = match[1] as string;
-  const scope = parseScopeMap(JSON.parse(text)).scopes.get(scopeId);
-  if (scope === undefined) {
-    throw new UnknownCommandError(commandId, `${SCOPES_FILE} at ${sha} defines no such scope`);
-  }
-  return { commandId, scopeId, sha, command: scope.testCommand };
+  return parseScopeMap(JSON.parse(text));
 }
