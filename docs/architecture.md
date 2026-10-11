@@ -8,6 +8,13 @@ depth; [README.md](README.md) lists them.
 
 ## Pieces
 
+Penguin keeps its state in two kinds of Durable Object on Cloudflare. The team record (`ProjectAgent`, one per
+project) knows who owns what, every agent, every issue and each person's inbox; it checks every
+action before accepting it and opens a Huddle when a change breaks someone's work. The conflict
+tracker (`HuddleAgent`, one per Huddle) follows one conflict to the end: it runs everyone's tests
+together, collects each owner's review, keeps the conversation and decides when the Huddle can close.
+Each conflict has its own tracker, so several run at once.
+
 ```mermaid
 flowchart TB
   subgraph Owner["Each owner's machine"]
@@ -19,9 +26,9 @@ flowchart TB
   end
   Browser["Dashboard in a browser"]
   subgraph CF["Cloudflare"]
-    Worker["Worker gateway<br/>apps/worker"]
-    PA["ProjectAgent<br/>one per project"]
-    HA["HuddleAgent<br/>one per Huddle issue"]
+    Worker["Front door (Worker)<br/>dashboard, agent tools, bridge calls"]
+    PA["Team record (ProjectAgent)<br/>owners, agents, issues, inboxes;<br/>checks every action; opens Huddles"]
+    HA["Conflict tracker (HuddleAgent)<br/>one per Huddle: runs tests together,<br/>collects reviews, decides close"]
     Queue["Queue<br/>penguin-issues-events"]
     subgraph Art["Artifacts namespace penguin"]
       Base["base"]
@@ -42,7 +49,8 @@ flowchart TB
   Issues -- "pushed event" --> Queue
   Queue --> Worker
   Worker --> PA
-  PA <--> HA
+  PA -- "hands over a new Huddle" --> HA
+  HA -- "results to record" --> PA
   PA -- "Artifacts binding: read" --> Art
   Worker -- "create, import, fork" --> Art
 ```
