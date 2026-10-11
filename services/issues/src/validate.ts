@@ -1,6 +1,7 @@
 // Decides whether one issue operation counts: its form, its signature, the binding between the
 // signing key and the author, its base version and, for an identity, its charter (PRD sections 4, 5
-// and 12). A review from someone without review rights is accepted: the reducer keeps it as a review
+// and 12), and for a send_upstream, that the issue is a fix whose trigger changed a scope outside the
+// identity's charter. A review from someone without review rights is accepted: the reducer keeps it as a review
 // that does not count toward approval (#49).
 // The function reads no file and no network, so the Node bridge and the Workers runtime both run it.
 // It never throws on any input: every problem with an operation becomes a rejection with a reason.
@@ -40,6 +41,10 @@ export const REJECT_REASONS = [
   "unknown_version",
   /** An identity's operation names a scope or path outside the identity's charter. */
   "outside_charter",
+  /** A send_upstream names an issue that is not a Huddle's fix sub-issue. */
+  "not_a_fix",
+  /** A send_upstream whose fix lies inside the sending identity's charter: every scope the trigger changed. */
+  "inside_charter",
 ] as const;
 
 export type RejectReason = (typeof REJECT_REASONS)[number];
@@ -68,6 +73,15 @@ export interface IdentityLookup {
   assigningOwner(issueId: string, handle: string): string | undefined;
 }
 
+/** The Huddle fix sub-issues a send_upstream may name: the ProjectAgent's Huddle store. */
+export interface FixLookup {
+  /**
+   * The scopes the trigger of the fix's Huddle changed, or undefined when the issue is not a fix
+   * sub-issue. `issueId` is the issue as the operation names it, a number or a temporary ID.
+   */
+  upstreamScopes(issueId: string): readonly string[] | undefined;
+}
+
 export interface ValidationContext {
   readonly bridges: readonly BridgeKey[];
   /** Penguin's service key, which signs operations from MCP, the dashboard and Penguin itself. */
@@ -81,6 +95,8 @@ export interface ValidationContext {
   readonly scopeMap: ScopeMap;
   /** Read only for an operation an identity authors that names a scope or path. */
   readonly identities: IdentityLookup;
+  /** Read only for a send_upstream an identity authors. Without it, no issue counts as a fix. */
+  readonly fixes?: FixLookup;
   /** The repo path the operation was read from. When given, it must match the operation. */
   readonly path?: string;
 }
@@ -104,7 +120,7 @@ export type Verdict =
 /**
  * Validate one operation. `input` is the operation file's bytes (or text), or an already parsed
  * JSON value. Checks run in this order: form, path, duplicate, signature, author and writer binding,
- * base version, charter. The first failing check gives the reason.
+ * base version, charter, then a send_upstream's fix. The first failing check gives the reason.
  */
 export async function validate(input: unknown, context: ValidationContext): Promise<Verdict> {
   try {
@@ -151,6 +167,10 @@ async function validateUnsafe(input: unknown, context: ValidationContext): Promi
   if ("identity" in operation.author) {
     const charterError = charterCheck(operation, operation.author.identity, context);
     if (charterError !== undefined) return reject("outside_charter", charterError);
+    if (operation.type === "send_upstream") {
+      const upstreamError = upstreamCheck(operation, operation.author.identity, context);
+      if (upstreamError !== undefined) return reject(upstreamError.reason, upstreamError.message);
+    }
   }
 
   return { status: "accepted", operation, signer };
@@ -168,6 +188,32 @@ function charterCheck(operation: Operation, handle: string, context: ValidationC
   const assigner = context.identities.assigningOwner(issueKey(operation.issue), handle);
   const verdict = withinCharter(identity, assigner, targets.scopes, targets.paths, context.scopeMap);
   return verdict.allowed ? undefined : verdict.message;
+}
+
+/**
+ * Why an identity may not send this fix upstream, or undefined when it may. The fix lies upstream in
+ * the scopes its Huddle's trigger changed; when every one of them is in the identity's charter, the
+ * identity fixes it itself. A trigger that changed no mapped scope leaves nothing to check.
+ */
+function upstreamCheck(
+  operation: Operation,
+  handle: string,
+  context: ValidationContext,
+): { readonly reason: RejectReason; readonly message: string } | undefined {
+  const issueId = issueKey(operation.issue);
+  const scopes = context.fixes?.upstreamScopes(issueId);
+  if (scopes === undefined) {
+    return { reason: "not_a_fix", message: `issue ${issueId} is not a Huddle's fix sub-issue, so it has no upstream` };
+  }
+  if (scopes.length === 0) return undefined;
+  const identity = context.identities.identity(handle);
+  if (identity === undefined) return undefined;
+  const assigner = context.identities.assigningOwner(issueId, handle);
+  if (!withinCharter(identity, assigner, scopes, [], context.scopeMap).allowed) return undefined;
+  return {
+    reason: "inside_charter",
+    message: `the fix lies in ${scopes.join(", ")}, inside ${handle}'s charter; fix it in this session`,
+  };
 }
 
 function parse(input: unknown): ValidationResult {

@@ -83,7 +83,7 @@ class Project {
               routes: (issueId) => this.sessions.routes(this.index.resolve(issueId)),
             },
             issueVersion: (issueId) => this.index.issue(issueId)?.version,
-            submit: (operation, author) =>
+            submit: (operation, author, recordRejections) =>
               this.index.submit({
                 operation,
                 author,
@@ -91,7 +91,10 @@ class Project {
                 signingKey: service.privateKey,
                 keys: { bridges: [], serviceKey: service.publicKey, scopeMap, identities: this.identities },
                 now: this.now,
+                ...(recordRejections === undefined ? {} : { recordRejections }),
               }),
+            // No Huddle is open here; tests/integration/send-upstream.test.ts covers the reassignment.
+            reassignUpstream: async () => ({ status: "failed", message: "no Huddle is open" }),
           },
           caller,
           id,
@@ -206,7 +209,7 @@ describe("MCP: tool list", () => {
     const variants = post.properties.update.oneOf ?? post.properties.update.anyOf;
     assert.deepEqual(
       variants.map((variant: any) => variant.properties.type.const).sort(),
-      ["add_label", "change_state", "comment", "link_commit", "remove_label", "reply_thread"],
+      ["add_label", "change_state", "comment", "link_commit", "remove_label", "reply_thread", "send_upstream"],
     );
     for (const variant of variants) assert.equal(variant.additionalProperties, false);
     const checkpoint = tools.get("report_checkpoint").inputSchema;
@@ -562,6 +565,28 @@ describe("MCP: post_update", () => {
     });
     assert.equal(inside.isError, false, JSON.stringify(inside.value));
     assert.equal(inside.value.opId, "jun.reports-web-0001");
+  });
+
+  test("send_upstream on an issue that is no fix is refused, and the refusal is recorded on the issue", async () => {
+    const { project, sessionId } = await working();
+    const { value, isError } = await call(project, "jun", "post_update", {
+      sessionId,
+      issue: 31,
+      update: { type: "send_upstream", reason: "The fix belongs in the merge rules." },
+    });
+    assert.equal(isError, true);
+    assert.deepEqual(
+      [value.error, value.recordedAs],
+      ["not_a_fix", "jun.reports-web-0001"],
+    );
+    const [entry] = project.index.read("31").timeline.filter((op) => op.opId === "jun.reports-web-0001");
+    assert.deepEqual(
+      [entry?.status, entry?.type, entry?.rejectReason, entry?.waitingForGitLog],
+      ["rejected", "send_upstream", "not_a_fix", true],
+    );
+    // Rejected operations do not advance the version; the issue stays assigned to Jun.
+    assert.equal(project.index.issue("31")?.version, 3);
+    assert.deepEqual([...(project.index.issue("31")?.assignments.keys() ?? [])], ["identity:@jun/reports"]);
   });
 
   test("the author is the session's identity: the input cannot name one", async () => {

@@ -6,8 +6,8 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { generateSigningKeyPair } from "@penguin/issues";
-import type { CombinedRunEvent } from "@penguin/protocol";
+import { generateSigningKeyPair, type ReduceRejectReason, type RejectReason } from "@penguin/issues";
+import type { Author, CombinedRunEvent } from "@penguin/protocol";
 import { parseScopeMap, type ScopeMap } from "@penguin/scope-map";
 
 import { parseCombinedRunEvent } from "@penguin/protocol";
@@ -29,11 +29,19 @@ import {
 } from "../src/huddle-verify.ts";
 import { IdentityStore } from "../src/identity-store.ts";
 import { InboxStore } from "../src/inbox-store.ts";
-import { IssueIndex, type IndexListener, type OperationKeys } from "../src/issue-index.ts";
+import {
+  IssueIndex,
+  type IndexListener,
+  type OperationKeys,
+  type PendingSource,
+  type SubmitOutcome,
+} from "../src/issue-index.ts";
 import { OwnerForkStore, recordReportedCheckpoint, type CheckpointOutcome } from "../src/owner-forks.ts";
 import { importServiceKey, type ServiceKey } from "../src/service-key.ts";
+import { postSessionUpdate, type SessionUpdate, type SessionUpdateOutcome } from "../src/session-updates.ts";
 import { SessionStore } from "../src/session-store.ts";
 import { VerificationStore } from "../src/verification-store.ts";
+import { reassignUpstream } from "../src/upstream.ts";
 import { sqlite } from "./issues-repo.ts";
 
 const FIXTURE = join(import.meta.dirname, "../../../examples/identity-unification/base/penguin");
@@ -133,28 +141,63 @@ export class HuddleProject {
     this.forks.recordCheckpoint(owner, `owner-${owner}`, sha, sessionId);
   }
 
-  /** The dependencies ProjectAgent.openHuddle passes, with `overrides` replacing any of them. */
-  async deps(overrides: Partial<HuddleOpenDeps> = {}): Promise<HuddleOpenDeps> {
+  /** Signs and applies an operation as `author`, as ProjectAgent.submit does. */
+  async submit(
+    operation: unknown,
+    author: Author,
+    source: PendingSource,
+    recordRejections?: readonly (RejectReason | ReduceRejectReason)[],
+  ): Promise<SubmitOutcome> {
     const key = await serviceKey();
     const keys: OperationKeys = {
       bridges: [],
       serviceKey: key.publicKey,
       scopeMap: this.scopeMap,
       identities: this.identities,
+      fixes: { upstreamScopes: (issueId) => this.huddles.fixOf(this.index.resolve(issueId))?.huddle.triggerScopes },
     };
+    const record = recordRejections === undefined ? {} : { recordRejections };
+    return this.index.submit({ operation, author, source, signingKey: key.privateKey, keys, ...record });
+  }
+
+  /** A session's post_update, wired as ProjectAgent.sessionUpdate wires it. */
+  sessionUpdate(caller: string, sessionId: string, update: SessionUpdate): Promise<SessionUpdateOutcome> {
+    return postSessionUpdate(
+      {
+        sessions: {
+          heartbeat: (owner, id) => this.sessions.heartbeat(owner, id),
+          routes: (issueId) => this.sessions.routes(this.index.resolve(issueId)),
+        },
+        issueVersion: (issueId) => this.index.issue(issueId)?.version,
+        submit: (operation, author, record) => this.submit(operation, author, "mcp", record),
+        reassignUpstream: (issueId, sender) =>
+          reassignUpstream(
+            {
+              huddleOf: (id) => this.huddles.fixOf(id)?.huddle,
+              scopeMap: this.scopeMap,
+              issue: (id) => this.index.issue(id),
+              identities: () => this.identities.list(),
+              runningHandles: () => this.sessions.running().map((session) => session.handle),
+              submit: (operation) => this.submit(operation, { penguin: true }, "penguin"),
+            },
+            issueId,
+            sender,
+          ),
+      },
+      caller,
+      sessionId,
+      update,
+    );
+  }
+
+  /** The dependencies ProjectAgent.openHuddle passes, with `overrides` replacing any of them. */
+  async deps(overrides: Partial<HuddleOpenDeps> = {}): Promise<HuddleOpenDeps> {
     return {
       huddles: this.huddles,
       scopeMap: this.scopeMap,
       issue: (issueId) => this.index.issue(issueId),
       issueIds: () => this.index.ids(),
-      submit: (operation) =>
-        this.index.submit({
-          operation,
-          author: { penguin: true },
-          source: "penguin",
-          signingKey: key.privateKey,
-          keys,
-        }),
+      submit: (operation) => this.submit(operation, { penguin: true }, "penguin"),
       ownerFork: (ownerId) => this.forks.get(ownerId),
       session: (sessionId) => this.sessions.get(sessionId),
       identities: () => this.identities.list(),

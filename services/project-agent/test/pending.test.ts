@@ -303,6 +303,57 @@ describe("submitted operations", () => {
     const next = await submit(index, { issue: 40, type: "comment", base_version: 1, payload: { body: "On time" } });
     assert.equal(next.status === "applied" && next.opId, "jun-web-0002");
   });
+
+  test("a rejection the submission asks to record is kept on the issue and pushed like any operation", async () => {
+    const { db, index } = sqlite();
+    await submit(index, create("Shared-device merge"));
+    const upstream = { issue: 40, type: "send_upstream", base_version: 1, payload: { reason: "Merge rules." } };
+    // Issue 40 is a fix whose trigger changed the identity map.
+    const fixKeys: OperationKeys = { ...keys, fixes: { upstreamScopes: () => ["identity-map"] } };
+    const record = (reasons: "not_assignee"[]) =>
+      index.submit({
+        operation: upstream,
+        author: reports,
+        source: "mcp",
+        signingKey: service.privateKey,
+        keys: fixKeys,
+        recordRejections: reasons,
+      });
+
+    // A reason the submission does not name goes back unrecorded, as before.
+    const stale = await index.submit({
+      operation: { ...upstream, base_version: 0 },
+      author: reports,
+      source: "mcp",
+      signingKey: service.privateKey,
+      keys: fixKeys,
+      recordRejections: ["not_assignee"],
+    });
+    assert.deepEqual(stale.status === "rejected" && [stale.reason, stale.opId], ["superseded_version", undefined]);
+
+    const outcome = await record(["not_assignee"]);
+    assert.deepEqual(outcome, {
+      status: "rejected",
+      reason: "not_assignee",
+      message: "@jun/reports is not assigned to issue 40, so it cannot send it upstream",
+      opId: "jun.reports-web-0001",
+    });
+    assert.deepEqual(rows(db, `SELECT op_id, status, reject_reason FROM AppliedOp WHERE author = 'jun.reports'`), [
+      { op_id: "jun.reports-web-0001", status: "rejected", reject_reason: "not_assignee" },
+    ]);
+    assert.equal(index.issue("40")?.version, 1);
+
+    // The runner pushes it; the push event records the commit on the rejected row.
+    const file = pending(index).find((candidate) => candidate.opId === "jun.reports-web-0001");
+    assert.ok(file);
+    assert.deepEqual(await push(index, file), { status: "duplicate", opId: "jun.reports-web-0001" });
+    assert.deepEqual(rows(db, `SELECT git_commit FROM AppliedOp WHERE op_id = 'jun.reports-web-0001'`), [
+      { git_commit: "abc123" },
+    ]);
+    // The recorded rejection claims its op_id, so the next submission takes the next one.
+    const again = await record(["not_assignee"]);
+    assert.equal(again.status === "rejected" && again.opId, "jun.reports-web-0002");
+  });
 });
 
 describe("submission security", () => {

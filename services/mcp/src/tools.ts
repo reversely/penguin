@@ -33,6 +33,8 @@ export interface Rejection {
   readonly status: "rejected";
   readonly reason: string;
   readonly message: string;
+  /** The op_id the rejected operation is recorded under on the issue's timeline, when it is. */
+  readonly opId?: string;
 }
 
 export type SessionResult = { readonly status: "ok"; readonly session: SessionView } | Rejection;
@@ -111,7 +113,14 @@ export interface McpRepos {
 /** One issue operation a session posts; the ProjectAgent sets its author to the session's identity. */
 export interface SessionUpdate {
   readonly issue: number | string;
-  readonly type: "comment" | "reply_thread" | "link_commit" | "change_state" | "add_label" | "remove_label";
+  readonly type:
+    | "comment"
+    | "reply_thread"
+    | "link_commit"
+    | "change_state"
+    | "add_label"
+    | "remove_label"
+    | "send_upstream";
   readonly payload: Readonly<Record<string, unknown>>;
   readonly baseVersion?: number;
 }
@@ -123,8 +132,18 @@ export type UpdateResult =
       readonly issueId: string;
       readonly version: number;
       readonly path: string;
+      /** Penguin's reassignment after a send_upstream. */
+      readonly reassignment?: ReassignmentView;
     }
   | Rejection;
+
+/** Who a fix sent upstream went to, or why Penguin could not reassign it. */
+export type ReassignmentView =
+  | {
+      readonly status: "reassigned";
+      readonly assignee: { readonly identity: string } | { readonly person: string };
+    }
+  | { readonly status: "failed"; readonly message: string };
 
 export type CheckpointResult =
   | {
@@ -223,6 +242,14 @@ const update = z.discriminatedUnion("type", [
   }),
   z.strictObject({ type: z.literal("add_label"), label }),
   z.strictObject({ type: z.literal("remove_label"), label }),
+  z.strictObject({
+    type: z.literal("send_upstream"),
+    reason: z
+      .string()
+      .min(1)
+      .max(REASON_MAX_LENGTH)
+      .describe("Why the fix lies outside your charter, such as \"the fix belongs in the merge rules\"."),
+  }),
 ]);
 
 const updateInput = z.strictObject({
@@ -267,7 +294,8 @@ function result(value: Record<string, unknown>): CallToolResult {
 }
 
 function rejected(rejection: Rejection): CallToolResult {
-  const value = { error: rejection.reason, message: rejection.message };
+  const recorded = rejection.opId === undefined ? {} : { recordedAs: rejection.opId };
+  const value = { error: rejection.reason, message: rejection.message, ...recorded };
   return { ...result(value), isError: true };
 }
 
@@ -362,7 +390,11 @@ export function createPenguinMcpServer(owner: string, project: McpProject, repos
         "Writes to an issue assigned to this session's identity: a comment, a reply in a thread, a " +
         "linked commit, a state change or a label. The update is authored by the session's identity, " +
         "applies at once and waits for the runner to push it to the issues repo. An update that names " +
-        "a scope outside the identity's charter is refused with the reason.",
+        "a scope outside the identity's charter is refused with the reason. On a Huddle's fix sub-issue " +
+        "whose fix lies outside your charter, in the scope the trigger changed, send_upstream with your " +
+        "reason: Penguin reassigns the sub-issue to an identity of that scope's owner and names it in " +
+        "`reassignment`. A send_upstream refused because you are not assigned, the issue is no fix, or " +
+        "the fix lies inside your charter is recorded on the issue as `recordedAs`.",
       inputSchema: updateInput,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
@@ -379,6 +411,7 @@ export function createPenguinMcpServer(owner: string, project: McpProject, repos
         issueId: outcome.issueId,
         version: outcome.version,
         waitingForGitLog: true,
+        ...(outcome.reassignment === undefined ? {} : { reassignment: outcome.reassignment }),
       });
     },
   );

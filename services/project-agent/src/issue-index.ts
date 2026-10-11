@@ -35,6 +35,7 @@ import {
   type BridgeKey,
   type CharterIdentity,
   type Comment,
+  type FixLookup,
   type IssueRecord,
   type IssueStateName,
   type RejectReason,
@@ -71,6 +72,8 @@ export interface OperationKeys {
   readonly scopeMap: ScopeMap;
   /** Finds an identity by handle for the charter check: the ProjectAgent's identity store. */
   readonly identities: IdentitySource;
+  /** The Huddle fix sub-issues a send_upstream may name (the Huddle store). Without it, none is a fix. */
+  readonly fixes?: FixLookup;
 }
 
 export interface ApplyInput {
@@ -146,9 +149,19 @@ export interface SubmitInput {
   readonly keys: OperationKeys;
   /** Milliseconds since the epoch, for PendingOp.created_at. */
   readonly now?: number;
+  /**
+   * Rejections the issue records, as it records a bridge's rejected operation: the AppliedOp row
+   * shows the operation rejected with its reason, and PendingOp queues it for the Git log. Only a
+   * rejection the validator gives after the signature verified, or the reducer gives, can be
+   * recorded. Every other rejection goes back unrecorded.
+   */
+  readonly recordRejections?: readonly (RejectReason | ReduceRejectReason)[];
 }
 
-/** A rejected submission goes back to the caller and is recorded nowhere, so the caller can retry. */
+/**
+ * A rejected submission goes back to the caller and is recorded nowhere, so the caller can retry,
+ * unless its reason is one the submission asked to record: then `opId` names the recorded operation.
+ */
 export type SubmitOutcome =
   | {
       readonly status: "applied";
@@ -161,6 +174,8 @@ export type SubmitOutcome =
       readonly status: "rejected";
       readonly reason: RejectReason | ReduceRejectReason;
       readonly message: string;
+      /** The op_id of the recorded rejected operation, when the rejection was recorded. */
+      readonly opId?: string;
     };
 
 /** A caller the gateway authenticated by its bridge token (K4), with the role the token grants. */
@@ -198,6 +213,13 @@ export interface TimelineEntry {
   readonly waitingForGitLog: boolean;
 }
 
+/** A submission's PendingOp fields and the rejections it records. */
+interface PendingWrite {
+  readonly source: PendingSource;
+  readonly now: number;
+  readonly record: ReadonlySet<string>;
+}
+
 /** Fields a submission may carry. Penguin fills `schema_version`, `op_id` and `signature`. */
 const DRAFT_FIELDS: ReadonlySet<string> = new Set(["issue", "type", "base_version", "payload", "author"]);
 
@@ -211,6 +233,8 @@ const AUTHENTICATED_REJECTIONS: ReadonlySet<RejectReason> = new Set([
   "superseded_version",
   "unknown_version",
   "outside_charter",
+  "not_a_fix",
+  "inside_charter",
 ]);
 
 const ISSUE_IN_PATH = /^issues\/([a-z0-9.-]{1,128})\/ops\//u;
@@ -391,7 +415,15 @@ export class IssueIndex {
     return run;
   }
 
-  async #submit({ operation, author, source, signingKey, keys, now = Date.now() }: SubmitInput): Promise<SubmitOutcome> {
+  async #submit({
+    operation,
+    author,
+    source,
+    signingKey,
+    keys,
+    now = Date.now(),
+    recordRejections = [],
+  }: SubmitInput): Promise<SubmitOutcome> {
     const draft = draftFields(operation, author, source);
     if ("reason" in draft) return { status: "rejected", reason: draft.reason, message: draft.message };
     const unsigned = withoutUndefined({
@@ -411,8 +443,12 @@ export class IssueIndex {
       const detail = error instanceof Error ? error.message : String(error);
       return { status: "rejected", reason: "malformed", message: detail };
     }
-    const outcome = await this.#apply({ file: operationFile(signed), gitCommit: null, keys }, { source, now });
-    if (outcome.status === "rejected") return { status: "rejected", reason: outcome.reason, message: outcome.message };
+    const record: ReadonlySet<string> = new Set(recordRejections);
+    const outcome = await this.#apply({ file: operationFile(signed), gitCommit: null, keys }, { source, now, record });
+    if (outcome.status === "rejected") {
+      const { reason, message, opId } = outcome;
+      return opId === "" ? { status: "rejected", reason, message } : { status: "rejected", reason, message, opId };
+    }
     if (outcome.status === "duplicate") throw new Error(`op_id ${outcome.opId} was taken during submission`);
     return { ...outcome, path: operationPath(signed) };
   }
@@ -504,13 +540,11 @@ export class IssueIndex {
   }
 
   /**
-   * With `pending` set, the operation comes from `submit`: a rejection goes back without a record,
-   * and an accepted operation gets its PendingOp row in the same transaction as its AppliedOp row.
+   * With `pending` set, the operation comes from `submit`: a rejection goes back without a record
+   * unless its reason is in `pending.record`, and an accepted or recorded operation gets its PendingOp
+   * row in the same transaction as its AppliedOp row.
    */
-  async #apply(
-    { file, gitCommit, path, keys }: ApplyInput,
-    pending?: { readonly source: PendingSource; readonly now: number },
-  ): Promise<ApplyOutcome> {
+  async #apply({ file, gitCommit, path, keys }: ApplyInput, pending?: PendingWrite): Promise<ApplyOutcome> {
     const parsed = parseInput(file);
     if (parsed !== undefined && gitCommit !== null && this.#confirmPushed(parsed, path, gitCommit)) {
       return { status: "duplicate", opId: parsed.op_id };
@@ -533,8 +567,14 @@ export class IssueIndex {
     if (verdict.status === "duplicate") return verdict;
 
     if (verdict.status === "rejected") {
-      if (pending !== undefined) return unrecorded(issueId, verdict.reason, verdict.message);
       const operation = verdict.operation;
+      if (pending !== undefined) {
+        // Only an authenticated rejection names an op_id the submission may claim.
+        if (operation === undefined || !AUTHENTICATED_REJECTIONS.has(verdict.reason) || !pending.record.has(verdict.reason)) {
+          return unrecorded(issueId, verdict.reason, verdict.message);
+        }
+        return this.#rejectPending(operation, issueId, verdict.reason, verdict.message, pending);
+      }
       const opId =
         operation !== undefined && AUTHENTICATED_REJECTIONS.has(verdict.reason)
           ? operation.op_id
@@ -552,7 +592,10 @@ export class IssueIndex {
     });
     if (!result.ok) {
       const rejectedId = issueId ?? this.resolve(issueKey(operation.issue));
-      if (pending !== undefined) return unrecorded(rejectedId, result.reason, result.message);
+      if (pending !== undefined) {
+        if (!pending.record.has(result.reason)) return unrecorded(rejectedId, result.reason, result.message);
+        return this.#rejectPending(operation, rejectedId, result.reason, result.message, pending);
+      }
       return this.#reject(operation.op_id, operation, rejectedId, result.reason, result.message, gitCommit);
     }
     // A renumbered create's issue takes the number the reducer assigned.
@@ -568,15 +611,7 @@ export class IssueIndex {
         this.#cache.set(id, result.issue);
         this.#notifyAssignments(id, current, result.issue);
         this.#listener?.issueChanged?.({ issueId: id, previous: current, next: result.issue, author: operation.author });
-        if (pending !== undefined) {
-          this.#db.exec(
-            `INSERT INTO PendingOp (op_id, source, created_at, file) VALUES (?, ?, ?, ?)`,
-            operation.op_id,
-            pending.source,
-            pending.now,
-            operationFile(operation),
-          );
-        }
+        if (pending !== undefined) this.#queuePending(operation, pending);
       });
     } catch (error) {
       // The cache may hold states the rollback undid.
@@ -592,6 +627,32 @@ export class IssueIndex {
     const added = [...next.assignments].filter(([key]) => !prev?.assignments.has(key)).map(([, a]) => a);
     const removed = [...(prev?.assignments ?? [])].filter(([key]) => !next.assignments.has(key)).map(([, a]) => a);
     if (added.length > 0 || removed.length > 0) listener.assignmentsChanged(id, added, removed);
+  }
+
+  #queuePending(operation: Operation, pending: PendingWrite): void {
+    this.#db.exec(
+      `INSERT INTO PendingOp (op_id, source, created_at, file) VALUES (?, ?, ?, ?)`,
+      operation.op_id,
+      pending.source,
+      pending.now,
+      operationFile(operation),
+    );
+  }
+
+  /** Records a submitted operation as rejected and queues it for the Git log, like a bridge's rejected file. */
+  #rejectPending(
+    operation: Operation,
+    issueId: string | null,
+    reason: RejectReason | ReduceRejectReason,
+    message: string,
+    pending: PendingWrite,
+  ): ApplyOutcome {
+    this.#db.transaction(() => {
+      this.#record(operation.op_id, operation, issueId, "rejected", reason, message, null);
+      this.#queuePending(operation, pending);
+    });
+    if (issueId !== null) this.#listener?.timelineChanged?.(issueId);
+    return { status: "rejected", opId: operation.op_id, issueId, reason, message };
   }
 
   #reject(

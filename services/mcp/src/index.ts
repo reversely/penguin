@@ -9,6 +9,7 @@ export {
   type McpProject,
   type McpRepos,
   type OperationView,
+  type ReassignmentView,
   type Rejection,
   type SessionRegistration,
   type SessionResult,

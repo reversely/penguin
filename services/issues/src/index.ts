@@ -1,6 +1,6 @@
 export const packageName: string = "@penguin/issues";
 
-export type { CharterIdentity } from "@penguin/policies";
+export { withinCharter, type CharterIdentity } from "@penguin/policies";
 
 export { canonicalBytes, canonicalJson } from "./canonical.ts";
 export {
@@ -17,6 +17,7 @@ export {
   REJECT_REASONS,
   validate,
   type BridgeKey,
+  type FixLookup,
   type IdentityLookup,
   type IssueState,
   type RejectReason,

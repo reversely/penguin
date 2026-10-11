@@ -44,6 +44,7 @@ import {
   type VerificationOutcome,
 } from "./huddle-verify.ts";
 import { VerificationStore } from "./verification-store.ts";
+import { reassignUpstream } from "./upstream.ts";
 import { IngestLedger, ingestPush, type IngestReport } from "./push-ingest.ts";
 import { rebuildIndex, type RebuildReport } from "./rebuild.ts";
 import { parseScopeFile, SCOPE_MAP_PATH } from "./scope-file.ts";
@@ -69,7 +70,7 @@ import {
   type SessionOutcome,
   type SessionWork,
 } from "./session-store.ts";
-import type { IssueRecord } from "@penguin/issues";
+import type { FixLookup, IssueRecord, ReduceRejectReason, RejectReason } from "@penguin/issues";
 import {
   identitiesChangedMessage,
   inboxChangedMessage,
@@ -197,6 +198,13 @@ export {
   type VerificationRun,
   type VerificationStatus,
 } from "./verification-store.ts";
+export {
+  reassignUpstream,
+  upstreamAssignee,
+  UPSTREAM_RECORDED_REJECTIONS,
+  type Reassignment,
+  type ReassignDeps,
+} from "./upstream.ts";
 export {
   INBOX_REASONS,
   InboxStore,
@@ -525,9 +533,16 @@ export class ProjectAgent extends Agent {
   /**
    * Applies an operation from MCP, the dashboard or Penguin at once and queues it for the Git log.
    * `author` is the caller the gateway authenticated; the operation cannot name anyone else. The
-   * operation is signed here with the service key (K5), which never leaves the Worker.
+   * operation is signed here with the service key (K5), which never leaves the Worker. A rejection
+   * whose reason is in `recordRejections` is recorded on the issue.
    */
-  async submit(operation: unknown, author: Author, source: PendingSource, scopeMap: ScopeMap): Promise<SubmitOutcome> {
+  async submit(
+    operation: unknown,
+    author: Author,
+    source: PendingSource,
+    scopeMap: ScopeMap,
+    recordRejections?: readonly (RejectReason | ReduceRejectReason)[],
+  ): Promise<SubmitOutcome> {
     const serviceKey = await this.#loadServiceKey();
     return this.#index().submit({
       operation,
@@ -535,7 +550,14 @@ export class ProjectAgent extends Agent {
       source,
       signingKey: serviceKey.privateKey,
       // Service-signed operations verify under the service key alone, so no bridge key is needed.
-      keys: { bridges: [], serviceKey: serviceKey.publicKey, scopeMap, identities: this.#identityStore() },
+      keys: {
+        bridges: [],
+        serviceKey: serviceKey.publicKey,
+        scopeMap,
+        identities: this.#identityStore(),
+        fixes: this.#fixLookup(),
+      },
+      ...(recordRejections === undefined ? {} : { recordRejections }),
     });
   }
 
@@ -719,9 +741,10 @@ export class ProjectAgent extends Agent {
   /**
    * Posts an update from an agent session (MCP `post_update`): applies the operation at once and
    * queues it for the Git log. `caller` is the owner the gateway authenticated by MCP token and must
-   * own the session; the author is the session's identity. The call counts as a heartbeat.
+   * own the session; the author is the session's identity. The call counts as a heartbeat. A
+   * send_upstream that applies is followed by Penguin's reassignment (upstream.ts).
    */
-  sessionUpdate(
+  async sessionUpdate(
     caller: string,
     sessionId: string,
     update: SessionUpdate,
@@ -729,6 +752,7 @@ export class ProjectAgent extends Agent {
   ): Promise<SessionUpdateOutcome> {
     const index = this.#index();
     const sessions = this.#sessionStore();
+    const scopeMap = await this.#scopeMap(repos);
     return postSessionUpdate(
       {
         // Routes are kept under the issue number, so a temporary ID resolves to it first.
@@ -737,7 +761,20 @@ export class ProjectAgent extends Agent {
           routes: (issueId) => sessions.routes(index.resolve(issueId)),
         },
         issueVersion: (issueId) => index.issue(issueId)?.version,
-        submit: async (operation, author) => this.submit(operation, author, "mcp", await this.#scopeMap(repos)),
+        submit: (operation, author, record) => this.submit(operation, author, "mcp", scopeMap, record),
+        reassignUpstream: (issueId, sender) =>
+          reassignUpstream(
+            {
+              huddleOf: (id) => this.#huddleStore().fixOf(id)?.huddle,
+              scopeMap,
+              issue: (id) => index.issue(id),
+              identities: () => this.#identityStore().list(),
+              runningHandles: () => sessions.running().map((session) => session.handle),
+              submit: (operation) => this.submit(operation, { penguin: true }, "penguin", scopeMap),
+            },
+            issueId,
+            sender,
+          ),
       },
       caller,
       sessionId,
@@ -940,7 +977,18 @@ export class ProjectAgent extends Agent {
       this.#registry().bridgeKeys(),
       this.#scopeMap(repos),
     ]);
-    return { serviceKey: serviceKey.publicKey, bridges, scopeMap, identities: this.#identityStore() };
+    return {
+      serviceKey: serviceKey.publicKey,
+      bridges,
+      scopeMap,
+      identities: this.#identityStore(),
+      fixes: this.#fixLookup(),
+    };
+  }
+
+  /** The fix sub-issues a send_upstream may name, with the scopes their Huddle's trigger changed. */
+  #fixLookup(): FixLookup {
+    return { upstreamScopes: (issueId) => this.#huddleStore().fixOf(this.#index().resolve(issueId))?.huddle.triggerScopes };
   }
 
   /** The scope map in the base repo's `penguin/scopes.json` at HEAD, read fresh for each call. */

@@ -165,6 +165,25 @@ When no session of the assigned identity is running, the owner's inbox lists the
 to start one. The Huddle issue stays in Fixing. When a session goes offline before or during a fix,
 the sub-issue stays open and assigned. The next session of the identity receives it when it registers.
 
+## Sending a fix upstream
+
+A session can find that its fix task belongs in the scope the trigger changed, outside its identity's
+charter. The session then calls `post_update` with `{"type": "send_upstream", "reason": "..."}` on
+the fix sub-issue. Penguin records the note on the issue's timeline. Penguin then assigns the
+sub-issue to an identity of the changing scope's owner whose charter holds that scope. Penguin also
+unassigns the sender. An identity with a running session comes first. The tool's answer names the new assignee
+under `reassignment`. The new session receives the task at its next safe checkpoint. With no session
+of that identity running, the owner's inbox asks for one.
+
+Penguin refuses a send-upstream in three cases and records each refusal on the issue's timeline. The
+tool's answer gives the recorded operation as `recordedAs`:
+
+| Reason | Case |
+|---|---|
+| `not_assignee` | The sending identity is not assigned to the issue |
+| `not_a_fix` | The issue is not a Huddle's fix sub-issue |
+| `inside_charter` | Every scope the trigger changed lies inside the sender's charter, so the sender fixes it |
+
 ## Manual exit check with live sessions
 
 These steps run the Phase 3 exit check with a live Claude Code session and a live Codex session. They

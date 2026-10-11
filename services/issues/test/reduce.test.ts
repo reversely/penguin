@@ -153,6 +153,19 @@ describe("reduce", () => {
     assert.equal(issue.stateReason, "cancelled");
   });
 
+  test("send_upstream comes only from an assigned identity and changes nothing but the version", () => {
+    const reports: Author = { identity: "@jun/reports" };
+    const assigned = ok(reduce(created(), op(jun, "assign", { assignee: reports }), noIssues));
+    const upstream = (author: Author): Operation => op(author, "send_upstream", { reason: "Belongs in the merge rules." });
+    const sent = ok(reduce(assigned, upstream(reports), noIssues));
+    assert.deepEqual({ ...sent, version: assigned.version }, assigned);
+    assert.equal(sent.version, assigned.version + 1);
+    rejected(reduce(assigned, upstream({ identity: "@sam/campaigns" }), noIssues), "not_assignee");
+    // A person, even an assigned one, sends nothing upstream: only an agent session does.
+    const junAssigned = ok(reduce(assigned, op(jun, "assign", { assignee: jun }), noIssues));
+    rejected(reduce(junAssigned, upstream(jun), noIssues), "not_assignee");
+  });
+
   test("a review counts only from the owner of a labelled scope; any other review is kept without counting", () => {
     let issue = ok(reduce(created(), op(jun, "add_label", { label: "scope:identity-map" }), noIssues));
     const review = (author: Author): Operation =>

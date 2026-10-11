@@ -366,6 +366,54 @@ describe("validate: charter", () => {
   });
 });
 
+describe("validate: send_upstream", () => {
+  const reports: CharterIdentity = {
+    handle: "@jun/reports",
+    ownerId: "jun",
+    teamOwners: [],
+    charterScopes: ["analytics"],
+    charterPaths: [],
+  };
+  const wide: CharterIdentity = { ...reports, handle: "@jun/wide", charterScopes: ["analytics", "identity-map"] };
+  const identities: IdentityLookup = {
+    identity: (handle) => [reports, wide].find((identity) => identity.handle === handle),
+    assigningOwner: () => undefined,
+  };
+  /** Issue 33 is a fix whose trigger changed the identity map; nothing else is a fix. */
+  const fixes = (scopes: string[]) => ({ upstreamScopes: (issue: string) => (issue === "33" ? scopes : undefined) });
+  const upstream = (handle: string): UnsignedOperation =>
+    draft({ identity: handle }, "send_upstream", { reason: "The fix belongs in the merge rules." });
+
+  test("a fix whose trigger changed a scope outside the sender's charter is accepted", async () => {
+    const operation = await sign(upstream("@jun/reports"), service.privateKey);
+    const verdict = await validate(operation, { ...context(issue33, [], identities), fixes: fixes(["identity-map"]) });
+    assert.equal(verdict.status, "accepted", JSON.stringify(verdict));
+  });
+
+  test("a fix that lies inside the sender's charter is rejected with the reason", async () => {
+    const operation = await sign(upstream("@jun/wide"), service.privateKey);
+    const verdict = await validate(operation, { ...context(issue33, [], identities), fixes: fixes(["identity-map"]) });
+    expectRejected(verdict, "inside_charter");
+    assert.equal(
+      verdict.status === "rejected" && verdict.message,
+      "the fix lies in identity-map, inside @jun/wide's charter; fix it in this session",
+    );
+  });
+
+  test("an issue that is no fix has no upstream", async () => {
+    const operation = await sign(upstream("@jun/reports"), service.privateKey);
+    expectRejected(await validate(operation, context(issue33, [], identities)), "not_a_fix");
+    const other = await sign({ ...upstream("@jun/reports"), issue: 34 }, service.privateKey);
+    expectRejected(await validate(other, { ...context(issue33, [], identities), fixes: fixes([]) }), "not_a_fix");
+  });
+
+  test("a trigger that changed no mapped scope leaves nothing inside any charter", async () => {
+    const operation = await sign(upstream("@jun/wide"), service.privateKey);
+    const verdict = await validate(operation, { ...context(issue33, [], identities), fixes: fixes([]) });
+    assert.equal(verdict.status, "accepted", JSON.stringify(verdict));
+  });
+});
+
 describe("validate: hostile input", () => {
   test("malformed JSON, oversized files, unknown fields and odd values are rejected, never thrown", async () => {
     const signed = await sign(comment({ person: "jun" }), junBridge.privateKey);

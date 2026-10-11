@@ -200,6 +200,8 @@ export function describeEntry(entry: IssuePageTimelineEntry): EntryText {
       const label = state !== undefined && state in STATE_LABEL ? STATE_LABEL[state as IssuePageState] : state;
       return withText(`moved the issue to ${label ?? "a new state"}`, text(p["reason"]));
     }
+    case "send_upstream":
+      return withText("sent the fix upstream", text(p["reason"]));
     default:
       return { summary: entry.type === null ? "unreadable operation" : `${entry.type} operation` };
   }

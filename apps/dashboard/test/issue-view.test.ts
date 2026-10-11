@@ -123,6 +123,10 @@ test("each operation reads as one line, with its text kept apart and never parse
     text: "tests pass",
   });
   assert.equal(describeEntry(entry({ type: "assign", payload: { assignee: { identity: "@jun/reports" } } })).summary, "assigned @jun/reports");
+  assert.deepEqual(describeEntry(entry({ type: "send_upstream", payload: { reason: "belongs in the merge rules" } })), {
+    summary: "sent the fix upstream",
+    text: "belongs in the merge rules",
+  });
   assert.equal(describeEntry(entry({ type: null, payload: null })).summary, "unreadable operation");
   assert.equal(reasonLabel("bad_signature"), "bad signature");
   assert.equal(authorName("jun.reports"), "@jun/reports");

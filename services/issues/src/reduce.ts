@@ -4,7 +4,8 @@
 //
 // It runs after the validator, which has already checked form, signature, author, base version and
 // charter. The reducer checks what needs the issue's contents: that the issue exists, and that a
-// referenced comment, thread or sub-issue exists and is in a state that allows the operation. It also
+// referenced comment, thread or sub-issue exists and is in a state that allows the operation, and
+// that a send_upstream comes from an identity assigned to the issue. It also
 // records whether a review counts toward approval, which depends on the issue's scope labels: a review
 // from someone without review rights is kept as a comment that does not count (PRD sections 5 and 14).
 //
@@ -42,6 +43,8 @@ export const REDUCE_REJECT_REASONS = [
   "unknown_check",
   /** A link from someone other than Penguin marks checks superseded. */
   "supersede_forbidden",
+  /** A send_upstream from an author other than an identity assigned to the issue. */
+  "not_assignee",
 ] as const;
 
 export type ReduceRejectReason = (typeof REDUCE_REJECT_REASONS)[number];
@@ -380,6 +383,13 @@ function apply(issue: IssueRecord, operation: Operation, context: ReduceContext)
     case "change_state": {
       const { state, reason } = p as { state: IssueStateName; reason: string };
       return { ...issue, state, stateReason: reason };
+    }
+    case "send_upstream": {
+      // The note stays on the timeline; Penguin's reassignment follows as its own operations.
+      const author = operation.author;
+      if ("identity" in author && issue.assignments.has(`identity:${author.identity}`)) return issue;
+      const who = "identity" in author ? author.identity : authorSegment(author);
+      return reject("not_assignee", `${who} is not assigned to issue ${issue.id}, so it cannot send it upstream`);
     }
   }
 }

@@ -86,6 +86,7 @@ export const OPERATION_TYPES = [
   "reply_thread",
   "resolve_thread",
   "change_state",
+  "send_upstream",
 ] as const;
 
 export type OperationType = (typeof OPERATION_TYPES)[number];
@@ -191,6 +192,11 @@ export const PAYLOAD_SCHEMAS: Readonly<Record<OperationType, JsonSchema>> = {
     },
     ["state", "reason"],
   ),
+  send_upstream: payload({ reason }, ["reason"], {
+    description:
+      "An identity assigned to a Huddle's fix sub-issue says the fix lies outside its charter, in the scope " +
+      "the trigger changed. Penguin then reassigns the sub-issue to an identity of that scope's owner.",
+  }),
 };
 
 export const OPERATION_SCHEMA: JsonSchema = {
