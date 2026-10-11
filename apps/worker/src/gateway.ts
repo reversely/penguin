@@ -8,8 +8,13 @@
  *
  * POST /setup is the deployer's project setup. It always requires the deployer credential, the
  * PENGUIN_DEPLOYER_TOKEN secret sent as a Bearer token, local development included.
+ *
+ * The bridge routes (/bridges, /bridges/codes, /bridges/<id> and /tokens) carry their own
+ * credentials; see bridges.ts.
  */
 
+import { isDeployer } from "./auth.ts";
+import { handleBridgeRoute, type BridgeHandlers } from "./bridges.ts";
 import {
   artifactsErrorCode,
   parseSetupRequest,
@@ -20,7 +25,7 @@ import {
 export type AgentRouter = (request: Request) => Promise<Response | null>;
 export type ProjectSetup = (request: ProjectSetupRequest) => Promise<ProjectSetupReport>;
 
-export interface GatewayHandlers {
+export interface GatewayHandlers extends BridgeHandlers {
   readonly routeAgents: AgentRouter;
   readonly setUpProject: ProjectSetup;
 }
@@ -28,34 +33,16 @@ export interface GatewayHandlers {
 export interface GatewayOptions {
   /** Value of the PENGUIN_LOCAL_DEV_UNAUTHENTICATED variable, if set. */
   localDevUnauthenticated?: string;
-  /** Value of the PENGUIN_DEPLOYER_TOKEN secret. When unset, /setup rejects every caller. */
+  /** Value of the PENGUIN_DEPLOYER_TOKEN secret. When unset, deployer routes reject every caller. */
   deployerToken?: string;
+  /** Lifetime of minted Artifacts tokens; undefined when PENGUIN_TOKEN_TTL_SECONDS is invalid. */
+  tokenTtlSeconds?: number | undefined;
 }
 
 const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
 function isOpenForLocalDev(url: URL, options: GatewayOptions): boolean {
   return options.localDevUnauthenticated === "true" && LOOPBACK_HOSTNAMES.has(url.hostname);
-}
-
-async function sha256(value: string): Promise<Uint8Array> {
-  return new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)));
-}
-
-/**
- * Compares the request's Bearer token with the deployer token. Both sides are hashed first, so the
- * comparison takes the same time whatever the token lengths and contents.
- */
-async function isDeployer(request: Request, deployerToken: string | undefined): Promise<boolean> {
-  if (!deployerToken) return false;
-  const match = /^Bearer (\S+)$/.exec(request.headers.get("Authorization") ?? "");
-  if (!match) return false;
-  const [given, expected] = await Promise.all([sha256(match[1] ?? ""), sha256(deployerToken)]);
-  let difference = 0;
-  for (let index = 0; index < expected.length; index += 1) {
-    difference |= (given[index] ?? 0) ^ (expected[index] ?? 0);
-  }
-  return difference === 0;
 }
 
 async function handleSetup(
@@ -113,6 +100,14 @@ export async function handleRequest(
   if (url.pathname === "/setup") {
     return handleSetup(request, options, handlers.setUpProject);
   }
+
+  const bridgeResponse = await handleBridgeRoute(
+    request,
+    url,
+    { deployerToken: options.deployerToken, tokenTtlSeconds: options.tokenTtlSeconds },
+    handlers,
+  );
+  if (bridgeResponse) return bridgeResponse;
 
   if (!isOpenForLocalDev(url, options)) {
     return Response.json({ error: "unauthorized" }, { status: 401 });

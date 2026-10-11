@@ -17,6 +17,14 @@ import type { IssueRecord } from "@penguin/issues";
 import type { Author } from "@penguin/protocol";
 import type { ScopeMap } from "@penguin/scope-map";
 
+import {
+  BridgeRegistry,
+  type BridgeIdentity,
+  type BridgeRole,
+  type RegisterOutcome,
+  type RegistrationCode,
+} from "./bridge-registry.ts";
+
 export {
   IssueIndex,
   type ApplyInput,
@@ -37,6 +45,15 @@ export { importServiceKey, type ServiceKey } from "./service-key.ts";
 interface ServiceKeyEnv {
   readonly PENGUIN_OP_SIGNING_KEY?: string;
 }
+export {
+  BRIDGE_ROLES,
+  BridgeRegistry,
+  type BridgeIdentity,
+  type BridgeRole,
+  type RegisterOutcome,
+  type RegisteredBridge,
+  type RegistrationCode,
+} from "./bridge-registry.ts";
 
 /**
  * Holds the project-wide state: issue index, scope map, owners, identities and sessions.
@@ -45,6 +62,7 @@ interface ServiceKeyEnv {
 export class ProjectAgent extends Agent {
   #issues: IssueIndex | undefined;
   #serviceKey: Promise<ServiceKey> | undefined;
+  #bridges: BridgeRegistry | undefined;
 
   override onStart(): void {
     this.sql`CREATE TABLE IF NOT EXISTS counter (id INTEGER PRIMARY KEY CHECK (id = 1), value INTEGER NOT NULL)`;
@@ -106,6 +124,31 @@ export class ProjectAgent extends Agent {
       this.#serviceKey = loading;
     }
     return this.#serviceKey;
+  }
+
+  /** Issues a one-time code that registers one bridge for `ownerId`. */
+  issueBridgeRegistrationCode(ownerId: string, role: BridgeRole, ttlSeconds: number): Promise<RegistrationCode> {
+    return this.#registry().issueCode(ownerId, role, ttlSeconds);
+  }
+
+  /** Spends a registration code and records the bridge's owner, role, public key and token hash. */
+  registerBridge(code: string, publicKey: unknown): Promise<RegisterOutcome> {
+    return this.#registry().register(code, publicKey);
+  }
+
+  /** The registered, unrevoked bridge holding `bridgeToken`, or undefined. */
+  authenticateBridge(bridgeToken: string): Promise<BridgeIdentity | undefined> {
+    return this.#registry().authenticate(bridgeToken);
+  }
+
+  /** Revokes a bridge. Returns false when no unrevoked bridge has that id. */
+  revokeBridge(bridgeId: string): boolean {
+    return this.#registry().revoke(bridgeId);
+  }
+
+  #registry(): BridgeRegistry {
+    this.#bridges ??= new BridgeRegistry(durableObjectSql(this.ctx.storage));
+    return this.#bridges;
   }
 
   #index(): IssueIndex {
