@@ -14,7 +14,7 @@ function op(author: Author, type: Operation["type"], payload: Record<string, unk
   const key = JSON.stringify(author);
   const seq = (seqs.get(key) ?? 0) + 1;
   seqs.set(key, seq);
-  const opId = formatOpId(author, seq);
+  const opId = formatOpId(author, "web", seq);
   return { schema_version: 1, op_id: opId, issue, type, author, base_version: 0, payload, signature: "x".repeat(86) };
 }
 
@@ -48,7 +48,7 @@ describe("reduce", () => {
 
   test("a create may use a string issue id only when it is its own op_id", () => {
     const create = op(priya, "create", { title: "Offline" }, "x");
-    rejected(reduce(undefined, { ...create, issue: "priya-9999" }, noIssues), "create_id_mismatch");
+    rejected(reduce(undefined, { ...create, issue: "priya-web-9999" }, noIssues), "create_id_mismatch");
     assert.equal(ok(reduce(undefined, { ...create, issue: create.op_id }, noIssues)).id, create.op_id);
   });
 
@@ -80,8 +80,8 @@ describe("reduce", () => {
       stored?.revisions.map((r) => r.body),
       ["A limit of five", "A limit of two"],
     );
-    rejected(reduce(issue, op(jun, "edit_comment", { comment: "jun-9999", body: "x" }), noIssues), "unknown_comment");
-    rejected(reduce(issue, op(jun, "mention", { mentioned: priya, comment: "jun-9999" }), noIssues), "unknown_comment");
+    rejected(reduce(issue, op(jun, "edit_comment", { comment: "jun-web-9999", body: "x" }), noIssues), "unknown_comment");
+    rejected(reduce(issue, op(jun, "mention", { mentioned: priya, comment: "jun-web-9999" }), noIssues), "unknown_comment");
   });
 
   test("threads take replies until resolved; unknown and resolved threads are rejected", () => {
@@ -97,7 +97,7 @@ describe("reduce", () => {
       reduce(issue, op(priya, "reply_thread", { thread: open.op_id, body: "More" }), noIssues),
       "thread_resolved",
     );
-    rejected(reduce(issue, op(priya, "resolve_thread", { thread: "jun-9999" }), noIssues), "unknown_thread");
+    rejected(reduce(issue, op(priya, "resolve_thread", { thread: "jun-web-9999" }), noIssues), "unknown_thread");
   });
 
   test("open_sub_issue rejects itself, unknown issues, issues with a parent, and cycles", () => {

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "node:test";
 
 import { runGit } from "@penguin/git-analysis";
+import { bridgeWriterTag } from "@penguin/protocol";
 import {
   bridgeRemotes,
   bridgeSpool,
@@ -134,6 +135,8 @@ describe("pushing to Artifacts", () => {
     const pushed = /^Pushed (\S+) in commit/m.exec(output.join(""))?.[1] ?? assert.fail(output.join(""));
     const text = await runGit(penguin.repoPath("issues"), ["cat-file", "blob", `main:${pushed}`]);
     assert.equal(JSON.parse(text).payload.title, "Retention drops on merge");
+    // A registered bridge numbers under the tag derived from its bridge ID.
+    assert.equal(JSON.parse(text).op_id, `${OWNER}-${await bridgeWriterTag("bridge-1")}-0001`);
     assertProtocolV1("git-receive-pack");
     // One token for the issues repo, reused for the fetch and the push.
     assert.deepEqual(
@@ -197,6 +200,7 @@ describe("pushing to Artifacts", () => {
       remotes,
       clonePath: join(stateDir, "issues", "clone"),
       ownerId: OWNER,
+      writer: await bridgeWriterTag("bridge-1"),
       key: await loadSigningKey(store, OWNER),
       spool: bridgeSpool(stateDir),
     });

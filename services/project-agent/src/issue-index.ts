@@ -38,6 +38,7 @@ import {
   operationPath,
   parseOperationFile,
   validateOperation,
+  WEB_WRITER_TAG,
   type Author,
   type Operation,
   type UnsignedOperation,
@@ -322,7 +323,7 @@ export class IssueIndex {
     if ("reason" in draft) return { status: "rejected", reason: draft.reason, message: draft.message };
     const unsigned = withoutUndefined({
       schema_version: 1,
-      op_id: formatOpId(author, this.#lastSeq(author) + 1),
+      op_id: formatOpId(author, WEB_WRITER_TAG, this.#lastSeq(author) + 1),
       issue: draft.issue,
       type: draft.type,
       author,
@@ -369,15 +370,23 @@ export class IssueIndex {
     return segment.split(".")[0];
   }
 
-  /** The highest sequence number among the author's op_ids that the index holds as claimed. */
+  /**
+   * The highest sequence number among the author's op_ids under the Worker's writer tag that the
+   * index holds as claimed. Bridges number their own operations under their own tags, so an offline
+   * bridge's operations neither move this counter nor collide with it.
+   */
   #lastSeq(author: Author): number {
     const segment = authorSegment(author);
+    const prefix = `${segment}-${WEB_WRITER_TAG}-`;
     // Only applied and authenticated-rejected rows claim their op_id (op_id = stated_op_id). An
     // unauthenticated file can state any sequence number, so it must not move the counter.
     const [row] = this.#db.exec(
-      `SELECT MAX(CAST(substr(op_id, ?) AS INTEGER)) AS seq FROM AppliedOp WHERE author = ? AND op_id = stated_op_id`,
-      segment.length + 2,
+      `SELECT MAX(CAST(substr(op_id, ?) AS INTEGER)) AS seq FROM AppliedOp
+       WHERE author = ? AND op_id = stated_op_id AND substr(op_id, 1, ?) = ?`,
+      prefix.length + 1,
       segment,
+      prefix.length,
+      prefix,
     );
     return Number(row?.["seq"] ?? 0);
   }

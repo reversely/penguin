@@ -7,7 +7,14 @@ import { join, relative, sep } from "node:path";
 import { describe, test } from "node:test";
 
 import { importPrivateKey, importPublicKey, signOperation, signingBytes, verifyOperation } from "@penguin/issues";
-import { OPERATION_TYPES, type Operation, operationPath, parseOperationFile } from "@penguin/protocol";
+import {
+  OPERATION_TYPES,
+  type Operation,
+  operationPath,
+  parseOperationFile,
+  parseOpId,
+  WEB_WRITER_TAG,
+} from "@penguin/protocol";
 
 const fixtures = join(import.meta.dirname, "issue-ops");
 const vector = JSON.parse(readFileSync(join(fixtures, "vector.json"), "utf8"));
@@ -33,8 +40,8 @@ describe("issue operation test vector", () => {
   test("the vector operation is valid and sits at its PRD path", () => {
     const bytes = new TextEncoder().encode(JSON.stringify(vector.operation));
     assert.equal(parseOperationFile(bytes).ok, true);
-    assert.equal(operationPath(vector.operation), "issues/33/ops/jun-0007.json");
-    assert.equal(vector.path, "issues/33/ops/jun-0007.json");
+    assert.equal(operationPath(vector.operation), "issues/33/ops/jun-b3f2-0007.json");
+    assert.equal(vector.path, "issues/33/ops/jun-b3f2-0007.json");
   });
 });
 
@@ -50,6 +57,9 @@ describe("issue operation examples", () => {
       const result = parseOperationFile(readFileSync(file));
       assert.ok(result.ok, JSON.stringify(!result.ok && result.errors));
       assert.equal(operationPath(result.operation), name);
+      // Every op_id carries a writer tag: the Worker's, or a bridge's four hex digits.
+      const writer = parseOpId(result.operation.op_id)?.writer ?? "";
+      assert.ok(writer === WEB_WRITER_TAG || /^[0-9a-f]{4}$/.test(writer), result.operation.op_id);
       const publicKey = await importPublicKey(vector.public_key_jwk);
       assert.equal(await verifyOperation(result.operation, publicKey), true);
     });

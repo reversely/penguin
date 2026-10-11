@@ -3,7 +3,14 @@ import { before, describe, test } from "node:test";
 import type { DatabaseSync } from "node:sqlite";
 
 import { generateSigningKeyPair, signOperation } from "@penguin/issues";
-import { formatOpId, operationPath, type Author, type IssueId, type Operation } from "@penguin/protocol";
+import {
+  formatOpId,
+  operationPath,
+  WEB_WRITER_TAG,
+  type Author,
+  type IssueId,
+  type Operation,
+} from "@penguin/protocol";
 import { parseScopeMap } from "@penguin/scope-map";
 
 import { BridgeRegistry } from "../src/bridge-registry.ts";
@@ -33,6 +40,9 @@ before(async () => {
   };
 });
 
+/** The writer tag the test bridges number their operations under. */
+const BRIDGE_TAG = "b3f2";
+
 /** Builds signed operation files; tracks each author's sequence numbers. */
 class Ops {
   readonly #seqs = new Map<string, number>();
@@ -49,8 +59,9 @@ class Ops {
     const seq = (this.#seqs.get(seqKey) ?? 0) + 1;
     this.#seqs.set(seqKey, seq);
     const key = signWith ?? ("penguin" in author ? service.privateKey : junBridge.privateKey);
+    const writer = key === service.privateKey ? WEB_WRITER_TAG : BRIDGE_TAG;
     const operation = await signOperation(
-      { schema_version: 1, op_id: formatOpId(author, seq), issue, type, author, base_version: base, payload },
+      { schema_version: 1, op_id: formatOpId(author, writer, seq), issue, type, author, base_version: base, payload },
       key,
     );
     return [operationPath(operation), JSON.stringify(operation)];
@@ -108,7 +119,7 @@ describe("ingestPush", () => {
     assert.equal(report.commits, 1);
     assert.equal(a.index.issue("33")?.title, "Shared-device merge");
     assert.deepEqual(appliedOps(a.db), [
-      { op_id: "jun-0001", status: "applied", reject_reason: null, git_commit: head },
+      { op_id: "jun-b3f2-0001", status: "applied", reject_reason: null, git_commit: head },
     ]);
   });
 
@@ -164,8 +175,8 @@ describe("ingestPush", () => {
     assert.deepEqual(
       appliedOps(a.db).map((row) => [row["op_id"], row["git_commit"]]),
       [
-        ["jun-0001", first],
-        ["jun-0002", second],
+        ["jun-b3f2-0001", first],
+        ["jun-b3f2-0002", second],
       ],
     );
   });
@@ -186,9 +197,9 @@ describe("ingestPush", () => {
 
     assert.deepEqual(report.outcomes, { applied: 3 });
     assert.deepEqual(a.order, [
-      "issues/31/ops/penguin-0001.json",
-      "issues/33/ops/jun-0002.json",
-      "issues/31/ops/jun-0001.json",
+      "issues/31/ops/penguin-web-0001.json",
+      "issues/33/ops/jun-b3f2-0002.json",
+      "issues/31/ops/jun-b3f2-0001.json",
     ]);
   });
 
@@ -210,7 +221,7 @@ describe("ingestPush", () => {
     const report = await ingestPush(repo.reader(), head, a.ledger, a.apply);
 
     assert.equal(report.files, 1);
-    assert.deepEqual(a.order.at(-1), "issues/33/ops/jun-0001.json");
+    assert.deepEqual(a.order.at(-1), "issues/33/ops/jun-b3f2-0001.json");
     assert.equal(a.index.issue("31")?.title, "Thirty-one");
     assert.equal(repo.calls["readBlob"], 1);
     assert.deepEqual(report.bindingCalls, repo.calls);
@@ -231,7 +242,7 @@ describe("ingestPush", () => {
 
     await ingestPush(repo.reader(), merge, a.ledger, a.apply);
 
-    const row = appliedOps(a.db).find((r) => r["op_id"] === "jun-0001");
+    const row = appliedOps(a.db).find((r) => r["op_id"] === "jun-b3f2-0001");
     assert.equal(row?.["git_commit"], merge);
   });
 
@@ -259,7 +270,7 @@ describe("ingestPush", () => {
     assert.deepEqual(retry.outcomes, { duplicate: 1, applied: 1 });
     assert.deepEqual(
       appliedOps(a.db).map((row) => row["op_id"]),
-      ["jun-0001", "jun-0002"],
+      ["jun-b3f2-0001", "jun-b3f2-0002"],
     );
     assert.equal(a.ledger.has(head), true);
   });
@@ -283,8 +294,8 @@ describe("ingestPush", () => {
     assert.deepEqual(
       timeline.map((entry) => [entry.statedOpId, entry.status, entry.rejectReason]),
       [
-        ["jun-0001", "applied", null],
-        ["jun-0002", "rejected", "bad_signature"],
+        ["jun-b3f2-0001", "applied", null],
+        ["jun-b3f2-0002", "rejected", "bad_signature"],
       ],
     );
   });

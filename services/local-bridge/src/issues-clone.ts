@@ -258,14 +258,17 @@ export class IssuesClone {
     return this.#tracked.filter((path) => path.startsWith(`${folder}/`));
   }
 
-  /** The highest sequence number in the per-author counter kept in the clone's Git directory. */
-  async savedSequence(segment: string): Promise<number> {
-    return (await this.#readSequences())[segment] ?? 0;
+  /**
+   * The highest sequence number in the counter kept in the clone's Git directory for one author and
+   * writer, keyed by their op_id prefix `<author>-<writer>-`.
+   */
+  async savedSequence(prefix: string): Promise<number> {
+    return (await this.#readSequences())[prefix] ?? 0;
   }
 
-  async saveSequence(segment: string, seq: number): Promise<void> {
+  async saveSequence(prefix: string, seq: number): Promise<void> {
     const sequences = await this.#readSequences();
-    sequences[segment] = Math.max(sequences[segment] ?? 0, seq);
+    sequences[prefix] = Math.max(sequences[prefix] ?? 0, seq);
     await writeFile(this.#sequenceFile(),`${JSON.stringify(sequences, null, 2)}\n`);
   }
 
@@ -348,7 +351,7 @@ export class IssuesClone {
     return commits;
   }
 
-  // The per-author counter lives in the clone's Git directory, outside the tracked tree.
+  // The per-author, per-writer counter lives in the clone's Git directory, outside the tracked tree.
   #sequenceFile(): string {
     return join(this.#gitDir, SEQUENCE_FILE);
   }

@@ -5,7 +5,14 @@ import { before, describe, test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 
 import { generateSigningKeyPair, signOperation } from "@penguin/issues";
-import { formatOpId, operationPath, type Author, type IssueId, type Operation } from "@penguin/protocol";
+import {
+  formatOpId,
+  operationPath,
+  WEB_WRITER_TAG,
+  type Author,
+  type IssueId,
+  type Operation,
+} from "@penguin/protocol";
 import { parseScopeMap } from "@penguin/scope-map";
 
 import {
@@ -320,7 +327,7 @@ describe("identities: the charter on the issue", () => {
       rejections.map((entry) => [entry.opId, entry.author, entry.rejectReason, entry.message]),
       [
         [
-          "jun.reports-0001",
+          "jun.reports-b3f2-0001",
           "jun.reports",
           "outside_charter",
           "@jun/reports acts outside its charter (scopes: analytics; paths: docs/metrics): the operation names scope identity-map",
@@ -399,17 +406,18 @@ class Writer {
     const seqKey = JSON.stringify(author);
     const seq = (this.#seqs.get(seqKey) ?? 0) + 1;
     this.#seqs.set(seqKey, seq);
+    const signer = key ?? bridgeKey(author);
     const operation = await signOperation(
       {
         schema_version: 1,
-        op_id: formatOpId(author, seq),
+        op_id: formatOpId(author, signer === service.privateKey ? WEB_WRITER_TAG : BRIDGE_TAG, seq),
         issue,
         type,
         author,
         base_version: this.#versions.get(String(issue)) ?? 0,
         payload,
       },
-      key ?? bridgeKey(author),
+      signer,
     );
     const outcome = await this.#index.apply({
       file: new TextEncoder().encode(JSON.stringify(operation)),
@@ -421,6 +429,9 @@ class Writer {
     return outcome;
   }
 }
+
+/** The writer tag the test bridges number their operations under. */
+const BRIDGE_TAG = "b3f2";
 
 function bridgeKey(author: Author): CryptoKey {
   if ("penguin" in author) return service.privateKey;

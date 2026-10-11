@@ -4,7 +4,14 @@ import { join } from "node:path";
 import { before, describe, test } from "node:test";
 
 import { generateSigningKeyPair, signOperation } from "@penguin/issues";
-import { formatOpId, operationPath, type Author, type IssueId, type Operation } from "@penguin/protocol";
+import {
+  formatOpId,
+  operationPath,
+  WEB_WRITER_TAG,
+  type Author,
+  type IssueId,
+  type Operation,
+} from "@penguin/protocol";
 import { parseScopeMap } from "@penguin/scope-map";
 
 import { INBOX_SCHEMA } from "../src/inbox-store.ts";
@@ -64,12 +71,21 @@ class Ops {
     const seqKey = JSON.stringify(author);
     const seq = (this.#seqs.get(seqKey) ?? 0) + 1;
     this.#seqs.set(seqKey, seq);
+    const key = signWith ?? signingKey(author);
     const operation = await signOperation(
-      { schema_version: 1, op_id: formatOpId(author, seq), issue, type, author, base_version: base, payload },
-      signWith ?? signingKey(author),
+      { schema_version: 1, op_id: formatOpId(author, writerOf(key), seq), issue, type, author, base_version: base, payload },
+      key,
     );
     return [operationPath(operation), JSON.stringify(operation)];
   }
+}
+
+/** The writer tag the test bridges number their operations under. */
+const BRIDGE_TAG = "b3f2";
+
+/** The writer that holds `key`: the Worker for the service key, a test bridge otherwise. */
+function writerOf(key: CryptoKey): string {
+  return key === service.privateKey ? WEB_WRITER_TAG : BRIDGE_TAG;
 }
 
 function signingKey(author: Author): CryptoKey {
@@ -156,8 +172,8 @@ async function scriptedHistory(project: Project): Promise<void> {
     await ops.file(jun, "comment", { body: "stale" }, 33, 1),
     await ops.file(jun, "comment", { body: "from the future" }, 33, 9),
     await ops.file(jun, "review", { verdict: "approve", commit: "owner-priya@9b2f10" }, 33, 3),
-    await ops.file(jun, "edit_comment", { comment: "jun-9999", body: "x" }, 33, 3),
-    ["issues/32/ops/jun-0099.json", "not json"],
+    await ops.file(jun, "edit_comment", { comment: "jun-b3f2-9999", body: "x" }, 33, 3),
+    ["issues/32/ops/jun-b3f2-0099.json", "not json"],
   ]);
   // Sam writes only from the dashboard: a bridge and the dashboard writing for one author share
   // one op_id sequence, and this history keeps clear of that open protocol gap.
@@ -229,7 +245,7 @@ describe("rebuildIndex", () => {
       comparison.differences.map((d) => [d.table, d.key, d.live === null, d.shadow === null]),
       [
         ["Assignment", { issue_id: "32", assignee_kind: "person", assignee_id: "sam" }, false, true],
-        ["Comment", { id: "jun-0002" }, true, false],
+        ["Comment", { id: "jun-b3f2-0002" }, true, false],
       ],
     );
   });
@@ -237,7 +253,7 @@ describe("rebuildIndex", () => {
   test("a second rebuild with no new operations gives the same result", async () => {
     const project = new Project();
     await scriptedHistory(project);
-    project.sql.exec(`UPDATE AppliedOp SET reject_reason = ? WHERE op_id = ?`, "bad_signature", "jun-0005");
+    project.sql.exec(`UPDATE AppliedOp SET reject_reason = ? WHERE op_id = ?`, "bad_signature", "jun-b3f2-0005");
 
     const first = await project.rebuild();
     const second = await project.rebuild();
@@ -245,7 +261,7 @@ describe("rebuildIndex", () => {
     assert.equal(first.head, second.head);
     assert.deepEqual(second.comparison, first.comparison);
     assert.deepEqual(second.rebuilt, first.rebuilt);
-    assert.deepEqual(second.comparison.differences.map((d) => [d.table, d.key]), [["AppliedOp", { op_id: "jun-0005" }]]);
+    assert.deepEqual(second.comparison.differences.map((d) => [d.table, d.key]), [["AppliedOp", { op_id: "jun-b3f2-0005" }]]);
   });
 
   test("the rebuild leaves the live tables as they were", async () => {
@@ -278,15 +294,15 @@ describe("rebuildIndex", () => {
 
     const report = await project.rebuild();
 
-    assert.deepEqual(report.pendingOps, ["sam-0003"]);
+    assert.deepEqual(report.pendingOps, ["sam-web-0003"]);
     assert.equal(report.comparison.equal, false);
     assert.deepEqual(
       report.comparison.differences.map((d) => [d.table, d.key, d.shadow === null]),
       [
         ["Issue", { id: "32" }, false],
-        ["Comment", { id: "sam-0003" }, true],
-        ["CommentRevision", { comment_id: "sam-0003", rev: 1 }, true],
-        ["AppliedOp", { op_id: "sam-0003" }, true],
+        ["Comment", { id: "sam-web-0003" }, true],
+        ["CommentRevision", { comment_id: "sam-web-0003", rev: 1 }, true],
+        ["AppliedOp", { op_id: "sam-web-0003" }, true],
       ],
     );
   });
@@ -306,8 +322,8 @@ describe("rebuildIndex", () => {
     assert.deepEqual(
       appliedOp.map((d) => [d.key["op_id"], d.live?.["status"], d.shadow?.["status"]]),
       [
-        ["priya-0001", "applied", "rejected"],
-        ["jun-0002", "rejected", "applied"],
+        ["priya-web-0001", "applied", "rejected"],
+        ["jun-b3f2-0002", "rejected", "applied"],
       ],
     );
     assert.equal(report.comparison.equal, false);

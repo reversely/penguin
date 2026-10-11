@@ -13,14 +13,21 @@ import { DatabaseSync } from "node:sqlite";
 import { runGit } from "@penguin/git-analysis";
 import { generateSigningKeyPair } from "@penguin/issues";
 import {
+  drainSpool,
   fetchPendingOperations,
+  IssueWriter,
+  loadSigningKey,
+  localRemote,
   MemoryKeyStore,
   pendingProblem,
   RemoteRefusedError,
+  RemoteUnavailableError,
   runCli,
+  Spool,
   type PendingOperation,
+  type RemoteResolver,
 } from "@penguin/local-bridge";
-import type { Author } from "@penguin/protocol";
+import { bridgeWriterTag, type Author } from "@penguin/protocol";
 import { parseScopeMap } from "@penguin/scope-map";
 
 // The index modules directly: the package entry point loads the Agents SDK, which needs workerd.
@@ -164,10 +171,10 @@ function reader(): IssuesRepoReader {
 }
 
 /** Delivers the push event: the ProjectAgent ingests the issues repo up to its head. */
-async function deliverPushEvent(): Promise<void> {
+async function deliverPushEvent(operationKeys: OperationKeys = keys): Promise<void> {
   const head = (await runGit(bare(), ["rev-parse", "refs/heads/main"])).trim();
   await ingestPush(reader(), head, ledger, (file, commit) =>
-    index.apply({ file: file.bytes, gitCommit: commit, path: file.path, keys }),
+    index.apply({ file: file.bytes, gitCommit: commit, path: file.path, keys: operationKeys }),
   );
 }
 
@@ -183,11 +190,11 @@ describe("runner mode", () => {
     assert.deepEqual(older, []);
     assert.equal(pushes(), 1);
     assert.deepEqual(await filesIn(commit), [
-      "issues/40/ops/jun-0001.json",
-      "issues/41/ops/jun-0002.json",
-      "issues/42/ops/jun-0003.json",
-      "issues/43/ops/jun-0004.json",
-      "issues/44/ops/penguin-0001.json",
+      "issues/40/ops/jun-web-0001.json",
+      "issues/41/ops/jun-web-0002.json",
+      "issues/42/ops/jun-web-0003.json",
+      "issues/43/ops/jun-web-0004.json",
+      "issues/44/ops/penguin-web-0001.json",
     ]);
     assert.match(output.join(""), /5 pending: 5 pushed in commit [0-9a-f]{12}, 0 already in the repo, 0 refused/);
 
@@ -246,7 +253,7 @@ describe("runner mode", () => {
     assert.equal(await runOnce(), 0, output.join(""));
     const [commit, ...older] = await commits();
     assert.equal(older.length, 1);
-    assert.deepEqual(await filesIn(commit!), ["issues/41/ops/jun-0002.json", "issues/42/ops/jun-0003.json"]);
+    assert.deepEqual(await filesIn(commit!), ["issues/41/ops/jun-web-0002.json", "issues/42/ops/jun-web-0003.json"]);
     assert.match(output.join(""), /3 pending: 2 pushed in commit \S+, 1 already in the repo, 0 refused/);
 
     await deliverPushEvent();
@@ -260,12 +267,12 @@ describe("runner mode", () => {
     const good = listing.status === "ok" ? listing.files[0]! : undefined;
     const text = good!.file;
     const crafted: PendingOperation[] = [
-      { opId: "jun-0001", path: "../../outside.json", file: text },
-      { opId: "jun-0001", path: ".git/hooks/post-commit", file: text },
-      { opId: "jun-0001", path: "issues/99/ops/jun-0001.json", file: text },
-      { opId: "jun-0001", path: "issues/40/ops/jun-0001.json/../../../evil.json", file: text },
-      { opId: "jun-0009", path: "issues/40/ops/jun-0009.json", file: text },
-      { opId: "jun-0002", path: "issues/40/ops/jun-0002.json", file: "#!/bin/sh\nexit 1\n" },
+      { opId: "jun-web-0001", path: "../../outside.json", file: text },
+      { opId: "jun-web-0001", path: ".git/hooks/post-commit", file: text },
+      { opId: "jun-web-0001", path: "issues/99/ops/jun-web-0001.json", file: text },
+      { opId: "jun-web-0001", path: "issues/40/ops/jun-web-0001.json/../../../evil.json", file: text },
+      { opId: "jun-web-0009", path: "issues/40/ops/jun-web-0009.json", file: text },
+      { opId: "jun-web-0002", path: "issues/40/ops/jun-web-0002.json", file: "#!/bin/sh\nexit 1\n" },
     ];
     for (const entry of crafted) assert.notEqual(pendingProblem(entry), null, entry.path);
     assert.equal(pendingProblem(good!), null);
@@ -273,7 +280,7 @@ describe("runner mode", () => {
     penguin.pendingOperations = () => ({ status: "ok", files: [...crafted, good] });
     assert.equal(await runOnce(), 1);
     const [commit] = await commits();
-    assert.deepEqual(await filesIn(commit!), ["issues/40/ops/jun-0001.json"]);
+    assert.deepEqual(await filesIn(commit!), ["issues/40/ops/jun-web-0001.json"]);
     assert.equal((output.join("").match(/^Refused /gm) ?? []).length, crafted.length);
     // Nothing escaped the clone.
     await assert.rejects(readFile(join(stateDir, "outside.json")));
@@ -306,5 +313,96 @@ describe("runner mode", () => {
       await deliverPushEvent();
       assert.equal(pendingCount(), 0);
     }
+  });
+});
+
+describe("an offline bridge and the dashboard writing for the same author", () => {
+  test("both operations survive the sync; neither is dropped as a duplicate", async () => {
+    assert.equal(await register(), 0);
+    // Jun's laptop bridge pushes straight to the issues repo; `online` stands for its network.
+    const bridgeId = "br_jun-laptop";
+    const tag = await bridgeWriterTag(bridgeId);
+    const junKey = await loadSigningKey(new MemoryKeyStore(), "jun");
+    const junKeys: OperationKeys = { ...keys, bridges: [{ bridgeId, ownerId: "jun", publicKey: junKey.publicKey }] };
+    let online = false;
+    const remotes: RemoteResolver = (name) => ({
+      name,
+      artifacts: false,
+      git: (cwd, args) =>
+        online ? localRemote(name).git(cwd, args) : Promise.reject(new RemoteUnavailableError("the laptop is offline")),
+    });
+    const junSpool = new Spool(join(root, "jun-spool.jsonl"));
+    const laptop = new IssueWriter({
+      remote: bare(),
+      remotes,
+      clonePath: join(root, "jun-clone"),
+      ownerId: "jun",
+      writer: tag,
+      key: junKey,
+      spool: junSpool,
+    });
+
+    // Offline, the bridge numbers Jun's first operation while the dashboard numbers Jun's first too.
+    const [fromLaptop, fromDashboard] = await Promise.all([
+      laptop.write({ type: "create", payload: { title: "Written on a plane" } }),
+      index.submit({
+        operation: { issue: 40, type: "create", base_version: 0, payload: { title: "Written on the dashboard" } },
+        author: jun,
+        source: "dashboard",
+        signingKey: service.privateKey,
+        keys: junKeys,
+      }),
+    ]);
+    assert.equal(fromLaptop.status, "queued", fromLaptop.reason ?? "");
+    assert.equal(fromDashboard.status === "applied" && fromDashboard.opId, "jun-web-0001");
+    // Both are Jun's first operation; the writer tag alone keeps the op_ids apart.
+    assert.equal(fromLaptop.operation.op_id, `jun-${tag}-0001`);
+
+    // The runner pushes the dashboard's operation; then the laptop reconnects and drains its spool.
+    assert.equal(await runOnce(), 0, output.join(""));
+    online = true;
+    const drained = await drainSpool(junSpool, remotes);
+    assert.deepEqual(drained.pushed.map((item) => item.id), [`jun-${tag}-0001`]);
+    await deliverPushEvent(junKeys);
+
+    // A second round once synced: each writer continues its own sequence for Jun.
+    const laptopIssue = fromLaptop.operation.op_id;
+    const comment = await laptop.write({ type: "comment", issue: 40, payload: { body: "From the laptop" } });
+    assert.equal(comment.status, "pushed", comment.reason ?? "");
+    const reply = await index.submit({
+      operation: { issue: laptopIssue, type: "comment", base_version: 1, payload: { body: "From the dashboard" } },
+      author: jun,
+      source: "dashboard",
+      signingKey: service.privateKey,
+      keys: junKeys,
+    });
+    assert.equal(reply.status === "applied" && reply.opId, "jun-web-0002");
+    assert.equal(comment.operation.op_id, `jun-${tag}-0002`);
+    assert.equal(await runOnce(), 0, output.join(""));
+    await deliverPushEvent(junKeys);
+
+    // Every operation is applied once, nothing was rejected, and nothing waits for the Git log.
+    const applied = db
+      .prepare(`SELECT op_id, status FROM AppliedOp WHERE author = 'jun' ORDER BY op_id`)
+      .all()
+      .map((row) => ({ op_id: row["op_id"], status: row["status"] }));
+    assert.deepEqual(applied, [
+      { op_id: `jun-${tag}-0001`, status: "applied" },
+      { op_id: `jun-${tag}-0002`, status: "applied" },
+      { op_id: "jun-web-0001", status: "applied" },
+      { op_id: "jun-web-0002", status: "applied" },
+    ]);
+    assert.equal(pendingCount(), 0);
+    assert.equal(index.issue("40")?.title, "Written on the dashboard");
+    assert.equal(index.issue(laptopIssue)?.title, "Written on a plane");
+    assert.equal(index.issue("40")?.comments.size, 1);
+    assert.equal(index.issue(laptopIssue)?.comments.size, 1);
+    const files = (await runGit(bare(), ["ls-tree", "-r", "--name-only", "main"])).trim().split("\n").sort();
+    assert.deepEqual(files, [
+      `issues/40/ops/jun-${tag}-0002.json`,
+      "issues/40/ops/jun-web-0001.json",
+      `issues/${laptopIssue}/ops/jun-${tag}-0001.json`,
+      `issues/${laptopIssue}/ops/jun-web-0002.json`,
+    ].sort());
   });
 });

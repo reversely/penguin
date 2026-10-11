@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "op_id": "penguin-0006",
+  "op_id": "penguin-web-0006",
   "issue": 31,
   "type": "open_sub_issue",
   "author": {
@@ -10,5 +10,5 @@
   "payload": {
     "sub_issue": 33
   },
-  "signature": "8XI6BaQkvurc8tfaI0aRU1m9iZTx4btPF5UxA2XjN_7mzXQf7DRfEPKDuXSAjv7dbYyCRupz4X16Xj5kYYRXBg"
+  "signature": "rA7NcAv1NaeiqnYANscjl6q7-9STqnFUDRy9FO8B_bWdGiwbjBO7U1ndnH-j0L_MRu_8KHSb6uqoz_eoUHsvAA"
 }

@@ -251,10 +251,10 @@ test("the pending route lists operations to a runner bridge only, by the role it
   const { call, db } = gateway();
   // A signed operation file as the ProjectAgent holds it in PendingOp after a submission.
   const file = readFileSync(
-    join(import.meta.dirname, "../../../tests/contracts/issue-ops/examples/issues/31/ops/penguin-0002.json"),
+    join(import.meta.dirname, "../../../tests/contracts/issue-ops/examples/issues/31/ops/penguin-web-0002.json"),
     "utf8",
   );
-  db.exec(`INSERT INTO PendingOp (op_id, source, created_at, file) VALUES (?, ?, ?, ?)`, "penguin-0002", "penguin", 1, file);
+  db.exec(`INSERT INTO PendingOp (op_id, source, created_at, file) VALUES (?, ?, ?, ?)`, "penguin-web-0002", "penguin", 1, file);
   const list = (token?: string, method = "GET") => call("/operations/pending", { method, ...(token ? { token } : {}) });
 
   const runner = await registerBridge(call, "sam", "runner");
@@ -262,7 +262,7 @@ test("the pending route lists operations to a runner bridge only, by the role it
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("Cache-Control"), "no-store");
   assert.deepEqual(await response.json(), {
-    files: [{ opId: "penguin-0002", path: "issues/31/ops/penguin-0002.json", file, source: "penguin", createdAt: 1 }],
+    files: [{ opId: "penguin-web-0002", path: "issues/31/ops/penguin-web-0002.json", file, source: "penguin", createdAt: 1 }],
   });
 
   // An owner bridge is refused, whatever it claims in the request.

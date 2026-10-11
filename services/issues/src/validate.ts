@@ -7,8 +7,10 @@
 import { operationTargets, reviewRight, withinCharter, type CharterIdentity } from "@penguin/policies";
 import {
   operationPath,
+  parseOpId,
   parseOperationFile,
   validateOperation,
+  WEB_WRITER_TAG,
   type Author,
   type Operation,
   type SchemaError,
@@ -26,7 +28,10 @@ export const REJECT_REASONS = [
   "wrong_path",
   /** The signature is missing, malformed, or verifies under no registered key. */
   "bad_signature",
-  /** A registered key signed it, but that key may not write as the operation's author. */
+  /**
+   * A registered key signed it, but that key may not write as the operation's author, or its op_id
+   * carries the other kind of writer's tag.
+   */
   "author_not_bound",
   /** The base version is older than the issue's current version. */
   "superseded_version",
@@ -94,8 +99,8 @@ export type Verdict =
 
 /**
  * Validate one operation. `input` is the operation file's bytes (or text), or an already parsed
- * JSON value. Checks run in this order: form, path, duplicate, signature, author binding, base
- * version, rights, charter. The first failing check gives the reason.
+ * JSON value. Checks run in this order: form, path, duplicate, signature, author and writer binding,
+ * base version, rights, charter. The first failing check gives the reason.
  */
 export async function validate(input: unknown, context: ValidationContext): Promise<Verdict> {
   try {
@@ -128,7 +133,7 @@ async function validateUnsafe(input: unknown, context: ValidationContext): Promi
   const signer = await findSigner(operation, context);
   if (signer === undefined) return reject("bad_signature", "the signature verifies under no registered key");
 
-  const bindingError = authorBindingError(operation.author, signer);
+  const bindingError = authorBindingError(operation.author, signer) ?? writerBindingError(operation.op_id, signer);
   if (bindingError !== undefined) return reject("author_not_bound", bindingError);
 
   const version = context.issue?.version ?? 0;
@@ -214,4 +219,19 @@ function authorBindingError(author: Author, signer: Signer): string | undefined 
   if (owner === signer.ownerId) return undefined;
   const who = "person" in author ? author.person : "identity" in author ? author.identity : "Penguin";
   return `signed by bridge ${signer.bridgeId} of ${signer.ownerId}, which cannot write as ${who}`;
+}
+
+/**
+ * Only the service key numbers operations under the Worker's tag `web`, and it numbers no other tag.
+ * A bridge's operations carry its own tag, so the two writers' sequences never meet.
+ */
+function writerBindingError(opId: string, signer: Signer): string | undefined {
+  const writer = parseOpId(opId)?.writer;
+  if (signer.kind === "service") {
+    if (writer === WEB_WRITER_TAG) return undefined;
+    return `signed by the service key, so its op_id must carry the writer tag ${WEB_WRITER_TAG}`;
+  }
+  return writer === WEB_WRITER_TAG
+    ? `signed by bridge ${signer.bridgeId}, which cannot write under the writer tag ${WEB_WRITER_TAG}`
+    : undefined;
 }

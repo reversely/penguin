@@ -1,4 +1,4 @@
-// JSON Schema (draft 2020-12) for one issue operation file, `issues/<id>/ops/<author>-<seq>.json`.
+// JSON Schema (draft 2020-12) for one issue operation file, `issues/<id>/ops/<author>-<writer>-<seq>.json`.
 // The schema is plain JSON data so any standard validator can load it; `checkSchema` applies it here.
 
 import type { JsonSchema } from "./schema-check.ts";
@@ -26,13 +26,27 @@ export const IDENTITY_HANDLE_PATTERN = `^@${NAME_PATTERN}/${NAME_PATTERN}$`;
 export const IDENTITY_HANDLE_MAX_LENGTH = 80;
 
 /**
- * An author's sequence number: decimal, at least four digits, zero-padded to exactly four when it
- * is below 1000, and at least 1. One number has exactly one spelling, so "jun-7" and "jun-00007"
- * are not aliases of "jun-0007".
+ * A writer's sequence number for one author: decimal, at least four digits, zero-padded to exactly
+ * four when it is below 1000, and at least 1. One number has exactly one spelling, so "jun-web-7" and
+ * "jun-web-00007" are not aliases of "jun-web-0007".
  */
 export const SEQ_PATTERN = "(?:(?!0000)[0-9]{4}|[1-9][0-9]{4,8})";
 
-export const OP_ID_PATTERN = `^${SEGMENT_PATTERN}-${SEQ_PATTERN}$`;
+/**
+ * The writer that numbered an operation: `web` for the Worker (the dashboard, MCP and Penguin itself),
+ * or a bridge's tag. Lowercase letters and digits with no separator, so an op_id splits unambiguously
+ * from the right into author segment, writer and sequence number.
+ */
+export const WRITER_TAG_PATTERN = "[a-z0-9]{1,16}";
+
+/** The Worker's writer tag. A bridge tag is hexadecimal, so it is never this. */
+export const WEB_WRITER_TAG = "web";
+
+/**
+ * `<author segment>-<writer>-<seq>`. Each writer counts its own sequence per author, so an offline
+ * bridge and the Worker never assign the same op_id.
+ */
+export const OP_ID_PATTERN = `^${SEGMENT_PATTERN}-${WRITER_TAG_PATTERN}-${SEQ_PATTERN}$`;
 
 /** The service author's segment. No person may take this ID. */
 export const PENGUIN_AUTHOR_SEGMENT = "penguin";
@@ -149,7 +163,7 @@ export const OPERATION_SCHEMA: JsonSchema = {
   description:
     "One signed change to one issue, stored as issues/<issue>/ops/<op_id>.json in the project's issues repo. " +
     `A reader rejects a file larger than ${MAX_OPERATION_FILE_BYTES} bytes before parsing it. ` +
-    "The op_id begins with the author's segment (see $defs/author).",
+    "The op_id begins with the author's segment (see $defs/author), then the writer tag.",
   type: "object",
   additionalProperties: false,
   required: ["schema_version", "op_id", "issue", "type", "author", "base_version", "payload", "signature"],
@@ -185,7 +199,9 @@ export const OPERATION_SCHEMA: JsonSchema = {
       type: "string",
       maxLength: 128,
       pattern: OP_ID_PATTERN,
-      description: "<author segment>-<seq>. Unique per author across the project.",
+      description:
+        "<author segment>-<writer>-<seq>. The writer is `web` for the Worker or the writing bridge's tag; " +
+        "each writer numbers its own operations per author, so the op_id is unique across the project.",
     },
     issue: {
       description:

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "op_id": "jun-0009",
+  "op_id": "jun-b3f2-0009",
   "issue": 33,
   "type": "resolve_thread",
   "author": {
@@ -8,8 +8,8 @@
   },
   "base_version": 16,
   "payload": {
-    "thread": "jun-0008",
+    "thread": "jun-b3f2-0008",
     "reason": "The lower limit passes."
   },
-  "signature": "3BUZFyrwpNqHh09xVDpKhDHr-bV-S76vruCaxjuzrhBGse3WeR38EmtgzZ-bkW9g8YMqvHTpIuwYkNcwHUdNCA"
+  "signature": "FEp8rl0wIT1gpBkZxLNIio3iPcaxXHW4qqdY8ySXZEeVSE3s1w3_gRY1c3hcTjd3yOQPtC97HXFtuVg6BX4LCQ"
 }

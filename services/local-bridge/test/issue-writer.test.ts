@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, test } from "node:test";
 import { runGit } from "@penguin/git-analysis";
 import { verifyOperation } from "@penguin/issues";
 import {
+  bridgeTagFor,
   IssueWriter,
   loadSigningKey,
   MemoryKeyStore,
@@ -47,17 +48,21 @@ async function readOp(path: string): Promise<Operation> {
 /** Runs the CLI as one owner's bridge with its own clone and in-memory key store. */
 function bridge(owner: string, store = new MemoryKeyStore()) {
   const clone = join(root, `clone-${owner}`);
+  // Each owner's bridge keeps its own state folder, as on separate machines.
+  const stateDir = join(root, `state-${owner}`);
   const run = async (...args: string[]) => {
     const out: string[] = [];
     const code = await runCli(
       ["issue", ...args.slice(0, 1), "--owner", owner, "--repo", bare, "--clone", clone, ...args.slice(1)],
       { write: (text) => out.push(text), ask: async () => "" },
-      // Each owner's bridge keeps its own state folder, as on separate machines.
-      { keyStore: store, stateDir: join(root, `state-${owner}`) },
+      { keyStore: store, stateDir },
     );
     return { code, out: out.join("") };
   };
-  return { store, clone, run };
+  /** The op_id of this bridge's `seq`th operation as `segment` (the owner by default). */
+  const opId = async (seq: number, segment = owner) =>
+    `${segment}-${await bridgeTagFor(stateDir, owner, await loadSigningKey(store, owner))}-${String(seq).padStart(4, "0")}`;
+  return { store, clone, run, opId };
 }
 
 function pushedPath(out: string): string {
@@ -98,7 +103,7 @@ describe("the bridge signing key", () => {
 
 describe("the issue commands", () => {
   test("each of the six commands pushes one commit holding one valid, verifiable operation file", async () => {
-    const { store, run } = bridge(OWNER);
+    const { store, run, opId } = bridge(OWNER);
     const publicKey = (await loadSigningKey(store, OWNER)).publicKey;
     const timings: number[] = [];
 
@@ -121,7 +126,7 @@ describe("the issue commands", () => {
       if (command === "create") issue = String(operation.issue);
 
       assert.equal(operation.type, type);
-      assert.equal(operation.op_id, `jun-${String(index + 1).padStart(4, "0")}`);
+      assert.equal(operation.op_id, await opId(index + 1));
       assert.equal(path, operationPath(operation));
       assert.equal(path, `issues/${issue}/ops/${operation.op_id}.json`);
       assert.equal(operation.base_version, index, "base_version counts the issue's earlier operations");
@@ -130,7 +135,8 @@ describe("the issue commands", () => {
       const changed = await runGit(bare, ["show", "--name-only", "--format=", "main"]);
       assert.deepEqual(changed.trim().split("\n"), [path]);
     }
-    assert.equal(issue, "jun-0001", "a new issue's folder is its create operation's op_id");
+    assert.equal(issue, await opId(1), "a new issue's folder is its create operation's op_id");
+    assert.match(issue, /^jun-[0-9a-f]{4}-0001$/, "the bridge's writer tag is four hex digits");
     // Recorded for the ticket's time check: command start to completed push, local bare repo.
     process.stdout.write(`# issue command timings (ms): ${timings.join(", ")}\n`);
   });
@@ -154,10 +160,11 @@ describe("the issue commands", () => {
       .trim()
       .split("\n")
       .sort();
-    assert.deepEqual(files, [
-      ...["0001", "0002", "0003", "0004"].map((seq) => `issues/${issue}/ops/jun-${seq}.json`),
-      ...["0001", "0002", "0003"].map((seq) => `issues/${issue}/ops/priya-${seq}.json`),
-    ]);
+    const expected = [
+      ...(await Promise.all([1, 2, 3, 4].map((seq) => jun.opId(seq)))),
+      ...(await Promise.all([1, 2, 3].map((seq) => priya.opId(seq)))),
+    ];
+    assert.deepEqual(files, expected.map((opId) => `issues/${issue}/ops/${opId}.json`).sort());
     assert.equal(await commitCount(), 7);
   });
 
@@ -188,15 +195,17 @@ describe("the issue commands", () => {
     await rm(first.clone, { recursive: true, force: true });
     const again = await bridge(OWNER, first.store).run("create", "--title", "Third");
     assert.equal(again.code, 0, again.out);
-    assert.equal(pushedPath(again.out), "issues/jun-0003/ops/jun-0003.json");
-    assert.equal(pushedPath(created.out), "issues/jun-0001/ops/jun-0001.json");
+    const [one, three] = [await first.opId(1), await first.opId(3)];
+    assert.equal(pushedPath(again.out), `issues/${three}/ops/${three}.json`);
+    assert.equal(pushedPath(created.out), `issues/${one}/ops/${one}.json`);
   });
 
   test("an identity of the owner can be the author; another owner cannot", async () => {
-    const { run } = bridge(OWNER);
+    const { run, opId } = bridge(OWNER);
     const asIdentity = await run("create", "--title", "From an identity", "--as", "@jun/reports");
     assert.equal(asIdentity.code, 0, asIdentity.out);
-    assert.equal(pushedPath(asIdentity.out), "issues/jun.reports-0001/ops/jun.reports-0001.json");
+    const reports = await opId(1, "jun.reports");
+    assert.equal(pushedPath(asIdentity.out), `issues/${reports}/ops/${reports}.json`);
     await assert.rejects(run("create", "--title", "Forged", "--as", "priya"), /cannot write as priya/);
   });
 
@@ -219,7 +228,8 @@ describe("the issue commands", () => {
   test("an invalid payload is refused before anything is committed", async () => {
     const key: BridgeSigningKey = await loadSigningKey(new MemoryKeyStore(), OWNER);
     const spool = new Spool(join(root, "spool.jsonl"));
-    const writer = new IssueWriter({ remote: bare, clonePath: join(root, "clone"), ownerId: OWNER, key, spool });
+    const clonePath = join(root, "clone");
+    const writer = new IssueWriter({ remote: bare, clonePath, ownerId: OWNER, writer: "b3f2", key, spool });
     await assert.rejects(writer.write({ type: "create", payload: { title: "" } }), /invalid/);
     assert.equal(await commitCount(), 0);
     assert.deepEqual(await spool.read(), [], "an invalid operation never reaches the spool");

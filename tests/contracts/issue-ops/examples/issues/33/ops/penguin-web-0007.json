@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "op_id": "penguin-0007",
+  "op_id": "penguin-web-0007",
   "issue": 33,
   "type": "assign",
   "author": {
@@ -12,5 +12,5 @@
       "identity": "@jun/reports"
     }
   },
-  "signature": "XoLxvLiSZk9B2oGAMygnhyceHDChh_vOyQyennshbX30wzhenWCAdpKlVRAlOD_SyCxwNCM-oNx08whHNN1ODA"
+  "signature": "fDBG4Wzr48HfVcWPOikoHnpBUCGbXBESGfH_MJd1esqXyJRLAdtpnJuZn2iUCIOSpbVnqR_sDxLsc0Gp8t2gCw"
 }

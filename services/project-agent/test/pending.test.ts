@@ -105,14 +105,14 @@ describe("submitted operations", () => {
 
     assert.deepEqual(outcome, {
       status: "applied",
-      opId: "jun-0001",
+      opId: "jun-web-0001",
       issueId: "40",
       version: 1,
-      path: "issues/40/ops/jun-0001.json",
+      path: "issues/40/ops/jun-web-0001.json",
     });
     assert.equal(index.issue("40")?.title, "Board filter drops identities");
     assert.deepEqual(rows(db, `SELECT op_id, source, created_at FROM PendingOp`), [
-      { op_id: "jun-0001", source: "dashboard", created_at: 1_700_000_000_000 },
+      { op_id: "jun-web-0001", source: "dashboard", created_at: 1_700_000_000_000 },
     ]);
     const [entry] = index.read("40").timeline;
     assert.equal(entry?.status, "applied");
@@ -130,8 +130,8 @@ describe("submitted operations", () => {
     assert.deepEqual(
       files.map((file) => [file.opId, file.path, file.source]),
       [
-        ["jun-0001", "issues/40/ops/jun-0001.json", "dashboard"],
-        ["jun.reports-0001", "issues/40/ops/jun.reports-0001.json", "mcp"],
+        ["jun-web-0001", "issues/40/ops/jun-web-0001.json", "dashboard"],
+        ["jun.reports-web-0001", "issues/40/ops/jun.reports-web-0001.json", "mcp"],
       ],
     );
     for (const file of files) {
@@ -158,17 +158,17 @@ describe("submitted operations", () => {
     const [file] = pending(index);
     assert.ok(file);
 
-    assert.deepEqual(await push(index, file, "abc123"), { status: "duplicate", opId: "jun-0001" });
+    assert.deepEqual(await push(index, file, "abc123"), { status: "duplicate", opId: "jun-web-0001" });
     assert.deepEqual(rows(db, `SELECT * FROM PendingOp`), []);
     assert.deepEqual(rows(db, `SELECT op_id, status, git_commit FROM AppliedOp`), [
-      { op_id: "jun-0001", status: "applied", git_commit: "abc123" },
+      { op_id: "jun-web-0001", status: "applied", git_commit: "abc123" },
     ]);
     assert.equal(index.read("40").timeline[0]?.waitingForGitLog, false);
     assert.equal(index.issue("40")?.version, 1);
 
     // A second delivery of the same event changes nothing.
-    assert.deepEqual(await push(index, file, "def456"), { status: "duplicate", opId: "jun-0001" });
-    assert.deepEqual(rows(db, `SELECT op_id, git_commit FROM AppliedOp`), [{ op_id: "jun-0001", git_commit: "abc123" }]);
+    assert.deepEqual(await push(index, file, "def456"), { status: "duplicate", opId: "jun-web-0001" });
+    assert.deepEqual(rows(db, `SELECT op_id, git_commit FROM AppliedOp`), [{ op_id: "jun-web-0001", git_commit: "abc123" }]);
   });
 
   test("a different file that names a pending op_id leaves the operation pending", async () => {
@@ -181,11 +181,11 @@ describe("submitted operations", () => {
     const forged = await signOperation({ ...original, payload: { title: "Forged" } }, stranger.privateKey);
     await push(index, { file: JSON.stringify(forged), path: file.path });
     // The genuine file stored at another path does not count either.
-    await push(index, { file: file.file, path: "issues/41/ops/jun-0001.json" });
+    await push(index, { file: file.file, path: "issues/41/ops/jun-web-0001.json" });
 
-    assert.deepEqual(rows(db, `SELECT op_id FROM PendingOp`), [{ op_id: "jun-0001" }]);
-    assert.deepEqual(rows(db, `SELECT op_id, git_commit FROM AppliedOp WHERE op_id = 'jun-0001'`), [
-      { op_id: "jun-0001", git_commit: null },
+    assert.deepEqual(rows(db, `SELECT op_id FROM PendingOp`), [{ op_id: "jun-web-0001" }]);
+    assert.deepEqual(rows(db, `SELECT op_id, git_commit FROM AppliedOp WHERE op_id = 'jun-web-0001'`), [
+      { op_id: "jun-web-0001", git_commit: null },
     ]);
     assert.equal(index.issue("40")?.title, "Board filter drops identities");
   });
@@ -205,7 +205,7 @@ describe("submitted operations", () => {
     );
     assert.deepEqual(
       pending(index).map((file) => file.opId),
-      ["jun-0001", "jun-0002", "jun-0003", "jun-0004", "jun-0005"],
+      ["jun-web-0001", "jun-web-0002", "jun-web-0003", "jun-web-0004", "jun-web-0005"],
     );
   });
 
@@ -218,18 +218,18 @@ describe("submitted operations", () => {
     ]);
     assert.deepEqual(
       outcomes.map((outcome) => outcome.status === "applied" && outcome.opId),
-      ["jun-0001", "jun-0002", "jun-0003"],
+      ["jun-web-0001", "jun-web-0002", "jun-web-0003"],
     );
   });
 
-  test("op_ids continue after the author's bridge operations and ignore forged sequence numbers", async () => {
+  test("op_ids continue the Worker's own sequence and ignore bridge and forged sequence numbers", async () => {
     const { index } = sqlite();
     const fromBridge = await signOperation(
-      { schema_version: 1, op_id: "jun-0003", issue: 40, type: "create", author: jun, base_version: 0, payload: { title: "From the bridge" } },
+      { schema_version: 1, op_id: "jun-b3f2-0003", issue: 40, type: "create", author: jun, base_version: 0, payload: { title: "From the bridge" } },
       junBridge.privateKey,
     );
     const forged = await signOperation(
-      { schema_version: 1, op_id: "jun-0500", issue: 40, type: "comment", author: jun, base_version: 1, payload: { body: "Forged" } },
+      { schema_version: 1, op_id: "jun-web-0500", issue: 40, type: "comment", author: jun, base_version: 1, payload: { body: "Forged" } },
       stranger.privateKey,
     );
     for (const operation of [fromBridge, forged]) {
@@ -241,8 +241,23 @@ describe("submitted operations", () => {
       });
     }
 
-    const outcome = await submit(index, { issue: 40, type: "comment", base_version: 1, payload: { body: "From the dashboard" } });
-    assert.equal(outcome.status === "applied" && outcome.opId, "jun-0004");
+    // The bridge numbers its own sequence under its own tag, so the Worker's starts at 1.
+    const first = await submit(index, { issue: 40, type: "comment", base_version: 1, payload: { body: "From the dashboard" } });
+    assert.equal(first.status === "applied" && first.opId, "jun-web-0001");
+
+    // A Worker operation read back from the issues repo, as after a rebuild, moves the Worker's counter.
+    const fromRepo = await signOperation(
+      { schema_version: 1, op_id: "jun-web-0007", issue: 40, type: "comment", author: jun, base_version: 2, payload: { body: "Earlier" } },
+      service.privateKey,
+    );
+    await index.apply({
+      file: new TextEncoder().encode(JSON.stringify(fromRepo)),
+      gitCommit: "c0ffee",
+      path: operationPath(fromRepo),
+      keys,
+    });
+    const next = await submit(index, { issue: 40, type: "comment", base_version: 3, payload: { body: "Later" } });
+    assert.equal(next.status === "applied" && next.opId, "jun-web-0008");
   });
 
   test("a rejected submission is returned to the caller and recorded nowhere", async () => {
@@ -262,7 +277,7 @@ describe("submitted operations", () => {
     assert.equal(rows(db, `SELECT * FROM AppliedOp`).length, 1);
     assert.equal(rows(db, `SELECT * FROM PendingOp`).length, 1);
     const next = await submit(index, { issue: 40, type: "comment", base_version: 1, payload: { body: "On time" } });
-    assert.equal(next.status === "applied" && next.opId, "jun-0002");
+    assert.equal(next.status === "applied" && next.opId, "jun-web-0002");
   });
 });
 
@@ -283,7 +298,7 @@ describe("submission security", () => {
 
   test("Penguin sets op_id, signature and schema_version", async () => {
     const { index } = sqlite();
-    for (const field of [{ op_id: "jun-0009" }, { signature: "AAAA" }, { schema_version: 1 }]) {
+    for (const field of [{ op_id: "jun-web-0009" }, { signature: "AAAA" }, { schema_version: 1 }]) {
       const outcome = await submit(index, { ...create("Own"), ...field });
       assert.equal(outcome.status === "rejected" && outcome.reason, "malformed", JSON.stringify(field));
     }
@@ -307,7 +322,7 @@ describe("submission security", () => {
       assert.equal(outcome.status, status, `${JSON.stringify(author)} through ${source}`);
     }
     const asPenguin = await submit(index, create("Huddle", 70), penguin, "penguin");
-    assert.equal(asPenguin.status === "applied" && asPenguin.opId, "penguin-0001");
+    assert.equal(asPenguin.status === "applied" && asPenguin.opId, "penguin-web-0001");
   });
 
   test("the pending listing rejects a bridge without the runner role", async () => {

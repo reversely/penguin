@@ -5,12 +5,13 @@ import { createHash } from "node:crypto";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
-import type { Author, IssueId, Party } from "@penguin/protocol";
+import { bridgeWriterTag, type Author, type IssueId, type Party } from "@penguin/protocol";
 
 import type { CliIo } from "./cli.ts";
 import { isPenguinRemote, penguinRemote, unregisteredRemotes, type RemoteResolver } from "./git-remote.ts";
 import { IssueWriter, type IssueChange } from "./issue-writer.ts";
-import { loadSigningKey, type KeyStore } from "./key-store.ts";
+import { loadSigningKey, type BridgeSigningKey, type KeyStore } from "./key-store.ts";
+import { readRegistration } from "./penguin-client.ts";
 import { bridgeSpool } from "./spool-cli.ts";
 
 export const ISSUE_USAGE = `Usage: penguin-bridge issue <command> --owner <id> [--repo penguin:issues|<bare repo path>] [--clone <dir>]
@@ -79,13 +80,15 @@ export async function runIssueCommand(
   // Without --repo the operation goes to the issues repo in Artifacts.
   const repo = values.repo ?? penguinRemote("issues");
   const remote = isPenguinRemote(repo) ? repo : resolve(repo);
+  const key = await loadSigningKey(keyStore, values.owner);
   const writer = new IssueWriter({
     remote,
     remotes: remotesFor(stateDir),
     clonePath: resolve(values.clone ?? defaultClonePath(stateDir, remote)),
     branch: values.branch,
     ownerId: values.owner,
-    key: await loadSigningKey(keyStore, values.owner),
+    writer: await bridgeTagFor(stateDir, values.owner, key),
+    key,
     spool: bridgeSpool(stateDir),
   });
   const result = await writer.write(change, { author, baseVersion });
@@ -166,6 +169,17 @@ function parseParty(text: string): Party {
 function parseCount(text: string): number {
   if (!/^[0-9]+$/u.test(text)) throw new UsageError("--base-version must be a whole number");
   return Number(text);
+}
+
+/**
+ * The tag this bridge puts in its op_ids: derived from its bridge ID once it is registered for
+ * `owner`. A bridge not yet registered has no bridge ID, so its tag comes from its public signing
+ * key, which is its own on each machine. Either way the tag is hexadecimal and never the Worker's.
+ */
+export async function bridgeTagFor(stateDir: string, owner: string, key: BridgeSigningKey): Promise<string> {
+  const registration = await readRegistration(stateDir);
+  if (registration !== null && registration.owner === owner) return bridgeWriterTag(registration.bridgeId);
+  return bridgeWriterTag(`key:${key.publicJwk.x}`);
 }
 
 /** The bridge's clone of an issues repo, under <state dir>/issues/, one folder per remote. */

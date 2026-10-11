@@ -63,6 +63,11 @@ export interface IssueWriterOptions {
   branch?: string;
   /** The human owner this bridge belongs to. */
   ownerId: string;
+  /**
+   * The bridge's writer tag in every op_id it numbers, `<author>-<writer>-<seq>`: `bridgeWriterTag`
+   * of the bridge ID. Its own tag keeps the bridge's sequence apart from the Worker's (`web`).
+   */
+  writer: string;
   key: BridgeSigningKey;
   /** The bridge's outbound spool. Every operation is appended here before any push. */
   spool: Spool;
@@ -146,11 +151,11 @@ export class IssueWriter {
     baseVersion: number | undefined,
     spooled: readonly SpoolEntry[],
   ): Promise<OperationEntry> {
-    const { remote, clonePath, branch, key, spool } = this.#options;
-    const segment = authorSegment(author);
+    const { remote, clonePath, branch, key, spool, writer } = this.#options;
+    const prefix = `${authorSegment(author)}-${writer}-`;
     const ops = spooled.filter((entry): entry is OperationEntry => entry.kind === "operation");
-    const seq = (await this.#lastSequence(segment, ops)) + 1;
-    const opId = formatOpId(author, seq);
+    const seq = (await this.#lastSequence(prefix, ops)) + 1;
+    const opId = formatOpId(author, writer, seq);
     const issue = change.type === "create" ? opId : change.issue;
     const version = change.type === "create" ? 0 : (baseVersion ?? (await this.#operationCount(issue, spooled)));
 
@@ -178,25 +183,27 @@ export class IssueWriter {
       throw new Error(`${path} already exists in the issues repo or the spool`);
     }
     const entry = await spool.enqueue({ kind: "operation", id: opId, remote, clone: clonePath, branch, path, operation });
-    await this.#clone.saveSequence(segment, seq);
+    await this.#clone.saveSequence(prefix, seq);
     return entry as OperationEntry;
   }
 
   /**
-   * The highest sequence number this author has used: the largest of the bridge's counter, the
-   * author's files in the repo and the author's entries in the spool, so neither a lost counter
-   * nor a queued operation lets an op_id be reused.
+   * The highest sequence number this bridge has numbered for the author, whose op_ids begin with
+   * `prefix` (`<author>-<writer>-`): the largest of the bridge's counter, those files in the repo
+   * and those entries in the spool, so neither a lost counter nor a queued operation lets an op_id
+   * be reused.
    */
-  async #lastSequence(segment: string, spooled: readonly OperationEntry[]): Promise<number> {
-    let highest = await this.#clone.savedSequence(segment);
+  async #lastSequence(prefix: string, spooled: readonly OperationEntry[]): Promise<number> {
+    let highest = await this.#clone.savedSequence(prefix);
     const opIds = [
       ...(await this.#clone.trackedFiles("issues")).map(opIdOfPath),
       ...spooled.map((entry) => entry.operation.op_id),
     ];
     for (const opId of opIds) {
-      if (opId === undefined || !opId.startsWith(`${segment}-`)) continue;
-      const rest = opId.slice(segment.length + 1);
-      // A longer segment such as "jun-two" also starts with "jun-"; only digits follow our own.
+      if (opId === undefined || !opId.startsWith(prefix)) continue;
+      const rest = opId.slice(prefix.length);
+      // Another author's op_id can start with the prefix too ("jun-b3f2-x-0001" for author
+      // "jun-b3f2"); only digits follow our own.
       if (/^[0-9]+$/u.test(rest)) highest = Math.max(highest, Number(rest));
     }
     return highest;

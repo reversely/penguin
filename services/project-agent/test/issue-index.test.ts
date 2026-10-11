@@ -5,7 +5,14 @@ import { before, describe, test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 
 import { generateSigningKeyPair, signOperation } from "@penguin/issues";
-import { formatOpId, operationPath, type Author, type IssueId, type Operation } from "@penguin/protocol";
+import {
+  formatOpId,
+  operationPath,
+  WEB_WRITER_TAG,
+  type Author,
+  type IssueId,
+  type Operation,
+} from "@penguin/protocol";
 import { parseScopeMap } from "@penguin/scope-map";
 
 import {
@@ -110,9 +117,11 @@ class Writer {
     const seq = (this.#seqs.get(seqKey) ?? 0) + 1;
     this.#seqs.set(seqKey, seq);
     const base = options.base ?? this.#versions.get(String(issue)) ?? 0;
+    const key = options.key ?? signingKey(author);
+    const writer = key === service.privateKey ? WEB_WRITER_TAG : BRIDGE_TAG;
     const operation = await signOperation(
-      { schema_version: 1, op_id: formatOpId(author, seq), issue, type, author, base_version: base, payload },
-      options.key ?? signingKey(author),
+      { schema_version: 1, op_id: formatOpId(author, writer, seq), issue, type, author, base_version: base, payload },
+      key,
     );
     const outcome = await this.applyFile(new TextEncoder().encode(JSON.stringify(operation)), operationPath(operation));
     if (outcome.status === "applied") this.#versions.set(outcome.issueId, outcome.version);
@@ -125,6 +134,9 @@ class Writer {
     return this.index.apply(input);
   }
 }
+
+/** The writer tag the test bridges number their operations under. */
+const BRIDGE_TAG = "b3f2";
 
 function signingKey(author: Author): CryptoKey {
   if ("penguin" in author) return service.privateKey;
@@ -290,10 +302,10 @@ describe("IssueIndex", () => {
       await writer.apply(jun, "review", { verdict: "approve", commit: "owner-priya@9b2f10" }, 33),
       "no_right",
     );
-    rejectedFor(await writer.apply(jun, "edit_comment", { comment: "jun-9999", body: "x" }, 33), "unknown_comment");
+    rejectedFor(await writer.apply(jun, "edit_comment", { comment: "jun-b3f2-9999", body: "x" }, 33), "unknown_comment");
     rejectedFor(await writer.apply(jun, "comment", { body: "nowhere" }, 77), "no_issue");
     rejectedFor(
-      await writer.applyFile(new TextEncoder().encode("{not json"), "issues/33/ops/jun-0500.json"),
+      await writer.applyFile(new TextEncoder().encode("{not json"), "issues/33/ops/jun-b3f2-0500.json"),
       "malformed",
     );
 
@@ -337,7 +349,7 @@ describe("IssueIndex", () => {
     const real = await signOperation(
       {
         schema_version: 1,
-        op_id: "priya-0042",
+        op_id: "priya-b3f2-0042",
         issue: 5,
         type: "comment",
         author: priya,
@@ -389,7 +401,7 @@ describe("IssueIndex", () => {
       const operation = await signOperation(
         {
           schema_version: 1,
-          op_id: formatOpId(jun, seq),
+          op_id: formatOpId(jun, BRIDGE_TAG, seq),
           issue: 1,
           type: seq === 1 ? "create" : "comment",
           author: jun,

@@ -426,7 +426,7 @@ describe("MCP: post_update", () => {
     await project.op("priya", 31, "assign", { assignee: { identity: "@jun/reports" } });
     await project.op("priya", 31, "open_thread", { body: "Which merge rule wins?", needs: ["jun"] });
     await project.op("priya", 32, "create", { title: "Not Jun's" });
-    return { project, sessionId, thread: "priya-0003" };
+    return { project, sessionId, thread: "priya-web-0003" };
   }
 
   function pendingAuthor(project: Project, opId: string): unknown {
@@ -448,21 +448,21 @@ describe("MCP: post_update", () => {
       update: { type: "comment", body: "The cohort query double-counts devices." },
     });
     assert.equal(isError, false, JSON.stringify(value));
-    assert.deepEqual(value, { opId: "jun.reports-0001", issueId: "31", version: 4, waitingForGitLog: true });
+    assert.deepEqual(value, { opId: "jun.reports-web-0001", issueId: "31", version: 4, waitingForGitLog: true });
 
-    const comment = project.index.issue("31")?.comments.get("jun.reports-0001");
+    const comment = project.index.issue("31")?.comments.get("jun.reports-web-0001");
     assert.equal(comment?.author, "jun.reports");
     assert.equal(comment?.body, "The cohort query double-counts devices.");
     assert.equal(project.count("PendingOp"), pendingBefore + 1);
-    assert.deepEqual(pendingAuthor(project, "jun.reports-0001"), { identity: "@jun/reports" });
-    const source = project.sqlite.db.prepare(`SELECT source FROM PendingOp WHERE op_id = ?`).get("jun.reports-0001");
+    assert.deepEqual(pendingAuthor(project, "jun.reports-web-0001"), { identity: "@jun/reports" });
+    const source = project.sqlite.db.prepare(`SELECT source FROM PendingOp WHERE op_id = ?`).get("jun.reports-web-0001");
     assert.equal(source?.["source"], "mcp");
 
     const issue = await call(project, "jun", "get_issue", { sessionId, issue: 31 });
     const last = issue.value.operations.at(-1);
     assert.deepEqual(
       [last.opId, last.author, last.type, last.waitingForGitLog],
-      ["jun.reports-0001", "jun.reports", "comment", true],
+      ["jun.reports-web-0001", "jun.reports", "comment", true],
     );
   });
 
@@ -481,9 +481,9 @@ describe("MCP: post_update", () => {
     assert.deepEqual(
       timeline.slice(-3).map((entry) => [entry.opId, entry.type, entry.status]),
       [
-        ["jun.reports-0001", "link_commit", "applied"],
-        ["jun.reports-0002", "reply_thread", "applied"],
-        ["jun.reports-0003", "change_state", "applied"],
+        ["jun.reports-web-0001", "link_commit", "applied"],
+        ["jun.reports-web-0002", "reply_thread", "applied"],
+        ["jun.reports-web-0003", "change_state", "applied"],
       ],
     );
     assert.deepEqual(
@@ -493,7 +493,7 @@ describe("MCP: post_update", () => {
     assert.deepEqual(issue?.threads.get(thread)?.participants, ["priya", "jun.reports"]);
     assert.equal(issue?.state, "fixing");
     assert.equal(issue?.stateReason, "Working on the cohort query.");
-    for (const opId of ["jun.reports-0001", "jun.reports-0002", "jun.reports-0003"]) {
+    for (const opId of ["jun.reports-web-0001", "jun.reports-web-0002", "jun.reports-web-0003"]) {
       assert.deepEqual(pendingAuthor(project, opId), { identity: "@jun/reports" });
     }
   });
@@ -518,7 +518,7 @@ describe("MCP: post_update", () => {
       update: { type: "add_label", label: "scope:analytics" },
     });
     assert.equal(inside.isError, false, JSON.stringify(inside.value));
-    assert.equal(inside.value.opId, "jun.reports-0001");
+    assert.equal(inside.value.opId, "jun.reports-web-0001");
   });
 
   test("the author is the session's identity: the input cannot name one", async () => {

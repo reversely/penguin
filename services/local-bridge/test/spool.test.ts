@@ -11,6 +11,7 @@ import { runGit } from "@penguin/git-analysis";
 import { signOperation } from "@penguin/issues";
 import {
   bridgeSpool,
+  bridgeTagFor,
   CheckpointPublisher,
   drainSpool,
   loadSigningKey,
@@ -34,6 +35,8 @@ let bare: string;
 let away: string;
 let stateDir: string;
 let store: MemoryKeyStore;
+/** The writer tag this test's bridge numbers its op_ids under. */
+let tag: string;
 
 beforeEach(async () => {
   root = await realpath(await mkdtemp(join(tmpdir(), "penguin-spool-")));
@@ -41,8 +44,12 @@ beforeEach(async () => {
   away = join(root, "issues.git.away");
   stateDir = join(root, "state");
   store = new MemoryKeyStore();
+  tag = await bridgeTagFor(stateDir, OWNER, await loadSigningKey(store, OWNER));
   await runGit(root, ["init", "--quiet", "--bare", "-b", "main", bare]);
 });
+
+/** The op_id of this bridge's `seq`th operation as the owner. */
+const op = (seq: number): string => `${OWNER}-${tag}-${String(seq).padStart(4, "0")}`;
 
 afterEach(async () => {
   await rm(root, { recursive: true, force: true });
@@ -90,7 +97,7 @@ async function queueThree(): Promise<string[]> {
   assert.equal(created.code, 0, created.out);
   paths.push(queuedPath(created.out));
   for (const body of ["first", "second"]) {
-    const comment = await issue("comment", "--issue", "jun-0001", "--body", body);
+    const comment = await issue("comment", "--issue", op(1), "--body", body);
     assert.equal(comment.code, 0, comment.out);
     paths.push(queuedPath(comment.out));
   }
@@ -120,16 +127,16 @@ describe("an unreachable issues remote", () => {
     await goOffline();
     const created = await issue("create", "--title", "Written on a plane");
     assert.equal(created.code, 0, created.out);
-    assert.match(created.out, /^Queued issues\/jun-0001\/ops\/jun-0001\.json \(\d+ ms\): /m);
+    assert.match(created.out, new RegExp(`^Queued issues/${op(1)}/ops/${op(1)}\\.json \\(\\d+ ms\\): `, "m"));
     assert.match(created.out, /spool drain\|watch/);
 
     // A follow-up on the queued issue counts the queued create in its base version.
-    const comment = await issue("comment", "--issue", "jun-0001", "--body", "Still offline.");
+    const comment = await issue("comment", "--issue", op(1), "--body", "Still offline.");
     assert.equal(comment.code, 0, comment.out);
     const pending = await spool().pending();
     assert.deepEqual(
       pending.map((entry) => entry.id),
-      ["jun-0001", "jun-0002"],
+      [op(1), op(2)],
     );
     const [, second] = pending;
     assert.equal(second?.kind === "operation" && second.operation.base_version, 1);
@@ -151,7 +158,7 @@ describe("an unreachable issues remote", () => {
 
     // A spool file someone widened is narrowed again on the next append.
     await chmod(spool().path, 0o644);
-    await issue("comment", "--issue", "jun-0001", "--body", "third");
+    await issue("comment", "--issue", op(1), "--body", "third");
     assert.equal((await stat(spool().path)).mode & 0o777, 0o600);
   });
 
@@ -187,15 +194,15 @@ describe("an unreachable issues remote", () => {
     await goOffline();
     await queueThree();
     await goOnline();
-    const label = await issue("label", "--issue", "jun-0001", "--label", "scope:analytics");
+    const label = await issue("label", "--issue", op(1), "--label", "scope:analytics");
     assert.equal(label.code, 0, label.out);
-    assert.match(label.out, /^Pushed issues\/jun-0001\/ops\/jun-0004\.json/m);
+    assert.match(label.out, new RegExp(`^Pushed issues/${op(1)}/ops/${op(4)}\\.json`, "m"));
     const subjects = (await runGit(bare, ["log", "--reverse", "--format=%s", "main"])).trim().split("\n");
     assert.deepEqual(subjects, [
-      "issue jun-0001: create jun-0001",
-      "issue jun-0001: comment jun-0002",
-      "issue jun-0001: comment jun-0003",
-      "issue jun-0001: add_label jun-0004",
+      `issue ${op(1)}: create ${op(1)}`,
+      `issue ${op(1)}: comment ${op(2)}`,
+      `issue ${op(1)}: comment ${op(3)}`,
+      `issue ${op(1)}: add_label ${op(4)}`,
     ]);
   });
 });
@@ -256,7 +263,7 @@ describe("a bridge killed during a push", () => {
       const result = await drainSpool(spool());
       assert.deepEqual(result.waiting, []);
       assert.deepEqual(result.failed, []);
-      assert.deepEqual(result.pushed.map((item) => item.id).sort(), ["jun-0001", "jun-0002", "jun-0003"]);
+      assert.deepEqual(result.pushed.map((item) => item.id).sort(), [op(1), op(2), op(3)]);
       const { files, adds } = await remoteOps();
       assert.deepEqual(files, [...paths].sort());
       for (const path of paths) assert.equal(adds.get(path), 1, `${path} was added more than once`);
@@ -274,12 +281,12 @@ describe("the spool file", () => {
     // Signed and spooled directly, as the issue command does offline, to keep the test fast.
     const key = await loadSigningKey(store, OWNER);
     for (let seq = 1; seq <= 100; seq++) {
-      const opId = formatOpId({ person: OWNER }, seq);
+      const opId = formatOpId({ person: OWNER }, tag, seq);
       const operation = await signOperation(
         {
           schema_version: OPERATION_SCHEMA_VERSION,
           op_id: opId,
-          issue: "jun-0001",
+          issue: op(1),
           type: seq === 1 ? "create" : "comment",
           author: { person: OWNER },
           base_version: seq - 1,
@@ -319,11 +326,11 @@ describe("the spool file", () => {
     await goOffline();
     await issue("create", "--title", "Before the crash");
     await appendFile(spool().path, '{"v":1,"kind":"operation","id":"jun-00');
-    const comment = await issue("comment", "--issue", "jun-0001", "--body", "after the crash");
+    const comment = await issue("comment", "--issue", op(1), "--body", "after the crash");
     assert.equal(comment.code, 0, comment.out);
     assert.deepEqual(
       (await spool().pending()).map((entry) => entry.id),
-      ["jun-0001", "jun-0002"],
+      [op(1), op(2)],
     );
     await goOnline();
     assert.equal((await drainSpool(spool())).pushed.length, 2);
