@@ -4,6 +4,7 @@
 // Git objects are real and read through the binding's object reads.
 
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { beforeEach, describe, test } from "node:test";
 
 import { canonicalBytes, fromBase64Url } from "@penguin/issues";
@@ -456,6 +457,85 @@ describe("propose_plan", () => {
     assert.equal(project.facts.record(request?.runId as string, "runner-1", report).status, "recorded");
     const outcome = (await project.propose("ines", "s-ines", "money-minor", parts())) as Extract<ProposePlanOutcome, { status: "missing" }>;
     assert.deepEqual(outcome.missing.map((item) => [item.code, item.detail]), [["impact_failed", HOSTILE]]);
+  });
+
+  // The orders fix divides by 100, which no name swap gives; the plan declares it as a rewrite rule.
+  const CENTS = { id: "cents", contract: "shared/money/api.py::price", kind: "expression", pattern: "price($item)", replacement: "price_minor($item) / 100", imports: [] };
+  const blob = (text: string) => createHash("sha1").update(`blob ${Buffer.byteLength(text)}\0`).update(text).digest("hex");
+
+  /** The runner's report of the run waiting with the plan's rules: the rules wrote `files` in orders-export. */
+  async function reportRewrites(rewrites: PlanFactsReport["rewrites"] | "none", files = [{ path: "orders/export.py", before: blob(ORDERS_BEFORE), after: blob(ORDERS_AFTER), rules: ["cents"] }]): Promise<void> {
+    const [request] = project.facts.pending();
+    assert.ok(request?.rewrites);
+    const shas = Object.fromEntries(request.targets.map((target) => [target.id, target.sha]));
+    const report = factsReport(impactReport(built.main, built.checkpoint, shas), built.checkpoint);
+    const places = request.rewrites.places.map((place) => ({ target: place.target, files: place.target === "orders-export" ? files : [], error: null }));
+    const full = rewrites === "none" ? report : { ...report, rewrites: rewrites ?? { refused: [], places } };
+    assert.deepEqual(checkPlanFactsReport(full), []);
+    assert.equal(project.facts.record(request.runId, "runner-1", JSON.parse(JSON.stringify(full))).status, "recorded");
+  }
+
+  test("a part whose fix is exactly what the plan's rewrite rules write is mechanical", async () => {
+    const first = await project.propose("ines", "s-ines", "money-minor", parts(), [CENTS]);
+    assert.ok(first.status === "missing" && first.missing[0]?.code === "waiting_for_runner");
+    const [request] = project.facts.pending();
+    // Main at the baseline inside the dependent scopes; each running feature on its own work since then.
+    assert.deepEqual(request?.rewrites, {
+      rules: [CENTS],
+      places: [
+        { target: "main", sha: built.main, paths: ["billing", "orders", "tax"], since: null },
+        { target: "billing-v2", sha: built.billingWork, paths: ["billing"], since: built.main },
+        { target: "orders-export", sha: built.main, paths: ["orders"], since: built.main },
+        { target: "tax-rounding", sha: built.main, paths: ["tax"], since: built.main },
+      ],
+    });
+    await reportRewrites(undefined);
+    const outcome = await project.propose("ines", "s-ines", "money-minor", parts(), [CENTS]);
+    assert.equal(outcome.status, "stored", JSON.stringify(outcome).slice(0, 800));
+    if (outcome.status !== "stored") return;
+    const orders = outcome.plan.parts.find((part) => part.place.kind === "feature" && part.place.feature === "orders-export");
+    assert.deepEqual([orders?.kind, orders?.kindReason], ["mechanical", "every changed file is what the plan's rules write (cents)"]);
+    // A name swap stays mechanical by the contract diff's codemod edits.
+    assert.match(outcome.plan.parts[1]?.kindReason ?? "", /price for price_minor/u);
+    assert.deepEqual(outcome.plan.rules, [CENTS]);
+    assert.deepEqual(project.records("money-minor", "propose_plan")[0]?.payload["rules"], ["cents"]);
+  });
+
+  test("a fix that differs from the rules' output stays behavioural and says where", async () => {
+    await project.propose("ines", "s-ines", "money-minor", parts(), [CENTS]);
+    await reportRewrites(undefined, [{ path: "orders/export.py", before: blob(ORDERS_BEFORE), after: blob(`${ORDERS_AFTER}# more\n`), rules: ["cents"] }]);
+    const outcome = await project.propose("ines", "s-ines", "money-minor", parts(), [CENTS]);
+    assert.ok(outcome.status === "stored");
+    const orders = outcome.plan.parts[2];
+    assert.deepEqual([orders?.kind, orders?.kindReason], ["behavioural", "orders/export.py differs from what the plan's rules write"]);
+  });
+
+  test("a rule outside the contract diff or refused by the runner is missing, and other rules need their own run", async () => {
+    const outside = { ...CENTS, id: "rows", contract: "orders/export.py::row" };
+    await project.propose("ines", "s-ines", "money-minor", parts(), [CENTS, outside]);
+    await reportRewrites({ refused: [{ rule: "cents", message: `the pattern names no use of shared.money.api.price ${HOSTILE}` }], places: [] });
+    const refused = await project.propose("ines", "s-ines", "money-minor", parts(), [CENTS, outside]);
+    assert.ok(refused.status === "missing", JSON.stringify(refused).slice(0, 500));
+    assert.deepEqual(
+      refused.missing.map((item) => [item.code, item.rule]),
+      [
+        ["rule_refused", "rows"],
+        ["rule_refused", "cents"],
+      ],
+    );
+    assert.match(refused.missing[0]?.message ?? "", /does not touch, so it would rewrite code outside the change/u);
+    // Other rules than the reported run's: a run of their own, and the old report no longer counts.
+    const again = await project.propose("ines", "s-ines", "money-minor", parts(), [CENTS]);
+    assert.ok(again.status === "missing" && again.missing[0]?.code === "waiting_for_runner");
+    assert.equal(project.facts.pending().length, 1);
+    // A runner that predates rules reports none: the plan waits on one that applies them.
+    await reportRewrites("none");
+    const old = await project.propose("ines", "s-ines", "money-minor", parts(), [CENTS]);
+    assert.ok(old.status === "missing");
+    assert.deepEqual(old.missing.map((item) => item.code), ["rules_not_run"]);
+    // A malformed rule is refused before anything runs.
+    const malformed = await project.propose("ines", "s-ines", "money-minor", parts(), [{ ...CENTS, replacement: "$other" }]);
+    assert.ok(malformed.status === "rejected" && /does not bind/u.test(malformed.message));
   });
 
   test("a newer checkpoint supersedes a pending facts run, and the runner's report of it answers so", async () => {

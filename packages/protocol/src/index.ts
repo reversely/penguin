@@ -7,6 +7,7 @@ export * from "./verification.ts";
 export * from "./impact.ts";
 export * from "./block-check.ts";
 export * from "./plan.ts";
+export * from "./rewrite-rule.ts";
 export * from "./plan-approval.ts";
 export * from "./dashboard.ts";
 export * from "./patch.ts";

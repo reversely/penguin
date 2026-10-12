@@ -192,9 +192,31 @@ The procedure moves conflict handling to the start of the work. Each step below 
   that differs only by names a codemod edit of the contract diff swaps in that place. The edits come
   from `codemodPlan` (`packages/protocol`), the same edits the resolution ladder's step 3 applies: a
   rename, a move or a renamed keyword parameter. A plan part and the ladder therefore agree on what
-  Penguin's codemod can write. Any other fix is behavioural. The part names the first line that
-  shows why. On the helpful fix both proposed fixes are behavioural: each one also adds the user's
-  offset as an argument of the call it switches to `start_of_local_day`.
+  Penguin's codemod can write. A fix is also mechanical when every file it changes is exactly what
+  the plan's rewrite rules write there (below). Any other fix is behavioural. The part names the
+  first line or file that shows why. On the helpful fix both proposed fixes are behavioural: each
+  one also adds the user's offset as an argument of the call it switches to `start_of_local_day`.
+- **Rewrite rules.** A type migration needs pattern rewrites the contract diff cannot give, so the
+  originating agent declares them in `propose_plan`'s `rules` (`rewrite-rule.ts` in
+  `packages/protocol`). Each rule names one contract the contract diff touches (`path::symbol`), a
+  kind, a pattern, a replacement and the imports the replacement needs. An `expression` rule
+  rewrites each expression its pattern matches, such as `money.display($amount)` to
+  `$amount.display()`. Its pattern must name a use of the contract. An `annotation` rule rewrites a
+  type annotation, such as `float` to `money.Money`, on a function's return when every `return`
+  calls the contract, and on a parameter passed by name to a call of the contract.
+  - The facts run carries the rules (#105). The check runner compiles each rule into LibCST
+    matchers and applies it with Penguin's codemod (`fix:python-codemod`), then the lint autofix
+    and the formatter. Rules run on main's files at the baseline inside the dependent scopes. They
+    also run on each running feature's own changed files at its checkpoint. The runner reports each
+    changed file's blob before and after.
+  - The runner refuses a rule whose pattern names no use of its contract, because it would rewrite
+    code outside its contract. It also refuses a replacement that names anything other than its
+    placeholders, the contract's module and the rule's imports. An import comes from the contract's
+    module or the standard library. Penguin refuses a rule whose contract the contract diff does
+    not touch. Each refusal is a `rule_refused` item in `missing`. Nothing in a rule is run.
+  - A part is mechanical by the rules when each file the fix or the rules change inside the part's
+    scopes has the same blob before and after on both sides. Other rules than the last run's need
+    a new facts run.
 - **Break limit.** The limit counts a plan's behavioural parts, the fixes an agent writes. Mechanical
   parts are left out, because Penguin's codemod writes them. `PENGUIN_PLAN_BREAK_LIMIT`, a Worker
   setting, sets the limit, 10 when unset. Any value other than a positive whole number refuses every

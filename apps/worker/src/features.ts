@@ -366,9 +366,9 @@ export function mcpFeatures(ports: FeaturePorts, owner: string): McpFeatures {
         const outcome = await (await ports.directory()).submitReview(owner, sessionId, { feature, scope, form }, ports.repos);
         return outcome.status === "ok" ? { status: "ok", value: reviewFields(outcome) } : outcome;
       }),
-    plan: (sessionId, feature, parts) =>
+    plan: (sessionId, feature, parts, rules) =>
       guarded(async () => {
-        const outcome = await (await ports.directory()).proposePlan(owner, sessionId, { feature, parts }, ports.repos);
+        const outcome = await (await ports.directory()).proposePlan(owner, sessionId, { feature, parts, rules }, ports.repos);
         return outcome.status === "rejected" ? outcome : { status: "ok", value: planAnswer(outcome) };
       }),
     revise: (sessionId, input) =>
@@ -535,11 +535,12 @@ export function planAnswer(outcome: Exclude<ProposePlanOutcome, { status: "rejec
         status: "missing",
         feature: outcome.featureId,
         checkpoint: outcome.checkpoint,
-        missing: outcome.missing.map(({ code, message, place, part, detail }) => ({
+        missing: outcome.missing.map(({ code, message, place, part, rule, detail }) => ({
           code,
           message,
           ...(place === undefined ? {} : { place }),
           ...(part === undefined ? {} : { part }),
+          ...(rule === undefined ? {} : { rule }),
           ...(detail === undefined ? {} : { personWritten: { detail } }),
         })),
         facts: factsFields(outcome.facts),
@@ -571,6 +572,7 @@ function planFields(plan: Plan): Record<string, unknown> {
     breakLimit,
     assembledMs,
     facts: factsFields(plan.facts),
+    rules: (plan.rules ?? []).map((rule) => rule.id),
     parts: plan.parts.map(partFields),
   };
 }

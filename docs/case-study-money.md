@@ -67,7 +67,7 @@ scopes that read money.
 
 | Scope | Kind of fix | Who writes it |
 |---|---|---|
-| `checkout`, `orders`, `refunds`, `invoicing`, `messaging`, `mobile-api` | Mechanical: the float type becomes `Money`, `* 100` conversions are removed, formatting moves to `Money.display()` | Penguin's codemod, generated from the contract diff |
+| `checkout`, `orders`, `refunds`, `invoicing`, `messaging`, `mobile-api` | Mechanical: the float type becomes `Money`, `* 100` conversions are removed, formatting moves to `Money.display()` | Penguin's codemod, from the rewrite rules Ines's agent declares in the plan |
 | `tax` | Behaviour: where rounding happens | Ines's agent |
 | `payouts` | Behaviour: how store fees round | Ines's agent |
 | `analytics` | Behaviour: summing revenue across currencies | Ines's agent |

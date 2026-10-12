@@ -32,7 +32,7 @@ import {
   TestRunner,
   toolPass,
 } from "@penguin/local-bridge";
-import { boundReviewRecord, type Plan, type ReviewForm } from "@penguin/protocol";
+import { boundReviewRecord, type Plan, type ReviewForm, type RewriteRule } from "@penguin/protocol";
 import { parseScopeMap, type ScopeMap } from "@penguin/scope-map";
 
 import type { DashboardBackend } from "../../apps/worker/src/dashboard.ts";
@@ -374,10 +374,11 @@ export class PreviewProject {
   }
 
   /**
-   * The originating agent proposes its merge plan. The first proposal schedules the facts run, which
-   * the check runner makes; the second stores the plan and tells every author.
+   * The originating agent proposes its merge plan with its rewrite rules. The first proposal schedules
+   * the facts run, which the check runner makes, rules included; the second stores the plan and tells
+   * every author.
    */
-  async propose(featureId: string, parts: readonly unknown[]): Promise<ProposePlanOutcome> {
+  async propose(featureId: string, parts: readonly unknown[], rules: readonly RewriteRule[] = []): Promise<ProposePlanOutcome> {
     this.tick();
     const feature = this.features.get(featureId);
     if (feature === undefined) throw new Error(`no feature ${featureId}`);
@@ -402,14 +403,16 @@ export class PreviewProject {
         },
         feature.personId,
         this.sessionOf.get(featureId) as string,
-        { feature: featureId, parts },
+        { feature: featureId, parts, ...(rules.length === 0 ? {} : { rules }) },
       );
     const first = await call();
     if (first.status !== "missing" || !first.missing.some((item) => item.code === "waiting_for_runner")) return first;
+    const scratch = await mkdtemp(join(tmpdir(), "penguin-preview-facts-"));
     const runner = new PlanFactsRunner({
       repoPath: this.repo,
-      runner: new TestRunner({ repoPath: this.repo, env: ENV, scratchDir: await mkdtemp(join(tmpdir(), "penguin-preview-facts-")), consent: () => true }),
+      runner: new TestRunner({ repoPath: this.repo, env: ENV, scratchDir: scratch, consent: () => true }),
       impact: pythonImpactAnalyzer({ repoPath: this.repo, python: PYTHON, env: ENV }),
+      fixes: new FixApplier({ repoPath: this.repo, ruff: RUFF, python: PYTHON, env: ENV, scratchDir: scratch }),
     });
     for (const request of this.facts.pending()) {
       const report = JSON.parse(JSON.stringify(await runner.run(request)));
@@ -759,7 +762,7 @@ async function moneyMinorUnits(preview: PreviewProject): Promise<void> {
   const larder = JSON.parse(await readFile(join(ROOT, "examples", preview.fixture, "larder.json"), "utf8")) as {
     features: LarderFeature[];
     promotions: { feature: string }[];
-    plan: { feature: string; parts: { scope: string; kind: string }[] };
+    plan: { feature: string; parts: { scope: string; kind: string }[]; rules: RewriteRule[] };
   };
   const identities = identitiesOf(preview);
   preview.seedIdentities(identities);
@@ -800,13 +803,15 @@ async function moneyMinorUnits(preview: PreviewProject): Promise<void> {
     return { place: { feature: feature.id }, patch: { base: head, diff } };
   });
   const parts = [...scopeParts, ...readerParts];
-  let proposed = await preview.step("propose_plan", () => preview.propose(origin.id, parts));
-  // Over the break limit Penguin returns the plan to Ines. The fixture holds no smaller plan, so the
-  // project raises its limit (PRD 13, decision 1) to the behavioural parts the returned plan counted,
-  // and Ines's agent proposes the same parts again. The returned plan stays in Ines's inbox.
+  let proposed = await preview.step("propose_plan", () => preview.propose(origin.id, parts, larder.plan.rules));
+  // Ines's agent declares the plan's rewrite rules from larder.json. The fixture's hand-written fixes
+  // also change docstrings and test data that no rule writes, so every part stays behavioural
+  // (docs/fixture-money.md). Over the break limit Penguin returns the plan to Ines. The fixture holds
+  // no smaller plan, so the project raises its limit (PRD 13, decision 1) to the behavioural parts the
+  // returned plan counted, and Ines's agent proposes the same parts again. The returned plan stays in Ines's inbox.
   if (proposed.status === "returned") {
     preview.breakLimit = proposed.behavioural.length;
-    proposed = await preview.step("propose_plan at the project's raised break limit", () => preview.propose(origin.id, parts));
+    proposed = await preview.step("propose_plan at the project's raised break limit", () => preview.propose(origin.id, parts, larder.plan.rules));
   }
   if (proposed.status !== "stored") throw new Error(`plan: ${JSON.stringify(proposed).slice(0, 3_000)}`);
 

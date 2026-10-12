@@ -9,14 +9,18 @@
 // 3. runs each listed `test:<scope>` command on the merged commit in a throwaway worktree, except on
 //    a feature the impact graph shows does not use the change;
 // 4. states each failing test as a break: its docstring at the merged commit and the assertion and
-//    error lines pytest printed.
+//    error lines pytest printed;
+// 5. when the plan declares rewrite rules, applies them in each listed place with Penguin's codemod,
+//    lint autofix and formatter (FixApplier.rewrite), and reports each file they change by its blob
+//    before and after, so the Worker can compare the rules' output with each part's proposed fix.
 //
 // The report carries no log. Every step is a local Git, analysis or test command; nothing calls a model.
 
-import { commitMergedTree, isObjectId, simulateMerge } from "@penguin/git-analysis";
+import { commitMergedTree, isObjectId, runGit, simulateMerge } from "@penguin/git-analysis";
 import {
   PLAN_LIMITS,
   PLAN_MAIN_TARGET,
+  rewriteRuleContractPath,
   selectAffectedForks,
   type ImpactReport,
   type PlanBreak,
@@ -24,8 +28,12 @@ import {
   type PlanFactsRequest,
   type PlanFactsResult,
   type PlanFactsTarget,
+  type PlanRewriteReport,
+  type PlanRewriteRequest,
 } from "@penguin/protocol";
+import { InvalidPathError, normalizeRepoPath } from "@penguin/scope-map";
 
+import type { FixApplier } from "./apply-fix.ts";
 import { parseFailingTests } from "./combined-run.ts";
 import { resolveCommand } from "./command-allowlist.ts";
 import { fingerprint } from "./fingerprint.ts";
@@ -41,6 +49,8 @@ export interface PlanFactsRunnerOptions {
   readonly repoPath: string;
   readonly runner: TestRunner;
   readonly impact: ImpactAnalyzer;
+  /** Applies a plan's rewrite rules; without it, a request with rules reports each place as not run. */
+  readonly fixes?: Pick<FixApplier, "rewrite">;
 }
 
 /** The repo a facts run fetches: the originating fork and each running feature's fork. */
@@ -56,6 +66,20 @@ export function checkFactsRequest(request: PlanFactsRequest): void {
   if (request.targets.length > PLAN_LIMITS.targets) throw new Error(`a facts run lists at most ${PLAN_LIMITS.targets} targets`);
   for (const target of request.targets) {
     if (target.commandIds.length > PLAN_LIMITS.commandsPerTarget) throw new Error(`target ${target.id} lists too many commands`);
+  }
+  for (const place of request.rewrites?.places ?? []) {
+    if (!request.targets.some((target) => target.id === place.target && target.sha === place.sha)) {
+      throw new Error(`rewrite place ${JSON.stringify(place.target)} is not a target at its commit`);
+    }
+    if (place.since !== null && !isObjectId(place.since)) throw new Error(`${JSON.stringify(place.since)} is not a full object ID`);
+    for (const prefix of place.paths) {
+      try {
+        if (normalizeRepoPath(prefix) === "") throw new Error("a rewrite path may not be the repository root");
+      } catch (error) {
+        if (error instanceof InvalidPathError) throw new Error(`${JSON.stringify(prefix)} is not a repository path`);
+        throw error;
+      }
+    }
   }
 }
 
@@ -98,7 +122,40 @@ export class PlanFactsRunner {
       const affected = target.id === PLAN_MAIN_TARGET || selected === undefined || selected.has(target.id);
       results.push(...(await this.#target(request.checkpoint, target, affected)));
     }
-    return { impact, impactError, results, durationMs: Math.round(performance.now() - started) };
+    const rewrites = request.rewrites == null || request.rewrites.rules.length === 0 ? undefined : await this.#rewrites(request.checkpoint, request.rewrites);
+    return { impact, impactError, results, durationMs: Math.round(performance.now() - started), ...(rewrites === undefined ? {} : { rewrites }) };
+  }
+
+  /** Applies the plan's rules in each place: every Python file under its paths, or the target's own changes. */
+  async #rewrites(checkpoint: string, request: PlanRewriteRequest): Promise<PlanRewriteReport> {
+    const { repoPath, fixes } = this.#options;
+    const contracts: Record<string, string> = {};
+    for (const path of new Set(request.rules.map(rewriteRuleContractPath))) {
+      const source = await readCommittedFile(repoPath, checkpoint, path).catch(() => null);
+      if (source !== null) contracts[path] = source;
+    }
+    let refused: PlanRewriteReport["refused"] | undefined;
+    const places: PlanRewriteReport["places"][number][] = [];
+    for (const place of request.places) {
+      if (fixes === undefined) {
+        places.push({ target: place.target, files: [], error: "this runner applies no rewrite rules" });
+        continue;
+      }
+      const paths = await rewritablePaths(repoPath, place.sha, place.paths, place.since);
+      if (paths.length === 0) {
+        places.push({ target: place.target, files: [], error: null });
+        continue;
+      }
+      const outcome = await fixes.rewrite({ commit: place.sha, paths, allowed: place.paths, rules: request.rules, contracts });
+      if (outcome.error === null) refused ??= outcome.refused;
+      places.push({ target: place.target, files: outcome.files, error: outcome.error === null ? null : clip(outcome.error, PLAN_LIMITS.failureLineLength) });
+    }
+    // With no file to rewrite anywhere, the codemod still checks the rules once.
+    if (refused === undefined && fixes !== undefined) {
+      const checked = await fixes.rewrite({ commit: checkpoint, paths: [], allowed: [], rules: request.rules, contracts });
+      refused = checked.error === null ? checked.refused : request.rules.map((rule) => ({ rule: rule.id, message: clip(`the rules were not checked: ${checked.error}`, PLAN_LIMITS.failureLineLength) }));
+    }
+    return { refused: refused ?? [], places };
   }
 
   async #target(checkpoint: string, target: PlanFactsTarget, affected: boolean): Promise<PlanFactsResult[]> {
@@ -214,6 +271,22 @@ export function formatPlanFactsPass(result: PlanFactsPassResult): string {
   for (const { runId, error } of result.failed) lines.push(`Plan facts ${runId} did not run; it stays listed: ${error}`);
   lines.push(`${result.listed} plan facts run${result.listed === 1 ? "" : "s"} listed (${result.durationMs} ms).`);
   return `${lines.join("\n")}\n`;
+}
+
+/**
+ * The Python files under `prefixes` at `sha` that a place's rules may rewrite: every one, or with
+ * `since`, those added or changed since the merge base of `since` and `sha`.
+ */
+async function rewritablePaths(repoPath: string, sha: string, prefixes: readonly string[], since: string | null): Promise<string[]> {
+  if (prefixes.length === 0) return [];
+  let listed: string;
+  if (since === null) {
+    listed = await runGit(repoPath, ["ls-tree", "-r", "--name-only", "-z", sha, "--", ...prefixes]);
+  } else {
+    const base = (await runGit(repoPath, ["merge-base", since, sha])).trim();
+    listed = await runGit(repoPath, ["diff", "--name-only", "--no-renames", "--diff-filter=AM", "-z", base, sha, "--", ...prefixes]);
+  }
+  return listed.split("\0").filter((path) => path.endsWith(".py"));
 }
 
 function clip(text: string, max: number): string {

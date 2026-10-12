@@ -1,6 +1,7 @@
 // A plan part's fix is mechanical exactly when the resolution ladder's step 3 codemod could have
 // written it: every changed line swaps names as a codemod edit of the contract diff does
-// (codemodPlan in @penguin/protocol). The parts' patches parse and apply as `git diff` prints them.
+// (codemodPlan in @penguin/protocol), or when every file it changes is what the plan's rewrite rules
+// write there. The parts' patches parse and apply as `git diff` prints them.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -16,7 +17,7 @@ import {
   type PlanFileDiff,
 } from "@penguin/protocol";
 
-import { classifyFix } from "../src/propose-plan.ts";
+import { classifyByRules, classifyFix } from "../src/propose-plan.ts";
 
 const SHA = "a".repeat(40);
 const use = (path: string, symbol: string, kind: "call" | "import" = "call") => ({ path, line: 1, kind, symbol, name: symbol.split(".").at(-1) as string, scope: "tax" });
@@ -129,4 +130,31 @@ test("a patch parses as git diff prints it and applies only where its lines matc
   ]) {
     assert.equal(parsePatch(bad).ok, false, JSON.stringify(bad));
   }
+});
+
+test("a fix is mechanical by the plan's rules only when every file in the place matches their output, blob for blob", () => {
+  const place = { kind: "feature" as const, feature: "tax-rounding" };
+  const inside = (path: string) => path.startsWith("tax/");
+  const written = (files: readonly { path: string; before: string; after: string }[], error: string | null = null) => ({
+    refused: [],
+    places: [{ target: "tax-rounding", files: files.map((file) => ({ ...file, rules: ["display"] })), error }],
+  });
+  const image = new Map([["tax/a.py", { before: "1".repeat(40), after: "2".repeat(40) }]]);
+  const same = [{ path: "tax/a.py", before: "1".repeat(40), after: "2".repeat(40) }];
+  assert.deepEqual(classifyByRules(image, written(same), place, inside), { kind: "mechanical", reason: "every changed file is what the plan's rules write (display)" });
+  // A file the rules change outside the place's scopes does not count.
+  assert.equal(classifyByRules(image, written([...same, { path: "orders/b.py", before: "3".repeat(40), after: "4".repeat(40) }]), place, inside)?.kind, "mechanical");
+  const reasons: [{ path: string; before: string; after: string }[], string][] = [
+    [[{ path: "tax/a.py", before: "1".repeat(40), after: "5".repeat(40) }], "tax/a.py differs from what the plan's rules write"],
+    [[{ path: "tax/a.py", before: "5".repeat(40), after: "2".repeat(40) }], "tax/a.py at the fix's base is not the file the plan's rules rewrote"],
+    [[], "tax/a.py changes where the plan's rules change nothing"],
+    [[...same, { path: "tax/b.py", before: "3".repeat(40), after: "4".repeat(40) }], "the plan's rules also change tax/b.py, which the fix leaves as it is"],
+  ];
+  for (const [files, reason] of reasons) {
+    assert.deepEqual(classifyByRules(image, written(files), place, inside), { kind: "behavioural", reason });
+  }
+  // Rules that did not run in the place leave the name-swap classification standing.
+  assert.equal(classifyByRules(image, written(same, "the codemod exited with 1"), place, inside), null);
+  assert.equal(classifyByRules(image, null, place, inside), null);
+  assert.equal(classifyByRules(image, written(same), { kind: "feature", feature: "other" }, inside), null);
 });

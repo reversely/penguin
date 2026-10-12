@@ -285,7 +285,15 @@ check runner for the impact graph and the test runs. The agent calls again once 
 reported. Each later `missing` answer lists every gap: an affected place without a part, a part for a
 place the facts show unaffected, two parts for one place, a diff commit missing from the fork, or a
 patch that names another base, writes outside the place's scopes or does not apply at the head. A
-plan with more behavioural parts than the project's break limit answers `returned`. A complete
+plan with more behavioural parts than the project's break limit answers `returned`.
+
+A plan may also declare `rules`: up to 32 rewrite rules for its mechanical fixes. Each rule names
+`id`, `contract` (`path::symbol`, one the contract diff touches), `kind` (`expression` or
+`annotation`), `pattern`, `replacement` and `imports`. For example, a rule with pattern
+`money.display($amount)` and replacement `$amount.display()` rewrites each call of `display`. A part
+whose fix is exactly what the rules write is mechanical. A refused rule comes back in `missing` as
+`rule_refused` with its `rule` id and the reason. Other rules than the last call's ask the runner
+for a new facts run. A complete
 plan answers `stored` with its id, facts and parts. Every `missing` or `returned` answer is marked as
 a tool error. Text from the repository and the run, such as the commit subject, docstrings, assertion
 lines, diff lines and the agent's own note, arrives only inside `personWritten`

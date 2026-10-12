@@ -250,9 +250,9 @@ async function testJobsPass(
   const writeRemotes = bridgeRemotes(stateDir, keyStore, fetchImpl, "write");
   const verifier = new VerificationRunner({ repoPath: repo, runner, readRemotes, writeRemotes });
   const approver = new ApprovedBranchWriter({ repoPath: repo, writeRemotes });
-  const facts = new PlanFactsRunner({ repoPath: repo, runner, impact });
-  const combined = new CombinedRunner({ repoPath: repo, runner, impact, checks });
   const fixes = new FixApplier({ repoPath: repo, ruff: programs.ruff });
+  const facts = new PlanFactsRunner({ repoPath: repo, runner, impact, fixes });
+  const combined = new CombinedRunner({ repoPath: repo, runner, impact, checks });
   const settle = <T>(job: () => Promise<T>): Promise<T | Error> => job().catch((error: unknown) => error as Error);
   return async () => ({
     combined: await settle(() =>

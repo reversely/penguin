@@ -286,8 +286,11 @@ export interface McpFeatures {
   whatsNear(sessionId: string, input: { readonly paths?: readonly string[]; readonly scopes?: readonly string[] }): Promise<FeatureCallResult>;
   /** Records `impact`, `check` or `apply_fix` on the session's feature for the check runner. */
   tool(sessionId: string, tool: "impact" | "check" | "apply_fix", input: Readonly<Record<string, unknown>>): Promise<FeatureCallResult>;
-  /** Takes a merge plan for feature `feature`, which the session works on; Penguin fills in the facts. */
-  plan(sessionId: string, feature: string, parts: unknown): Promise<FeatureCallResult>;
+  /**
+   * Takes a merge plan for feature `feature`, which the session works on, with its rewrite rules;
+   * Penguin fills in the facts.
+   */
+  plan(sessionId: string, feature: string, parts: unknown, rules?: unknown): Promise<FeatureCallResult>;
   /** Revises a part of the session's feature's plan whose author asked for a change. */
   revise(sessionId: string, input: PartRevision): Promise<FeatureCallResult>;
   /** A write token on the affected fork of an approved part, for the originating agent named in the plan. */
@@ -610,10 +613,52 @@ const planPart = z.union([
     note: partNote,
   }),
 ]);
+// A rewrite rule (rewrite-rule.ts in @penguin/protocol); the ProjectAgent checks the form again and the
+// check runner parses it.
+const rewriteRule = z.strictObject({
+  id: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/u).max(64).describe("Lowercase words joined by '-', unique in the plan."),
+  contract: z
+    .string()
+    .min(1)
+    .max(700)
+    .describe("The contract the rule migrates, path::symbol, one the contract diff touches, such as shared/money/__init__.py::display."),
+  kind: z
+    .enum(["expression", "annotation"])
+    .describe(
+      "expression: each expression the pattern matches becomes the replacement. annotation: a type annotation equal to the pattern " +
+        "becomes the replacement on a function's return whose every return calls the contract, or on a parameter passed by name to it.",
+    ),
+  pattern: z
+    .string()
+    .min(1)
+    .max(500)
+    .describe(
+      "A Python expression. An expression rule's pattern must name a use of its contract, through its module's last name or the " +
+        "symbol alone (money.display($amount)); $name placeholders match any expression.",
+    ),
+  replacement: z
+    .string()
+    .min(1)
+    .max(500)
+    .describe("A Python expression using the pattern's placeholders, the contract's module (money.Money) and the rule's imports."),
+  imports: z
+    .array(z.strictObject({ module: z.string().min(1).max(512), name: z.string().min(1).max(128) }))
+    .max(8)
+    .default([])
+    .describe("Names the replacement uses, from the contract's module or the standard library, such as { module: decimal, name: Decimal }."),
+});
 const proposePlanInput = z.strictObject({
   sessionId,
   feature: featureId.describe("The feature this session works on."),
   parts: z.array(planPart).max(128).describe("One part per affected place."),
+  rules: z
+    .array(rewriteRule)
+    .max(32)
+    .optional()
+    .describe(
+      "Rewrite rules for the change's mechanical fixes, such as money.display($amount) to $amount.display(). Penguin applies them on the " +
+        "check runner; a part whose fix is exactly what the rules write is mechanical and does not count against the break limit.",
+    ),
 });
 const revisePlanPartInput = z
   .strictObject({
@@ -1110,7 +1155,9 @@ function registerFeatureTools(server: McpServer, features: McpFeatures): void {
         "running feature. Penguin fills in the facts: the change from the " +
         "checkpoint's commit subject, the contract diff and callers from the impact graph, the affected running " +
         "features, each affected scope's invariants, each break with its test's docstring and failing line, and " +
-        "each part's changed lines, and classifies each fix as mechanical or behavioural. The first call for a " +
+        "each part's changed lines, and classifies each fix as mechanical or behavioural: mechanical when it only swaps names as " +
+        "the contract diff's codemod would, or when every file it changes is what your declared rewrite rules write. A rule is " +
+        "refused when it would rewrite code outside its contract. The first call for a " +
         "checkpoint asks the check runner for the impact graph and test runs and answers `missing` until it " +
         "reports; call again later. `missing` lists every place without a part and every part Penguin cannot " +
         "read or apply. A plan with more behavioural parts than the project's break limit is `returned`: split it. " +
@@ -1118,8 +1165,8 @@ function registerFeatureTools(server: McpServer, features: McpFeatures): void {
       inputSchema: proposePlanInput,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
-    async ({ sessionId: id, feature, parts }) => {
-      const outcome = await features.plan(id, feature, parts);
+    async ({ sessionId: id, feature, parts, rules }) => {
+      const outcome = await features.plan(id, feature, parts, rules);
       // A plan with gaps or over the limit is an answer with the reasons, marked as an error so the agent acts on it.
       if (outcome.status === "ok" && outcome.value.status !== "stored") return { ...result({ ...outcome.value }), isError: true };
       return answer(outcome);

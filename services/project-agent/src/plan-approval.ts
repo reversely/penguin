@@ -45,7 +45,7 @@ import {
   type ReviewExceptionRequest,
 } from "@penguin/protocol";
 import type { Delegates } from "@penguin/issues";
-import { protectedPathFor, type ScopeMap } from "@penguin/scope-map";
+import { protectedPathFor, scopeForPath, type ScopeMap } from "@penguin/scope-map";
 
 import type { FeatureRejection } from "./feature-open.ts";
 import { parseFeatureId, type FeatureRecord, type FeatureStore, type StoredFeatureRecord, type UnsignedFeatureRecord } from "./feature-store.ts";
@@ -53,7 +53,7 @@ import { parsePartRef, type InboxItem, type InboxStore } from "./inbox-store.ts"
 import type { SqlDatabase, SqlValue } from "./issue-index.ts";
 import type { PlanFactsStore } from "./plan-facts.ts";
 import type { PlanKeeper } from "./plan-store.ts";
-import { classifyFix, classifyFixPlace, parseFixFields, readFix, type AffectedPlace, type RepoReading } from "./propose-plan.ts";
+import { classifyPart, parseFixFields, readFix, type AffectedPlace, type RepoReading } from "./propose-plan.ts";
 import type { ReviewStore, StoredReview } from "./review-submit.ts";
 import { reviewView } from "./review-view.ts";
 import type { PlanDecisionNotice, PlanNoticeSources, PlanPartNotice, ReviewResultNotice, SessionOutcome } from "./session-store.ts";
@@ -460,7 +460,8 @@ export async function revisePlanPart(deps: ReviseDeps, caller: string, sessionId
   for (const key of ["diff", "patch", "note"] as const) if (input[key] !== undefined) fields[key] = input[key];
   const fix = parseFixFields(part.place, fields, "the revision");
   if (typeof fix === "string") return rejected("invalid", fix);
-  const impact = plan.facts.run === null ? null : (deps.facts.get(plan.facts.run.runId)?.report?.impact ?? null);
+  const report = plan.facts.run === null ? null : (deps.facts.get(plan.facts.run.runId)?.report ?? null);
+  const impact = report?.impact ?? null;
   if (impact === null || feature.repo === null) {
     return rejected("not_found", `the facts of plan ${plan.planId} are gone; propose a new plan`);
   }
@@ -476,7 +477,10 @@ export async function revisePlanPart(deps: ReviseDeps, caller: string, sessionId
   };
   const read = await readFix(deps, { place: part.place, ...fix }, place, feature.repo, scopeMap, {});
   if ("code" in read) return rejected("invalid", `${read.code}: ${read.message}`);
-  const kind = classifyFix(read.files, impact, classifyFixPlace(part.place));
+  const kind = classifyPart(read, impact, part.place, plan.rules ?? [], report?.rewrites, (path) => {
+    const scope = scopeForPath(scopeMap, path);
+    return scope !== undefined && part.scopes.includes(scope);
+  });
   const revision = part.revision + 1;
   const record = await deps.sign(
     deps.features.draftRecord(featureId, "revise_plan_part", { identity: live.session.handle }, {
@@ -485,7 +489,7 @@ export async function revisePlanPart(deps: ReviseDeps, caller: string, sessionId
       revision,
       answers: part.changeRequest?.recordId ?? null,
       place: part.place,
-      diff: read.ref,
+      diff: read.diff.ref,
       kind: kind.kind,
     }),
   );
@@ -494,7 +498,7 @@ export async function revisePlanPart(deps: ReviseDeps, caller: string, sessionId
     revision,
     kind: kind.kind,
     kindReason: kind.reason,
-    diff: read,
+    diff: read.diff,
     note: fix.note,
     approvalState: "pending",
     approvedBy: null,

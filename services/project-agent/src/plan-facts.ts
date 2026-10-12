@@ -2,23 +2,30 @@
 // find out about one feature checkpoint, and what the runner reported. The impact graph and contract
 // diff need the code parsed, and each break needs the tests run, so neither can be made in the Worker.
 //
-// propose_plan schedules one run per feature checkpoint the first time a plan names it. The runner
-// lists the pending runs on `GET /plan-facts` and reports each on `POST /plan-facts/<run id>`. A newer
-// checkpoint of the feature supersedes a run still pending: its report answers `superseded`.
+// propose_plan schedules one run per feature checkpoint and set of rewrite rules the first time a plan
+// names them. The runner lists the pending runs on `GET /plan-facts` and reports each on
+// `POST /plan-facts/<run id>`. A newer run of the feature, for a newer checkpoint or other rules,
+// supersedes a run still pending: its report answers `superseded`.
 //
 // A run's targets are main, at the checkpoint's baseline, and each running feature that may read what
 // the checkpoint changes: one whose area falls in a scope that depends on a scope the feature touches,
 // or that the overlap check stored as a dependent. Each feature is a target of its own, keyed by its
 // id and carrying its person, so a person with two such features gets two targets. Each target runs the tests of those dependent
 // scopes, by command ID only; the runner resolves each ID from `penguin/scopes.json` itself.
+//
+// When the plan declares rewrite rules, the run also carries them with the places to apply them: main
+// at the baseline, inside the dependent scopes' paths, and each running feature at its checkpoint,
+// on the files it changed itself inside its scopes. The runner reports each file the rules change.
 
 import {
   checkPlanFactsReport,
   PLAN_LIMITS,
   PLAN_MAIN_TARGET,
+  rewriteRulesKey,
   type PlanFactsReport,
   type PlanFactsRequest,
   type PlanFactsTarget,
+  type RewriteRule,
 } from "@penguin/protocol";
 import type { ScopeMap } from "@penguin/scope-map";
 
@@ -80,26 +87,32 @@ export class PlanFactsStore {
     for (const statement of PLAN_FACTS_SCHEMA) db.exec(statement);
   }
 
-  /** The feature's newest run for `checkpoint` that no newer checkpoint superseded, or undefined. */
-  forCheckpoint(featureId: string, checkpoint: string): PlanFactsRun | undefined {
+  /**
+   * The feature's newest run for `checkpoint` that no newer run superseded, or undefined. With
+   * `rules`, only a run that carries exactly those rewrite rules.
+   */
+  forCheckpoint(featureId: string, checkpoint: string, rules?: readonly RewriteRule[]): PlanFactsRun | undefined {
     const [row] = this.#db.exec(
       `SELECT * FROM PlanFactsRun WHERE feature_id = ? AND checkpoint = ? AND state != 'superseded' ORDER BY id DESC LIMIT 1`,
       featureId,
       checkpoint,
     );
-    return row === undefined ? undefined : run(row);
+    if (row === undefined) return undefined;
+    const found = run(row);
+    if (rules !== undefined && rewriteRulesKey(found.request.rewrites?.rules ?? []) !== rewriteRulesKey(rules)) return undefined;
+    return found;
   }
 
   /**
-   * Schedules a run for the feature's checkpoint, superseding the feature's runs still pending for
-   * other checkpoints. `request` is everything but the run id, which the store gives.
+   * Schedules a run for the feature's checkpoint, superseding every run of the feature still pending:
+   * one for another checkpoint, or for this one with other rules. `request` is everything but the run
+   * id, which the store gives.
    */
   schedule(request: Omit<PlanFactsRequest, "runId">): PlanFactsRun {
     return this.#db.transaction(() => {
       this.#db.exec(
-        `UPDATE PlanFactsRun SET state = 'superseded' WHERE feature_id = ? AND checkpoint != ? AND state = 'pending'`,
+        `UPDATE PlanFactsRun SET state = 'superseded' WHERE feature_id = ? AND state = 'pending'`,
         request.feature,
-        request.checkpoint,
       );
       const [row] = this.#db.exec(
         `INSERT INTO PlanFactsRun (feature_id, checkpoint, request, state, created_at) VALUES (?, ?, '{}', 'pending', ?) RETURNING id`,
@@ -169,7 +182,7 @@ const testCommand = (scopeId: string): string => `test:${scopeId}`;
 /**
  * The facts run for feature `feature` at its latest checkpoint, built on `baseline`: main and each
  * running feature with a checkpoint that may read what it changes. `features` is every feature and
- * `dependents` the feature's stored dependents.
+ * `dependents` the feature's stored dependents. `rules`, the plan's rewrite rules, run in each target.
  */
 export function factsRequest(
   feature: Feature,
@@ -177,6 +190,7 @@ export function factsRequest(
   scopeMap: ScopeMap,
   features: readonly Feature[],
   dependents: readonly FeatureDependent[],
+  rules: readonly RewriteRule[] = [],
 ): Omit<PlanFactsRequest, "runId"> {
   const consumers = dependentScopes(touchedScopes(feature, scopeMap), scopeMap);
   const fork = `feature-${feature.id}`;
@@ -211,5 +225,13 @@ export function factsRequest(
     });
     if (targets.length >= PLAN_LIMITS.targets) break;
   }
-  return { feature: feature.id, fork, checkpoint: feature.latestCheckpointSha as string, baseline, targets };
+  const request = { feature: feature.id, fork, checkpoint: feature.latestCheckpointSha as string, baseline, targets };
+  if (rules.length === 0) return request;
+  const pathsOf = (scopes: Iterable<string>) => [...new Set([...scopes].flatMap((scope) => scopeMap.scopes.get(scope)?.paths ?? []))].sort();
+  const places = targets.map((target) =>
+    target.id === PLAN_MAIN_TARGET
+      ? { target: target.id, sha: target.sha, paths: pathsOf(consumers), since: null }
+      : { target: target.id, sha: target.sha, paths: pathsOf(target.scopes), since: baseline },
+  );
+  return { ...request, rewrites: { rules, places } };
 }

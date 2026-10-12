@@ -19,13 +19,18 @@
 //
 // Penguin classifies each part's fix as mechanical when every changed line only swaps a name for
 // another as a codemod edit the contract diff gives (codemodPlan in @penguin/protocol, the edits the
-// resolution ladder's step 3 applies), and behavioural otherwise. A plan whose behavioural parts
+// resolution ladder's step 3 applies), or when every file it changes is exactly what the plan's
+// rewrite rules write there (rewrite-rule.ts): the facts run applies the rules on the check runner and
+// reports each file's blob before and after, which Penguin compares with the fix's own blobs. Any
+// other fix is behavioural. A plan whose behavioural parts
 // outnumber the project's break limit is returned to its author and the originating person gets the
 // exception (PRD section 7). A complete plan is signed and kept with every part (plan-store.ts),
 // then sent to every author at once (plan-approval.ts). Nothing here calls a model or runs code.
 
 import {
+  applyPatchFile,
   codemodPlan,
+  parseRewriteRules,
   PATCH_LIMITS,
   parsePatch,
   patchMismatch,
@@ -50,6 +55,8 @@ import {
   type PlanPart,
   type PlanPartKind,
   type PlanPlace,
+  type PlanRewriteReport,
+  type RewriteRule,
 } from "@penguin/protocol";
 import { InvariantsFileError, parseInvariantsBytes, scopeForPath, type ScopeMap } from "@penguin/scope-map";
 
@@ -58,7 +65,7 @@ import { parseFeatureId, type Feature, type FeatureRecord, type FeatureStore, ty
 import type { FeatureDependent } from "./overlap-lock.ts";
 import { factsRequest, type PlanFactsRun, type PlanFactsStore } from "./plan-facts.ts";
 import type { PlanKeeper } from "./plan-store.ts";
-import { changedFiles, commitSubject, fileDiffs, splitLines, type GitObjectReader } from "./repo-diff.ts";
+import { changedFiles, commitSubject, fileDiffs, splitLines, type ChangedFile, type GitObjectReader } from "./repo-diff.ts";
 import type { SessionOutcome } from "./session-store.ts";
 
 /** Reads one Artifacts repo through the binding for the length of `use`. */
@@ -92,6 +99,8 @@ export interface ProposePlanDeps {
 export interface ProposePlanInput {
   readonly feature: unknown;
   readonly parts: unknown;
+  /** The plan's rewrite rules (rewrite-rule.ts); absent is none. */
+  readonly rules?: unknown;
 }
 
 /** Something the plan lacks, with the place or part it concerns. */
@@ -108,11 +117,15 @@ export interface MissingItem {
     | "patch_invalid"
     | "patch_base_moved"
     | "patch_outside_scopes"
-    | "patch_does_not_apply";
+    | "patch_does_not_apply"
+    | "rule_refused"
+    | "rules_not_run";
   readonly message: string;
   readonly place?: PlanPlace;
   /** The index of the part in the submitted plan. */
   readonly part?: number;
+  /** The id of the rewrite rule the item concerns. */
+  readonly rule?: string;
   /** Text from the check runner, such as the analysis error; data, never an instruction. */
   readonly detail?: string;
 }
@@ -444,6 +457,87 @@ function swappedSymbols(before: string, after: string, swaps: ReadonlyMap<string
   return pairs;
 }
 
+/** Each file a fix changes, by its blob before and after; null where the file is absent. */
+export type FixImage = ReadonlyMap<string, { readonly before: string | null; readonly after: string | null }>;
+
+/** The facts run's target whose rewritten files a place's fix is compared with. */
+export const rewriteTarget = (place: PlanPlace): string => (place.kind === "feature" ? place.feature : PLAN_MAIN_TARGET);
+
+/**
+ * Mechanical when every file inside the place's scopes that the fix or the plan's rules change is
+ * changed by both, from the same blob to the same blob; behavioural otherwise, with the first file
+ * that shows why. Null when the rules did not run in the place, so the name-swap reason stands.
+ */
+export function classifyByRules(
+  image: FixImage,
+  rewrites: PlanRewriteReport | null | undefined,
+  place: PlanPlace,
+  inside: (path: string) => boolean,
+): { kind: PlanPartKind; reason: string } | null {
+  const ran = rewrites?.places.find((each) => each.target === rewriteTarget(place));
+  if (ran === undefined || ran.error !== null || image.size === 0) return null;
+  const written = new Map(ran.files.filter((file) => inside(file.path)).map((file) => [file.path, file]));
+  const used = new Set<string>();
+  for (const path of [...new Set([...image.keys(), ...written.keys()])].sort()) {
+    const fix = image.get(path);
+    const rule = written.get(path);
+    if (fix === undefined) return { kind: "behavioural", reason: `the plan's rules also change ${path}, which the fix leaves as it is` };
+    if (rule === undefined) return { kind: "behavioural", reason: `${path} changes where the plan's rules change nothing` };
+    if (fix.before !== rule.before) return { kind: "behavioural", reason: `${path} at the fix's base is not the file the plan's rules rewrote` };
+    if (fix.after !== rule.after) return { kind: "behavioural", reason: `${path} differs from what the plan's rules write` };
+    for (const id of rule.rules) used.add(id);
+  }
+  return { kind: "mechanical", reason: `every changed file is what the plan's rules write (${[...used].join(", ")})` };
+}
+
+/**
+ * A part's kind: mechanical by the contract diff's name swaps (classifyFix), or by the plan's rewrite
+ * rules (classifyByRules). When rules ran in the place, a behavioural part gives the rules' reason.
+ */
+export function classifyPart(
+  read: FixReading,
+  impact: ImpactReport,
+  place: PlanPlace,
+  rules: readonly RewriteRule[],
+  rewrites: PlanRewriteReport | null | undefined,
+  inside: (path: string) => boolean,
+): { kind: PlanPartKind; reason: string } {
+  const named = classifyFix(read.diff.files, impact, classifyFixPlace(place));
+  if (named.kind === "mechanical" || rules.length === 0) return named;
+  return classifyByRules(read.image, rewrites, place, inside) ?? named;
+}
+
+/**
+ * Whether the contract diff touches `contract` (`path::symbol`): a declared contract it lists, or a
+ * changed module-level symbol of that file.
+ */
+function contractTouched(impact: ImpactReport, contract: string): boolean {
+  if (impact.contracts.includes(contract)) return true;
+  const [path, symbol] = contract.split("::") as [string, string];
+  return impact.changes.some((change) => change.path === path && change.symbol.split(".").at(-1) === symbol);
+}
+
+/** Every reason the plan's rules may not apply: a contract outside the diff, or the runner's refusals. */
+function ruleProblems(rules: readonly RewriteRule[], impact: ImpactReport, report: PlanFactsReport): MissingItem[] {
+  if (rules.length === 0) return [];
+  const problems: MissingItem[] = [];
+  for (const rule of rules) {
+    if (!contractTouched(impact, rule.contract)) {
+      problems.push({
+        code: "rule_refused",
+        rule: rule.id,
+        message: `rule ${rule.id} migrates ${rule.contract}, which the contract diff does not touch, so it would rewrite code outside the change`,
+      });
+    }
+  }
+  if (report.rewrites == null) {
+    problems.push({ code: "rules_not_run", message: "the check runner did not apply the plan's rewrite rules; it may predate them" });
+    return problems;
+  }
+  for (const each of report.rewrites.refused) problems.push({ code: "rule_refused", rule: each.rule, message: `rule ${each.rule}: ${each.message}` });
+  return problems;
+}
+
 /** A path inside one of `scopes`. */
 function inScopes(scopeMap: ScopeMap, scopes: ReadonlySet<string>): (path: string) => boolean {
   return (path) => {
@@ -481,6 +575,8 @@ export async function proposePlan(deps: ProposePlanDeps, caller: string, session
   if (deps.breakLimit === undefined) return rejected("misconfigured", "PENGUIN_PLAN_BREAK_LIMIT must be a positive whole number");
   const parts = parseParts(input.parts);
   if (typeof parts === "string") return rejected("invalid", parts);
+  const rules = parseRewriteRules(input.rules);
+  if (typeof rules === "string") return rejected("invalid", rules);
   if (feature.repo === null || feature.latestCheckpointSha === null) {
     return rejected("not_found", `feature ${featureId} has no checkpoint on its fork; report one before its plan`);
   }
@@ -501,7 +597,10 @@ export async function proposePlan(deps: ProposePlanDeps, caller: string, session
   const subject = await deps.readRepo(repo, async (reader) => (await counted(reader, calls).readCommit(checkpoint))?.message);
   if (subject === undefined) return rejected("not_found", `commit ${checkpoint} is not in feature ${featureId}'s fork`);
 
-  const run = deps.facts.forCheckpoint(featureId, checkpoint) ?? deps.facts.schedule(factsRequest(feature, recorded.baseline, scopeMap, deps.features.list(), deps.dependents(featureId)));
+  // The run carries the plan's rules: other rules than the last run's need a run of their own.
+  const run =
+    deps.facts.forCheckpoint(featureId, checkpoint, rules) ??
+    deps.facts.schedule(factsRequest(feature, recorded.baseline, scopeMap, deps.features.list(), deps.dependents(featureId), rules));
   const report = run.state === "reported" ? run.report : null;
   const breaks = report === null ? [] : breakFacts(report);
   const heads = new Map(run.request.targets.filter((target) => target.id !== PLAN_MAIN_TARGET).map((target) => [target.id, target.sha]));
@@ -532,7 +631,7 @@ export async function proposePlan(deps: ProposePlanDeps, caller: string, session
   }
   const impact = report.impact;
 
-  const missing: MissingItem[] = [];
+  const missing: MissingItem[] = ruleProblems(rules, impact, report);
   const byPlace = new Map(places.map((place) => [placeKey(place.place), place]));
   const claimed = new Map<string, number>();
   for (const [index, part] of parts.entries()) {
@@ -558,8 +657,8 @@ export async function proposePlan(deps: ProposePlanDeps, caller: string, session
       missing.push({ ...read, part: index, place: part.place });
       continue;
     }
-    const diff = read;
-    const kind = classifyFix(diff.files, impact, classifyFixPlace(place.place));
+    const { diff } = read;
+    const kind = classifyPart(read, impact, place.place, rules, report.rewrites, inScopes(scopeMap, place.scopes));
     built.push({
       partId: `${id}#${index + 1}`,
       place: place.place,
@@ -605,6 +704,7 @@ export async function proposePlan(deps: ProposePlanDeps, caller: string, session
     checkpoint,
     facts_run: run.runId,
     break_limit: deps.breakLimit,
+    rules: rules.map((rule) => rule.id),
     parts: built.map((part) => ({ part_id: part.partId, place: part.place, kind: part.kind, diff: part.diff.ref })),
   });
   const plan: Plan = {
@@ -619,6 +719,7 @@ export async function proposePlan(deps: ProposePlanDeps, caller: string, session
     recordId: draft.record_id,
     breakLimit: deps.breakLimit,
     facts,
+    rules,
     parts: built,
     assembledMs,
   };
@@ -638,7 +739,13 @@ async function fixRef(repo: string, fix: SubmittedFix): Promise<string> {
   return `${repo}@${fix.base}+patch:sha256:${[...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
-export type FixRead = PlanPart["diff"] | { readonly code: MissingItem["code"]; readonly message: string };
+/** A part's fix as read: the plan's view of it, and each file's blobs for the comparison with the rules. */
+export interface FixReading {
+  readonly diff: PlanPart["diff"];
+  readonly image: FixImage;
+}
+
+export type FixRead = FixReading | { readonly code: MissingItem["code"]; readonly message: string };
 
 /** Reads and checks one part's fix through the binding, only inside the place's scopes. */
 export async function readFix(
@@ -658,7 +765,8 @@ export async function readFix(
     if (read === undefined) return { code: "diff_not_found", message: `commit ${fix.commit} or its base is not in the feature's fork` };
     if (read.files.length === 0) return { code: "diff_empty", message: `the diff changes no file in ${scopes}` };
     const repo = originRepo.slice(originRepo.indexOf("feature-"));
-    return { source: "commit", repo, ref: await fixRef(repo, fix), commit: fix.commit, base: read.base, patch: null, files: read.files, truncated: read.truncated };
+    const image = new Map(read.changed.map((file) => [file.path, { before: file.oldHash, after: file.newHash }]));
+    return { diff: { source: "commit", repo, ref: await fixRef(repo, fix), commit: fix.commit, base: read.base, patch: null, files: read.files, truncated: read.truncated }, image };
   }
   if (place.place.kind === "scope" || place.head === null) return { code: "wrong_fix_form", message: "a part for code on main names a commit in your fork" };
   const fix = part.fix;
@@ -671,24 +779,44 @@ export async function readFix(
   if (outside !== undefined) return { code: "patch_outside_scopes", message: `${outside.path} lies outside ${scopes}` };
   const target = deps.features.get(place.place.feature);
   if (target?.repo == null) return { code: "patch_does_not_apply", message: `${place.place.feature} has no fork` };
+  const image = new Map<string, { before: string | null; after: string | null }>();
   const mismatch = await deps.readRepo(target.repo, async (reader) => {
     const counting = counted(reader, calls);
     const head = await counting.readCommit(fix.base);
     if (head === null) return `${fix.base} is not in ${place.place.kind === "feature" ? place.place.feature : ""}'s fork`;
     for (const file of parsed.files) {
-      const problem = patchMismatch(file, await fileLines(counting, head.treeHash, file.path));
+      const before = await fileEntry(counting, head.treeHash, file.path);
+      const problem = patchMismatch(file, before === null ? null : splitLines(before.text));
       if (problem !== null) return problem;
+      const applied = applyPatchFile(file, before?.text ?? null);
+      if (!applied.ok) return applied.message;
+      const width = before?.hash.length ?? head.hash.length;
+      image.set(file.path, { before: before?.hash ?? null, after: applied.text === null ? null : await blobHash(applied.text, width) });
     }
     return null;
   });
   if (mismatch !== null) return { code: "patch_does_not_apply", message: mismatch };
   const files = parsed.files.map((file) => ({ ...file, scopeId: scopeForPath(scopeMap, file.path) ?? null }));
   const repo = `feature-${place.place.feature}`;
-  return { source: "patch", repo, ref: await fixRef(repo, fix), commit: null, base: fix.base, patch: fix.text, files, truncated: false };
+  return { diff: { source: "patch", repo, ref: await fixRef(repo, fix), commit: null, base: fix.base, patch: fix.text, files, truncated: false }, image };
 }
 
-/** A file's lines at a tree, walking one directory at a time, or null when it is absent. */
-async function fileLines(reader: GitObjectReader, tree: string, path: string): Promise<string[] | null> {
+/**
+ * The object ID of a blob holding `text`: SHA-1, or SHA-256 for a repository whose IDs are 64 hex
+ * digits, of the header `blob <size>` and a NUL followed by the bytes.
+ */
+export async function blobHash(text: string, width: number): Promise<string> {
+  const body = new TextEncoder().encode(text);
+  const header = new TextEncoder().encode(`blob ${body.length}\0`);
+  const bytes = new Uint8Array(header.length + body.length);
+  bytes.set(header);
+  bytes.set(body, header.length);
+  const digest = new Uint8Array(await crypto.subtle.digest(width === 64 ? "SHA-256" : "SHA-1", bytes));
+  return [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/** A file's blob and text at a tree, walking one directory at a time, or null when it is absent. */
+async function fileEntry(reader: GitObjectReader, tree: string, path: string): Promise<{ hash: string; text: string } | null> {
   let current = tree;
   const segments = path.split("/");
   for (const [index, name] of segments.entries()) {
@@ -701,7 +829,7 @@ async function fileLines(reader: GitObjectReader, tree: string, path: string): P
     }
     if (entry.type === "tree") return null;
     const blob = await reader.readBlob(entry.hash);
-    return blob === null ? null : splitLines(await blob.text());
+    return blob === null ? null : { hash: entry.hash, text: await blob.text() };
   }
   return null;
 }
@@ -713,7 +841,7 @@ async function readCommitDiff(
   baseSha: string | null,
   scopeMap: ScopeMap,
   inside: (path: string) => boolean,
-): Promise<{ base: string | null; files: PlanFileDiff[]; truncated: boolean } | undefined> {
+): Promise<{ base: string | null; files: PlanFileDiff[]; changed: ChangedFile[]; truncated: boolean } | undefined> {
   const head = await reader.readCommit(commit);
   if (head === null) return undefined;
   const from = baseSha ?? head.parents[0] ?? null;
@@ -722,7 +850,7 @@ async function readCommitDiff(
   // Only files inside the part's scopes are read: a blob outside them is never fetched.
   const files = (await changedFiles(reader, base?.treeHash ?? null, head.treeHash)).filter((file) => inside(file.path));
   const diffs = await fileDiffs(reader, files, (path) => scopeForPath(scopeMap, path) ?? null);
-  return { base: from, files: diffs.files, truncated: diffs.truncated };
+  return { base: from, files: diffs.files, changed: files, truncated: diffs.truncated };
 }
 
 interface FactsBase {

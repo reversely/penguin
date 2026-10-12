@@ -62,6 +62,10 @@ test("each person sees only the approvals and exceptions that wait on them", asy
   }
   // Every part that waits on an author reached that author and nobody else.
   const plan = await preview.plan("money-minor-units");
+  // The plan declares the fixture's rewrite rules, and the runner applied them in every place: each
+  // part's kind comes from comparing its fix with the rules' output (docs/fixture-money.md).
+  assert.equal(plan?.rules?.length, 7);
+  for (const part of plan?.parts ?? []) assert.match(part.kindReason, /plan's rules/u, part.partId);
   const waiting = (plan?.parts ?? []).filter((part) => part.approvalState === "pending").map((part) => part.partId);
   assert.ok(waiting.length > 20, `${waiting.length} parts wait`);
   assert.deepEqual([...seen.keys()].sort(), [...waiting].sort());

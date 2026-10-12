@@ -11,6 +11,9 @@
 // | lockfile | fix:uv-lock          | `uv lock`, after merging the other side when given  |
 // | codemod  | fix:python-codemod   | the bridge's libcst script on the named files       |
 //
+// A merge plan's rewrite rules run through the same codemod script (`rewrite`), followed by the lint
+// autofix and the formatter on the files the rules changed. That run reports blobs and commits nothing.
+//
 // A fix may change only the files it names, and only inside the allowed paths: the caller's charter
 // or the approved part of a plan. A lockfile fix may change only the lockfiles. A named file that is
 // a symlink, or lies under a symlinked directory, is refused before any program runs. When the
@@ -32,6 +35,8 @@ import {
   type BlockCheckFinding,
   type CodemodEdit,
   type FixKind,
+  type PlanRewriteFile,
+  type RewriteRule,
   type ToolCaller,
   type ToolRunRecord,
 } from "@penguin/protocol";
@@ -78,6 +83,25 @@ export interface FixApplierOptions {
   readonly scratchDir?: string;
   /** A program still running after this long is stopped. Defaults to 10 minutes. */
   readonly timeoutMs?: number;
+}
+
+/** A merge plan's rewrite rules to apply to some files of one commit (PRD 0.4 section 4.2 step 4). */
+export interface RewriteRequest {
+  readonly commit: string;
+  /** The Python files the rules may rewrite. */
+  readonly paths: readonly string[];
+  /** Path prefixes the rewrite may change: the place's scopes. */
+  readonly allowed: readonly string[];
+  readonly rules: readonly RewriteRule[];
+  /** Each rule's contract module as the originating checkpoint holds it, by path. */
+  readonly contracts: Readonly<Record<string, string>>;
+}
+
+/** What the rules wrote: each changed file's blob before and after. Nothing is committed. */
+export interface RewriteOutcome {
+  readonly refused: readonly { readonly rule: string; readonly message: string }[];
+  readonly files: readonly PlanRewriteFile[];
+  readonly error: string | null;
 }
 
 /** A fix the request itself rules out; nothing ran. */
@@ -222,6 +246,67 @@ export class FixApplier {
     } catch (error) {
       return { record: record({ result: "error", summary: (error as Error).message.slice(0, 300) }), commit: null, log: "" };
     }
+  }
+
+  /**
+   * Applies a plan's rewrite rules with the codemod (`fix:python-codemod`), then ruff's lint autofix
+   * and formatter on the files the rules changed, as the ladder's steps 3 and 1 would, in a throwaway
+   * worktree of `request.commit`. Reports each changed file's blob before and after; commits nothing.
+   * A rule the codemod refuses is listed and not applied. Never raises for a failed run: `error` says why.
+   */
+  async rewrite(request: RewriteRequest): Promise<RewriteOutcome> {
+    const failed = (error: string): RewriteOutcome => ({ refused: [], files: [], error: error.slice(0, 300) });
+    try {
+      // With no paths the codemod only checks the rules, so the refusals are known everywhere.
+      if (request.paths.length > 0) checkFixRequest({ kind: "format", commit: request.commit, paths: request.paths, allowed: request.allowed });
+      else if (!isObjectId(request.commit)) throw new FixRefusedError("the commit must be a full object ID");
+    } catch (error) {
+      if (error instanceof FixRefusedError) return failed(error.message);
+      throw error;
+    }
+    const { repoPath, scratchDir } = this.#options;
+    try {
+      const { value } = await inDetachedWorktree(repoPath, request.commit, scratchDir ?? tmpdir(), (worktree) => this.#rewriteIn(request, worktree));
+      return value;
+    } catch (error) {
+      return failed((error as Error).message);
+    }
+  }
+
+  async #rewriteIn(request: RewriteRequest, worktree: string): Promise<RewriteOutcome> {
+    const paths = request.paths.map((path) => normalizeRepoPath(path));
+    for (const path of paths) {
+      const problem = await symlinkRefusal(worktree, path);
+      if (problem !== null) return { refused: [], files: [], error: problem };
+    }
+    const options = { env: this.#options.env, timeoutMs: this.#options.timeoutMs };
+    const { script } = resolveAnalysisCommand(FIX_COMMAND_IDS.codemod);
+    const python = this.#options.python ?? defaultCodemodPython(this.#options.env);
+    const input = JSON.stringify({ rules: request.rules, contracts: request.contracts, paths });
+    const ran = failedExit(await runProgram(python, ["-I", script, "--tree", worktree], worktree, { ...options, input }), [0], "the codemod");
+    if (ran.stopped !== null) return { refused: [], files: [], error: ran.stopped };
+    const report = JSON.parse(ran.stdout) as { refused: { rule: string; message: string }[]; changed: { path: string; rules: string[] }[] };
+    const refused = report.refused.map(({ rule, message }) => ({ rule, message: message.slice(0, 300) }));
+    const rulesOf = new Map(report.changed.map((entry) => [entry.path, entry.rules]));
+    const touched = [...rulesOf.keys()];
+    if (touched.length > 0) {
+      const ruff = this.#options.ruff ?? defaultRuff(this.#options.env);
+      const lint = ["check", "--fix", "--no-cache", "--exit-zero", "--quiet", ...ruffConfig(worktree), "--", ...touched];
+      for (const [argv, name] of [[lint, "ruff check --fix"], [["format", "--no-cache", "--quiet", ...ruffConfig(worktree), "--", ...touched], "ruff format"]] as const) {
+        const outcome = failedExit(await runProgram(ruff, [...argv], worktree, options), [0], name);
+        if (outcome.stopped !== null) return { refused, files: [], error: outcome.stopped };
+      }
+    }
+    const changed = await changedFiles(worktree);
+    const stray = changed.filter((path) => !paths.includes(path) || !request.allowed.some((prefix) => under(path, prefix)));
+    if (stray.length > 0) return { refused, files: [], error: `the rules changed files they may not change: ${stray.slice(0, 5).join(", ")}` };
+    const files: PlanRewriteFile[] = [];
+    for (const path of changed) {
+      const before = (await runGit(worktree, ["rev-parse", `HEAD:${path}`])).trim();
+      const after = (await runGit(worktree, ["hash-object", "--", path])).trim();
+      if (before !== after) files.push({ path, before, after, rules: rulesOf.get(path) ?? [] });
+    }
+    return { refused, files, error: null };
   }
 
   async #inWorktree(request: FixRequest, worktree: string): Promise<{

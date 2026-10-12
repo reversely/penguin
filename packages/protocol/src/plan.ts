@@ -14,6 +14,7 @@
 
 import { IMPACT_REPORT_SCHEMA, type ImpactReport, type ImpactUse } from "./impact.ts";
 import { FINGERPRINT_PATTERN } from "./operation-schema.ts";
+import type { RewriteRule } from "./rewrite-rule.ts";
 import { checkSchema, type JsonSchema, type SchemaError } from "./schema-check.ts";
 
 export const PLAN_SCHEMA_VERSION = 1;
@@ -93,6 +94,47 @@ export interface PlanFactsRequest {
   /** The commit on main the checkpoint was built on; the change is baseline to checkpoint. */
   readonly baseline: string;
   readonly targets: readonly PlanFactsTarget[];
+  /** The plan's rewrite rules and where to apply them; absent or null when the plan declares none. */
+  readonly rewrites?: PlanRewriteRequest | null;
+}
+
+/** One tree the runner applies a plan's rewrite rules to. */
+export interface PlanRewritePlace {
+  /** `main`, or the running feature's id, as the facts run's targets name them. */
+  readonly target: string;
+  /** The commit whose files the rules rewrite: main's baseline, or the feature's fork head. */
+  readonly sha: string;
+  /** The path prefixes the rules may rewrite inside: the paths of the place's scopes. */
+  readonly paths: readonly string[];
+  /**
+   * Null to rewrite every Python file under `paths`; otherwise only the files the target changed
+   * since its merge base with this commit, so a running feature's rules run on its own work.
+   */
+  readonly since: string | null;
+}
+
+export interface PlanRewriteRequest {
+  readonly rules: readonly RewriteRule[];
+  readonly places: readonly PlanRewritePlace[];
+}
+
+/** A file the rules changed: its blob before and after, and the rules that changed it. */
+export interface PlanRewriteFile {
+  readonly path: string;
+  readonly before: string;
+  readonly after: string;
+  readonly rules: readonly string[];
+}
+
+/** What the rules wrote in each place, and each rule the runner refused with its reason. */
+export interface PlanRewriteReport {
+  readonly refused: readonly { readonly rule: string; readonly message: string }[];
+  readonly places: readonly {
+    readonly target: string;
+    readonly files: readonly PlanRewriteFile[];
+    /** Why the rules could not run there, or null. */
+    readonly error: string | null;
+  }[];
 }
 
 /** A test that fails on a merged tree, in the words its repository and its run give. */
@@ -136,6 +178,8 @@ export interface PlanFactsReport {
   readonly impactError: string | null;
   readonly results: readonly PlanFactsResult[];
   readonly durationMs: number;
+  /** What the plan's rewrite rules wrote; absent or null when the request carried none. */
+  readonly rewrites?: PlanRewriteReport | null;
 }
 
 const SHA = { type: "string", pattern: "^[0-9a-f]{40}(?:[0-9a-f]{24})?$" };
@@ -146,6 +190,23 @@ const record = (properties: Record<string, JsonSchema>): JsonSchema => ({
   additionalProperties: false,
   required: Object.keys(properties),
   properties,
+});
+const RULE_ID = { type: "string", pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$", maxLength: 64 };
+const REWRITE_REPORT_SCHEMA: JsonSchema = record({
+  refused: { type: "array", maxItems: 32, items: record({ rule: RULE_ID, message: { type: "string", maxLength: PLAN_LIMITS.failureLineLength } }) },
+  places: {
+    type: "array",
+    maxItems: PLAN_LIMITS.targets,
+    items: record({
+      target: { type: "string", pattern: "^[a-z0-9]+(?:[.-][a-z0-9]+)*$", maxLength: 63 },
+      files: {
+        type: "array",
+        maxItems: 2_000,
+        items: record({ path: { type: "string", minLength: 1, maxLength: 1_024 }, before: SHA, after: SHA, rules: { type: "array", maxItems: 32, items: RULE_ID } }),
+      },
+      error: LINE(PLAN_LIMITS.failureLineLength),
+    }),
+  },
 });
 // The impact report's schema without its document annotations, nested as one field.
 const { $schema: _schema, title: _title, ...IMPACT_FIELD } = IMPACT_REPORT_SCHEMA;
@@ -192,7 +253,10 @@ export const PLAN_FACTS_REPORT_SCHEMA: JsonSchema = {
       }),
     },
     durationMs: { type: "integer", minimum: 0 },
+    rewrites: { anyOf: [REWRITE_REPORT_SCHEMA, { type: "null" }] },
   }),
+  // A runner from before rewrite rules reports no `rewrites`.
+  required: ["impact", "impactError", "results", "durationMs"],
 };
 
 /** Where a value breaks PLAN_FACTS_REPORT_SCHEMA; empty when it is a valid report. */
@@ -393,6 +457,8 @@ export interface Plan {
   readonly recordId: string;
   readonly breakLimit: number;
   readonly facts: PlanFacts;
+  /** The rewrite rules the plan declares; absent on a plan from before rules. */
+  readonly rules?: readonly RewriteRule[];
   readonly parts: readonly PlanPart[];
   /** How long Penguin took to assemble the facts and parts, in milliseconds. */
   readonly assembledMs: number;

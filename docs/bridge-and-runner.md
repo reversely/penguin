@@ -329,7 +329,14 @@ its latest checkpoint, keyed by its feature id and naming its person. Every targ
 4. runs each listed test command on the merged commit in a throwaway worktree. A running feature
    that the impact graph shows makes no use of the change gets `not-affected` without a run;
 5. states each failing test as a break: its docstring at the merged commit (`test-evidence.ts`)
-   with the assertion line and first error line pytest printed for it.
+   with the assertion line and first error line pytest printed for it;
+6. applies the plan's rewrite rules when the listing carries them
+   ([design.md](design.md#steps-1-to-5-in-the-build)). In each listed place the runner runs the
+   codemod with the rules in a throwaway worktree, then `ruff check --fix` and `ruff format` on the
+   files the rules changed (`FixApplier.rewrite`). Main's place covers every Python file under the
+   dependent scopes' paths at the baseline. A running feature's place covers the files it added or
+   changed since its merge base with the baseline. The report lists each changed file's blob before
+   and after, with each rule the codemod refused and the reason. Nothing is committed.
 
 The report carries the impact report and each command's result with its fingerprint and breaks. It
 carries no log. `PLAN_FACTS_REPORT_SCHEMA` (`packages/protocol`) caps each docstring at 500
@@ -565,8 +572,12 @@ commit it starts from, with the scrubbed environment above (`apply-fix.ts`):
 
 The codemod script uses libcst 1.9.0 (T21). A `rename` or `move` edit rewrites every import and
 reference of one dotted name to another with libcst's `RenameCommand`. A `rename-parameter` edit
-rewrites one keyword in each call that resolves to the function. The script parses the code and
-never imports or runs it. The runner starts it with the interpreter of this repository's uv
+rewrites one keyword in each call that resolves to the function. Given a plan's rewrite rules in
+place of edits, the script compiles each rule into LibCST matchers. A name in the contract's module
+matches however the file imports it, through `QualifiedNameProvider`. Each placeholder captures one
+expression, parenthesised where the replacement needs it. After the rewrite the script removes each
+import of the contract's module that the file no longer uses and adds each import a replacement
+declares. The script parses the code and never imports or runs it. The runner starts it with the interpreter of this repository's uv
 environment, `.venv/bin/python`, which has the pinned libcst. `PENGUIN_CODEMOD_PYTHON` or
 `--codemod-python` names another.
 

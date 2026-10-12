@@ -480,6 +480,64 @@
       { "scope": "tax", "kind": "behavioural" },
       { "scope": "payouts", "kind": "behavioural" },
       { "scope": "analytics", "kind": "behavioural" }
+    ],
+    "rules": [
+      {
+        "id": "display-of-price",
+        "contract": "shared/money/__init__.py::display",
+        "kind": "expression",
+        "pattern": "money.display(money.price($amount))",
+        "replacement": "$amount.display()",
+        "imports": []
+      },
+      {
+        "id": "display",
+        "contract": "shared/money/__init__.py::display",
+        "kind": "expression",
+        "pattern": "money.display($amount)",
+        "replacement": "$amount.display()",
+        "imports": []
+      },
+      {
+        "id": "price-annotation",
+        "contract": "shared/money/__init__.py::price",
+        "kind": "annotation",
+        "pattern": "float",
+        "replacement": "money.Money",
+        "imports": []
+      },
+      {
+        "id": "total-annotation",
+        "contract": "shared/money/__init__.py::total",
+        "kind": "annotation",
+        "pattern": "float",
+        "replacement": "money.Money",
+        "imports": []
+      },
+      {
+        "id": "price-times",
+        "contract": "shared/money/__init__.py::price",
+        "kind": "expression",
+        "pattern": "money.price($amount * $quantity)",
+        "replacement": "$amount.times($quantity)",
+        "imports": []
+      },
+      {
+        "id": "price-percent",
+        "contract": "shared/money/__init__.py::price",
+        "kind": "expression",
+        "pattern": "money.price($amount * $percent / 100)",
+        "replacement": "$amount.scaled(Decimal($percent) / 100)",
+        "imports": [{ "module": "decimal", "name": "Decimal" }]
+      },
+      {
+        "id": "price-difference",
+        "contract": "shared/money/__init__.py::price",
+        "kind": "expression",
+        "pattern": "money.price($minuend - $subtrahend)",
+        "replacement": "$minuend - $subtrahend",
+        "imports": []
+      }
     ]
   }
 }
