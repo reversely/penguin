@@ -711,24 +711,24 @@ describe("migration plans of a split, one per owner group", () => {
     })();
     // price is defined in money (Ines) and line_total in orders (Tomas): one carrier per DRI.
     assert.deepEqual(outcome?.proposed.map((each) => [each.feature, each.contracts]), [
-      ["contract-ines-money-minor", [PRICE.contract]],
-      ["contract-tomas-money-minor", [LINE.contract]],
+      ["contract-ines-money-minor-shared-money", [PRICE.contract]],
+      ["contract-tomas-money-minor-orders", [LINE.contract]],
     ]);
-    const carrier = project.features.get("contract-ines-money-minor");
-    assert.deepEqual([carrier?.personId, carrier?.repo, carrier?.state], ["ines", "feature-contract-ines-money-minor", "building"]);
-    const [proposal] = records("contract-ines-money-minor", "contract_proposed");
+    const carrier = project.features.get("contract-ines-money-minor-shared-money");
+    assert.deepEqual([carrier?.personId, carrier?.repo, carrier?.state], ["ines", "feature-contract-ines-money-minor-shared-money", "building"]);
+    const [proposal] = records("contract-ines-money-minor-shared-money", "contract_proposed");
     assert.deepEqual([proposal?.author, proposal?.payload["places"], proposal?.payload["approved_by"], proposal?.payload["origin"]], [{ penguin: true }, [], "penguin", "money-minor"]);
     // The removal is an edit task for the steward of the defining scope's DRI, never the carrier's builder.
-    const [task] = tasks.forFeature("contract-ines-money-minor");
+    const [task] = tasks.forFeature("contract-ines-money-minor-shared-money");
     assert.deepEqual([task?.kind, task?.handle, task?.via, task?.scopes], ["contract", "@ines/steward", "steward", ["money"]]);
     // Tomas's removal of line_total names the orders scope's own test of it, which leaves with it.
-    const [orders] = tasks.forFeature("contract-tomas-money-minor");
+    const [orders] = tasks.forFeature("contract-tomas-money-minor-orders");
     assert.match(orders?.instructions ?? "", /Remove their own uses with them, in their defining module and its scope's tests: orders\/tests\/test_model\.py\./u);
     assert.ok(orders?.evidence.includes("orders/tests/test_model.py: the defining scope's own use, removed with the symbol"));
-    assert.deepEqual(records("contract-tomas-money-minor", "contract_proposed")[0]?.payload["own_files"], ["orders/tests/test_model.py"]);
+    assert.deepEqual(records("contract-tomas-money-minor-orders", "contract_proposed")[0]?.payload["own_files"], ["orders/tests/test_model.py"]);
     // The originating feature's contract step shows it approved and carried.
     const step = project.retiring.contractSteps("money-minor").find((each) => each.contract === PRICE.contract);
-    assert.deepEqual([step?.state, step?.carrier], ["approved", "contract-ines-money-minor"]);
+    assert.deepEqual([step?.state, step?.carrier], ["approved", "contract-ines-money-minor-shared-money"]);
     // A later count does not carry it again.
     const again = requestRetiringCount(count, "money-minor", sha(6));
     assert.ok(again !== undefined);
@@ -736,7 +736,32 @@ describe("migration plans of a split, one per owner group", () => {
     assert.ok(rerun.status === "recorded");
     assert.deepEqual((await countReported(count, rerun.run))?.proposed, []);
     // The carrier's block closes the symbol once its facts show it removed: its approved steps are the carrier's.
-    assert.deepEqual(project.retiring.approvedSteps("contract-ines-money-minor").map((each) => each.contract), [PRICE.contract]);
-    assert.deepEqual(await closeRemoved(count, "contract-ines-money-minor", sha(7)), []);
+    assert.deepEqual(project.retiring.approvedSteps("contract-ines-money-minor-shared-money").map((each) => each.contract), [PRICE.contract]);
+    assert.deepEqual(await closeRemoved(count, "contract-ines-money-minor-shared-money", sha(7)), []);
+  });
+
+  test("each contract batch opens its own carrier by owner and package, and a landed carrier is never reused", async () => {
+    const TOTAL = { contract: "shared/money/api.py::total", replacement: "shared/money/api.py::Money.sum" };
+    const RATE = { contract: "shared/money/fx/rates.py::rate", replacement: "shared/money/fx/rates.py::Rate" };
+    project.retiring.declare({ featureId: "money-minor", planId: "money-minor/v2", person: "ines", rules: [PRICE_RULE] } as unknown as Plan, [PRICE, TOTAL, RATE, LINE], "record-money-2");
+    project.features.setState("money-minor", ["opening", "building", "landing"], "landed");
+    // One owner's batch in two packages: two carriers.
+    const first = await carryContract(deps, "money-minor", [PRICE, RATE], { promotion: sha(4), runId: 1 });
+    const carrier = "contract-ines-money-minor-shared-money";
+    assert.deepEqual(first.map((each) => [each.feature, each.contracts]), [
+      [carrier, [PRICE.contract]],
+      ["contract-ines-money-minor-shared-money-fx", [RATE.contract]],
+    ]);
+    // The first carrier lands; the owner's next batch in its package gets a new carrier.
+    project.features.setState(carrier, ["opening", "building", "landing"], "landed");
+    const second = await carryContract(deps, "money-minor", [TOTAL], { promotion: sha(5), runId: 2 });
+    assert.deepEqual(second.map((each) => [each.feature, each.contracts]), [[`${carrier}-2`, [TOTAL.contract]]]);
+    const next = project.features.get(`${carrier}-2`);
+    assert.deepEqual([next?.personId, next?.state, next?.repo], ["ines", "building", `feature-${carrier}-2`]);
+    assert.deepEqual(tasks.forFeature(`${carrier}-2`).map((task) => task.sourceKey), [`contract:${carrier}-2`]);
+    // The landed carrier keeps only its own batch.
+    assert.equal(project.features.get(carrier)?.state, "landed");
+    assert.deepEqual(tasks.forFeature(carrier).map((task) => task.sourceKey), [`contract:${carrier}`]);
+    assert.equal(project.retiring.contractSteps("money-minor").find((each) => each.contract === TOTAL.contract)?.carrier, `${carrier}-2`);
   });
 });

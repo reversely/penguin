@@ -38,7 +38,12 @@ test("plan, block and carrier ids stay valid feature ids", () => {
   assert.equal(migrationPlanId("money-type", "tomas", 2), "migrate:money-type:tomas:2");
   assert.equal(migrationBlockId("money-type", "tomas", 1), "migrate-tomas-money-type");
   assert.equal(migrationBlockId("money-type", "tomas", 3), "migrate-tomas-money-type-3");
-  assert.equal(contractCarrierId("money-type", "ines"), "contract-ines-money-type");
+  assert.equal(contractCarrierId("money-type", "ines", "shared/money"), "contract-ines-money-type-shared-money");
+  assert.equal(contractCarrierId("money-type", "ines", "shared/money", 2), "contract-ines-money-type-shared-money-2");
+  assert.equal(contractCarrierId("money-type", "ines", ""), "contract-ines-money-type");
+  const carrier = contractCarrierId(`${"x".repeat(60)}-y`, "ines", "shared/Money_v2", 3);
+  assert.ok(carrier.length <= 63 && /^[a-z0-9]+(?:[.-][a-z0-9]+)*$/u.test(carrier), carrier);
+  assert.ok(carrier.endsWith("-shared-money-v2-3"), carrier);
   const long = migrationBlockId(`${"x".repeat(60)}-y`, "tomas", 12);
   assert.ok(long.length <= 63 && /^[a-z0-9]+(?:[.-][a-z0-9]+)*$/u.test(long), long);
   assert.equal(migrationPlaceKey({ kind: "feature", feature: "pagination" }), "feature:pagination");

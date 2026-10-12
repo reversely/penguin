@@ -147,11 +147,19 @@ export function migrationBlockId(feature: string, owner: string, seq: number): s
 }
 
 /**
- * The feature Penguin opens from main to carry the contract step of a feature that is no longer
- * running, one per DRI of the scopes that define the symbols.
+ * The feature Penguin opens from main to carry one contract batch of a feature that is no longer
+ * running: `contract-<owner>-<feature>-<package>`, one per DRI and defining package, with a `-<n>`
+ * suffix for each later batch of that owner and package, since a carrier is never reused. The package
+ * is a directory such as `shared/money`, written `shared-money`; a long feature id is cut first, so
+ * the package stays readable.
  */
-export function contractCarrierId(feature: string, owner: string): string {
-  return carrierId(`contract-${owner}`, feature, 1);
+export function contractCarrierId(feature: string, owner: string, pkg: string, seq = 1): string {
+  const prefix = `contract-${owner}`;
+  const slug = pkg.toLowerCase().replace(/[^a-z0-9]+/gu, "-").replace(/^-+|-+$/gu, "");
+  if (slug === "") return carrierId(prefix, feature, seq);
+  const room = FEATURE_ID_LENGTH - prefix.length - 1 - (seq > 1 ? `-${seq}`.length : 0);
+  const cut = feature.slice(0, Math.max(room - slug.length - 1, 1)).replace(/[.-]+$/u, "");
+  return carrierId(prefix, `${cut}-${slug}`, seq);
 }
 
 /**

@@ -72,7 +72,7 @@ const RUNNER = { bridgeId: "br_runner", role: "runner" } as const;
 const PRICE = { contract: "shared/money/api.py::price", replacement: "shared/money/api.py::Money" };
 const LINE = { contract: "orders/model.py::line_total", replacement: "orders/model.py::line_total_minor" };
 const BLOCK = "migrate-tomas-money-minor";
-const CARRIER = "contract-ines-money-minor";
+const CARRIER = "contract-ines-money-minor-shared-money";
 
 const sha = (n: number) => n.toString(16).padStart(40, "d");
 const lineUse = (path: string): ImpactUse => ({ path, line: 3, kind: "call", symbol: "orders.model.line_total", name: "line_total", scope: "orders" });

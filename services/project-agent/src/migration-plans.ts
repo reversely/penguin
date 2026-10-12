@@ -52,9 +52,9 @@
 //    locks it held are released (`released`).
 // 7. **Contract after the originating feature landed.** A landed fork is read-only, so when no caller
 //    of a retiring symbol is left and its originating feature no longer runs, `carryContract` opens a
-//    short-lived feature from main for the DRI of each scope that defines the symbols,
-//    `contract-<owner>-<feature>`. It signs the contract proposal there: its plan has no places, so
-//    Penguin approves it. The removal becomes a `contract` edit task for that DRI's steward. Once that
+//    short-lived feature from main for the DRI of each scope that defines the symbols and each
+//    defining package, `contract-<owner>-<feature>-<package>`; a landed carrier is never reused. It
+//    signs the contract proposal there: its plan has no places, so Penguin approves it. The removal becomes a `contract` edit task for that DRI's steward. Once that
 //    task is done, Penguin lands the carrier itself (penguin-land.ts). When the carrying feature's
 //    block reaches main, retiring-count.ts `closeRemoved` closes the symbols.
 //
@@ -105,7 +105,7 @@ import type { SqlDatabase, SqlValue } from "./issue-index.ts";
 import { RUNNING_STATES } from "./overlap-lock.ts";
 import { protectedLookup } from "./part-checks.ts";
 import { trialEvidence, type PartTrialStore, type StoredPartTrial } from "./part-trial.ts";
-import { CALLERS_SEARCH, PENGUIN_SESSION, REWRITE_SEARCH } from "./retiring-count.ts";
+import { CALLERS_SEARCH, definingPackage, PENGUIN_SESSION, REWRITE_SEARCH } from "./retiring-count.ts";
 import type { RetiringStore } from "./retiring-store.ts";
 import type { ReviewStore } from "./review-submit.ts";
 
@@ -1151,11 +1151,23 @@ export function contractTask(
 }
 
 /**
+ * The carrier of one contract batch: the first id of that owner and package no feature has. An
+ * existing carrier is never reused: a landed fork is read-only, and a building one's `contract` task
+ * already names its own batch, so each batch is its own feature.
+ */
+function freeCarrierId(deps: MigrationDeps, origin: string, owner: string, pkg: string): string {
+  for (let seq = 1; ; seq += 1) {
+    const id = contractCarrierId(origin, owner, pkg, seq);
+    if (deps.features.get(id) === undefined) return id;
+  }
+}
+
+/**
  * The contract step of symbols with no caller left whose originating feature `origin` no longer runs:
- * for the DRI of each scope that defines them, a short-lived feature from main carries the removal.
- * Its plan has no places, so Penguin approves it under a signed `contract_proposed` record there, and
- * the removal is a `contract` edit task for that DRI's steward. A symbol in no scope, or in a scope
- * with no owner, stays retiring.
+ * for the DRI of each scope that defines them, one short-lived feature from main per defining
+ * package carries the removal. Its plan has no places, so Penguin approves it under a signed
+ * `contract_proposed` record there, and the removal is a `contract` edit task for that DRI's steward.
+ * A symbol in no scope, or in a scope with no owner, stays retiring.
  */
 export async function carryContract(
   deps: MigrationDeps,
@@ -1164,19 +1176,21 @@ export async function carryContract(
   count: { readonly promotion: string; readonly runId: number },
 ): Promise<{ feature: string; contracts: string[]; recordId: string }[]> {
   const scopeMap = await deps.scopeMap();
-  const byOwner = new Map<string, { scopes: Set<string>; symbols: RetiringSymbol[] }>();
+  const batches = new Map<string, { owner: string; pkg: string; scopes: Set<string>; symbols: RetiringSymbol[] }>();
   for (const symbol of symbols) {
     const scope = scopeForPath(scopeMap, contractPath(symbol.contract));
     const owner = scope === undefined ? undefined : scopeMap.scopes.get(scope)?.driId;
     if (scope === undefined || owner === undefined) continue;
-    const entry = byOwner.get(owner) ?? { scopes: new Set<string>(), symbols: [] };
+    const pkg = definingPackage(symbol.contract);
+    const key = `${owner}\0${pkg}`;
+    const entry = batches.get(key) ?? { owner, pkg, scopes: new Set<string>(), symbols: [] };
     entry.scopes.add(scope);
     entry.symbols.push(symbol);
-    byOwner.set(owner, entry);
+    batches.set(key, entry);
   }
   const carried: { feature: string; contracts: string[]; recordId: string }[] = [];
-  for (const [owner, { scopes, symbols: owned }] of [...byOwner].sort(([a], [b]) => (a < b ? -1 : 1))) {
-    const carrierId = contractCarrierId(origin, owner);
+  for (const [, { owner, pkg, scopes, symbols: owned }] of [...batches].sort(([a], [b]) => (a < b ? -1 : 1))) {
+    const carrierId = freeCarrierId(deps, origin, owner, pkg);
     const contracts = owned.map((each) => each.contract);
     // The defining scope's own uses leave with the symbols: the task edits those files too.
     const own = deps.retiring.ownFiles(contracts);

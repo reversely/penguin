@@ -477,9 +477,12 @@ Penguin sorts each feature checkpoint's contract diff and decides between a spli
   - **Withdrawal.** A later count that finds a caller of an approved symbol withdraws the approval
     with a signed `contract_withdrawn` record.
   - **The originating feature landed.** A landed fork is read-only, so it cannot carry the removal.
-    For the DRI of each scope that defines the symbols, Penguin opens a short-lived feature from
-    main, `contract-<owner>-<feature>`. It signs the `contract_proposed` record there with
-    `origin`, `places: []`, `own_files` and `approved_by: penguin`. The removal becomes a `contract`
+    For each batch, the symbols of one defining package and one DRI of the defining scope, Penguin
+    opens a short-lived feature from main, `contract-<owner>-<feature>-<package>`, with the
+    package's slashes written as hyphens: `contract-ines-money-minor-shared-money`. A carrier
+    already open, building or landed is never reused: each batch gets the next free id, `-2` and on,
+    so each carrier is its own feature on the timeline with its own `contract` task. It signs the
+    `contract_proposed` record there with `origin`, `places: []`, `own_files` and `approved_by: penguin`. The removal becomes a `contract`
     edit task for that DRI's steward; its instructions and evidence name the own uses' files, which
     the removal edits too. The originating feature's `contractStep` shows the symbol `approved` with
     the carrying feature as `carrier`. Once the steward's removal is done, Penguin lands the carrier
