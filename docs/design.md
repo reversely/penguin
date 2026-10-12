@@ -847,8 +847,12 @@ agent becomes an edit task for one of them.
   holds another person's scope. A feature's builder is created when the feature opens. Its charter
   scopes are the declared area's scopes the person is DRI for. Its charter paths are the area's paths
   plus the paths of the area's other scopes. The charter follows the area as checkpoints grow it.
-  Charters are cut at 32 scopes and 64 paths. A builder handle another identity already holds moves
-  to `-2`, then `-3`.
+  Charters are cut at 32 scopes and 64 paths. An identity the person already made under the
+  feature's builder handle, `@<person>/<feature>`, is taken as its builder, as a person's own
+  `@<person>/steward` is taken as the steward: Penguin brings its charter to the area and keeps it
+  there. Only an identity whose one owner is the feature's person is taken, never a team identity.
+  A builder handle another identity holds, or one whose charter cannot be brought to the area, moves
+  the builder to `-2`, then `-3`.
 - **Sources** (`services/project-agent/src/edit-work.ts`). Five kinds of work open tasks:
 
   | Kind | Opened by | Routed | Done when |

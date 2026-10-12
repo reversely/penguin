@@ -78,6 +78,23 @@ test("Penguin proposes one migration plan per owner group, with each reader in i
   t.diagnostic(`${plans.length} plans, ${parts.length} parts; writers: ${by((part) => part.writer ?? "none")}; states: ${by((part) => part.state)}`);
 });
 
+test("each reader's migration task names the reader's own builder, which its agent session runs as", (t: TestContext) => {
+  const handles: string[] = [];
+  for (const plan of preview.migrations.plans(ORIGIN.id)) {
+    for (const part of plan.parts) {
+      if (part.place.kind !== "feature") continue;
+      const feature = LARDER.features.find((each) => each.id === (part.place as { feature: string }).feature) as LarderFeature;
+      for (const task of preview.editTasks.forSource(`migrate:${part.partId}`)) {
+        assert.equal(task.handle, `@${feature.owner}/${feature.id}`, `${part.partId} routes to ${task.handle}`);
+        handles.push(task.handle as string);
+      }
+    }
+  }
+  assert.ok(handles.length > 0);
+  assert.deepEqual(preview.identities.list().filter((identity) => /-\d+$/u.test(identity.handle)).map((identity) => identity.handle), []);
+  t.diagnostic(`${handles.length} reader tasks, builders: ${[...new Set(handles)].sort().join(", ")}`);
+});
+
 test("Noor's pagination calls the float API midway and joins Noor's open plan", () => {
   for (const feature of MIDWAY) {
     const plan = firstPlans().find((each) => each.owner === feature.owner);

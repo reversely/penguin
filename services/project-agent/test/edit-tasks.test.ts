@@ -129,6 +129,32 @@ test("a feature's builder is chartered on its declared area: the person's scopes
   });
 });
 
+test("the person's own identity under the feature's builder handle becomes its builder, with no -2 identity", () => {
+  const project = new Project();
+  const own = project.identities.create("jun", { handle: "@jun/weekly-report", name: "weekly", job: "Builds the weekly report", charterScopes: ["reports"], autoAccept: true }, project.scopeMap);
+  assert.equal(own.status, "ok");
+  project.open("weekly-report", "jun", { scopes: ["analytics"] });
+  // The roster takes it and brings its charter to the feature's area.
+  assert.deepEqual(project.roster.builderOf("jun", "weekly-report"), { handle: "@jun/weekly-report", person: "jun", scopes: ["analytics"], paths: [] });
+  assert.equal(own.status === "ok" && project.roster.roleOf(own.identity.id)?.role, "builder");
+  assert.equal(project.identities.byHandle("@jun/weekly-report-2"), undefined);
+  // The area grows: the same identity follows it.
+  project.features.setArea("weekly-report", { ...EMPTY_AREA, scopes: ["analytics", "reports"] }, { ...project.features.draftRecord("weekly-report", "declare_area", { person: "jun" }, {}), signature: "test" }, null);
+  project.roster.builder(project.features.get("weekly-report")!, project.scopeMap);
+  assert.deepEqual(project.roster.builderOf("jun", "weekly-report")?.scopes, ["analytics", "reports"]);
+  assert.equal(project.identities.list().filter((identity) => identity.handle.startsWith("@jun/weekly-report")).length, 1);
+});
+
+test("an identity under a feature's builder handle that is not the person's own is never taken as its builder", () => {
+  const project = new Project();
+  // A team identity Jun made with Sam: Jun is one of its owners, not its one owner.
+  const team = project.identities.createTeam("jun", { handle: "@jun/weekly-report", name: "weekly", job: "Team work", charterScopes: [], owners: ["jun", "sam"], autoAccept: true }, project.scopeMap);
+  assert.equal(team.status, "ok");
+  project.open("weekly-report", "jun", { scopes: ["analytics"] });
+  assert.deepEqual(project.roster.builderOf("jun", "weekly-report"), { handle: "@jun/weekly-report-2", person: "jun", scopes: ["analytics"], paths: [] });
+  assert.equal(team.status === "ok" && project.roster.roleOf(team.identity.id), undefined);
+});
+
 test("a failed block run's agent steps become next-step tasks, split across charters under one block", async () => {
   const project = new Project();
   project.open("utc-day", "priya", { scopes: ["ingestion"] });

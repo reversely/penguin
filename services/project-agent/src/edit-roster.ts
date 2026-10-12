@@ -8,7 +8,9 @@
 // - A feature's builder, `@<person>/<feature>`, is created when the feature first routes a task or opens,
 //   chartered on the feature's declared area: the area's scopes the person is DRI for, and as paths the
 //   area's paths plus the paths of the area's other scopes. The charter follows the area as the
-//   area grows. A handle another identity holds moves the builder to `-2`, `-3`.
+//   area grows. An identity the person already made under that handle is taken as the builder, as
+//   the steward rule takes one, once its charter is brought to the area. A handle another person's
+//   identity holds, or one whose charter cannot cover the area, moves the builder to `-2`, `-3`.
 //
 // Charters are cut at IDENTITY_LIMITS (32 scopes, 64 paths), sorted first, so a place past the cut
 // routes to a steward instead of the builder.
@@ -78,6 +80,15 @@ export class EditRoster {
     const charterPaths = [...new Set([...feature.area.paths, ...borrowed])].filter((path) => path !== "").sort().slice(0, IDENTITY_LIMITS.paths);
     const known = this.#identityOf("builder", person, feature.id);
     if (known !== undefined) return this.#keepCharter(known, charterScopes, charterPaths, scopeMap);
+    // The person's own identity under the feature's handle, such as a session's `@jun/basket-size`.
+    const own = this.#identities.byHandle(builderHandle(person, feature.id));
+    if (own !== undefined && own.ownerId === person) {
+      const kept = this.#keepCharter(own, charterScopes, charterPaths, scopeMap);
+      if (sameList([...kept.charterScopes].sort(), charterScopes) && sameList([...kept.charterPaths].sort(), charterPaths)) {
+        this.#remember(own.id, "builder", person, feature.id);
+        return kept;
+      }
+    }
     for (let attempt = 1; attempt <= BUILDER_HANDLE_ATTEMPTS; attempt += 1) {
       const created = this.#identities.create(
         person,
@@ -122,12 +133,13 @@ export class EditRoster {
 
   /** Edits the identity's charter only when it differs, as its owner. */
   #keepCharter(identity: Identity, charterScopes: readonly string[], charterPaths: readonly string[], scopeMap: ScopeMap): Identity {
-    const same = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((value, index) => value === b[index]);
-    if (same([...identity.charterScopes].sort(), charterScopes) && same([...identity.charterPaths].sort(), charterPaths)) return identity;
+    if (sameList([...identity.charterScopes].sort(), charterScopes) && sameList([...identity.charterPaths].sort(), charterPaths)) return identity;
     const edited = this.#identities.edit(identity.ownerId as string, identity.id, { charterScopes, charterPaths }, scopeMap);
     return edited.status === "ok" ? edited.identity : identity;
   }
 }
+
+const sameList = (a: readonly string[], b: readonly string[]): boolean => a.length === b.length && a.every((value, index) => value === b[index]);
 
 function charterOf(identity: Identity | undefined): EditCharter | undefined {
   if (identity === undefined || identity.ownerId === null) return undefined;
