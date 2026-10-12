@@ -1,6 +1,7 @@
 /**
- * The project's repos in its Artifacts namespace: the base repo, the issues repo, one fork of the
- * base per owner, one fork of the base per Huddle issue and one fork of the base per feature.
+ * The project's repos in its Artifacts namespace: the base repo, the issues repo, the record repo, one
+ * fork of the base per owner, one fork of the base per Huddle issue and one fork of the base per
+ * feature.
  *
  * This module takes the Artifacts binding as a parameter and never imports the Agents SDK, so
  * node:test can run it against a fake binding.
@@ -67,6 +68,11 @@ export class RepoNames {
 
   get issues(): string {
     return `${this.prefix}issues`;
+  }
+
+  /** The record repo: every signed feature record, written by Penguin alone (project-agent record-repo.ts). */
+  get record(): string {
+    return `${this.prefix}record`;
   }
 
   owner(ownerId: string): string {
@@ -189,7 +195,7 @@ async function listRepoNames(artifacts: ArtifactsNamespace): Promise<Set<string>
   return names;
 }
 
-export type RepoRole = "base" | "issues" | "owner" | "huddle" | "feature";
+export type RepoRole = "base" | "issues" | "record" | "owner" | "huddle" | "feature";
 
 /**
  * `created` and `imported` repos were made by this call; `existing` ones were there before it.
@@ -366,7 +372,7 @@ async function ensureRepo(
 
 /**
  * Makes the project's repos: the base repo (imported from `source.url`, or created empty), the
- * issues repo and one fork of the base per owner. Repos that already exist are reported and left
+ * issues repo, the record repo and one fork of the base per owner. Repos that already exist are reported and left
  * alone, so running setup again creates nothing. Owner forks wait until the base repo holds a
  * commit; they are reported as `pending` until then.
  *
@@ -406,6 +412,15 @@ export async function setUpProject(
     await ensureRepo(existing, { name: names.issues, role: "issues" }, "created", () =>
       artifacts.create(names.issues, {
         description: "Penguin issue operation log",
+        setDefaultBranch: "main",
+      }),
+    ),
+  );
+
+  repos.push(
+    await ensureRepo(existing, { name: names.record, role: "record" }, "created", () =>
+      artifacts.create(names.record, {
+        description: "Penguin signed feature records",
         setDefaultBranch: "main",
       }),
     ),

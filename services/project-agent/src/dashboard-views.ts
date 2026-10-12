@@ -93,6 +93,8 @@ export interface DashboardViewDeps {
   readonly split?: (featureId: string) => ContractSplitView | undefined;
   /** The scope dependencies stored from the last derivation (ScopeEdgeStore.snapshot); absent, only declared ones show. */
   readonly scopeEdges?: () => ScopeEdgeSnapshot;
+  /** Each of a feature's records in the record repo: record id to the commit that added it (RecordRepoStore.commits). */
+  readonly recordCommits?: (featureId: string) => ReadonlyMap<string, string>;
 }
 
 /**
@@ -474,6 +476,7 @@ export async function buildFeaturePage(deps: DashboardViewDeps, featureId: strin
   const runs = deps.tools.list(featureId);
   const checkRun = runs.filter((run) => run.tool === "check" && run.outcome !== null).at(-1);
   const scope = (id: string): DashboardScope => dashboardScope(scopeMap, id);
+  const commits = deps.recordCommits?.(featureId);
   return {
     feature: {
       id: feature.id,
@@ -532,6 +535,7 @@ export async function buildFeaturePage(deps: DashboardViewDeps, featureId: strin
       author: records[index] === undefined ? "" : authorLabel(records[index]),
       createdAt: records[index]?.created_at ?? "",
       path: stored.path,
+      commit: commits?.get(stored.recordId) ?? null,
     })),
   };
 }

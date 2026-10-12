@@ -116,6 +116,7 @@ export default {
             team: async (owner) => agent.teamView(owner, repos),
             personScopes: async (person) => agent.personScopes(person, repos),
             featurePage: async (owner, featureId) => agent.featurePage(owner, featureId, repos),
+            featureRecord: async (featureId, recordId) => agent.recordFile(featureId, recordId),
             reviewDifferences: async (reviewId) => agent.reviewDifferences(reviewId),
             overlapRequests: async (owner) => agent.overlapRequests(owner),
             // The approver is the session's person, named by the dashboard route, never by the body.

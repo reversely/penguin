@@ -47,7 +47,7 @@ export type FastForwardOutcome =
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
-const FLUSH = encoder.encode("0000");
+export const FLUSH = encoder.encode("0000");
 const PACK = [0x50, 0x41, 0x43, 0x4b];
 const USER_AGENT = "git/2 penguin-promotion";
 
@@ -60,7 +60,7 @@ export function pktLine(text: string): Uint8Array {
   return out;
 }
 
-function concat(parts: readonly Uint8Array[]): Uint8Array<ArrayBuffer> {
+export function concat(parts: readonly Uint8Array[]): Uint8Array<ArrayBuffer> {
   const out = new Uint8Array(parts.reduce((total, part) => total + part.length, 0));
   let offset = 0;
   for (const part of parts) {
@@ -121,7 +121,8 @@ export function parseAdvertisement(bytes: Uint8Array): Advertisement {
   return { refs, capabilities };
 }
 
-async function request(fetchImpl: typeof fetch, url: string, token: string, timeoutMs: number, body?: { readonly service: string; readonly bytes: Uint8Array<ArrayBuffer> }): Promise<Uint8Array> {
+/** One smart HTTP request with the token in the Authorization header; a non-2xx answer throws with its status alone. */
+export async function request(fetchImpl: typeof fetch, url: string, token: string, timeoutMs: number, body?: { readonly service: string; readonly bytes: Uint8Array<ArrayBuffer> }): Promise<Uint8Array> {
   const headers: Record<string, string> = { Authorization: `Bearer ${token}`, "User-Agent": USER_AGENT };
   if (body !== undefined) {
     headers["Content-Type"] = `application/x-${body.service}-request`;
@@ -139,11 +140,11 @@ async function request(fetchImpl: typeof fetch, url: string, token: string, time
   return bytes;
 }
 
-function repoUrl(remote: string, path: string): string {
+export function repoUrl(remote: string, path: string): string {
   return `${remote.replace(/\/+$/u, "")}/${path}`;
 }
 
-async function advertisement(fetchImpl: typeof fetch, endpoint: GitEndpoint, service: string, timeoutMs: number): Promise<Advertisement> {
+export async function advertisement(fetchImpl: typeof fetch, endpoint: GitEndpoint, service: string, timeoutMs: number): Promise<Advertisement> {
   return parseAdvertisement(await request(fetchImpl, repoUrl(endpoint.remote, `info/refs?service=${service}`), endpoint.token, timeoutMs));
 }
 

@@ -174,6 +174,11 @@ class Backend implements DashboardBackend {
     this.viewReads.push({ owner, featureId });
     return this.pages.get(featureId);
   }
+  /** Each record file the record repo holds, by `<feature>/<record id>`. */
+  readonly recordFiles = new Map<string, string>();
+  async featureRecord(featureId: string, recordId: string) {
+    return this.recordFiles.get(`${featureId}/${recordId}`);
+  }
   /** The full tables of differing inputs the ProjectAgent holds, by review id, and each id read. */
   readonly tables = new Map<number, unknown>();
   readonly tableReads: number[] = [];
@@ -670,6 +675,22 @@ describe("a signed-in person's features", () => {
     assert.equal((await browser.request("/api/features/ledger/plan")).status, 404);
     assert.equal((await browser.post("/api/features/tax-rounding/plan", {})).status, 405);
     assert.equal((await new Browser(browser.backend).request("/api/features/tax-rounding/plan")).status, 401);
+  });
+
+  test("a feature's record path opens the signed file the record repo holds, and nothing before it is there", async () => {
+    const browser = new Browser();
+    await browser.signIn("jun-gh");
+    const file = JSON.stringify({ schema_version: 1, record_id: "ines-web-0001", feature: "tax-rounding", type: "open_feature", signature: "c2ln" });
+    browser.backend.recordFiles.set("tax-rounding/ines-web-0001", file);
+    const response = await browser.request("/api/features/tax-rounding/records/ines-web-0001");
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get("Content-Type") ?? "", /^application\/json/);
+    assert.equal(response.headers.get("X-Content-Type-Options"), "nosniff");
+    assert.equal(await response.text(), file);
+    assert.equal((await browser.request("/api/features/tax-rounding/records/ines-web-0002")).status, 404);
+    assert.equal((await browser.request("/api/features/tax-rounding/records/..%2Fbase")).status, 404);
+    assert.equal((await browser.post("/api/features/tax-rounding/records/ines-web-0001", {})).status, 405);
+    assert.equal((await new Browser(browser.backend).request("/api/features/tax-rounding/records/ines-web-0001")).status, 401);
   });
 
   test("without a session the feature routes answer 401", async () => {

@@ -111,7 +111,9 @@ curl -sS -X POST https://<worker-url>/setup \
 | `owners` | The owner ids from the project's `penguin/owners.json`; each gets a fork `owner-<id>` |
 | `source` | Optional. An HTTPS Git remote to import the base repo from. Without it the base repo starts empty |
 
-Setup creates `base`, `issues` and one fork of `base` per owner. It reports each repo as `created`,
+Setup creates `base`, `issues`, `record` and one fork of `base` per owner. `record` holds the signed
+feature records, which Penguin alone writes. A project set up before `record` existed gets it when
+Penguin pushes its first record, so it needs no second setup run. It reports each repo as `created`,
 `imported`, `existing` or `pending` with the count of Artifacts operations it used. It returns no repo
 token. Running it again creates only what is missing, so it also adds a new owner's fork.
 
@@ -147,5 +149,5 @@ shadow tables and returns their row-by-row comparison with the live index. It ch
 ## Teardown
 
 Delete the project's repos with `npx wrangler artifacts repos delete <name> --namespace penguin -y`:
-`base`, `issues`, each `owner-<id>` and each `huddle-<id>`. Remove the queue's consumer before
+`base`, `issues`, `record`, each `owner-<id>`, each `feature-<id>` and each `huddle-<id>`. Remove the queue's consumer before
 deleting the queue, then delete the Worker.

@@ -150,8 +150,14 @@ The procedure moves conflict handling to the start of the work. Each step below 
   exists ([Checks](#checks)).
 - **Records.** Each opening, declaration and checkpoint update is a record signed with Penguin's
   service key. Each record carries its path in the record repo,
-  `records/<feature>/<author>-<writer>-<seq>.json`. The ProjectAgent keeps the records until the
-  record repo exists.
+  `records/<feature>/<author>-<writer>-<seq>.json`. Project setup makes the record repo, `record`, in
+  the Artifacts namespace. A project set up before it existed gets it at its first record push. The ProjectAgent keeps every record in its own tables as the working copy.
+  A few seconds after a record is stored, Penguin commits it at its path, in the order the records
+  were stored. One commit and one push carry every record stored since the last push, with a write
+  token Penguin mints for that push alone (`services/project-agent/src/record-repo.ts`). A failed push
+  retries the same commit, so no record is committed twice. Every bridge may hold an expiring read
+  token on `record`, so any person can clone the history. No bridge, session or dashboard route gets
+  write on it.
 - **Configuration.** `PENGUIN_FEATURE_FORK_DEFAULT_BRANCH_ONLY` sets `fork()`'s
   `defaultBranchOnly`. `PENGUIN_FEATURE_TOKEN_TTL_MINUTES` sets the token lifetime.
   `PENGUIN_REPO_PREFIX` leads every repo name. Opening refuses without valid values.

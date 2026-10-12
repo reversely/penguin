@@ -131,7 +131,9 @@ import { claimReviews, recordReview } from "../../services/project-agent/src/rev
 import { ReviewStore, submitReview } from "../../services/project-agent/src/review-submit.ts";
 import { reviewDifferences } from "../../services/project-agent/src/review-view.ts";
 import { SessionStore } from "../../services/project-agent/src/session-store.ts";
+import { flushRecords, RecordRepoStore } from "../../services/project-agent/src/record-repo.ts";
 import { gitReader } from "../../services/project-agent/test/git-reader.ts";
+import { gitServer } from "../../services/project-agent/test/git-server.ts";
 
 const ROOT = join(import.meta.dirname, "../..");
 const VENV_BIN = join(ROOT, ".venv", "bin");
@@ -197,6 +199,8 @@ export class PreviewProject {
   readonly blocks: BlockStore;
   readonly blockQueue: BlockQueueStore;
   readonly penguinLands: PenguinLandStore;
+  /** What the record repo holds; the repo is a bare repository on disk (`#recordRepo`). */
+  readonly recordRepo: RecordRepoStore;
   /**
    * True to propose the split's migration plans after each count, as the ProjectAgent does: each plan's
    * rewrites and trials then run on the check runner. Off by default, since a scenario that does not
@@ -212,6 +216,7 @@ export class PreviewProject {
   #key = generateSigningKeyPair();
   #clock = Date.parse("2026-10-11T09:00:00Z");
   #runnerRepo: Promise<string> | undefined;
+  #recordRepoDir: Promise<string> | undefined;
 
   readonly scopeMap: ScopeMap;
   readonly repo: string;
@@ -256,6 +261,7 @@ export class PreviewProject {
     this.blocks = new BlockStore(this.sql, now);
     this.blockQueue = new BlockQueueStore(this.sql, now);
     this.penguinLands = new PenguinLandStore(this.sql, now);
+    this.recordRepo = new RecordRepoStore(this.sql);
     let sessions: SessionStore | undefined;
     this.index = new IssueIndex(this.sql, { assignmentsChanged: (issueId, added, removed) => sessions?.assignmentsChanged(issueId, added, removed) });
     sessions = new SessionStore(this.sql, this.identities, {
@@ -682,6 +688,39 @@ export class PreviewProject {
     return execFileSync("git", ["-C", await this.#runner(), "show", `${sha}:${path}`], { encoding: "utf8" });
   }
 
+  /** The record repo: an empty bare repository on disk, as project setup makes it in Artifacts. */
+  #recordRepo(): Promise<string> {
+    this.#recordRepoDir ??= (async () => {
+      const dir = await realpath(await mkdtemp(join(tmpdir(), "penguin-preview-record-")));
+      execFileSync("git", ["init", "--quiet", "--bare", "--initial-branch=main", dir]);
+      return dir;
+    })();
+    return this.#recordRepoDir;
+  }
+
+  /**
+   * Commits every stored record to the record repo, a batch a push, as the ProjectAgent's alarm does
+   * a few seconds after each record (record-repo.ts). The push goes to the bare repository through
+   * `git receive-pack`.
+   */
+  async pushRecords(): Promise<void> {
+    const server = gitServer({ record: await this.#recordRepo() }, { preview: "write" });
+    const open = async () => ({ endpoint: { remote: "https://artifacts.test/git/record.git", token: "preview" }, close: async () => undefined });
+    for (;;) {
+      const outcome = await flushRecords({ store: this.recordRepo, open, fetch: server.fetch });
+      if (outcome.status === "failed") throw new Error(`pushing records: ${outcome.reason}`);
+      if (outcome.status === "idle") return;
+    }
+  }
+
+  /** A record's file at the commit that added it, or undefined while it is not in the record repo. */
+  async recordFile(featureId: string, recordId: string): Promise<string | undefined> {
+    const stored = this.features.records(featureId).find((record) => record.recordId === recordId);
+    const commit = this.recordRepo.commitOf(recordId);
+    if (stored === undefined || commit === undefined) return undefined;
+    return execFileSync("git", ["-C", await this.#recordRepo(), "show", `${commit}:${stored.path}`], { encoding: "utf8" });
+  }
+
   /** An empty repository for the check runner, which fetches each fork as runner mode does. */
   #runner(): Promise<string> {
     this.#runnerRepo ??= (async () => {
@@ -1084,6 +1123,7 @@ export class PreviewProject {
       editTasks: (featureId) => this.editTasks.forFeature(featureId).map((task) => editTaskView(task)),
       steward: (person) => this.stewardView(person),
       scopeEdges: () => this.scopeEdges.snapshot(),
+      recordCommits: (featureId) => this.recordRepo.commits(featureId),
     };
   }
 
@@ -1162,8 +1202,10 @@ export class PreviewProject {
       personScopes: async (person) => buildPersonScopes(this.viewDeps(), person),
       featurePage: async (owner, featureId) => {
         await this.syncEditWork();
+        await this.pushRecords();
         return buildFeaturePage(this.viewDeps(), featureId, owner);
       },
+      featureRecord: async (featureId, recordId) => this.recordFile(featureId, recordId),
       reviewDifferences: async (reviewId) => {
         const review = this.reviews.get(reviewId);
         return review === undefined ? undefined : reviewDifferences(review);

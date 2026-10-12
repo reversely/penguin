@@ -25,14 +25,14 @@ export const DEFAULT_TOKEN_TTL_SECONDS = 3600;
 
 /** A repo named as the bridge names it: without the deployment's repo prefix. */
 export type ProjectRepo =
-  | { readonly role: "base" | "issues" }
+  | { readonly role: "base" | "issues" | "record" }
   | { readonly role: "owner"; readonly ownerId: string }
   | { readonly role: "huddle"; readonly huddleId: string }
   | { readonly role: "feature"; readonly featureId: string };
 
-/** Parses `base`, `issues`, `owner-<id>`, `huddle-<id>` or `feature-<id>`; anything else is undefined. */
+/** Parses `base`, `issues`, `record`, `owner-<id>`, `huddle-<id>` or `feature-<id>`; anything else is undefined. */
 export function parseProjectRepo(name: string): ProjectRepo | undefined {
-  if (name === "base" || name === "issues") return { role: name };
+  if (name === "base" || name === "issues" || name === "record") return { role: name };
   const owner = /^owner-(.+)$/.exec(name)?.[1];
   if (owner !== undefined && isValidRepoName(owner)) return { role: "owner", ownerId: owner };
   const huddle = /^huddle-(.+)$/.exec(name)?.[1];
@@ -42,7 +42,7 @@ export function parseProjectRepo(name: string): ProjectRepo | undefined {
   return undefined;
 }
 
-/** The widest scope `bridge` may hold on `repo`. */
+/** The widest scope `bridge` may hold on `repo`. Penguin alone writes the record repo, so every bridge reads it. */
 export function allowedScope(bridge: BridgeIdentity, repo: ProjectRepo): TokenScope {
   switch (repo.role) {
     case "issues":
@@ -52,6 +52,7 @@ export function allowedScope(bridge: BridgeIdentity, repo: ProjectRepo): TokenSc
     case "huddle":
       return bridge.role === "runner" ? "write" : "read";
     case "base":
+    case "record":
     case "feature":
       return "read";
   }
@@ -68,6 +69,8 @@ export function artifactsRepoName(repo: ProjectRepo, names: RepoNames): string {
       return names.base;
     case "issues":
       return names.issues;
+    case "record":
+      return names.record;
     case "owner":
       return names.owner(repo.ownerId);
     case "huddle":

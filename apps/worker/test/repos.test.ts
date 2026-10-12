@@ -130,22 +130,23 @@ test("parseSetupRequest requires a non-empty owner list and an HTTPS source", ()
 test("RepoNames applies the prefix and rejects an invalid one", () => {
   const prefixed = new RepoNames("test-14-");
   assert.deepEqual(
-    [prefixed.base, prefixed.issues, prefixed.owner("jun"), prefixed.huddle("031")],
-    ["test-14-base", "test-14-issues", "test-14-owner-jun", "test-14-huddle-031"],
+    [prefixed.base, prefixed.issues, prefixed.record, prefixed.owner("jun"), prefixed.huddle("031")],
+    ["test-14-base", "test-14-issues", "test-14-record", "test-14-owner-jun", "test-14-huddle-031"],
   );
   assert.throws(() => new RepoNames("-bad"), InvalidRepoNameError);
 });
 
-test("setup with an import source makes N + 2 repos for N owners", async () => {
+test("setup with an import source makes N + 3 repos for N owners, the record repo among them", async () => {
   const artifacts = new FakeArtifacts();
   const request = { ...OWNERS, source: { url: "https://github.com/o/fixture" } };
   const report = await setUpProject(artifacts, request, names);
 
   assert.equal(report.complete, true);
-  assert.equal(report.created, 5);
+  assert.equal(report.created, 6);
   assert.deepEqual(statuses(report), {
     base: "imported",
     issues: "created",
+    record: "created",
     "owner-priya": "created",
     "owner-jun": "created",
     "owner-sam": "created",
@@ -155,8 +156,8 @@ test("setup with an import source makes N + 2 repos for N owners", async () => {
   assert.deepEqual(artifacts.calls.filter((call) => call.startsWith("get")), ["get base"]);
   assert.equal(artifacts.disposed, 1);
   assert.deepEqual(report.artifactsOperations, {
-    total: 8,
-    byMethod: { list: 1, import: 1, create: 1, get: 1, log: 1, fork: 3 },
+    total: 9,
+    byMethod: { list: 1, import: 1, create: 2, get: 1, log: 1, fork: 3 },
   });
   assert.ok(report.repos.every((repo) => !("token" in repo)));
 });
@@ -171,7 +172,7 @@ test("running setup a second time creates no repo and reports the existing ones"
   assert.equal(report.created, 0);
   assert.equal(report.complete, true);
   assert.ok(report.repos.every((repo) => repo.status === "existing"));
-  // Five repos over two-item pages: three list calls and nothing else.
+  // Six repos over two-item pages: three list calls and nothing else.
   assert.deepEqual(artifacts.calls, ["list", "list", "list"]);
 });
 
@@ -182,17 +183,18 @@ test("without a source, owner forks wait for the base commit and a later run mak
   assert.deepEqual(statuses(first), {
     base: "created",
     issues: "created",
+    record: "created",
     "owner-priya": "pending",
     "owner-jun": "pending",
     "owner-sam": "pending",
   });
-  assert.match(first.repos[2]?.reason ?? "", /no commits/);
+  assert.match(first.repos[3]?.reason ?? "", /no commits/);
   assert.ok(!artifacts.calls.some((call) => call.startsWith("get")));
 
   // Still empty on the second run: the base is opened, found empty and left alone.
   const second = await setUpProject(artifacts, OWNERS, names);
   assert.equal(second.created, 0);
-  assert.equal(second.repos[2]?.status, "pending");
+  assert.equal(second.repos[3]?.status, "pending");
 
   artifacts.repos.get("base")?.commits.push(BASE_COMMIT); // the deployer pushes the fixture
   const third = await setUpProject(artifacts, OWNERS, names);
@@ -210,7 +212,7 @@ test("owner forks stay pending while the base repo is importing", async () => {
     names,
   );
   assert.equal(report.complete, false);
-  assert.match(report.repos[2]?.reason ?? "", /IMPORT_IN_PROGRESS/);
+  assert.match(report.repos[3]?.reason ?? "", /IMPORT_IN_PROGRESS/);
 });
 
 test("setup keeps the request order and adds only the missing owner forks", async () => {
@@ -218,7 +220,7 @@ test("setup keeps the request order and adds only the missing owner forks", asyn
   await setUpProject(artifacts, { owners: ["jun"], source: { url: "https://x/r" } }, names);
   const report = await setUpProject(artifacts, { owners: ["priya", "jun", "sam"] }, names);
   assert.deepEqual(
-    report.repos.slice(2).map((repo) => [repo.name, repo.status]),
+    report.repos.slice(3).map((repo) => [repo.name, repo.status]),
     [
       ["owner-priya", "created"],
       ["owner-jun", "existing"],

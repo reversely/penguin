@@ -559,7 +559,14 @@ function RecordView({ page }: { readonly page: FeaturePage }) {
             <span className="record-type">{recordLabel(record.type)}</span>
             <span className="muted">{record.author}</span>
             <time dateTime={record.createdAt}>{timeText(record.createdAt)}</time>
-            <code className="record-path">{record.path}</code>
+            {record.commit ? (
+              // The signed file as the record repo holds it, read at the commit that added it.
+              <a className="record-path" href={`/api/features/${page.feature.id}/records/${record.recordId}`} title={`In the record repo at ${shortSha(record.commit)}`}>
+                <code>{record.path}</code>
+              </a>
+            ) : (
+              <code className="record-path">{record.path}</code>
+            )}
           </li>
         ))}
       </ol>

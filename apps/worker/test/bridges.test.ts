@@ -286,6 +286,28 @@ test("jun's bridge is refused write on another owner's fork, the base repo and a
   assert.equal(artifacts.minted.length, 0);
 });
 
+test("every bridge reads the record repo with an expiring token and none may write it: Penguin alone does", async () => {
+  const { call, artifacts } = gateway(fakeArtifacts([...PROJECT_REPOS, "test-record"]));
+  const started = Date.now();
+  for (const role of ["owner", "runner"] as const) {
+    const bridge = await registerBridge(call, role === "owner" ? "jun" : "sam", role);
+    const read = await requestToken(call, bridge.bridgeToken, "record", "read");
+    assert.equal(read.status, 200, role);
+    const body = (await read.json()) as { scope: string; remote: string; expiresAt: string };
+    assert.equal(body.scope, "read");
+    assert.equal(body.remote, "https://account.artifacts.example/git/penguin/test-record.git");
+    assert.ok(Date.parse(body.expiresAt) <= started + TTL * 1000 + 1000, body.expiresAt);
+    assert.equal((await requestToken(call, bridge.bridgeToken, "record", "write")).status, 403, role);
+  }
+  assert.deepEqual(
+    artifacts.minted.map((token) => [token.repo, token.scope]),
+    [
+      ["test-record", "read"],
+      ["test-record", "read"],
+    ],
+  );
+});
+
 test("a runner bridge gets write on a Huddle repo", async () => {
   const { call } = gateway();
   const runner = await registerBridge(call, "sam", "runner");
@@ -362,6 +384,7 @@ test("the token TTL setting defaults to an hour and must fall in the range Artif
 
 test("project repo names parse by role", () => {
   assert.deepEqual(parseProjectRepo("issues"), { role: "issues" });
+  assert.deepEqual(parseProjectRepo("record"), { role: "record" });
   assert.deepEqual(parseProjectRepo("owner-jun-2"), { role: "owner", ownerId: "jun-2" });
   assert.deepEqual(parseProjectRepo("huddle-031"), { role: "huddle", huddleId: "031" });
   assert.deepEqual(parseProjectRepo("feature-person-id"), { role: "feature", featureId: "person-id" });

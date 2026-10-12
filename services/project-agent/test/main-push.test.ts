@@ -3,13 +3,14 @@
 // bare repositories standing for the base repo and a feature's fork.
 
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 
-import { fastForwardMain, packEnd, pktLine } from "../src/main-push.ts";
+import { fastForwardMain, packEnd } from "../src/main-push.ts";
+import { gitServer, type Served } from "./git-server.ts";
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -17,36 +18,6 @@ function git(cwd: string, ...args: string[]): string {
 
 const READ = "art_v1_read-token-for-the-test";
 const WRITE = "art_v1_write-token-for-the-test";
-
-interface Served {
-  readonly fetch: typeof fetch;
-  readonly requests: { readonly url: string; readonly method: string; readonly auth: string | null }[];
-}
-
-/** A fetch that serves `repos` by name, as https://artifacts.test/git/<name>.git, checking each token's scope. */
-function gitServer(repos: Record<string, string>, tokens: Record<string, "read" | "write">): Served {
-  const requests: Served["requests"] = [];
-  const served = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-    const url = new URL(String(input));
-    const auth = new Headers(init?.headers).get("Authorization");
-    requests.push({ url: url.pathname + url.search, method: init?.method ?? "GET", auth });
-    const match = /^\/git\/([a-z-]+)\.git\/(info\/refs|git-upload-pack|git-receive-pack)$/u.exec(url.pathname);
-    const dir = match === null ? undefined : repos[match[1] as string];
-    if (match === null || dir === undefined) return new Response("not found", { status: 404 });
-    const scope = tokens[(auth ?? "").replace(/^Bearer /u, "")];
-    const service = match[2] === "info/refs" ? url.searchParams.get("service") : match[2];
-    if (scope === undefined || (service === "git-receive-pack" && scope !== "write")) return new Response("denied", { status: 403 });
-    const program = (service as string).replace(/^git-/u, "");
-    if (match[2] === "info/refs") {
-      const out = execFileSync("git", [program, "--stateless-rpc", "--advertise-refs", dir]);
-      return new Response(Buffer.concat([pktLine(`# service=${service}\n`), Buffer.from("0000"), out]));
-    }
-    const body = Buffer.from(init?.body as Uint8Array);
-    const run = spawnSync("git", [program, "--stateless-rpc", dir], { input: body });
-    return new Response(run.stdout);
-  };
-  return { fetch: served as typeof fetch, requests };
-}
 
 describe("moving main in one push", () => {
   const root = mkdtempSync(join(tmpdir(), "penguin-main-push-"));

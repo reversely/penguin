@@ -489,6 +489,8 @@ export interface FeatureRecordView {
   readonly author: string;
   readonly createdAt: string;
   readonly path: string;
+  /** The record repo commit that added the record, or null while it waits for the next push. Absent from an older Worker. */
+  readonly commit?: string | null;
 }
 
 /** GET /api/features/<id>/page: the feature page (PRD section 10). */

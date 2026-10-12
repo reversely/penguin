@@ -50,6 +50,7 @@ flowchart TB
       Forks["owner forks<br/>owner-id"]
       Issues["issues"]
       Huddle["Huddle repos<br/>huddle-NNN"]
+      Record["record"]
     end
   end
   Agent -- "MCP /mcp" --> Worker
@@ -68,6 +69,7 @@ flowchart TB
   Worker -- "block reports from the runner" --> HA
   HA -- "records to sign; feature landed" --> PA
   HA -- "one push of main,<br/>with a token only it holds" --> Base
+  PA -- "signed records,<br/>one push per batch" --> Record
   PA -- "Artifacts binding: read" --> Art
   Worker -- "create, import, fork" --> Art
 ```
@@ -77,7 +79,7 @@ flowchart TB
 | Worker gateway | `apps/worker/src/` | Every caller: bridges, the runner, agent sessions, browsers | Authentication of each caller, request routing, the Queue consumer, repo setup, Artifacts token minting |
 | ProjectAgent | `services/project-agent/src/` | The whole project | The issue index, operation validation, identities, sessions and routing, inboxes, bridge and MCP token registries, owner forks' latest checkpoints, combined-run scheduling, the Huddle records, features with their overlap locks and dependents |
 | FeatureAgent | `services/feature-agent/src/index.ts` | One feature, or one owner-fork Huddle under a Huddle's name | The feature's plan, fix writes, block runs and promotion; a Huddle's verification runs, fix review standing, threads and approved-branch request |
-| Artifacts repos | One namespace, `penguin` | Every Git client and the Worker | Versioned source and the issue operation log |
+| Artifacts repos | One namespace, `penguin` | Every Git client and the Worker | Versioned source, the issue operation log and the signed feature records |
 | `penguin-bridge` | `services/local-bridge/src/` | One owner on one machine | Checkpoint publishing with consent, the issue command line, the safe-checkpoint hook, the outbound spool |
 | Integration runner | `penguin-bridge runner` on a designated machine | The project | Pushing queued operations, combined runs, plan facts runs, block runs, verification runs, the `approved` branch |
 | Dashboard | `apps/dashboard/src/` | People in a browser | The team map, the approvals inbox with one card per merge plan, the feature page, the issue page, the identities page |
@@ -98,6 +100,7 @@ run's repos apart from production's; the prefix leads every name.
 | `base` | `POST /setup`, imported from the team's Git remote or created empty | The deployer, once, when setup created it empty. Then only a FeatureAgent, to promote a block | The team's main branch, with `penguin/scopes.json`, `penguin/owners.json` and `penguin/identities.json` |
 | `owner-<id>` | `POST /setup`, one fork of `base` per owner | That owner's bridge only | The owner's published checkpoints, one branch per worktree branch |
 | `issues` | `POST /setup` | Every bridge and the runner | One signed file per issue operation, `issues/<issue>/ops/<op_id>.json` |
+| `record` | `POST /setup`. A project set up before it existed gets it from the ProjectAgent at its first record push | The ProjectAgent only, with a write token it mints for each push | One signed file per feature record, `records/<feature>/<author>-<writer>-<seq>.json`, on `main` |
 | `huddle-<id>` | The Worker, when a Huddle issue opens; `<id>` is the issue number padded to three digits, as in `huddle-031` | The runner only | The `integration` branch of each verification run and the `approved` branch at close |
 | `feature-<id>` | The Worker, when a person or an agent session opens the feature (`apps/worker/src/features.ts`) | The feature's agent sessions, with tokens the Worker mints for them. For an approved merge plan part, also the plan's originating agent or the runner, with a token minted for that part | The feature's work, forked from main's branch, with each approved fix as one commit on `main` |
 
@@ -113,6 +116,7 @@ Write on `base` is minted only by a FeatureAgent, for one promotion, for
 `PENGUIN_PROMOTION_TOKEN_TTL_MINUTES`. It never leaves the FeatureAgent: `/tokens` holds every bridge
 to `read` on `base`. No MCP tool or dashboard route mints a token on it. Once a feature's block
 reaches main, every write token on its fork is revoked and none is minted again.
+`/tokens` holds every bridge to `read` on `record`: a person clones it with that expiring token.
 Artifacts tokens separate only read from write per repo, so the repo boundary is the push boundary.
 The validator then decides what each operation in `issues` may do.
 
@@ -129,8 +133,10 @@ bridges and MCP tokens as hashes, `OwnerFork` latest checkpoints, `CombinedRun`,
 fix approvals and close-out blockers for the issue page. The feature tables are live state too
 (`services/project-agent/src/feature-store.ts`): `Feature` holds each feature's person, fork, state
 and declared area. `FeatureSession` names the agent sessions of each feature. `FeatureRecord` holds
-the signed records of each opening, declaration, checkpoint update, overlap check and approval
-until the record repo takes them. `OverlapLock` and `FeatureDependent`
+every signed feature record. It is the working copy that every view reads. The `record` repo holds the
+same files as their durable history. `RecordRepoEntry`, `RecordRepoTree` and `RecordRepoHead`
+(`services/project-agent/src/record-repo.ts`) keep the commit that added each record, each feature
+folder's tree and `main`'s head with the batch being pushed. `OverlapLock` and `FeatureDependent`
 (`services/project-agent/src/overlap-lock.ts`) hold each feature's overlap locks and the running
 features that read its area. `OwnOverlap` holds overlaps with the same person's running
 features, which make no lock. `OverlapSettled` records each lock that was approved or withdrawn.
@@ -241,6 +247,28 @@ matches a pending operation clears its `PendingOp` row.
 A checkpoint of a running feature whose area meets another feature's announced plan asks for a
 `plan_check` run of that plan's block. It runs the same checks and never moves main.
 [design.md](design.md#block-promotion-in-the-build) has the rules.
+
+### Records to the record repo
+
+The record repo lets a person read every plan, approval, check and promotion as signed files in Git,
+outside Penguin.
+
+1. Storing a signed record in `FeatureRecord` arms an alarm on the ProjectAgent five seconds later,
+   unless one is already scheduled. Records stored in that window share one push.
+2. The alarm takes the oldest records not yet in the repo, in the order they were stored, up to 200.
+   It fixes them as the batch with the ID of the commit that adds them, then mints a write token on
+   `record` for 120 seconds. When the project has no `record` repo, the ProjectAgent first creates it
+   through the Artifacts binding with the call `POST /setup` uses. A repo another call made in between
+   counts as made.
+3. The ProjectAgent builds the commit itself: one blob per record, the folder trees above them and a
+   commit by Penguin on `main`'s last head. It sends them as one pack to `git-receive-pack` in one push,
+   naming the head `main` must still stand at. It then revokes the token.
+4. Once `main` names the commit, each record keeps that commit. Records left over start the next push at
+   once. A failed push leaves the batch fixed and is tried again 60 seconds later. When `main` already
+   names the batch's commit, the earlier push succeeded and nothing is pushed again.
+
+The feature page links each committed record's path to `GET /api/features/<id>/records/<record id>`.
+That route reads the file through the Artifacts binding at the commit that added it.
 
 ### Promoting an expand checkpoint
 

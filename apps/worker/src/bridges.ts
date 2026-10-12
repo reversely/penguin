@@ -377,7 +377,7 @@ async function issueToken(request: Request, options: BridgeOptions, handlers: Br
   if (scope !== "read" && scope !== "write") return invalid("scope", "must be read or write");
   const repo = typeof repoName === "string" ? parseProjectRepo(repoName) : undefined;
   if (repo === undefined || typeof repoName !== "string") {
-    return invalid("repo", "must be base, issues, owner-<id>, huddle-<id> or feature-<id>");
+    return invalid("repo", "must be base, issues, record, owner-<id>, huddle-<id> or feature-<id>");
   }
   if (!isPermitted(scope, allowedScope(bridge, repo))) {
     return json({ error: "forbidden", message: `this bridge may not hold ${scope} on ${repoName}` }, 403);

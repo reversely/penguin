@@ -479,6 +479,22 @@ temporary folder. On the helpful-fix fixture, three features open and Priya's pl
 written. Priya's block reaches main, then Jun's and Sam's after a failing land and a race. Every
 scope's tests run on main after each promotion.
 
+### Record repo check
+
+`tests/e2e/record-repo.test.ts` proves a feature's signed records reach the record repo against real
+Artifacts, through local `wrangler dev` under a repo prefix unique to the run. It deletes every repo it
+made. It needs a Wrangler login and this repository's `.venv`:
+
+```sh
+PENGUIN_RECORD_E2E=1 node --test tests/e2e/record-repo.test.ts
+```
+
+It writes `worker.log` and `evidence.json` to `PENGUIN_RECORD_E2E_OUT`, default a temporary folder. On
+the helpful-fix fixture, setup makes `record`. Priya's feature opens and reaches main alone. Priya's
+bridge then clones `record` with a read token. Every record the feature page lists is at its path with
+the same bytes the page's link answers. Artifacts refuses a push with the read token. The bridge gets no
+write token on `record`.
+
 ### Expand promotion check
 
 `tests/e2e/expand-promotion.test.ts` proves an expand checkpoint reaches main on its own against real

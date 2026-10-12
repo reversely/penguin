@@ -36,6 +36,9 @@
  *   - GET /api/features/<id>/page: the feature page as the signed-in person may see it (FeaturePage in
  *     @penguin/protocol): a part's changed lines only for the feature's person, the part's owner and
  *     that owner's delegate; 404 for no such feature.
+ *   - GET /api/features/<id>/records/<record id>: one signed record of the feature as the record repo
+ *     holds it, read at the commit that added it, as JSON; 404 for no such record or one not in the
+ *     repo yet. Any signed-in person may read it, as the feature page lists every record.
  *   - GET /api/reviews/<id>/differences: every differing input of a review's side-by-side run, with
  *     each side's outcome and no arguments (ReviewDifferences in @penguin/protocol), checked against
  *     REVIEW_DIFFERENCES_SCHEMA; 404 for no such review or one without a run. Any signed-in person
@@ -150,6 +153,8 @@ export interface DashboardBackend {
   personScopes(person: string): Promise<unknown>;
   /** The feature page as `owner` may see it (FeaturePage in @penguin/protocol), or undefined. */
   featurePage(owner: string, featureId: string): Promise<unknown>;
+  /** One signed record's file as the record repo holds it, or undefined while it is not there. */
+  featureRecord(featureId: string, recordId: string): Promise<string | undefined>;
   /** Every differing input of a review's side-by-side run (ReviewDifferences in @penguin/protocol), or undefined. */
   reviewDifferences(reviewId: number): Promise<unknown>;
   /** The overlapping starts waiting for `owner` as plain JSON (OverlapRequests in @penguin/protocol). */
@@ -481,6 +486,14 @@ async function featureRoute(
     if (request.method !== "GET") return methodNotAllowed("GET");
     const found = await (await handlers.dashboard()).featurePage(session.owner, page);
     return found === undefined ? json({ error: "not found", message: `no feature ${page}` }, 404) : json(found);
+  }
+  const record = /^\/api\/features\/([a-z0-9.-]{1,63})\/records\/([a-z0-9.-]{1,96})$/.exec(url.pathname);
+  if (record !== null) {
+    if (request.method !== "GET") return methodNotAllowed("GET");
+    const [, featureId, recordId] = record as unknown as [string, string, string];
+    const file = await (await handlers.dashboard()).featureRecord(featureId, recordId);
+    if (file === undefined) return json({ error: "not found", message: `record ${recordId} is not in the record repo yet` }, 404);
+    return new Response(file, { headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } });
   }
   const plan = /^\/api\/features\/([a-z0-9.-]{1,63})\/plan$/.exec(url.pathname)?.[1];
   if (plan !== undefined) {

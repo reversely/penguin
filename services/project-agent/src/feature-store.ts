@@ -146,7 +146,7 @@ export interface FeatureRecord {
 
 export type UnsignedFeatureRecord = Omit<FeatureRecord, "signature">;
 
-/** One stored record: its future path in the record repo and its signed JSON. */
+/** One stored record: its path in the record repo and its signed JSON. */
 export interface StoredFeatureRecord {
   readonly recordId: string;
   readonly featureId: string;
@@ -164,7 +164,7 @@ export const FEATURE_SCHEMA: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS FeatureSession (
     session_id TEXT PRIMARY KEY, feature_id TEXT NOT NULL, joined_at INTEGER NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS FeatureSession_feature ON FeatureSession (feature_id)`,
-  // Signed records, kept here until the record repo takes them (PRD section 9).
+  // Signed records: the working copy of the record repo (record-repo.ts, PRD section 9).
   `CREATE TABLE IF NOT EXISTS FeatureRecord (
     record_id TEXT PRIMARY KEY, feature_id TEXT NOT NULL, author_segment TEXT NOT NULL,
     seq INTEGER NOT NULL, path TEXT NOT NULL, file TEXT NOT NULL, created_at INTEGER NOT NULL)`,
@@ -267,10 +267,13 @@ export function featureRecordPath(record: Pick<FeatureRecord, "feature" | "recor
 export class FeatureStore {
   readonly #db: SqlDatabase;
   readonly #now: () => number;
+  readonly #stored: () => void;
 
-  constructor(db: SqlDatabase, now: () => number = Date.now) {
+  /** `stored` is called after each record is stored, inside the caller's transaction, so it only arms work for later. */
+  constructor(db: SqlDatabase, now: () => number = Date.now, stored: () => void = () => undefined) {
     this.#db = db;
     this.#now = now;
+    this.#stored = stored;
     for (const statement of FEATURE_SCHEMA) db.exec(statement);
   }
 
@@ -436,6 +439,7 @@ export class FeatureStore {
       JSON.stringify(record),
       this.#now(),
     );
+    this.#stored();
   }
 }
 

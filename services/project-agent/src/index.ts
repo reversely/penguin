@@ -64,6 +64,7 @@ import {
   type TokenGrant,
 } from "./feature-open.ts";
 import { FeatureStore, readOnlyReason, signFeatureRecord, type Feature } from "./feature-store.ts";
+import { flushRecords, openRecordRepo, RecordRepoStore, type RecordFlushOutcome, type RecordRepoAccess } from "./record-repo.ts";
 import {
   approveOverlap,
   checkOverlap,
@@ -893,7 +894,16 @@ interface ProjectAgentEnv {
   readonly PENGUIN_FIX_TOKEN_TTL_MINUTES?: string;
   /** Whether a fork Penguin makes for a feature it opens keeps only the default branch, as the Worker's forks do. */
   readonly PENGUIN_FEATURE_FORK_DEFAULT_BRANCH_ONLY?: string;
+  /** The prefix of every repo name, as the Worker names repos; the record repo is `<prefix>record`. */
+  readonly PENGUIN_REPO_PREFIX?: string;
 }
+
+/** Seconds after a record is stored before the alarm that commits it, so one push carries the records stored together. */
+const RECORD_FLUSH_DELAY_SECONDS = 5;
+/** Seconds before a failed record push is tried again. */
+const RECORD_RETRY_SECONDS = 60;
+/** The lifetime of the write token minted for one record push; Artifacts' shortest is 60. */
+const RECORD_TOKEN_TTL_SECONDS = 120;
 
 /** A land's answer as the ProjectAgent returns it across RPC: the run without its full request. */
 export type LandAnswer =
@@ -979,6 +989,9 @@ export class ProjectAgent extends Agent {
   #mcpTokens: McpTokenStore | undefined;
   #forks: OwnerForkStore | undefined;
   #featureRows: FeatureStore | undefined;
+  #recordRows: RecordRepoStore | undefined;
+  /** Record pushes run one at a time, so two alarms never build two commits on one head. */
+  #recordFlushes: Promise<unknown> = Promise.resolve();
   #reviewRows: ReviewStore | undefined;
   #trialRows: PartTrialStore | undefined;
   #toolRows: AgentToolStore | undefined;
@@ -2029,8 +2042,78 @@ export class ProjectAgent extends Agent {
   }
 
   #featureStore(): FeatureStore {
-    this.#featureRows ??= new FeatureStore(this.#database());
+    // A stored record arms the push to the record repo once the storing transaction is over.
+    this.#featureRows ??= new FeatureStore(this.#database(), Date.now, () => queueMicrotask(() => this.#armRecordFlush()));
     return this.#featureRows;
+  }
+
+  #recordRepoStore(): RecordRepoStore {
+    this.#recordRows ??= new RecordRepoStore(this.#database());
+    return this.#recordRows;
+  }
+
+  /** The record repo's name: the Worker's repo prefix, then `record`. */
+  #recordRepoName(): string {
+    return `${(this.env as unknown as ProjectAgentEnv).PENGUIN_REPO_PREFIX ?? ""}record`;
+  }
+
+  /** Schedules a record push unless one is already scheduled; see record-repo.ts. */
+  #armRecordFlush(): void {
+    const arm = async () => {
+      if ((await this.listSchedules()).some((schedule) => schedule.callback === "flushRecords")) return;
+      await this.schedule(RECORD_FLUSH_DELAY_SECONDS, "flushRecords");
+    };
+    arm().catch((error: unknown) => console.error(JSON.stringify({ event: "record_flush_arm_failed", error: String(error).slice(0, 200) })));
+  }
+
+  /**
+   * Commits the records not yet in the record repo, one batch per push, with a write token minted for
+   * the push and revoked after it. Called by the Agents SDK scheduler. A failed push is tried again
+   * after RECORD_RETRY_SECONDS; records left over after a push are pushed at once.
+   */
+  async flushRecords(): Promise<RecordFlushOutcome> {
+    const step = this.#recordFlushes.then(() => flushRecords({ store: this.#recordRepoStore(), open: () => this.#openRecordRepo() }));
+    this.#recordFlushes = step.catch(() => undefined);
+    const outcome = await step;
+    if (outcome.status === "failed") {
+      console.error(JSON.stringify({ event: "record_push_failed", records: outcome.records, reason: outcome.reason }));
+      await this.schedule(RECORD_RETRY_SECONDS, "flushRecords");
+    } else if (outcome.status === "pushed") {
+      console.log(JSON.stringify({ event: "record_pushed", commit: outcome.commit, records: outcome.records, recovered: outcome.recovered }));
+      if (this.#recordRepoStore().queuedCount() > 0) await this.schedule(1, "flushRecords");
+    }
+    return outcome;
+  }
+
+  async #openRecordRepo(): Promise<RecordRepoAccess> {
+    // A project set up before the record repo existed gets it on its first push.
+    const repo = await openRecordRepo(this.env.ARTIFACTS, this.#recordRepoName());
+    try {
+      const [token, info] = await Promise.all([repo.createToken("write", RECORD_TOKEN_TTL_SECONDS), repo.info()]);
+      return {
+        endpoint: { remote: info.remote, token: token.plaintext },
+        close: async () => {
+          // A revocation that fails still expires with the token's TTL.
+          await Promise.allSettled([repo.revokeToken(token.id)]);
+          repo[Symbol.dispose]();
+        },
+      };
+    } catch (error) {
+      repo[Symbol.dispose]();
+      throw error;
+    }
+  }
+
+  /**
+   * One signed record of a feature as the record repo holds it, read at the commit that added it, or
+   * undefined when the feature has no such record or it is not in the repo yet.
+   */
+  async recordFile(featureId: string, recordId: string): Promise<string | undefined> {
+    const stored = this.#featureStore().records(featureId).find((record) => record.recordId === recordId);
+    const commit = stored === undefined ? undefined : this.#recordRepoStore().commitOf(recordId);
+    if (stored === undefined || commit === undefined) return undefined;
+    const blob = await withRepo(this.env.ARTIFACTS, this.#recordRepoName(), (repo) => repo.readFile({ ref: commit, path: stored.path }));
+    return blob === null ? undefined : blob.text();
   }
 
   /**
@@ -2574,6 +2657,7 @@ export class ProjectAgent extends Agent {
       protectedChanges: (featureId) => this.#protectedChangeStore().ofFeature(featureId),
       split: (featureId) => this.#splitStore().get(featureId),
       scopeEdges: () => this.#scopeEdgeStore().snapshot(),
+      recordCommits: (featureId) => this.#recordRepoStore().commits(featureId),
     };
   }
 
