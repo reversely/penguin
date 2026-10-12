@@ -228,13 +228,14 @@ own rounding mode (`ROUND_HALF_UP`) states. The revision's tax equals exact deci
   | Ines's agent, revision | Ines's fork: tax per line | 1 |
 - **Rewrite rules.** The case's codemods write exactly what the plan's rules give. The fixture's
   codemod commits were written by hand, so they also change what no rule writes. With the seven
-  rules in `larder.json`, the money plan's 33 parts classify as 0 mechanical and 33 behavioural.
+  rules in `larder.json`, the money plan's 32 parts classify as 0 mechanical and 32 behavioural:
+  the nine plan scopes on main and the 23 readers.
   The rules reproduce the code changes of 12 codemod fixes: Ines's messaging fix and the
   saved-carts, split-shipments, substitutions, partial-refunds, pdf-layout, business-accounts,
   credit-notes, order-shipped, refund-email, weekly-digest and order-history fixes. Each of those 12
   also rewrites its tests' float prices, such as `Line("milk", 2, 1.49)` to
   `Line("milk", 2, Money(149, "USD"))`. That rewrite needs a unit conversion and a currency. Its pattern
-  would name `Line`, a contract outside the money change. The other 11 codemod fixes in the plan
+  would name `Line`, a contract outside the money change. The other 10 codemod fixes in the plan
   differ in their code too:
 
   | Fix | What no rule writes |
@@ -243,11 +244,17 @@ own rounding mode (`ROUND_HALF_UP`) states. The revision's tax equals exact deci
   | Ines's mobile-api fix, cart-sync | `round(total * 100)` on a variable: no use of a money contract to match |
   | reorder | `dict[str, float]` becomes `dict[str, money.Money]` inside a parameter's annotation |
   | japan-launch | `money.price(yen)` gains the currency `"JPY"`, a choice per call |
-  | pagination | The part's patch adds files, against Noor's first checkpoint |
 
-  If every test rewrite were rule-shaped, 21 parts would stay behavioural, over the default limit of
+  If every test rewrite were rule-shaped, 20 parts would stay behavioural, over the default limit of
   10. The preview seed therefore still raises the project's break limit to the returned plan's
   count.
+- **Places in running features.** Every reader's fork starts at `base`, so it also carries main's
+  callers in its scope, such as `checkout/cart.py` in the `japan-launch` fork. Those callers belong to
+  main's part. Each reader's part lists only the callers in the module its own checkpoint adds, two
+  or three per reader. Noor's first `pagination` checkpoint changes only `shared/platform`. The facts
+  run reports its 2 callers in `mobile_api/orders.py` as carried from main, so Penguin states
+  `pagination` as not affected and the plan holds no part for it. The preview seed proposes a part
+  for every reader and the midway feature, then drops the part Penguin answers `not_affected`.
 - **Routine merge conflicts.** The case resolves two import and formatting conflicts. Every fork in
   the fixture merges with Ines's fork without a conflict.
 - **Agents.** The case counts about sixty agents. The fixture gives each feature one agent identity,

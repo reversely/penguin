@@ -89,6 +89,15 @@ export interface ImpactFork {
   readonly id: string;
   readonly sha: string;
   readonly scopes: readonly string[];
+  /**
+   * Main's commit, when the request asked for the fork's own changes only. `uses` and `errors` then
+   * cover only files the fork added or changed since `mergeBase`, its merge base with `since`.
+   */
+  readonly since?: string;
+  /** The fork's merge base with `since`; null when their histories never meet and every file counts. */
+  readonly mergeBase?: string | null;
+  /** Uses left out because they sit in files the fork carries unchanged from main: main's callers. */
+  readonly carried?: number;
   /** Uses of a changed symbol inside the fork's scopes. */
   readonly uses: readonly ImpactUse[];
   /** Files inside the fork's scopes the analysis could not read. */
@@ -197,13 +206,19 @@ export const IMPACT_REPORT_SCHEMA: JsonSchema = {
     forks: {
       type: "array",
       maxItems: 256,
-      items: record({
-        id: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
-        sha: SHA,
-        scopes: strings,
-        uses: list(use),
-        errors: list(record(error)),
-      }),
+      items: record(
+        {
+          id: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+          sha: SHA,
+          scopes: strings,
+          since: SHA,
+          mergeBase: nullable(SHA),
+          carried: { type: "integer", minimum: 0 },
+          uses: list(use),
+          errors: list(record(error)),
+        },
+        ["since", "mergeBase", "carried"],
+      ),
     },
     unanalysed: list(PATH),
     errors: list(record({ ...error, tree: NAME })),

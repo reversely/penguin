@@ -7,8 +7,9 @@
 //   and the identity whose report recorded the checkpoint (its signed `checkpoint_area` record).
 // - The contract diff and the callers: the check runner's impact report (`analysis:python-impact`)
 //   on the checkpoint against its baseline, with one fork per running feature (plan-facts.ts).
-// - The affected running features: those the impact graph shows using a changed symbol, or whose
-//   tests break on the merged tree.
+// - The affected running features: those the impact graph shows using a changed symbol in a file
+//   they changed since their merge base with main, or whose tests break on the merged tree. A caller
+//   in a file a feature carries unchanged from main is main's; the feature takes that fix with main.
 // - Each affected scope's invariants: `penguin/invariants.json` on main.
 // - Each break: the failing test's docstring (or its name in words) and the assertion and error
 //   lines from the runner's run.
@@ -307,8 +308,9 @@ function breakFacts(report: PlanFactsReport): PlanBreakFact[] {
 
 /**
  * The places the change reaches. Code on main: each scope outside the changed scopes with a caller on
- * main or a break on the main target. Unfinished work: each running feature whose fork uses a changed
- * symbol, holds an unreadable file in its scopes, or breaks on its merged tree.
+ * main or a break on the main target. Unfinished work: each running feature whose own changes use a
+ * changed symbol or hold an unreadable file in its scopes, or that breaks on its merged tree. The
+ * facts run reports a fork's uses only in files it changed since its merge base with main.
  */
 function affectedPlaces(
   impact: ImpactReport,
@@ -363,6 +365,22 @@ function affectedPlaces(
     place?.scopes.add(each.scopeId);
   }
   return [...places.values()].sort((a, b) => (placeKey(a.place) < placeKey(b.place) ? -1 : 1));
+}
+
+/**
+ * Why running feature `featureId` is not a place, from the impact report: its area reads no scope the
+ * change touches, or its own changes call nothing in the contract diff. Callers in files it carries
+ * unchanged from main are main's, and it takes main's fix with main.
+ */
+export function unaffectedReason(impact: ImpactReport | null, featureId: string): string {
+  const fork = impact?.forks.find((each) => each.id === featureId);
+  if (fork === undefined) return "its area reads no scope the change touches";
+  const carried = fork.carried ?? 0;
+  if (carried === 0) return "its own changes call nothing in the contract diff and none of its tests breaks on the merged tree";
+  return (
+    `its own changes since its merge base with main call nothing in the contract diff; ` +
+    `its ${carried} caller${carried === 1 ? "" : "s"} sit in files it carries unchanged from main, which main's fix covers when it takes main`
+  );
 }
 
 /**
@@ -638,7 +656,10 @@ export async function proposePlan(deps: ProposePlanDeps, caller: string, session
     const key = placeKey(part.place);
     if (claimed.has(key)) missing.push({ code: "duplicate_part", part: index, place: part.place, message: `parts ${claimed.get(key)} and ${index} both name ${placeLabel(part.place)}` });
     else claimed.set(key, index);
-    if (!byPlace.has(key)) missing.push({ code: "not_affected", part: index, place: part.place, message: `the facts show no caller or break in ${placeLabel(part.place)}` });
+    if (!byPlace.has(key)) {
+      const why = part.place.kind === "feature" ? unaffectedReason(impact, part.place.feature) : "the facts show no caller or break there";
+      missing.push({ code: "not_affected", part: index, place: part.place, message: `${placeLabel(part.place)} is not affected: ${why}` });
+    }
   }
   for (const place of places) {
     if (!claimed.has(placeKey(place.place))) {
@@ -891,6 +912,8 @@ function planFacts(
       : [],
   );
   const request = base.run.request;
+  const affected = new Set(affectedFeatures.map((each) => each.feature));
+  const unaffected = impact === null ? [] : request.targets.filter((target) => target.id !== PLAN_MAIN_TARGET && !affected.has(target.id));
   const commands = [...new Set(request.targets.flatMap((target) => target.commandIds))].sort();
   const reads = Object.entries(calls)
     .map(([method, count]) => `${method} ${count}`)
@@ -910,7 +933,10 @@ function planFacts(
     {
       fact: "affected_features",
       tool: "python-impact forks, test runs and scope dependencies",
-      detail: `${request.targets.length - 1} running features checked, ${affectedFeatures.length} affected`,
+      detail: [
+        `${request.targets.length - 1} running features checked, ${affectedFeatures.length} affected`,
+        ...unaffected.map((target) => `${target.id} is not affected: ${unaffectedReason(impact, target.id)}`),
+      ].join(". "),
     },
     { fact: "invariants", tool: "penguin/invariants.json on main", detail: `${base.invariants.length} invariants of the affected scopes` },
     {

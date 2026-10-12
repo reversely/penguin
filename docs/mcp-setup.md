@@ -283,9 +283,11 @@ optional on each part.
 The first call for a checkpoint answers `missing` with `waiting_for_runner`: Penguin has asked the
 check runner for the impact graph and the test runs. The agent calls again once the runner has
 reported. Each later `missing` answer lists every gap: an affected place without a part, a part for a
-place the facts show unaffected, two parts for one place, a diff commit missing from the fork, or a
+place the facts show unaffected (`not_affected`, with the reason), two parts for one place, a diff commit missing from the fork, or a
 patch that names another base, writes outside the place's scopes or does not apply at the head. A
-plan with more behavioural parts than the project's break limit answers `returned`.
+running feature is affected only by its own changes: the files it added or changed since its merge
+base with main. A caller in a file it carries unchanged from main is main's, so a feature with no
+caller of its own and no break needs no part. A plan with more behavioural parts than the project's break limit answers `returned`.
 
 A plan may also declare `rules`: up to 32 rewrite rules for its mechanical fixes. Each rule names
 `id`, `contract` (`path::symbol`, one the contract diff touches), `kind` (`expression` or

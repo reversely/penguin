@@ -168,8 +168,8 @@ The procedure moves conflict handling to the start of the work. Each step below 
   |---|---|
   | The change in plain words | The checkpoint commit's subject, read with the Artifacts binding's `readCommit`. The identity whose report recorded the checkpoint made it |
   | Contract diff | `analysis:python-impact` on the check runner, from the checkpoint's baseline on main to the checkpoint |
-  | Callers | The same impact report: uses already on main plus uses in each running feature's fork |
-  | Affected running features | Running features whose fork uses a changed symbol or whose tests break on the merged tree |
+  | Callers | The same impact report: uses already on main plus uses in each running feature's own changes, the files it added or changed since its merge base with the baseline |
+  | Affected running features | Running features whose own changes use a changed symbol or whose tests break on the merged tree |
   | Invariants | Each affected scope's entries in `penguin/invariants.json` on main |
   | Breaks | Each `test:<scope>` command the runner ran on the checkpoint merged onto main and onto each running feature. A break states the test's docstring, or the test's name in words when it has none, with the assertion line and the error line from the run |
   | Changed lines | For code on main, the part's commit against its base, read with `readCommit`, `readTree` and `readBlob`. For a running feature, the part's patch, checked against that feature's files at its fork head read the same way. Only files inside the part's affected scopes are read |
@@ -179,9 +179,15 @@ The procedure moves conflict handling to the start of the work. Each step below 
   checkpoint schedules a run and answers `missing` with `waiting_for_runner`. A newer checkpoint
   supersedes a pending run.
 - **Places.** A scope outside the changed scopes is a place when it has a caller on main or a break on
-  the `main` target. A running feature is a place when its fork uses a changed symbol, holds a file the
-  analysis could not read in its scopes, or breaks on its merged tree. The scope's owner or the
-  feature's person approves the part.
+  the `main` target. A running feature is a place when its own changes use a changed symbol or hold a
+  file the analysis could not read in its scopes, or when it breaks on its merged tree. Its own changes
+  are the files it added or changed since its merge base with the baseline. A fork also carries
+  main's files as they were when it started. A caller in a file the feature carries unchanged belongs
+  to main's part. The feature gets that fix when it takes main, which the block check requires
+  before the feature lands. A feature whose own changes call nothing in the contract diff is no place.
+  Its tests do not run. The `affected_features` source names each such feature with the reason. A
+  part proposed for it is `not_affected` with the same reason. The scope's owner or the feature's
+  person approves the part.
 - **What is missing.** Penguin answers `missing` with every gap: an affected place with no part, a
   part for an unaffected place, two parts for one place, a diff commit missing from the fork, a diff
   that changes no file in the place's scopes, or a failed analysis. A patch is also refused when it
@@ -474,7 +480,7 @@ with its commit and scopes, then what the analysis found.
 | Signatures | Before and after of each changed signature with the parameters added or removed. It says whether a call that worked before can now fail, with the reason |
 | Removed exports | Each name a module exported at base that an import of the module at head can no longer reach |
 | Stored data shapes | Field lists before and after for each dataclass, `NamedTuple`, `TypedDict` and `Enum` whose fields change |
-| Uses | Each import, call or reference of a changed symbol, with its file and line. Head uses lie outside the changed files. Fork uses lie inside the fork's scopes |
+| Uses | Each import, call or reference of a changed symbol, with its file and line. Head uses lie outside the changed files. Fork uses lie inside the fork's scopes. A fork asked with `since` lists only uses in files it changed since its merge base with that commit. The rest count as `carried` |
 
 Names resolve through imports and re-exports. A re-export in `__all__` that points at another
 definition counts as a change to the re-exported name. In the dependency bump, `shared/http.py`

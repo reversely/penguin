@@ -802,7 +802,7 @@ async function moneyMinorUnits(preview: PreviewProject): Promise<void> {
     const diff = preview.diff(head, `feature-${feature.id}`, paths);
     return { place: { feature: feature.id }, patch: { base: head, diff } };
   });
-  const parts = [...scopeParts, ...readerParts];
+  let parts = [...scopeParts, ...readerParts];
   let proposed = await preview.step("propose_plan", () => preview.propose(origin.id, parts, larder.plan.rules));
   // Ines's agent declares the plan's rewrite rules from larder.json. The fixture's hand-written fixes
   // also change docstrings and test data that no rule writes, so every part stays behavioural
@@ -812,6 +812,14 @@ async function moneyMinorUnits(preview: PreviewProject): Promise<void> {
   if (proposed.status === "returned") {
     preview.breakLimit = proposed.behavioural.length;
     proposed = await preview.step("propose_plan at the project's raised break limit", () => preview.propose(origin.id, parts, larder.plan.rules));
+  }
+  // A running feature whose own changes call nothing in the contract diff is not a place: its callers
+  // sit in files it carries from main, and it takes main's fix with main. Ines's agent drops each part
+  // the facts answer `not_affected` and proposes the rest.
+  const unaffected = new Set(proposed.status === "missing" ? proposed.missing.flatMap((item) => (item.code === "not_affected" && item.part !== undefined ? [item.part] : [])) : []);
+  if (unaffected.size > 0) {
+    parts = parts.filter((_, index) => !unaffected.has(index));
+    proposed = await preview.step("propose_plan without the unaffected features", () => preview.propose(origin.id, parts, larder.plan.rules));
   }
   if (proposed.status !== "stored") throw new Error(`plan: ${JSON.stringify(proposed).slice(0, 3_000)}`);
 

@@ -16,6 +16,11 @@ export interface ImpactForkRequest {
   readonly sha: string;
   /** Scope ids from `penguin/scopes.json`; empty searches the whole tree. */
   readonly scopes: readonly string[];
+  /**
+   * Main's commit. When set, the fork's uses are those in files it added or changed since its merge
+   * base with this commit; a use in a file it carries unchanged is main's caller.
+   */
+  readonly since?: string;
 }
 
 export interface ImpactRequest {

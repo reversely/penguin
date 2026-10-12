@@ -351,6 +351,98 @@ def test_a_fork_whose_scopes_never_use_the_change_has_no_uses(repo: Repo):
     assert report["complete"] is True
 
 
+def _forks_since_main(repo: Repo) -> tuple[str, str, dict[str, str]]:
+    """Main with a caller of ``core.f.f``, a change to ``f``, and three forks from the first commit.
+
+    Main gains a second caller after the forks start, so ``since`` is not the forks' merge base.
+    """
+    start = repo.commit(
+        base_files(
+            **{
+                "core/f.py": "def f():\n    return 1\n",
+                "app/a.py": "from core.f import f\n\nf()\n",
+            }
+        )
+    )
+    forks = {
+        "carried-only": repo.commit({"app/notes.py": "NOTE = 1\n"}, start=start),
+        "adds-a-caller": repo.commit(
+            {"app/new.py": "from core.f import f\n\nf()\n"}, start=start
+        ),
+        "edits-a-caller-file": repo.commit(
+            {"app/a.py": "from core.f import f\n\nf()\nDONE = True\n"}, start=start
+        ),
+    }
+    main = repo.commit({"app/b.py": "from core.f import f\n\nf()\n"}, start=start)
+    head = repo.commit({"core/f.py": "def f():\n    return 2\n"}, start=main)
+    return main, head, forks
+
+
+def test_a_fork_with_since_reports_only_uses_in_its_own_changes(repo: Repo):
+    main, head, forks = _forks_since_main(repo)
+    report = run(
+        repo,
+        main,
+        head,
+        [
+            {"id": fork_id, "sha": sha, "scopes": ["app"], "since": main}
+            for fork_id, sha in forks.items()
+        ],
+    )
+    start = git(repo.path, "merge-base", main, forks["carried-only"])
+    found = {
+        fork["id"]: (
+            fork["mergeBase"],
+            sorted({use["path"] for use in fork["uses"]}),
+            fork["carried"],
+        )
+        for fork in report["forks"]
+    }
+    # A caller in a file the fork carries unchanged is main's; one in a file it changed is its own.
+    assert found == {
+        "carried-only": (start, [], 2),
+        "adds-a-caller": (start, ["app/new.py"], 2),
+        "edits-a-caller-file": (start, ["app/a.py"], 0),
+    }
+    assert (
+        impact.parse_request(
+            {
+                "base": main,
+                "head": head,
+                "forks": [{"id": "x", "sha": head, "since": main}],
+            }
+        )
+        .forks[0]
+        .since
+        == main
+    )
+
+
+def test_a_fork_without_since_keeps_every_use_in_its_scopes(repo: Repo):
+    main, head, forks = _forks_since_main(repo)
+    report = run(
+        repo, main, head, [{"id": "f", "sha": forks["carried-only"], "scopes": ["app"]}]
+    )
+    fork = report["forks"][0]
+    assert "since" not in fork and "carried" not in fork
+    assert [use["path"] for use in fork["uses"]] == ["app/a.py", "app/a.py"]
+
+
+def test_a_fork_with_no_common_history_counts_every_file_as_its_own(repo: Repo):
+    main, head, _ = _forks_since_main(repo)
+    git(repo.path, "checkout", "--quiet", "--orphan", "lonely")
+    lonely = repo.commit({"app/c.py": "C = 1\n"})
+    report = run(
+        repo,
+        main,
+        head,
+        [{"id": "f", "sha": lonely, "scopes": ["app"], "since": main}],
+    )
+    fork = report["forks"][0]
+    assert (fork["mergeBase"], fork["carried"]) == (None, 0)
+    assert {use["path"] for use in fork["uses"]} == {"app/a.py", "app/b.py"}
+
+
 def test_a_declared_contract_is_named_on_its_change(repo: Repo):
     scopes = json.loads(json.dumps(SCOPES))
     scopes["scopes"][0]["contracts"] = ["core/f.py::Api"]
@@ -465,6 +557,11 @@ def test_a_path_outside_the_checkout_is_refused(path: str):
             "base": "a" * 40,
             "head": "a" * 40,
             "forks": [{"id": "x", "sha": "a" * 40, "scopes": [3]}],
+        },
+        {
+            "base": "a" * 40,
+            "head": "a" * 40,
+            "forks": [{"id": "x", "sha": "a" * 40, "since": "main"}],
         },
     ],
 )

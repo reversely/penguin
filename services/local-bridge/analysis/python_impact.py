@@ -3,10 +3,14 @@
 Usage: python3 -I python_impact.py --repo PATH < request.json
 
 The request is a JSON object: ``{"base": SHA, "head": SHA, "forks": [{"id": ID, "sha": SHA,
-"scopes": [SCOPE ID, ...]}]}``. The report on standard output names every function, method, class
-and module-level value the change from ``base`` to ``head`` touches, the changed signatures, the
-removed exports, the changed stored data shapes, and each place in each fork's scopes that imports,
-calls or references a changed symbol, with its file and line.
+"scopes": [SCOPE ID, ...], "since": SHA}]}``. The report on standard output names every function,
+method, class and module-level value the change from ``base`` to ``head`` touches, the changed
+signatures, the removed exports, the changed stored data shapes, and each place in each fork's
+scopes that imports, calls or references a changed symbol, with its file and line.
+
+A fork with ``since`` (main's commit) reports only the uses in files the fork added or changed since
+its merge base with ``since``. A use in a file the fork carries unchanged from main is main's caller,
+which the fork takes with main; the report counts those as ``carried``.
 
 Source is never imported or executed. Paths come from ``git ls-tree``, file bytes from ``git
 cat-file``, and each file is parsed with ``ast.parse``. A file that cannot be read safely becomes a
@@ -159,6 +163,23 @@ class GitRepo:
                 continue
             entries.append(TreeEntry(path, oid.decode("ascii"), int(size)))
         return entries, errors
+
+    def merge_base(self, one: str, other: str) -> str | None:
+        """The best common ancestor of two commits, or None when their histories never meet."""
+        result = subprocess.run(
+            ["git", "-C", self.path, "-c", "core.fsmonitor=false", "merge-base"]
+            + [one, other],
+            capture_output=True,
+            env=_git_env(),
+            check=False,
+        )
+        # Exit 1 with no output means no common ancestor; anything else is a failure.
+        if result.returncode == 1 and not result.stdout and not result.stderr:
+            return None
+        if result.returncode != 0:
+            message = result.stderr.decode("utf-8", "replace").strip()
+            raise GitError(f"git merge-base failed: {message}")
+        return result.stdout.decode("ascii").strip()
 
     def blobs(self, oids: list[str]) -> dict[str, bytes]:
         """Read blobs by object ID in one ``cat-file --batch`` call."""
@@ -1307,6 +1328,8 @@ class ForkRequest:
     id: str
     sha: str
     scopes: tuple[str, ...]
+    # Main's commit: uses count only in files the fork changed since its merge base with it.
+    since: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1335,6 +1358,7 @@ def parse_request(raw: object) -> AnalysisRequest:
         if not isinstance(fork, dict):
             raise RequestError(f"forks[{index}] must be an object")
         fork_id, sha, scopes = fork.get("id"), fork.get("sha"), fork.get("scopes", [])
+        since = fork.get("since")
         if (
             not isinstance(fork_id, str)
             or not FORK_ID.match(fork_id)
@@ -1349,8 +1373,12 @@ def parse_request(raw: object) -> AnalysisRequest:
             isinstance(scope, str) and 0 < len(scope) <= 128 for scope in scopes
         ):
             raise RequestError(f"forks[{index}].scopes must be an array of scope ids")
+        if since is not None and (not isinstance(since, str) or not SHA.match(since)):
+            raise RequestError(
+                f"forks[{index}].since must be a full lowercase commit SHA"
+            )
         seen.add(fork_id)
-        forks.append(ForkRequest(fork_id, sha, tuple(sorted(set(scopes)))))
+        forks.append(ForkRequest(fork_id, sha, tuple(sorted(set(scopes))), since))
     return AnalysisRequest(raw["base"], raw["head"], tuple(forks))
 
 
@@ -1367,6 +1395,28 @@ def unanalysed_paths(base: Tree, head: Tree) -> list[str]:
         ):
             unanalysed.append(path)
     return unanalysed
+
+
+def own_paths(
+    repo: GitRepo, fork: ForkRequest, tree: Tree, listed: dict
+) -> tuple[str | None, set[str] | None]:
+    """The fork's merge base with ``since`` and the paths it added or changed since then.
+
+    None for the paths means every path counts: no ``since``, or no common ancestor. ``listed``
+    caches each merge base's entries, since most forks share one.
+    """
+    if fork.since is None:
+        return None, None
+    merge_base = repo.merge_base(fork.since, fork.sha)
+    if merge_base is None:
+        return None, None
+    if merge_base not in listed:
+        entries, _ = repo.tree(merge_base)
+        listed[merge_base] = {entry.path: entry.oid for entry in entries}
+    before = listed[merge_base]
+    return merge_base, {
+        path for path, oid in tree.entries.items() if before.get(path) != oid
+    }
 
 
 def _cap(items: list, limits: Limits, truncated: list[bool]) -> list:
@@ -1394,26 +1444,37 @@ def analyse(
     truncated = [False]
 
     forks = []
+    merge_bases: dict = {}
     for fork in request.forks:
         tree = load_tree(repo, fork.id, fork.sha, cache, limits)
         scope_ids = set(fork.scopes) if fork.scopes else None
+        merge_base, own = own_paths(repo, fork, tree, merge_bases)
         uses = find_uses(tree, changed, scope_ids, set())
+        # A carried file is main's: its unreadable file is main's too, like its callers.
         errors = [
             error
             for error in tree.errors
-            if scope_ids is None
-            or not error["path"]
-            or tree.scopes.scope_of(error["path"]) in scope_ids
+            if (
+                scope_ids is None
+                or not error["path"]
+                or tree.scopes.scope_of(error["path"]) in scope_ids
+            )
+            and (own is None or not error["path"] or error["path"] in own)
         ]
-        forks.append(
-            {
-                "id": fork.id,
-                "sha": fork.sha,
-                "scopes": list(fork.scopes),
-                "uses": _cap(uses, limits, truncated),
-                "errors": _cap(errors, limits, truncated),
+        entry = {"id": fork.id, "sha": fork.sha, "scopes": list(fork.scopes)}
+        if fork.since is not None:
+            own_uses = [use for use in uses if own is None or use["path"] in own]
+            entry |= {
+                "since": fork.since,
+                "mergeBase": merge_base,
+                "carried": len(uses) - len(own_uses),
             }
-        )
+            uses = own_uses
+        entry |= {
+            "uses": _cap(uses, limits, truncated),
+            "errors": _cap(errors, limits, truncated),
+        }
+        forks.append(entry)
 
     # Uses inside the files that define a changed symbol are the change itself, not its callers.
     defining = set(changed.values())

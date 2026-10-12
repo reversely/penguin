@@ -4,7 +4,8 @@
 // checkpoint. The runner:
 //
 // 1. runs `analysis:python-impact` on baseline..checkpoint with one fork per running feature, which
-//    gives the contract diff, the callers already on main and each feature's uses;
+//    gives the contract diff, the callers already on main and each feature's uses in the files it
+//    changed since its merge base with the baseline;
 // 2. merges the checkpoint onto each target with `git merge-tree --write-tree`;
 // 3. runs each listed `test:<scope>` command on the merged commit in a throwaway worktree, except on
 //    a feature the impact graph shows does not use the change;
@@ -111,7 +112,9 @@ export class PlanFactsRunner {
       impact = await this.#options.impact({
         base: request.baseline,
         head: request.checkpoint,
-        forks: features.map(({ id, sha, scopes }) => ({ id, sha, scopes })),
+        // A feature's places are its own changes: a caller in a file it carries unchanged from main
+        // is main's, and the feature takes main's fix with main before its block lands.
+        forks: features.map(({ id, sha, scopes }) => ({ id, sha, scopes, since: request.baseline })),
       });
     } catch (error) {
       impactError = clip((error as Error).message, 4_096);

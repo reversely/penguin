@@ -324,10 +324,14 @@ its latest checkpoint, keyed by its feature id and naming its person. Every targ
 1. refuses a listing that names a repo other than a `feature-<id>` fork or a commit that is not a
    full SHA, then fetches each fork it names;
 2. runs `analysis:python-impact` on the baseline and the checkpoint, with one fork per running
-   feature;
+   feature. Each fork names the baseline as `since`, so the analysis lists only the uses in files the
+   feature added or changed since its merge base with the baseline. A use in a file the feature
+   carries unchanged from main is main's caller. The report counts those as `carried` and leaves
+   them out of the fork's uses;
 3. merges the checkpoint onto each target with `git merge-tree --write-tree`;
 4. runs each listed test command on the merged commit in a throwaway worktree. A running feature
-   that the impact graph shows makes no use of the change gets `not-affected` without a run;
+   whose own changes the impact graph shows make no use of the change gets `not-affected` without a
+   run;
 5. states each failing test as a break: its docstring at the merged commit (`test-evidence.ts`)
    with the assertion line and first error line pytest printed for it;
 6. applies the plan's rewrite rules when the listing carries them
@@ -370,8 +374,13 @@ from the repository. Any other `analysis:` ID is refused (`command-allowlist.ts`
 starts the script as `python3 -I python_impact.py --repo <path>` with an argument vector and no
 shell, in the scrubbed environment described above (`impact-analysis.ts`). Isolated mode keeps the
 working directory and `PYTHON*` variables out of the interpreter's import path. The request goes in
-on standard input as JSON: the base and head commits plus each fork's id, commit and scopes. The
-report comes back on standard output and is checked against `IMPACT_REPORT_SCHEMA` in
+on standard input as JSON: the base and head commits plus each fork's id, commit and scopes. A fork
+may also name `since`, a commit on main. The script then looks up the fork's merge base with it
+(`git merge-base`, one call per fork) and lists the merge base's paths with `git ls-tree`. It reports
+the fork's uses and unreadable files only in paths the fork added or changed since that merge base.
+The fork's entry in the report repeats `since` and adds `mergeBase` and `carried`, the number of uses
+left out. When the two histories never meet, `mergeBase` is null and every file counts as the fork's
+own. The report comes back on standard output and is checked against `IMPACT_REPORT_SCHEMA` in
 `packages/protocol` before anything reads it. [design.md](design.md#impact-graph-and-contract-diff-for-python)
 lists what the report holds.
 
