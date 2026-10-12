@@ -74,7 +74,8 @@ export interface Feature {
  * back because its fork head moved are written by fix-write.ts. A part added for a feature that started
  * touching the plan's area is written by plan-coverage.ts. A land request, a plan check request, a
  * block run's checks, a promotion, a promotion main refused and a land Penguin returned are written
- * by block-land.ts.
+ * by block-land.ts. A person's confirmation of the lines the feature's own change writes under a
+ * path they protect is written by protected-change.ts.
  */
 export type FeatureRecordType =
   | "open_feature"
@@ -97,7 +98,8 @@ export type FeatureRecordType =
   | "block_checked"
   | "promotion"
   | "promotion_refused"
-  | "land_returned";
+  | "land_returned"
+  | "confirm_protected_change";
 
 export interface FeatureRecord {
   readonly schema_version: 1;

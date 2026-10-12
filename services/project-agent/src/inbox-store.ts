@@ -31,7 +31,10 @@
 //   author at once; a revision marks the item unread again, and an approval or a requested change
 //   takes it away until the part next waits on the person.
 // - "protected_path": a part's fix touches a path the person protects in `penguin/scopes.json`, so
-//   they confirm its lines (PRD section 7). Its `issue_id` holds `part:<part id>`.
+//   they confirm its lines (PRD section 7). Its `issue_id` holds `part:<part id>`. A feature's own
+//   change since its merge base with main that touches such a path raises the same reason with
+//   `change:<feature>` (protected-change.ts). A changed set of lines marks it unread again, a
+//   confirmation marks it read, and a checkpoint that no longer touches the path takes it away.
 // - "round_limit": the author of a part of the person's plan asked for one change more than the
 //   project's round limit, so the part waits on the person (PRD section 7). Its `issue_id` holds
 //   `part:<part id>`.
@@ -221,6 +224,25 @@ export class InboxStore implements StartRequestListener {
     this.#raise(personId, partRef(partId), "protected_path");
   }
 
+  /** Asks `personId` to confirm the lines feature `featureId`'s own change writes under a path they protect. */
+  protectedChangeTouched(personId: string, featureId: string): void {
+    this.#raise(personId, changeRef(featureId), "protected_path");
+  }
+
+  /** `personId`'s confirmation of feature `featureId`'s protected lines is recorded: the item stays, read. */
+  protectedChangeConfirmed(personId: string, featureId: string): void {
+    this.#db.exec(
+      `UPDATE InboxItem SET read = 1 WHERE person_id = ? AND issue_id = ? AND reason = 'protected_path'`,
+      personId,
+      changeRef(featureId),
+    );
+  }
+
+  /** Feature `featureId`'s own change no longer touches a path `personId` protects. */
+  protectedChangeWithdrawn(personId: string, featureId: string): void {
+    this.#db.exec(`DELETE FROM InboxItem WHERE person_id = ? AND issue_id = ? AND reason = 'protected_path'`, personId, changeRef(featureId));
+  }
+
   /** Tells `personId` that part `partId` of their plan went past the round limit. */
   roundLimitReached(personId: string, partId: string): void {
     this.#raise(personId, partRef(partId), "round_limit");
@@ -286,6 +308,11 @@ export function partRef(partId: string): string {
 /** The part id of a plan part item's reference, or undefined for any other reference. */
 export function parsePartRef(ref: string): string | undefined {
   return ref.startsWith("part:") && ref.length > "part:".length ? ref.slice("part:".length) : undefined;
+}
+
+/** The reference of a protected-path item for a feature's own change; no issue id can take this form. */
+export function changeRef(featureId: string): string {
+  return `change:${featureId}`;
 }
 
 /** The reference of a feature's returned-plan item; no issue id can take this form. */

@@ -152,6 +152,7 @@ The inbox page holds the approvals that wait on the signed-in person (`approvals
 |---|---|---|
 | Overlapping starts | Each feature whose start waits beside one of the person's running features, its person and the scopes, contracts and paths where the two areas meet | Approve start, `POST /api/overlaps/approve` |
 | Plans | One card per merge plan with parts for the person: the originating feature and person, why the plan needs the person in person, each review the parts carry and then each of the person's parts | Per part: Approve revision, `POST /api/plan-parts/approve`; Request change, which opens a field whose text posts `POST /api/plan-parts/request-change` |
+| Protected paths | Each feature whose own change, since its merge base with main, writes a path the person protects in `penguin/scopes.json`: the feature and its person, the checkpoint, each protected path and the changed lines of each file under it | Confirm lines, `POST /api/plan-parts/confirm-protected` with `{ feature, owner, checkpoint }`. A confirmed card stays, marked Confirmed, until a later checkpoint changes the lines |
 | Review exceptions | Each review of the person's scopes whose record raised an exception | None |
 | Returned plans | Each plan of the person's returned over the break limit, with its behavioural places | None |
 
@@ -163,6 +164,11 @@ A part of the person's own plan past the round limit reads Past the round limit.
 controls. The latest requested change follows as a quote. The tests that break in the place and the
 fix's changed lines open from a line that counts them, such as "4 breaks, 3 changed files". A review
 exception whose review a plan card already shows lists its exceptions with a link to that review.
+
+A feature cannot land while a Protected paths card of its own waits. The card lists for the person
+who protects the path and for their delegate; its lines follow the plan patches' rule, so only the
+feature's person, the protecting person and that person's delegate read them. The approvals count
+leaves out a confirmed card.
 
 A review shows the form row by row: each invariant's statement, the verdict and the evidence, the
 stored data marker, Penguin's refusals and the exceptions it raised. Beside the form, in a centre

@@ -333,8 +333,17 @@ inputs and `feature-money-tax-tax-per-line` on 10.
   scopes.
 - **Same-area forks in the impact report.** The impact graph selects Hugo's fork because it lives in
   `shared/money`. The case counts it under the overlapping start, outside the 23 readers.
-- **Protected file.** `analytics/revenue_report.py` is listed in the scope's `protected_paths`, which
-  no Penguin code reads yet.
+- **Protected file.** `analytics/revenue_report.py` is listed in the scope's `protected_paths`. At
+  the `money-analytics` checkpoint Penguin reads the wave's own change since its merge base with
+  main, which is main as `money-refunds-payouts` left it. The change rewrites the protected file, so
+  Jun gets one `protected_path` item for the wave with the file's diff, 38 lines with context. The
+  wave's plan has no parts, so the item is the only thing the wave waits on. The preview seed has Jun
+  confirm the lines once the plan is stored and before main moves to the wave's head, which signs a
+  `confirm_protected_change` record on the wave. No other checkpoint the seed reports touches the
+  file: Ines's one-block attempt rewrites it only in its `fix-analytics` step, past the checkpoint
+  it reports, and Jun's own analytics features add files beside it.
+  `apps/worker/test/money-waves.test.ts` derives the expected item from `larder.json`: each wave of
+  another person whose area is a scope with `protected_paths`.
 
 ## Changing the fixture
 

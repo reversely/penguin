@@ -141,6 +141,9 @@ form that passed waits as `pending` until the check runner claims it and attache
 `check` or `apply_fix` request waits until the check runner claims it and reports its result
 (`agent-tool-runner.ts`). The row records when the requesting session's safe checkpoint delivered it.
 `PlanPartRoute` (`plan-approval.ts`) keeps which revision of which plan part waits on whom.
+`ProtectedChange` (`protected-change.ts`) holds, per feature and protecting person, the lines the
+feature's own change writes under a protected path at its latest checkpoint and whether that person
+confirmed them.
 `FixWriteGrant` (`fix-write.ts`) holds each write asked for, one per part revision, with its writer,
 the fork head it must fast-forward and the commit once kept. `AnnouncedPlan` and `PlanCoverage`
 (`plan-coverage.ts`) hold each feature's newest plan with its area and the running features the plan
@@ -219,7 +222,8 @@ matches a pending operation clears its `PendingOp` row.
 ### Landing a feature
 
 1. The feature's agent calls `land_feature`. The ProjectAgent checks that the feature's latest
-   checkpoint already holds main's head and that every part of its plan is approved. Each fix for a
+   checkpoint already holds main's head, that every part of its plan is approved and that every
+   person whose protected path the feature's own change writes confirmed the lines. Each fix for a
    running feature must be written and still under that fork's head. Each fix for code on main must be
    in the checkpoint. It then asks the FeatureAgent to open a block run: the checkpoint merged onto
    main and onto every other running feature's fork head. The feature is `landing`.

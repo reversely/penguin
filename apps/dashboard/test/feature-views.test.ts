@@ -247,6 +247,32 @@ test("markup in an approval's overlap, part, breaks, review, changed lines and r
     overlaps: [{ feature: "rounding", blockedFeature: "money", blockedPerson: "ines", overlap: { scopes: [MARKUP], paths: [UNBROKEN], contracts: [SCRIPT], omittedPaths: 2 }, read: false, raisedAt: "2026-10-11T09:00:00.000Z" }],
     plan: {
       parts: [part, { ...part, ask: "round_limit", state: "round_limit", partId: "money/v1#3" }],
+      protectedChanges: [
+        {
+          feature: "money-analytics",
+          person: "ines",
+          owner: "jun",
+          checkpoint: "a".repeat(40),
+          mergeBase: "b".repeat(40),
+          state: "pending",
+          confirmedBy: null,
+          files: [{ path: "analytics/revenue_report.py", status: "modified", scope: "analytics", protectedPath: MARKUP, lines: [`+report = ${MARKUP}`] }],
+          read: false,
+          raisedAt: "2026-10-11T09:00:00.000Z",
+        },
+        {
+          feature: "money-tax",
+          person: "ines",
+          owner: "jun",
+          checkpoint: "c".repeat(40),
+          mergeBase: "b".repeat(40),
+          state: "confirmed",
+          confirmedBy: "jun",
+          files: [{ path: "analytics/tax.py", status: "modified", scope: "analytics", protectedPath: "analytics/tax.py", lines: null }],
+          read: true,
+          raisedAt: "2026-10-11T09:00:00.000Z",
+        },
+      ],
       reviewExceptions: [{ feature: "money", scope: "tax", reviewId: 4, state: "accepted", exceptions: REVIEW.exceptions, review: REVIEW, read: false, raisedAt: "2026-10-11T09:00:00.000Z" }],
       returnedPlans: [{ feature: "money", breakLimit: 10, behavioural: [MARKUP], read: false, raisedAt: "2026-10-11T09:00:00.000Z" }],
     },
@@ -256,7 +282,12 @@ test("markup in an approval's overlap, part, breaks, review, changed lines and r
   // A part's changed lines open from its counting line; they render as text there too.
   assert.match(renderDiff(part.files), /\+total = &lt;img src=x onerror=&quot;globalThis\.pwned = 1&quot;&gt;/);
   assert.ok(html.includes(UNBROKEN));
-  for (const heading of ["Overlapping starts", "Plans", "Review exceptions", "Returned plans"]) assert.ok(html.includes(heading), heading);
+  for (const heading of ["Overlapping starts", "Plans", "Protected paths", "Review exceptions", "Returned plans"]) assert.ok(html.includes(heading), heading);
+  // A feature's own change to a protected path: Confirm lines while it waits, its lines as text, and a confirmed one marked.
+  assert.equal(html.match(/Confirm lines/g)?.length, 1);
+  assert.match(html, /It lands once jun confirms the lines/);
+  assert.match(html, /jun confirmed the lines at checkpoint cccccccccccc/);
+  assert.match(html, /\+report = &lt;img/);
   // Only the part waiting on the person and the overlapping start carry controls; the round-limit part shows none.
   assert.equal(html.match(/Approve revision 2/g)?.length, 1);
   assert.equal(html.match(/Approve start/g)?.length, 1);

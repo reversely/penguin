@@ -120,6 +120,11 @@ export default {
                 kind === "approve" ? await agent.approvePlanPart(owner, decision, repos) : await agent.requestPlanChange(owner, decision, repos);
               return decided.status === "ok" ? { status: "ok", part: decided.part, recordId: decided.recordId } : decided;
             },
+            // The confirmer is the session's person, named by the dashboard route, never by the body.
+            confirmProtectedChange: async (owner, input) => {
+              const confirmed = await agent.confirmProtectedChange(owner, input, repos);
+              return confirmed.status === "ok" ? { status: "ok", recordId: confirmed.recordId } : confirmed;
+            },
             connectLive: (liveRequest, owner) => {
               // The browser cannot name the owner: the header is replaced with the session's.
               const headers = new Headers(liveRequest.headers);

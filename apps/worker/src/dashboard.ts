@@ -49,14 +49,18 @@
  *     `approved_by`, is refused. The ProjectAgent refuses a lock on another person's feature and a
  *     second approval of the same lock.
  *   - GET /api/plan-parts: the merge plan parts waiting on the signed-in person as owner or
- *     delegate, the parts that write a path they protect, the parts of their plans past the round
- *     limit and the reviews of their scopes that raised an exception, checked against
- *     PLAN_INBOX_SCHEMA; an answer that breaks it answers 500.
+ *     delegate, the parts that write a path they protect, the features whose own change writes one,
+ *     the parts of their plans past the round limit and the reviews of their scopes that raised an
+ *     exception, checked against PLAN_INBOX_SCHEMA; an answer that breaks it answers 500.
  *   - POST /api/plan-parts/approve: approves one revision of a part, `{ feature, part, revision }`,
  *     as the signed-in person. POST /api/plan-parts/request-change asks for a change to it,
  *     `{ feature, part, revision, text }`. The decider is the session's person: a body with any other
  *     field is refused. The ProjectAgent refuses anyone but the part's owner or their delegate, a
  *     part outside the feature's newest plan, a stale revision and a part already decided.
+ *   - POST /api/plan-parts/confirm-protected: confirms the lines a feature's own change writes under
+ *     paths a person protects, `{ feature, owner, checkpoint }`, as the signed-in person. The
+ *     ProjectAgent refuses anyone but `owner` or their delegate, a checkpoint other than the
+ *     feature's latest and lines already confirmed.
  *   - POST /api/operations: one issue operation, applied with the signed-in person as author. An
  *     operation that carries `author` is refused: only the session names the author.
  *   - GET /api/live: the WebSocket to the ProjectAgent, which sends a message on each index change
@@ -148,7 +152,23 @@ export interface DashboardBackend {
   planParts(owner: string): Promise<unknown>;
   /** Decides one revision of a plan part as `owner`; the ProjectAgent checks who may. */
   decidePlanPart(owner: string, decision: PlanPartDecision): Promise<PlanPartDecisionResult>;
+  /** Confirms a feature's own protected lines as `owner`; the ProjectAgent checks who may. */
+  confirmProtectedChange(owner: string, input: ProtectedChangeConfirmation): Promise<ProtectedChangeConfirmResult>;
 }
+
+/**
+ * A confirmation of the lines a feature's own change writes under paths `owner` protects, at the
+ * checkpoint the person saw, as the dashboard posts it.
+ */
+export interface ProtectedChangeConfirmation {
+  readonly feature: string;
+  readonly owner: string;
+  readonly checkpoint: string;
+}
+
+export type ProtectedChangeConfirmResult =
+  | { readonly status: "ok"; readonly recordId: string }
+  | { readonly status: "rejected"; readonly reason: string; readonly message: string };
 
 /** A person's decision on one revision of a plan part, as the dashboard posts it. */
 export type PlanPartDecision =
@@ -542,6 +562,7 @@ async function planPartRoute(request: Request, url: URL, session: DashboardSessi
     const parts = await (await handlers.dashboard()).planParts(session.owner);
     return checkPlanInbox(parts).length === 0 ? json(parts) : json({ error: "invalid plan parts" }, 500);
   }
+  if (url.pathname === "/api/plan-parts/confirm-protected") return confirmProtectedRoute(request, url, session, handlers);
   const kind = url.pathname === "/api/plan-parts/approve" ? "approve" : url.pathname === "/api/plan-parts/request-change" ? "request_change" : undefined;
   if (kind === undefined) return json({ error: "not found" }, 404);
   if (request.method !== "POST") return methodNotAllowed("POST");
@@ -564,6 +585,30 @@ async function planPartRoute(request: Request, url: URL, session: DashboardSessi
     kind === "approve" ? { kind, feature, part, revision } : { kind, feature, part, revision, text: text as string };
   const decided = await (await handlers.dashboard()).decidePlanPart(session.owner, decision);
   return json(decided, decided.status === "ok" ? 200 : (FEATURE_REJECTION_STATUS[decided.reason] ?? 422));
+}
+
+/**
+ * POST /api/plan-parts/confirm-protected: the session's person confirms the lines a feature's own
+ * change writes under paths `owner` protects, `{ feature, owner, checkpoint }`. The confirmer comes
+ * from the session only.
+ */
+async function confirmProtectedRoute(request: Request, url: URL, session: DashboardSession, handlers: DashboardHandlers): Promise<Response> {
+  if (request.method !== "POST") return methodNotAllowed("POST");
+  if (!isSameOrigin(request, url)) return json({ error: "cross-origin request" }, 403);
+  if (Number(request.headers.get("Content-Length") ?? 0) > MAX_PLAN_DECISION_BYTES) {
+    return json({ error: "invalid request", message: "the request is too large" }, 413);
+  }
+  const body = await readJsonObject(request);
+  if (body === undefined) return json({ error: "invalid request", message: "the body must be a JSON object" }, 400);
+  const { feature, owner, checkpoint, ...rest } = body;
+  if (Object.keys(rest).length > 0) {
+    return json({ error: "invalid", message: "the body takes only feature, owner and checkpoint; the confirmer is the signed-in person" }, 400);
+  }
+  if (!isFeatureId(feature) || typeof owner !== "string" || typeof checkpoint !== "string" || !/^[0-9a-f]{40}$/u.test(checkpoint)) {
+    return json({ error: "invalid", message: "feature must be a feature id, owner a person and checkpoint a full SHA" }, 400);
+  }
+  const confirmed = await (await handlers.dashboard()).confirmProtectedChange(session.owner, { feature, owner, checkpoint });
+  return json(confirmed, confirmed.status === "ok" ? 200 : (FEATURE_REJECTION_STATUS[confirmed.reason] ?? 422));
 }
 
 async function handleApi(

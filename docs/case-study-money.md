@@ -108,8 +108,12 @@ A migrate wave's places are the other scopes on main that call what it changes:
 - **Refunds and payouts.** Refunds sum line totals in the order's currency. Store fees round half up
   in the minor unit, as the store agreement says. No other scope calls them on main.
 - **Analytics.** Revenue is reported per currency, so amounts in different currencies are never
-  added together. The wave edits `analytics/revenue_report.py`, the file Jun protects. The fixture
-  lists it in the scope's `protected_paths`, which Penguin's routing does not read yet.
+  added together. The wave edits `analytics/revenue_report.py`, the file Jun protects in the
+  scope's `protected_paths`. The wave's plan has no parts, because no other scope on main calls
+  what it changes. Penguin checks the wave's own change at its checkpoint anyway: the files that
+  differ from its merge base with main. The change rewrites the protected file, so Jun gets a
+  `protected_path` item with the file's changed lines. The wave cannot land until Jun confirms
+  them. Jun confirms, and main moves to the wave's head.
 - **Messaging and mobile API.** Receipts and order payloads read totals as `Money`. Their tests
   pass unchanged, because they compare the displayed text and the minor amount.
 
@@ -151,6 +155,7 @@ Two moments depend on the contract wave's plan being announced:
 | Plans returned over the break limit | 2: the one-block attempt (32) and the contract wave (24) |
 | Plans stored | 6: the expand wave and five migrate waves |
 | Parts approved in the migrate waves | 2: Lena for promotions, Mei for invoicing |
+| Protected-path confirmations | 1: Jun for the analytics wave's `analytics/revenue_report.py` |
 | Starts approved beside a running feature | 1 for the one-block attempt and 23 for the waves |
 | Times main moved | 6, one per stored wave, each with every scope's tests passing |
 | Review exceptions | 1: Rahul's broken `tax-per-line` invariant on the whole-order step |
@@ -161,4 +166,5 @@ plan. The running features' own float calls stay in place until the contract wav
 carries the same 23 feature fixes the one-block attempt carried.
 
 Every step lives as a signed record in the project's record repo in Artifacts: each plan, each
-return, each approval and its reason, Rahul's review and revision, each promotion.
+return, each approval and its reason, Rahul's review and revision, Jun's confirmation of the
+protected lines, each promotion.

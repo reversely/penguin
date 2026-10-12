@@ -146,7 +146,7 @@ test("the dashboard answer schema takes a part with its routing and refuses mark
     read: false,
     raisedAt: "2026-10-11T09:00:00.000Z",
   };
-  const empty = { parts: [], reviewExceptions: [], returnedPlans: [] };
+  const empty = { parts: [], protectedChanges: [], reviewExceptions: [], returnedPlans: [] };
   assert.deepEqual(checkPlanInbox({ ...empty, parts: [item] }), []);
   assert.notDeepEqual(checkPlanInbox({ ...empty, parts: [{ ...item, owner: "<b>jun</b>" }] }), []);
   assert.notDeepEqual(checkPlanInbox({ ...empty, parts: [{ ...item, state: "merged" }] }), []);
@@ -158,6 +158,23 @@ test("the dashboard answer schema takes a part with its routing and refuses mark
   assert.deepEqual(checkPlanInbox({ ...empty, reviewExceptions: [exception], returnedPlans: [returned] }), []);
   assert.notDeepEqual(checkPlanInbox({ ...empty, returnedPlans: [{ ...returned, feature: "../main" }] }), []);
   assert.notDeepEqual(checkPlanInbox({ parts: [], reviewExceptions: [] }), []);
+  // A feature's own protected lines: a SHA checkpoint, a known state, and lines or null for a viewer the line rule leaves out.
+  const change = {
+    feature: "money-analytics",
+    person: "ines",
+    owner: "jun",
+    checkpoint: "a".repeat(40),
+    mergeBase: "b".repeat(40),
+    state: "pending",
+    confirmedBy: null,
+    files: [{ path: "analytics/revenue_report.py", status: "modified", scope: "analytics", protectedPath: "analytics/revenue_report.py", lines: ["-a", "+b"] }],
+    read: false,
+    raisedAt: "2026-10-11T09:00:00.000Z",
+  };
+  assert.deepEqual(checkPlanInbox({ ...empty, protectedChanges: [change, { ...change, state: "confirmed", confirmedBy: "jun", files: [{ ...change.files[0], lines: null }] }] }), []);
+  assert.notDeepEqual(checkPlanInbox({ ...empty, protectedChanges: [{ ...change, checkpoint: "main" }] }), []);
+  assert.notDeepEqual(checkPlanInbox({ ...empty, protectedChanges: [{ ...change, state: "approved" }] }), []);
+  assert.notDeepEqual(checkPlanInbox({ ...empty, protectedChanges: [{ ...change, owner: "<b>jun</b>" }] }), []);
   // A breakdown names its list and counts at most REVIEW_VIEW_LIMITS.breakdownLengths lengths.
   const set = REVIEW.sideBySide.sets[0]!;
   const withBreakdown = (breakdown: unknown) => ({ ...REVIEW, sideBySide: { ...REVIEW.sideBySide, sets: [{ ...set, breakdown }] } });

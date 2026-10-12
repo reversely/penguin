@@ -6,7 +6,8 @@
 // only (PRD 4.3 step 4): the review form of a scope the part touches reports a broken invariant, that
 // review's side-by-side run differs on a protected invariant, or the part's diff touches a path a
 // scope's owner protects in `penguin/scopes.json`. With none of them, the author's agent review stands
-// and the author approves without a further exception.
+// and the author approves without a further exception. The originating feature's own change to a
+// protected path is not a part: it reaches the protecting person as a `ProtectedChangeRequest`.
 //
 // The ProjectAgent builds the dashboard answer (services/project-agent/src/plan-approval.ts); the
 // Worker checks it against PLAN_INBOX_SCHEMA before answering, so a malformed field never reaches the
@@ -164,8 +165,43 @@ export interface ReturnedPlanRequest {
   readonly raisedAt: string;
 }
 
+/**
+ * A feature's own change since its merge base with main that touches paths the person protects
+ * (`protected_path`, PRD 4.3 step 4). The feature cannot land until the person, or their delegate,
+ * confirms the lines at the feature's latest checkpoint. A person's own features raise none.
+ */
+export interface ProtectedChangeRequest {
+  /** The feature whose own change touches the paths, and its person. */
+  readonly feature: string;
+  readonly person: string;
+  /** The person who protects the paths and confirms the lines. */
+  readonly owner: string;
+  /** The checkpoint whose change the lines are, and the merge base they are measured from. */
+  readonly checkpoint: string;
+  readonly mergeBase: string;
+  readonly state: ProtectedChangeState;
+  readonly confirmedBy: string | null;
+  /** Each changed file under a protected path, with its lines; `lines` is null for a viewer the line rule (PRD 13) leaves out. */
+  readonly files: readonly ProtectedChangeFile[];
+  readonly read: boolean;
+  readonly raisedAt: string;
+}
+
+export const PROTECTED_CHANGE_STATES = ["pending", "confirmed"] as const;
+export type ProtectedChangeState = (typeof PROTECTED_CHANGE_STATES)[number];
+
+export interface ProtectedChangeFile {
+  readonly path: string;
+  readonly status: "added" | "deleted" | "modified";
+  readonly scope: string;
+  /** The protected path in `penguin/scopes.json` that covers the file. */
+  readonly protectedPath: string;
+  readonly lines: readonly string[] | null;
+}
+
 export interface PlanInbox {
   readonly parts: readonly PlanPartRequest[];
+  readonly protectedChanges: readonly ProtectedChangeRequest[];
   readonly reviewExceptions: readonly ReviewExceptionRequest[];
   readonly returnedPlans: readonly ReturnedPlanRequest[];
 }
@@ -174,6 +210,7 @@ const FEATURE_ID: JsonSchema = { type: "string", pattern: `^${SEGMENT_PATTERN}$`
 const PERSON: JsonSchema = { type: "string", pattern: PERSON_ID_PATTERN, maxLength: PERSON_ID_MAX_LENGTH };
 const TEXT: JsonSchema = { type: "string", maxLength: 1_024 };
 const COUNT: JsonSchema = { type: "integer", minimum: 0 };
+const SHA: JsonSchema = { type: "string", pattern: "^[0-9a-f]{40}$" };
 const record = (properties: Record<string, JsonSchema>): JsonSchema => ({
   type: "object",
   additionalProperties: false,
@@ -233,6 +270,33 @@ export const PLAN_INBOX_SCHEMA: JsonSchema = {
             record({ by: PERSON, revision: { type: "integer", minimum: 1 }, text: { type: "string", maxLength: PLAN_LIMITS.changeRequestLength } }),
             { type: "null" },
           ],
+        },
+        read: { type: "boolean" },
+        raisedAt: { type: "string" },
+      }),
+    },
+    protectedChanges: {
+      type: "array",
+      items: record({
+        feature: FEATURE_ID,
+        person: PERSON,
+        owner: PERSON,
+        checkpoint: SHA,
+        mergeBase: SHA,
+        state: { type: "string", enum: [...PROTECTED_CHANGE_STATES] },
+        confirmedBy: { anyOf: [PERSON, { type: "null" }] },
+        files: {
+          type: "array",
+          maxItems: PLAN_LIMITS.diffFiles,
+          items: record({
+            path: TEXT,
+            status: { type: "string", enum: ["added", "deleted", "modified"] },
+            scope: TEXT,
+            protectedPath: TEXT,
+            lines: {
+              anyOf: [{ type: "array", items: { type: "string", maxLength: PLAN_LIMITS.diffLineLength + 1 } }, { type: "null" }],
+            },
+          }),
         },
         read: { type: "boolean" },
         raisedAt: { type: "string" },

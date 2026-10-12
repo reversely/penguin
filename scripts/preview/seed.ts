@@ -62,6 +62,15 @@ import {
 import { PlanFactsStore } from "../../services/project-agent/src/plan-facts.ts";
 import { PlanStore } from "../../services/project-agent/src/plan-store.ts";
 import { proposePlan, type ProposePlanOutcome } from "../../services/project-agent/src/propose-plan.ts";
+import {
+  checkProtectedChanges,
+  confirmProtectedChange,
+  ownChange,
+  protectedChangeRequests,
+  ProtectedChangeStore,
+  type ConfirmDeps,
+} from "../../services/project-agent/src/protected-change.ts";
+import { fileDiffs } from "../../services/project-agent/src/repo-diff.ts";
 import { claimReviews, recordReview } from "../../services/project-agent/src/review-record.ts";
 import { ReviewStore, submitReview } from "../../services/project-agent/src/review-submit.ts";
 import { reviewDifferences } from "../../services/project-agent/src/review-view.ts";
@@ -107,6 +116,7 @@ export class PreviewProject {
   readonly facts: PlanFactsStore;
   readonly plans: PlanStore;
   readonly routes: PlanRouteStore;
+  readonly protectedChanges: ProtectedChangeStore;
   readonly reviews: ReviewStore;
   readonly tools: AgentToolStore;
   readonly index: IssueIndex;
@@ -147,6 +157,7 @@ export class PreviewProject {
     this.facts = new PlanFactsStore(this.sql);
     this.plans = new PlanStore(this.sql);
     this.routes = new PlanRouteStore(this.sql, now);
+    this.protectedChanges = new ProtectedChangeStore(this.sql, now);
     this.reviews = new ReviewStore(this.sql);
     this.tools = new AgentToolStore(this.sql);
     this.forks = new OwnerForkStore(this.sql, now);
@@ -305,6 +316,17 @@ export class PreviewProject {
           const delivery = this.sessions.checkpoint(caller, session);
           return delivery.status === "ok" ? delivery : undefined;
         },
+        protectedChanges: (reporting, commit) =>
+          checkProtectedChanges(
+            {
+              ...this.protectedDeps(),
+              readOwnChange: (_repo, at) => ownChange(gitReader(this.repo), history, at),
+              readDiffs: async (_repo, files) => (await fileDiffs(gitReader(this.repo), files, () => null)).files,
+            },
+            reporting,
+            commit,
+            this.scopeMap,
+          ),
         now: () => Date.now(),
       },
       feature.personId,
@@ -314,6 +336,26 @@ export class PreviewProject {
     );
     if (reported.status === "rejected") throw new Error(`checkpoint ${featureId}: ${reported.message}`);
     return sha;
+  }
+
+  protectedDeps(): ConfirmDeps {
+    return {
+      store: this.protectedChanges,
+      inbox: this.inbox,
+      notify: this.#notify,
+      features: this.features,
+      delegates: async () => new Map(),
+      sign: (record) => this.#sign(record),
+    };
+  }
+
+  /** `person` confirms the lines feature `featureId`'s own change writes under the paths they protect. */
+  async confirmProtected(person: string, featureId: string): Promise<void> {
+    this.tick();
+    const change = this.protectedChanges.get(featureId, person);
+    if (change === undefined) throw new Error(`no protected change of ${featureId} for ${person}`);
+    const confirmed = await confirmProtectedChange(this.protectedDeps(), person, { feature: featureId, owner: person, checkpoint: change.checkpoint });
+    if (confirmed.status !== "ok") throw new Error(`confirm ${featureId} for ${person}: ${confirmed.message}`);
   }
 
   /** The person who owns `blocked`'s covering feature approves its start. */
@@ -588,6 +630,7 @@ export class PreviewProject {
             delegates: async () => new Map(),
             roundLimit: this.roundLimit,
             records: (featureId) => this.features.records(featureId),
+            protectedChanges: (owners, items, delegates) => protectedChangeRequests(this.protectedChanges, this.features, items, owners, owner, delegates),
           },
           owner,
         ),
@@ -595,6 +638,10 @@ export class PreviewProject {
         const decided =
           decision.kind === "approve" ? await approvePlanPart(this.approvalDeps(), owner, decision) : await requestPlanChange(this.approvalDeps(), owner, decision);
         return decided.status === "ok" ? { status: "ok", part: decided.part, recordId: decided.recordId } : decided;
+      },
+      confirmProtectedChange: async (owner, input) => {
+        const confirmed = await confirmProtectedChange(this.protectedDeps(), owner, input);
+        return confirmed.status === "ok" ? { status: "ok", recordId: confirmed.recordId } : confirmed;
       },
     };
   }
@@ -902,8 +949,12 @@ async function moneyMinorUnits(preview: PreviewProject): Promise<void> {
     }
     preview.waveOutcomes.push({ feature: wave.id, outcome: proposed });
     if (proposed.status !== "stored" || last) break;
-    // Each author approves their part once; main moves to the wave's head and the wave has landed.
+    // Each author approves their part once, and each person whose protected path the wave's own change
+    // writes confirms its lines; main moves to the wave's head and the wave has landed.
     for (const part of proposed.plan.parts) await preview.step(`approve ${part.partId}`, () => preview.decide(part.owner, wave.id, part.partId));
+    for (const change of preview.protectedChanges.ofFeature(wave.id).filter((row) => row.state === "pending")) {
+      await preview.step(`confirm ${wave.id}'s protected lines as ${change.ownerId}`, () => preview.confirmProtected(change.ownerId, wave.id));
+    }
     preview.moveMain(preview.git("rev-parse", `feature-${wave.id}`));
     preview.features.setState(wave.id, ["opening", "building", "landing"], "landed");
   }

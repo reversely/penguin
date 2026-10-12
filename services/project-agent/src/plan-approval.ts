@@ -7,7 +7,8 @@
 //   each part's owner, and each running session of that owner hears of the part at its next safe
 //   checkpoint (session-store.ts PlanNotice). A part whose fix touches a path a scope's owner protects
 //   in `penguin/scopes.json` also gives that owner a `protected_path` item. A newer plan of the feature
-//   withdraws the older plan's items.
+//   withdraws the older plan's items. The originating feature's own change to a protected path is
+//   checked at each of its checkpoints instead (protected-change.ts).
 // - Decisions. Only a person decides a part, on the dashboard: the part's owner, or the delegate that
 //   owner names in `penguin/owners.json`. Agents submit reviews (review-submit.ts) and never approve.
 //   A decision names the part and the revision it saw. A decision by anyone else, on a part outside the
@@ -40,6 +41,7 @@ import {
   type PlanPartRequest,
   type PlanPartState,
   type PlanPlace,
+  type ProtectedChangeRequest,
   type ProtectedPathHit,
   type ReturnedPlanRequest,
   type ReviewExceptionRequest,
@@ -614,14 +616,20 @@ export interface PlanInboxDeps {
   readonly roundLimit: number | undefined;
   /** The feature's signed records, which hold each returned plan (FeatureStore.records). */
   readonly records: (featureId: string) => readonly StoredFeatureRecord[];
+  /**
+   * The features' own changes to paths one of `owners` protects (protected-change.ts
+   * protectedChangeRequests), with `items` the viewer's inbox. Absent, none are listed.
+   */
+  readonly protectedChanges?: (owners: readonly string[], items: readonly InboxItem[], delegates: Delegates) => readonly ProtectedChangeRequest[];
 }
 
 const REVIEW_REF = /^([^/]+)\/([^/]+)$/u;
 
 /**
  * The dashboard's plan parts for `caller`: the parts waiting on them as owner or delegate, the parts
- * that write a path they protect, the parts of their own plans past the round limit, and the reviews
- * of their scopes that raised an exception, each with the facts behind it.
+ * that write a path they protect, the features whose own change writes such a path, the parts of
+ * their own plans past the round limit, and the reviews of their scopes that raised an exception,
+ * each with the facts behind it.
  */
 export async function buildPlanInbox(deps: PlanInboxDeps, caller: string): Promise<PlanInbox> {
   const [scopeMap, delegates] = await Promise.all([deps.scopeMap(), deps.delegates()]);
@@ -717,7 +725,8 @@ export async function buildPlanInbox(deps: PlanInboxDeps, caller: string): Promi
     const { break_limit: breakLimit, behavioural } = returned.payload as { break_limit: number; behavioural: string[] };
     return [{ feature: featureId, breakLimit, behavioural, read: item.read, raisedAt: item.raisedAt }];
   });
-  return { parts, reviewExceptions, returnedPlans };
+  const protectedChanges = [...(deps.protectedChanges?.(owners, items, delegates) ?? [])];
+  return { parts, protectedChanges, reviewExceptions, returnedPlans };
 }
 
 /** A part's diff as each file's lines, the way the dashboard shows changed lines. */

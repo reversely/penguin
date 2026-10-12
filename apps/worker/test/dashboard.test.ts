@@ -12,6 +12,8 @@ import {
   type OverlapApproveResult,
   type PlanPartDecision,
   type PlanPartDecisionResult,
+  type ProtectedChangeConfirmation,
+  type ProtectedChangeConfirmResult,
 } from "../src/dashboard.ts";
 import type { FeatureOpenResult } from "../src/features.ts";
 import { type GatewayHandlers, handleRequest } from "../src/gateway.ts";
@@ -174,8 +176,15 @@ class Backend implements DashboardBackend {
     return this.tables.get(reviewId);
   }
   /** What GET /api/plan-parts answers; a test may break it to see the schema check. */
-  planInbox: unknown = { parts: [], reviewExceptions: [], returnedPlans: [] };
+  planInbox: unknown = { parts: [], protectedChanges: [], reviewExceptions: [], returnedPlans: [] };
   readonly decisions: { owner: string; decision: PlanPartDecision }[] = [];
+  readonly confirmations: { owner: string; input: ProtectedChangeConfirmation }[] = [];
+  async confirmProtectedChange(owner: string, input: ProtectedChangeConfirmation): Promise<ProtectedChangeConfirmResult> {
+    this.confirmations.push({ owner, input });
+    if (owner !== input.owner) return { status: "rejected", reason: "forbidden", message: "only the protector confirms" };
+    if (this.confirmations.filter((each) => each.owner === owner).length > 1) return { status: "rejected", reason: "conflict", message: "already confirmed" };
+    return { status: "ok", recordId: "jun-web-0001" };
+  }
   async planParts() {
     return this.planInbox;
   }
@@ -745,8 +754,8 @@ describe("a signed-in person's merge plan parts", () => {
   test("lists the parts waiting on them, checked against the schema", async () => {
     const browser = new Browser();
     await browser.signIn("rahul-gh");
-    assert.deepEqual(await (await browser.request("/api/plan-parts")).json(), { parts: [], reviewExceptions: [], returnedPlans: [] });
-    browser.backend.planInbox = { parts: [{ feature: "../main" }], reviewExceptions: [], returnedPlans: [] };
+    assert.deepEqual(await (await browser.request("/api/plan-parts")).json(), { parts: [], protectedChanges: [], reviewExceptions: [], returnedPlans: [] });
+    browser.backend.planInbox = { parts: [{ feature: "../main" }], protectedChanges: [], reviewExceptions: [], returnedPlans: [] };
     assert.equal((await browser.request("/api/plan-parts")).status, 500);
     assert.equal((await browser.post("/api/plan-parts", {})).status, 405);
   });
@@ -778,6 +787,31 @@ describe("a signed-in person's merge plan parts", () => {
       [["jun", "approve"], ["rahul", "request_change"], ["rahul", "approve"]],
     );
     assert.deepEqual(rahul.backend.decisions[1]?.decision, { kind: "request_change", ...part, text });
+  });
+
+  test("confirms a feature's own protected lines as the session's person; a forged confirmer, another person and a replay are refused", async () => {
+    const jun = new Browser();
+    await jun.signIn("jun-gh");
+    const change = { feature: "money-analytics", owner: "jun", checkpoint: "a".repeat(40) };
+    // The confirmer comes from the session only: a body naming one is refused before the ProjectAgent.
+    for (const forged of [{ ...change, confirmed_by: "jun" }, { ...change, person: "jun" }]) {
+      assert.equal((await jun.post("/api/plan-parts/confirm-protected", forged)).status, 400);
+    }
+    for (const bad of [{ ...change, feature: "../main" }, { ...change, checkpoint: "HEAD" }, { feature: "money-analytics", checkpoint: change.checkpoint }]) {
+      assert.equal((await jun.post("/api/plan-parts/confirm-protected", bad)).status, 400);
+    }
+    assert.equal((await jun.post("/api/plan-parts/confirm-protected", change, "https://evil.test")).status, 403);
+    assert.deepEqual(jun.backend.confirmations, []);
+
+    const rahul = new Browser(jun.backend);
+    await rahul.signIn("rahul-gh");
+    assert.equal((await rahul.post("/api/plan-parts/confirm-protected", change)).status, 403);
+    assert.equal((await jun.post("/api/plan-parts/confirm-protected", change)).status, 200);
+    assert.equal((await jun.post("/api/plan-parts/confirm-protected", change)).status, 409);
+    assert.deepEqual(
+      jun.backend.confirmations.map(({ owner, input }) => [owner, input.owner]),
+      [["rahul", "jun"], ["jun", "jun"], ["jun", "jun"]],
+    );
   });
 
   test("without a session the plan part routes answer 401", async () => {

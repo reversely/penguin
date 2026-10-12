@@ -2,9 +2,10 @@
 //
 // 1. The originating agent asks to land (`land_feature`). The ProjectAgent checks the feature is
 //    ready: its latest checkpoint is in its fork and already contains main's head (the agent took
-//    main), every part of its plan is approved, each fix for a running feature is written into that
-//    feature's fork (fix-write.ts) and still sits under the fork's head, and each fix for code on main
-//    is in the checkpoint. It then asks the feature's FeatureAgent to open a block run: the
+//    main), every part of its plan is approved, every person whose protected path the feature's own
+//    change touches confirmed its lines (protected-change.ts), each fix for a running feature is
+//    written into that feature's fork (fix-write.ts) and still sits under the fork's head, and each
+//    fix for code on main is in the checkpoint. It then asks the feature's FeatureAgent to open a block run: the
 //    checkpoint merged onto main and onto every other running feature's fork head. The feature is
 //    `landing` and a signed `land_requested` record names the run.
 // 2. The check runner claims the run (POST /blocks/claim) and runs the checks of section 5.1 on every
@@ -134,6 +135,7 @@ export type LandRejectReason =
   | "not_ready"
   | "behind_main"
   | "plan_not_approved"
+  | "protected_path_unconfirmed"
   | "fix_not_written"
   | "fix_not_in_block"
   | "fix_not_in_place"
@@ -156,6 +158,11 @@ export interface LandDeps {
   /** Main's branch: BASE_BRANCH. */
   readonly branch: string;
   readonly queue: BlockQueueStore;
+  /**
+   * The people whose protected paths the feature's own change touches and who have not confirmed its
+   * lines at the latest checkpoint (protected-change.ts). Absent, no land waits on a confirmation.
+   */
+  readonly unconfirmedProtected?: (featureId: string) => readonly { readonly ownerId: string; readonly files: readonly { readonly protectedPath: string }[] }[];
   readonly sign: (record: UnsignedFeatureRecord) => Promise<FeatureRecord>;
   readonly notify: (personId: string) => void;
   readonly now?: () => number;
@@ -249,6 +256,15 @@ async function prepareLand(deps: LandDeps, feature: Feature, checkpoint: unknown
   if (unapproved.length > 0) {
     const list = unapproved.map((part) => `${part.partId} (${part.approvalState.replaceAll("_", " ")})`).join(", ");
     return rejected("plan_not_approved", `every part of plan ${plan?.planId} must be approved before it lands: ${list}`);
+  }
+  const unconfirmed = deps.unconfirmedProtected?.(feature.id) ?? [];
+  if (unconfirmed.length > 0) {
+    // Each person is named with the protected paths of penguin/scopes.json, never the fork's file names.
+    const list = unconfirmed.map(({ ownerId, files }) => `${ownerId} (${[...new Set(files.map((file) => file.protectedPath))].join(", ")})`).join("; ");
+    return rejected(
+      "protected_path_unconfirmed",
+      `the feature's own change touches paths other people protect; each confirms the lines on the dashboard before it lands: ${list}`,
+    );
   }
   const writes = plan === undefined ? [] : await deps.agent(feature.id).fixWrites(feature.id);
   const written = new Map(writes.map((write) => [`${write.partId}@${write.revision}`, write]));

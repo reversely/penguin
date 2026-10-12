@@ -303,6 +303,13 @@ export interface FeatureCheckpointDeps extends FeatureDeps {
    * coverMidway). Absent, no plan gains a part.
    */
   readonly joinPlans?: (feature: Feature) => Promise<readonly JoinedPlan[]>;
+  /**
+   * Asks each person whose protected path the feature's own change touches at the checkpoint to
+   * confirm its lines (protected-change.ts checkProtectedChanges). It runs before the checkpoint is
+   * recorded, so a recorded checkpoint always has its confirmations asked; a failure fails the report.
+   * Absent, nobody is asked.
+   */
+  readonly protectedChanges?: (feature: Feature, sha: string) => Promise<unknown>;
   readonly now?: () => number;
 }
 
@@ -338,6 +345,7 @@ export async function reportFeatureCheckpoint(
   if (feature.repo === null || !(await deps.commitExists(feature.repo, sha))) {
     return rejected("not_found", `commit ${sha} is not in feature ${id}'s fork`);
   }
+  await deps.protectedChanges?.(feature, sha);
   const outcome = await recordCheckpointArea(deps, feature, sha, author, deps.readChange);
   if (outcome.status === "rejected") return outcome;
   // Joining plans runs before the delivery, so the originating sessions' notices already name the new part.

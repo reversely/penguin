@@ -102,7 +102,17 @@ import {
 } from "./agent-tools.ts";
 import { PlanFactsStore, type PlanFactsReportOutcome } from "./plan-facts.ts";
 import type { PlanKeeper } from "./plan-store.ts";
-import type { GitObjectReader } from "./repo-diff.ts";
+import { fileDiffs, type GitObjectReader } from "./repo-diff.ts";
+import {
+  checkProtectedChanges,
+  confirmProtectedChange,
+  ownChange,
+  protectedChangeRequests,
+  ProtectedChangeStore,
+  unconfirmedProtected,
+  type ProtectedConfirmInput,
+  type ProtectedConfirmOutcome,
+} from "./protected-change.ts";
 import {
   agentFixGrant,
   agentFixReport,
@@ -453,6 +463,21 @@ export {
   type RepoReading,
 } from "./propose-plan.ts";
 export {
+  checkProtectedChanges,
+  confirmProtectedChange,
+  ownChange,
+  PROTECTED_CHANGE_SCHEMA,
+  protectedChangeRequests,
+  ProtectedChangeStore,
+  unconfirmedProtected,
+  type CheckpointProtectionDeps,
+  type ConfirmDeps as ProtectedConfirmDeps,
+  type OwnChange,
+  type ProtectedChange,
+  type ProtectedConfirmInput,
+  type ProtectedConfirmOutcome,
+} from "./protected-change.ts";
+export {
   changedFiles,
   commitSubject,
   DIFF_LIMITS,
@@ -756,6 +781,7 @@ export class ProjectAgent extends Agent {
   #overlapRows: OverlapStore | undefined;
   #planFacts: PlanFactsStore | undefined;
   #planRoutes: PlanRouteStore | undefined;
+  #protectedChanges: ProtectedChangeStore | undefined;
   #fixGrants: FixGrantStore | undefined;
   #planCoverage: PlanCoverageStore | undefined;
   #blockQueue: BlockQueueStore | undefined;
@@ -1621,6 +1647,22 @@ export class ProjectAgent extends Agent {
         const delivery = this.#sessionStore().checkpoint(caller, session);
         return delivery.status === "ok" ? delivery : undefined;
       },
+      // The feature's own change to a path another person protects asks that person (protected-change.ts).
+      protectedChanges: async (feature: Feature, checkpoint: string) =>
+        checkProtectedChanges(
+          {
+            store: this.#protectedChangeStore(),
+            inbox: this.#inboxStore(),
+            notify: (personId) => sendToOwner(this.getConnections<{ owner?: string }>(), personId, inboxChangedMessage()),
+            readOwnChange: (repo, commit) =>
+              withRepo(this.env.ARTIFACTS, repo, (fork) => withRepo(this.env.ARTIFACTS, repos.base, (main) => ownChange(fork as unknown as GitObjectReader, main, commit))),
+            readDiffs: async (repo, files) =>
+              (await withRepo(this.env.ARTIFACTS, repo, (fork) => fileDiffs(fork as unknown as GitObjectReader, files, () => null))).files,
+          },
+          feature,
+          checkpoint,
+          await this.#scopeMap(repos),
+        ),
       // A running feature that starts touching an announced plan's area gains a part in it (plan-coverage.ts).
       joinPlans: (feature: Feature) =>
         this.#planStep(async () => {
@@ -1943,6 +1985,8 @@ export class ProjectAgent extends Agent {
         delegates: async () => rules.delegates,
         roundLimit: this.#roundLimit(),
         records: (featureId) => this.#featureStore().records(featureId),
+        protectedChanges: (owners, items, delegates) =>
+          protectedChangeRequests(this.#protectedChangeStore(), this.#featureStore(), items, owners, caller, delegates),
       },
       caller,
     );
@@ -2100,6 +2144,34 @@ export class ProjectAgent extends Agent {
     return this.#planRoutes;
   }
 
+  #protectedChangeStore(): ProtectedChangeStore {
+    this.#protectedChanges ??= new ProtectedChangeStore(this.#database());
+    return this.#protectedChanges;
+  }
+
+  /**
+   * `caller`, the person the dashboard session names, confirms the lines a feature's own change writes
+   * under paths `input.owner` protects (protected-change.ts). Only that person or their delegate may.
+   */
+  confirmProtectedChange(caller: string, input: ProtectedConfirmInput, repos: ProjectRepos): Promise<ProtectedConfirmOutcome> {
+    return this.#featuresChanging(
+      this.#planStep(() =>
+        confirmProtectedChange(
+          {
+            store: this.#protectedChangeStore(),
+            inbox: this.#inboxStore(),
+            notify: (personId) => sendToOwner(this.getConnections<{ owner?: string }>(), personId, inboxChangedMessage()),
+            features: this.#featureStore(),
+            delegates: async () => (await this.#reviewRules(repos)).delegates,
+            sign: async (record) => signFeatureRecord(record, (await this.#loadServiceKey()).privateKey),
+          },
+          caller,
+          input,
+        ),
+      ),
+    );
+  }
+
   /** The facts runs waiting for the check runner; refused unless `caller` holds the runner role. */
   planFactsRuns(caller: BridgeCaller): { readonly status: "ok"; readonly runs: PlanFactsRequest[] } | { readonly status: "forbidden"; readonly message: string } {
     if (caller.role !== "runner") return { status: "forbidden", message: `bridge ${caller.bridgeId} does not hold the runner role` };
@@ -2174,6 +2246,7 @@ export class ProjectAgent extends Agent {
       baseRepo: repos.base,
       branch: BASE_BRANCH,
       queue: this.#blockQueueStore(),
+      unconfirmedProtected: (featureId) => unconfirmedProtected(this.#protectedChangeStore(), featureId),
       sign: async (record) => signFeatureRecord(record, (await this.#loadServiceKey()).privateKey),
       notify: (personId) => sendToOwner(this.getConnections<{ owner?: string }>(), personId, inboxChangedMessage()),
     };

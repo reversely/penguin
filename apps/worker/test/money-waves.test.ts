@@ -19,11 +19,14 @@ const ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 
 interface LarderFeature {
   readonly id: string;
+  readonly owner: string;
   readonly role: string;
+  readonly area?: readonly string[];
   readonly commits: readonly { readonly tag?: string; readonly after?: string; readonly fix?: { readonly scope: string; readonly kind: string } }[];
 }
 const LARDER = JSON.parse(readFileSync(join(ROOT, "examples", "money-minor-units", "larder.json"), "utf8")) as {
   features: LarderFeature[];
+  scopes: { id: string; owner: string; protected_paths?: string[] }[];
   plan: { parts: { scope: string }[] };
 };
 const WAVES = LARDER.features.filter((feature) => feature.role === "wave");
@@ -97,4 +100,25 @@ test("the tax wave's review breaks tax-per-line on the whole-order step and hold
   assert.deepEqual(whole?.exceptions.map((each) => each.kind), ["broken_invariant"]);
   assert.ok((perLine?.record?.sideBySide.totals.differing ?? 0) < (whole?.record?.sideBySide.totals.differing ?? 0));
   assert.deepEqual(perLine?.exceptions, []);
+});
+
+test("a wave whose own change writes a protected file asks the file's protector, who confirms the lines before main moves", async () => {
+  const guarded = LARDER.scopes.filter((scope) => (scope.protected_paths ?? []).length > 0);
+  // Each wave that declares a protected scope as its area and belongs to another person rewrites that scope's protected file.
+  const expected = WAVES.flatMap((wave) => guarded.flatMap((scope) => ((wave.area ?? []).includes(scope.id) && scope.owner !== wave.owner ? [[wave.id, scope.owner]] : [])));
+  assert.ok(expected.length > 0);
+  const rows = preview.features.list().flatMap((feature) => preview.protectedChanges.ofFeature(feature.id));
+  assert.deepEqual(rows.map((row) => [row.featureId, row.ownerId]), expected, "only the waves' own changes touch another person's protected file");
+  for (const row of rows) {
+    assert.equal(row.state, "confirmed");
+    assert.equal(row.confirmedBy, row.ownerId);
+    assert.deepEqual(row.files.map((file) => file.protectedPath), guarded.find((scope) => scope.owner === row.ownerId)?.protected_paths);
+    const confirm = preview.steps.findIndex((step) => step.step === `confirm ${row.featureId}'s protected lines as ${row.ownerId}`);
+    assert.ok(confirm > preview.steps.findIndex((step) => step.step === `propose_plan for ${row.featureId}`), "the protector confirms once the wave's plan is stored, before main moves");
+    const records = preview.features.records(row.featureId).map((kept) => JSON.parse(kept.file) as { type: string; payload: { owner: string } });
+    assert.deepEqual(records.filter((record) => record.type === "confirm_protected_change").map((record) => record.payload.owner), [row.ownerId]);
+    const inbox = (await preview.backend().planParts(row.ownerId)) as { protectedChanges: { feature: string; state: string; files: { lines: string[] | null }[] }[] };
+    assert.deepEqual(inbox.protectedChanges.map((change) => [change.feature, change.state]), [[row.featureId, "confirmed"]]);
+    assert.ok(inbox.protectedChanges[0]?.files.every((file) => file.lines !== null && file.lines.length > 0), "the protector reads the changed lines");
+  }
 });

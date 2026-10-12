@@ -3,16 +3,18 @@
 // needs the person, each review its parts carry (once, however many parts share it) and then the
 // person's parts, each with its rounds, its breaks and changed lines behind a line counting them, and
 // Approve and Request change on a part that waits on them. Protected-path confirmations and parts past
-// the round limit sit in their plan's card without controls. Review exceptions and plans returned
-// over the break limit follow; an exception whose review a plan card already shows links to it. The
-// server names the approver and the decider from the session; an agent never approves. The lists are
-// read again on each inbox-changed or features-changed message and after a reconnect. Every value
-// renders as text.
+// the round limit sit in their plan's card without controls. A feature's own change to a path the
+// person protects is its own card, with the changed lines and Confirm lines while it waits; a
+// confirmed one stays, marked confirmed, until a later checkpoint changes the lines. Review exceptions
+// and plans returned over the break limit follow; an exception whose review a plan card already shows
+// links to it. The server names the approver, the decider and the confirmer from the session; an
+// agent never approves. The lists are read again on each inbox-changed or features-changed message
+// and after a reconnect. Every value renders as text.
 
-import type { OverlapRequest, PlanInbox, PlanPartRequest, ReviewExceptionRequest } from "@penguin/protocol";
+import type { OverlapRequest, PlanInbox, PlanPartRequest, ProtectedChangeRequest, ReviewExceptionRequest } from "@penguin/protocol";
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 
-import { approveOverlap, decidePlanPart, fetchOverlapRequests, fetchPlanInbox, SignedOut } from "./api.ts";
+import { approveOverlap, confirmProtectedChange, decidePlanPart, fetchOverlapRequests, fetchPlanInbox, SignedOut } from "./api.ts";
 import {
   counted,
   PART_STATE_LABEL,
@@ -22,6 +24,7 @@ import {
   reviewAnchor,
   reviewExceptionText,
   roundText,
+  shortSha,
   type PlanGroup,
 } from "./feature-view.ts";
 import { PersonAvatar } from "./avatar.tsx";
@@ -51,12 +54,16 @@ export interface Approvals {
   readonly plan: PlanInbox;
 }
 
-const EMPTY: Approvals = { overlaps: [], plan: { parts: [], reviewExceptions: [], returnedPlans: [] } };
+const EMPTY: Approvals = { overlaps: [], plan: { parts: [], protectedChanges: [], reviewExceptions: [], returnedPlans: [] } };
 
-/** How many items the approvals inbox shows the person. */
+/** How many items the approvals inbox shows the person; a confirmed protected change asks nothing. */
 export function approvalCount({ overlaps, plan }: Approvals): number {
-  return overlaps.length + plan.parts.length + plan.reviewExceptions.length + plan.returnedPlans.length;
+  const waiting = plan.protectedChanges.filter((change) => change.state === "pending").length;
+  return overlaps.length + plan.parts.length + waiting + plan.reviewExceptions.length + plan.returnedPlans.length;
 }
+
+/** The key of a protected change's card: one per feature and protecting person. */
+const changeKey = (change: ProtectedChangeRequest) => `change:${change.feature}/${change.owner}`;
 
 /** Reads the person's approvals, again on each inbox change, after a reconnect and after each decision. */
 export function useApprovals(live: Live, onSignedOut: () => void): ApprovalsState {
@@ -124,6 +131,7 @@ export function ApprovalsInbox({ state, navigate, onSignedOut }: Props) {
         const decision = { feature: part.feature, part: part.partId, revision: part.revision };
         act(part.partId, () => decidePlanPart(text === undefined ? { kind: "approve", ...decision } : { kind: "request_change", ...decision, text }));
       }}
+      onConfirm={(change) => act(changeKey(change), () => confirmProtectedChange(change))}
     />
   );
 }
@@ -138,10 +146,11 @@ interface ViewProps {
   readonly navigate: (path: string) => void;
   readonly onApproveStart: (request: OverlapRequest) => void;
   readonly onDecide: (part: PlanPartRequest, text?: string) => void;
+  readonly onConfirm?: (change: ProtectedChangeRequest) => void;
 }
 
 /** The approvals as read, without the fetch, so they render on the server in a test. */
-export function ApprovalsView({ approvals, busy, failed, unread = false, navigate, onApproveStart, onDecide }: ViewProps) {
+export function ApprovalsView({ approvals, busy, failed, unread = false, navigate, onApproveStart, onDecide, onConfirm = () => undefined }: ViewProps) {
   const { overlaps, plan } = approvals;
   const plans = planGroups(plan.parts);
   const shownReviews = new Set(plans.flatMap((group) => group.reviews.map((review) => review.reviewId)));
@@ -180,6 +189,16 @@ export function ApprovalsView({ approvals, busy, failed, unread = false, navigat
           </h2>
           {plans.map((group) => (
             <PlanCard key={group.planId} group={group} busy={busy} navigate={navigate} onDecide={onDecide} />
+          ))}
+        </section>
+      )}
+      {plan.protectedChanges.length === 0 ? null : (
+        <section className="approval-group" aria-labelledby="approvals-protected">
+          <h2 id="approvals-protected" className="approval-group-heading">
+            Protected paths <span className="tab-count">{plan.protectedChanges.length}</span>
+          </h2>
+          {plan.protectedChanges.map((change) => (
+            <ProtectedChangeCard key={changeKey(change)} change={change} sending={busy === changeKey(change)} navigate={navigate} onConfirm={() => onConfirm(change)} />
           ))}
         </section>
       )}
@@ -424,6 +443,62 @@ function PartRow({ part, sending, onDecide }: PartProps) {
         {part.files.length === 0 ? null : <DiffFiles files={part.files} />}
       </Disclosure>
     </li>
+  );
+}
+
+interface ProtectedChangeProps {
+  readonly change: ProtectedChangeRequest;
+  readonly sending: boolean;
+  readonly navigate: (path: string) => void;
+  readonly onConfirm: () => void;
+}
+
+/**
+ * A feature's own change to paths the person protects: the feature and its person, each file with the
+ * protected path that covers it and its changed lines, and Confirm lines while it waits. The feature
+ * does not land until the lines are confirmed.
+ */
+function ProtectedChangeCard({ change, sending, navigate, onConfirm }: ProtectedChangeProps) {
+  const titleId = useId();
+  const waiting = change.state === "pending";
+  const covering = [...new Set(change.files.map((file) => file.protectedPath))];
+  return (
+    <article className="approval-card card-raised" data-unread={change.read ? undefined : true} aria-labelledby={titleId}>
+      <header className="approval-card-head">
+        <h3 className="approval-card-title" id={titleId}>
+          <FeatureLink feature={change.feature} navigate={navigate} />
+        </h3>
+        <span className="approval-person">
+          <PersonAvatar id={change.person} size="card" />
+          {change.person}
+        </span>
+      </header>
+      <p className="approval-line">
+        {waiting
+          ? `Its own change at checkpoint ${shortSha(change.checkpoint)} writes ${counted(change.files.length, "file")} under paths ${change.owner} protects. It lands once ${change.owner} confirms the lines`
+          : `${change.confirmedBy ?? change.owner} confirmed the lines at checkpoint ${shortSha(change.checkpoint)}`}
+      </p>
+      <ul className="chip-list" aria-label="Protected paths">
+        {covering.map((path) => (
+          <li key={path} className="code-chip">
+            {path}
+          </li>
+        ))}
+      </ul>
+      {change.files.every((file) => file.lines === null) ? null : (
+        <DiffFiles files={change.files.flatMap((file) => (file.lines === null ? [] : [{ path: file.path, status: file.status, lines: file.lines }]))} />
+      )}
+      <div className="approval-actions">
+        {waiting ? (
+          // While the confirmation sends the button keeps focus and refuses presses through aria-disabled.
+          <button type="button" className="button primary progressive" aria-disabled={sending} aria-describedby={titleId} onClick={() => sending || onConfirm()}>
+            {sending ? "Confirming" : "Confirm lines"}
+          </button>
+        ) : (
+          <span className="tag plan-part-state">Confirmed</span>
+        )}
+      </div>
+    </article>
   );
 }
 

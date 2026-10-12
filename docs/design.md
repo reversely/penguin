@@ -304,13 +304,29 @@ The procedure moves conflict handling to the start of the work. Each step below 
 - **Protected paths.** A scope in `penguin/scopes.json` may list `protected_paths`, each inside the
   scope's own paths. A path protects itself and everything under it. A part whose fix writes such a
   path gives the scope's owner a `protected_path` item to confirm its lines.
+- **The feature's own change.** The plan includes the originating feature's own change, so its
+  protected paths are checked too, at each checkpoint of the feature
+  (`services/project-agent/src/protected-change.ts`). Penguin reads the files that differ between
+  the checkpoint and its merge base with main: the newest commit of main's history that the
+  checkpoint reaches through any parent. A file main brought in by a merge is not the feature's own.
+  Each changed file is matched once against the protected paths. A path the feature's own person
+  protects raises nothing, as the overlap lock makes no lock between one person's features. Each
+  other person who protects a touched path gets a `protected_path` item naming the feature, with the
+  changed lines of those files. Only that person or their delegate confirms the lines, on the
+  dashboard, at the checkpoint they saw (`POST /api/plan-parts/confirm-protected`). A confirmation is
+  a signed `confirm_protected_change` record on the feature. A later checkpoint that leaves those
+  files as confirmed keeps the confirmation. One that changes them asks again, and one that no longer
+  touches the person's paths withdraws the item. The feature cannot land while a confirmation waits
+  (`protected_path_unconfirmed`). The lines follow the plan patches' rule: the feature's person, the
+  protecting person and that person's delegate read them. A project whose protected paths all belong
+  to the feature's own person reads nothing more at a checkpoint.
 - **Review verdicts.** The session that submitted a review hears the check runner's verdict at its
   next safe checkpoint under `reviewResults`: accepted or refused, the refusal codes and the
   exceptions raised. `get_work` repeats each verdict with its reasons.
 - **Dashboard.** `GET /api/plan-parts` lists the parts waiting on the signed-in person as owner or
   delegate with their changed lines and routing reasons. It also lists the parts that write a path
-  the person protects, the parts of their plans past the round limit and the reviews of their
-  scopes that raised an exception.
+  the person protects, the features whose own change writes one, the parts of their plans past the
+  round limit and the reviews of their scopes that raised an exception.
 - **Storage.** The parts with their revisions and states live in the feature's own Durable Object,
   which takes a change only while the part still stands where the decision read it.
   `PlanPartRoute` on the ProjectAgent keeps which revision of which part waits on whom, for
@@ -395,12 +411,14 @@ The procedure moves conflict handling to the start of the work. Each step below 
   request and signs each record (`block-land.ts`). The same FeatureAgent keeps the feature's plan and
   fix writes. A feature with no plan goes through the same steps with no fix to check.
 - **Ready to land.** The feature's agent calls `land_feature`. Penguin refuses the land with a reason
-  and opens no run in five cases. The latest checkpoint does not yet hold main's head (`behind_main`):
+  and opens no run in six cases. The latest checkpoint does not yet hold main's head (`behind_main`):
   the agent merges main into its fork and reports the merge as a checkpoint. A part of the plan is not
-  approved (`plan_not_approved`). A part for a running feature has no fix written at its current
-  revision (`fix_not_written`). A fix for code on main is not in the checkpoint (`fix_not_in_block`).
-  A written fix is no longer under its fork's head (`fix_not_in_place`). Ancestry is read through the
-  binding's `log` and `readCommit`; the search stops at main's own history.
+  approved (`plan_not_approved`). A person whose protected path the feature's own change writes has
+  not confirmed the lines (`protected_path_unconfirmed`). A part for a running feature has no fix
+  written at its current revision (`fix_not_written`). A fix for code on main is not in the
+  checkpoint (`fix_not_in_block`). A written fix is no longer under its fork's head
+  (`fix_not_in_place`). Ancestry is read through the binding's `log` and `readCommit`; the search
+  stops at main's own history.
 - **The block run.** One run checks the checkpoint merged onto main's head and onto the head of the
   `main` branch of every other running feature's fork. That head carries each fix written into the
   fork. The check runner claims the run at `POST /blocks/claim` and runs the [checks](#checks) on each
@@ -820,12 +838,13 @@ People see only the exceptions in this table. Everything else proceeds without t
 | Agents pass a fix back and forth past the project's round limit (default 3) | The originating feature's person |
 | A plan exceeds the break limit | The originating feature's person, to split it |
 
-A plan part goes to its owner as a `plan_part` item, a protected path to that path's scope owner
-as a `protected_path` item and a part past the round limit to the originating person as a
-`round_limit` item ([Advance notice in the build](#advance-notice-in-the-build)). A review exception
-goes to the scope's owner as a `review_exception` item. The dashboard inbox shows the first three
-in one card per merge plan with each shared review once. It lists review exceptions under their own
-heading ([dashboard.md](dashboard.md#inbox)).
+A plan part goes to its owner as a `plan_part` item, a protected path a part or the feature's own
+change writes to that path's scope owner as a `protected_path` item and a part past the round limit
+to the originating person as a `round_limit` item
+([Advance notice in the build](#advance-notice-in-the-build)). A review exception goes to the
+scope's owner as a `review_exception` item. The dashboard inbox shows the plan parts in one card per
+merge plan with each shared review once. It lists a feature's own protected changes under Protected
+paths and review exceptions under their own heading ([dashboard.md](dashboard.md#inbox)).
 
 The overlapping start is built for features of two different people. The ProjectAgent puts it in
 the covering person's inbox and tells that person's running sessions at their next safe checkpoint

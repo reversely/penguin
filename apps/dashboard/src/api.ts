@@ -124,6 +124,25 @@ export async function decidePlanPart({ kind, ...decision }: PlanPartDecision): P
   return true;
 }
 
+/**
+ * Confirms the lines a feature's own change writes under paths `owner` protects, at the checkpoint
+ * read; the server names the confirmer from the session. Resolves false when the change moved on.
+ */
+export async function confirmProtectedChange(change: { readonly feature: string; readonly owner: string; readonly checkpoint: string }): Promise<boolean> {
+  const path = "/api/plan-parts/confirm-protected";
+  const response = await fetch(path, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ feature: change.feature, owner: change.owner, checkpoint: change.checkpoint }),
+  });
+  await response.arrayBuffer();
+  if (response.status === 401) throw new SignedOut();
+  if (response.status === 404 || response.status === 409) return false;
+  if (!response.ok) throw new Error(`${path} answered ${response.status}`);
+  return true;
+}
+
 export async function fetchIdentities(): Promise<IdentitiesPage> {
   return getJson<IdentitiesPage>("/api/identities");
 }

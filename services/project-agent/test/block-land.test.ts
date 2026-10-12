@@ -20,6 +20,7 @@ import {
   type BlockRunRequest,
   type Promotion,
 } from "@penguin/protocol";
+import { parseScopeMap } from "@penguin/scope-map";
 
 import {
   BlockQueueStore,
@@ -40,7 +41,9 @@ import { BlockStore } from "../src/block-store.ts";
 import { featureTokenGrant } from "../src/feature-open.ts";
 import { agentFixGrant, agentFixReport, type ForkReading } from "../src/fix-write.ts";
 import { fastForwardMain, pktLine } from "../src/main-push.ts";
-import { FixProject, git, SESSIONS, TAX, TAX_FIXED, TAX_FORK } from "./fix-project.ts";
+import { checkProtectedChanges, confirmProtectedChange, ownChange, ProtectedChangeStore, unconfirmedProtected } from "../src/protected-change.ts";
+import { fileDiffs } from "../src/repo-diff.ts";
+import { FixProject, git, SCOPES, SESSIONS, TAX, TAX_FIXED, TAX_FORK } from "./fix-project.ts";
 import { gitReader } from "./git-reader.ts";
 
 const BILLING = "money-minor/v1#1";
@@ -110,6 +113,7 @@ describe("landing a feature as a block", () => {
   let base: string;
   let blocks: BlockStore;
   let queue: BlockQueueStore;
+  let protectedChanges: ProtectedChangeStore;
   const notified: string[] = [];
   const sealed: string[] = [];
   let slotHeldElsewhere = false;
@@ -121,6 +125,7 @@ describe("landing a feature as a block", () => {
     git(base, "update-ref", "refs/heads/main", fx.main);
     blocks = new BlockStore(fx.project.sql, () => fx.now);
     queue = new BlockQueueStore(fx.project.sql, () => fx.now);
+    protectedChanges = new ProtectedChangeStore(fx.project.sql, () => fx.now);
     notified.length = 0;
     sealed.length = 0;
     slotHeldElsewhere = false;
@@ -158,6 +163,7 @@ describe("landing a feature as a block", () => {
     baseRepo: "base",
     branch: "main",
     queue,
+    unconfirmedProtected: (id) => unconfirmedProtected(protectedChanges, id),
     sign: (draft) => fx.project.sign(draft),
     notify: (person) => notified.push(person),
     now: () => fx.now,
@@ -252,6 +258,45 @@ describe("landing a feature as a block", () => {
     assert.equal((await land({}, SESSIONS.inesOther)).status, "checking");
     refused(await land(), "busy");
     assert.equal(mainHead(), fx.main, "nothing moved main");
+  });
+
+  test("a feature whose own change writes a path another person protects lands only once that person confirms the lines", async () => {
+    await ready();
+    // Bea protects billing/old.py, which Ines's own checkpoint rewrites; the tax fix sits in Rahul's fork.
+    const scopeMap = parseScopeMap({
+      scopes: SCOPES.scopes.map((each) => (each.id === "billing" ? { ...each, protected_paths: ["billing/old.py"] } : each)),
+    });
+    const feature = fx.project.features.get("money-minor");
+    assert.ok(feature);
+    const mainLog = { log: async ({ limit }: { limit: number }) => git(base, "log", "--first-parent", "--format=%H %T", `-n${limit}`, "main").split("\n").map((line) => ({ hash: line.split(" ")[0] as string, treeHash: line.split(" ")[1] as string })) };
+    const asked = await checkProtectedChanges(
+      {
+        store: protectedChanges,
+        inbox: fx.project.inbox,
+        notify: (person) => notified.push(person),
+        readOwnChange: (_repo, sha) => ownChange(gitReader(fx.repo.dir), mainLog, sha),
+        readDiffs: async (_repo, files) => (await fileDiffs(gitReader(fx.repo.dir), files, () => null)).files,
+      },
+      feature,
+      fx.billingFix,
+      scopeMap,
+    );
+    assert.deepEqual(asked, ["bea"]);
+    const waiting = await land();
+    refused(waiting, "protected_path_unconfirmed");
+    assert.match(waiting.status === "rejected" ? waiting.message : "", /bea \(billing\/old\.py\)/u);
+    const confirmDeps = {
+      store: protectedChanges,
+      inbox: fx.project.inbox,
+      notify: (person: string) => notified.push(person),
+      features: fx.project.features,
+      delegates: async () => new Map<string, string>(),
+      sign: (draft: Parameters<typeof fx.project.sign>[0]) => fx.project.sign(draft),
+    };
+    const byOther = await confirmProtectedChange(confirmDeps, "ines", { feature: "money-minor", owner: "bea", checkpoint: fx.billingFix });
+    assert.equal(byOther.status === "rejected" && byOther.reason, "forbidden", "the feature's own person cannot confirm another person's lines");
+    assert.equal((await confirmProtectedChange(confirmDeps, "bea", { feature: "money-minor", owner: "bea", checkpoint: fx.billingFix })).status, "ok");
+    assert.equal((await land()).status, "checking");
   });
 
   test("a fix whose commit is no longer under its fork's head is not in place", async () => {

@@ -312,8 +312,11 @@ A session of a feature asks Penguin to move main to the feature's latest checkpo
 
 The answer carries no token: Penguin moves main itself. A refusal names what is missing:
 `behind_main` (merge main into your fork, report the merge with `report_checkpoint` and land again),
-`plan_not_approved`, `fix_not_written`, `fix_not_in_block`, `fix_not_in_place`, `not_ready` (no
-checkpoint, or nothing past main) or `busy` (a land of the feature is already being checked).
+`plan_not_approved`, `protected_path_unconfirmed` (the feature's own change writes a path another
+person protects, and that person has not confirmed the lines on the dashboard; the message names
+each person with the protected paths), `fix_not_written`, `fix_not_in_block`, `fix_not_in_place`,
+`not_ready` (no checkpoint, or nothing past main) or `busy` (a land of the feature is already being
+checked).
 
 `get_work` reports `landing`: the feature's state (`building`, `landing` or `landed`), its newest block
 runs and its promotion. Each run names its purpose (`land` or `plan_check`), its state, the failing
