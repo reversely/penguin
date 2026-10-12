@@ -53,7 +53,9 @@ import {
   featureTokenGrant,
   openFeature,
   recordFeatureRepo,
+  recordPenguinCheckpoint,
   reportFeatureCheckpoint,
+  type FeatureCheckpointDeps,
   type FeatureCheckpointOutcome,
   type FeatureDeps,
   type FeatureOpenInput,
@@ -171,7 +173,9 @@ import {
   claimBlockRuns,
   featureLanded,
   landFailed,
+  mainState,
   requestLand,
+  requestPenguinLand,
   requestPlanCheck,
   retryLand,
   signBlockRecord,
@@ -192,8 +196,10 @@ import {
   migrationWrites,
   MigrationStore,
   rewritesReported,
+  stewardsFor,
   type MigrationDeps,
 } from "./migration-plans.ts";
+import { landPenguinFeatures, PenguinLandStore, type PenguinLandAttempt } from "./penguin-land.ts";
 import { checkpointRecord, parseBreakLimit, proposePlan, type ProposePlanInput, type ProposePlanOutcome } from "./propose-plan.ts";
 import { claimToolRuns, recordToolResult, type ToolReportOutcome, type ToolRunClaim } from "./agent-tool-runner.ts";
 import { reviewResult } from "./part-checks.ts";
@@ -253,6 +259,7 @@ import type { Delegates, FixLookup, IssueRecord, ReduceRejectReason, RejectReaso
 import {
   BACKGROUND_RUN_CAP_DEFAULT,
   EDIT_RUN_MINUTES_DEFAULT,
+  FIX_WRITE_BRANCH,
   identitiesChangedMessage,
   inboxChangedMessage,
   isMigrationPlanId,
@@ -982,6 +989,9 @@ export class ProjectAgent extends Agent {
   #retiring: RetiringStore | undefined;
   #scopeEdges: ScopeEdgeStore | undefined;
   #migrations: MigrationStore | undefined;
+  #penguinLands: PenguinLandStore | undefined;
+  /** Penguin's lands of the features it opened run one sweep at a time (penguin-land.ts). */
+  #penguinLandSweeps: Promise<unknown> = Promise.resolve();
   #splits: ContractSplitStore | undefined;
   #blockQueue: BlockQueueStore | undefined;
   #editTasks: EditTaskStore | undefined;
@@ -1847,7 +1857,12 @@ export class ProjectAgent extends Agent {
     sha: string,
     repos: ProjectRepos,
   ): Promise<FeatureCheckpointOutcome> {
-    const deps = {
+    return this.#featuresChanging(reportFeatureCheckpoint(this.#featureCheckpointDeps(repos), owner, sessionId, featureId, sha));
+  }
+
+  /** What recording a feature's checkpoint reads and asks for, from a session, a bridge or Penguin itself. */
+  #featureCheckpointDeps(repos: ProjectRepos): FeatureCheckpointDeps {
+    return {
       ...this.#featureDeps(repos),
       commitExists: this.#checkpointDeps().commitExists,
       readChange: (repo: string, commit: string) =>
@@ -1912,7 +1927,6 @@ export class ProjectAgent extends Agent {
         }
       },
     };
-    return this.#featuresChanging(reportFeatureCheckpoint(deps, owner, sessionId, featureId, sha));
   }
 
   /** Every feature, newest first, for the dashboard. */
@@ -2646,8 +2660,11 @@ export class ProjectAgent extends Agent {
   }
 
   /** The check runner reports the commit of write `writeId`, which it claimed. */
-  reportRunnerFixWrite(caller: BridgeCaller, writeId: number, body: unknown, repos: ProjectRepos): Promise<FixWriteOutcome> {
-    return this.#featuresChanging(this.#planStep(() => runnerFixReport(this.#fixWriteDeps(repos), caller, writeId, body)));
+  async reportRunnerFixWrite(caller: BridgeCaller, writeId: number, body: unknown, repos: ProjectRepos): Promise<FixWriteOutcome> {
+    const outcome = await this.#featuresChanging(this.#planStep(() => runnerFixReport(this.#fixWriteDeps(repos), caller, writeId, body)));
+    // A migration part written into a block feature may be its last (penguin-land.ts).
+    if (outcome.status === "ok") await this.#landPenguinFeatures(repos);
+    return outcome;
   }
 
   #fixWriteDeps(repos: ProjectRepos): FixWriteDeps {
@@ -2698,12 +2715,16 @@ export class ProjectAgent extends Agent {
     const outcome = await this.#planStep(() => reportEditTask(this.#editWorkDeps(repos), caller.ownerId, caller.bridgeId, taskId, body));
     // A migration part's task done writes the part; one whose run failed sends it to a person (migration-plans.ts).
     if (outcome.status === "ok" && outcome.task.kind === "migration") await this.#settleMigrationTasks(repos, taskId);
+    // A task done in a feature Penguin opened may write its last part or its removal, or fix its failed block (penguin-land.ts).
+    if (outcome.status === "ok" && this.#migrationStore().openedByPenguin(outcome.task.target)) await this.#landPenguinFeatures(repos);
     return outcome;
   }
 
   /** A block run of the feature reported (block-land.ts): its agent steps become next-step tasks, or a pass does them. */
   async blockReported(featureId: string, run: { readonly runId: string; readonly checkpoint: string; readonly passed: boolean }, decisions: readonly LadderDecision[], repos: ProjectRepos): Promise<void> {
-    await blockReported(this.#editWorkDeps(repos), featureId, run, decisions);
+    // A feature Penguin opened has no builder: its next steps reach the steward of its person.
+    const migrations = this.#migrationStore();
+    await blockReported(this.#editWorkDeps(repos), featureId, run, decisions, migrations.openedByPenguin(featureId) ? stewardsFor(migrations) : undefined);
     this.#liveFeed().featuresChanged();
   }
 
@@ -2720,10 +2741,60 @@ export class ProjectAgent extends Agent {
   async #settleMigrationTasks(repos: ProjectRepos, taskId: number | null): Promise<void> {
     try {
       const changed = await this.#planStep(() => migrationTasksSettled(this.#migrationDeps(repos)));
-      if (changed.length > 0) this.#liveFeed().featuresChanged();
+      if (changed.length > 0) {
+        this.#liveFeed().featuresChanged();
+        await this.#landPenguinFeatures(repos);
+      }
     } catch (error) {
       console.error(JSON.stringify({ event: "migration_tasks_failed", task: taskId, error: String(error).slice(0, 200) }));
     }
+  }
+
+  #penguinLandStore(): PenguinLandStore {
+    this.#penguinLands ??= new PenguinLandStore(this.#database());
+    return this.#penguinLands;
+  }
+
+  /**
+   * Penguin lands each feature it opened whose parts are all written (penguin-land.ts): its fork head
+   * recorded as its checkpoint, then the block check and promotion. Sweeps run one at a time and
+   * outside the plan steps, since recording a checkpoint takes plan steps of its own; only the land
+   * request is one. A failure is logged and never fails the report that asked for the sweep.
+   */
+  #landPenguinFeatures(repos: ProjectRepos): Promise<PenguinLandAttempt[]> {
+    const sweep = this.#penguinLandSweeps.then(async () => {
+      try {
+        const land = this.#landDeps(repos);
+        const attempts = await landPenguinFeatures({
+          migrations: this.#migrationStore(),
+          lands: this.#penguinLandStore(),
+          features: this.#featureStore(),
+          tasks: this.#editTaskStore(),
+          forkHead: async (repo) => (await land.readRepo(repo, (reader) => reader.log({ ref: FIX_WRITE_BRANCH, limit: 1 })))[0]?.hash ?? null,
+          mainHead: async () => (await mainState(land)).head,
+          checkpoint: async (feature, sha) => {
+            const recorded = await recordPenguinCheckpoint(this.#featureCheckpointDeps(repos), feature, sha);
+            return recorded.status === "ok" ? recorded.feature : undefined;
+          },
+          factsWaiting: (feature) =>
+            feature.latestCheckpointSha !== null && this.#planFactsStore().forCheckpoint(feature.id, feature.latestCheckpointSha)?.state === "pending",
+          charter: (person) => {
+            const steward = this.#editRosterStore().stewardOf(person);
+            return steward === undefined ? undefined : land.charter(steward.handle, person);
+          },
+          land: (featureId, charter) => this.#planStep(() => requestPenguinLand(land, featureId, charter)),
+          sign: land.sign,
+          notify: land.notify,
+        });
+        if (attempts.length > 0) this.#liveFeed().featuresChanged();
+        return attempts;
+      } catch (error) {
+        console.error(JSON.stringify({ event: "penguin_land_failed", error: String(error).slice(0, 200) }));
+        return [];
+      }
+    });
+    this.#penguinLandSweeps = sweep;
+    return sweep;
   }
 
   /** Opens an edit task from another source, such as a migration part of a split (#131). */
@@ -2911,6 +2982,8 @@ export class ProjectAgent extends Agent {
       } catch (error) {
         console.error(JSON.stringify({ event: "contract_sort_failed", feature: feature.id, error: String(error).slice(0, 200) }));
       }
+      // A contract carrier lands once its checkpoint's facts are in, so its promotion can close the symbols (penguin-land.ts).
+      if (this.#migrationStore().openedByPenguin(feature.id)) await this.#landPenguinFeatures(repos);
     }
     return outcome;
   }

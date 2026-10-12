@@ -20,6 +20,7 @@ import {
   planStillApproved,
   reportBlockRun,
   requestLand,
+  requestPenguinLand,
   requestPlanCheck,
   retryLand,
   signBlockRecord,
@@ -237,6 +238,21 @@ describe("landing a feature as a block", () => {
     assert.equal(byOther.status === "rejected" && byOther.reason, "forbidden", "the feature's own person cannot confirm another person's lines");
     assert.equal((await confirmProtectedChange(confirmDeps, "bea", { feature: "money-minor", owner: "bea", checkpoint: fx.billingFix })).status, "ok");
     assert.equal((await land()).status, "checking");
+  });
+
+  test("Penguin lands a feature with no session, through the same checks, as Penguin with the charter it is given (#141)", async () => {
+    await ready();
+    const steward = { handle: "@ines/steward", person: "ines", scopes: ["money"], paths: [] };
+    git(base, "update-ref", "refs/heads/main", anotherBlock());
+    refused(await requestPenguinLand(landDeps(), "money-minor", steward), "behind_main");
+    git(base, "update-ref", "refs/heads/main", fx.main);
+    const asked = await requestPenguinLand(landDeps(), "money-minor", steward);
+    assert.equal(asked.status, "checking", JSON.stringify(asked));
+    const [run] = await claim();
+    assert.deepEqual([run?.charter, run?.checkpoint], [steward, fx.billingFix]);
+    const [record] = fx.project.features.records("money-minor").map((stored) => JSON.parse(stored.file) as { type: string; author: unknown }).filter((each) => each.type === "land_requested");
+    assert.deepEqual(record?.author, { penguin: true });
+    refused(await requestPenguinLand(landDeps(), "money-minor", steward), "busy");
   });
 
   test("a fix whose commit is no longer under its fork's head is not in place", async () => {

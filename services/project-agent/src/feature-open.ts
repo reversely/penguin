@@ -384,6 +384,27 @@ export async function reportFeatureCheckpoint(
 
 const NO_PLAN_NOTICES: Delivery["planNotices"] = { parts: [], decisions: [], reviews: [] };
 
+/**
+ * Records `sha`, the head of a fork Penguin opened, as the feature's checkpoint under a signed
+ * `checkpoint_area` record authored by Penguin (penguin-land.ts): the protected-path confirmations,
+ * the area update, the plans it now meets and its contract diff's facts run, as an agent's checkpoint
+ * takes them. No session is delivered to and no retiring-calls check is asked: Penguin wrote nothing
+ * of its own.
+ */
+export async function recordPenguinCheckpoint(
+  deps: Omit<FeatureCheckpointDeps, "deliver" | "commitExists">,
+  feature: Feature,
+  sha: string,
+): Promise<CheckpointAreaOutcome> {
+  if (feature.state === "landed") return rejected("conflict", `feature ${feature.id} has landed; its fork is read-only`);
+  await deps.protectedChanges?.(feature, sha);
+  const outcome = await recordCheckpointArea(deps, feature, sha, { penguin: true }, deps.readChange);
+  if (outcome.status === "rejected") return outcome;
+  await deps.joinPlans?.(outcome.feature);
+  await deps.sortContract?.(outcome.feature);
+  return outcome;
+}
+
 function addedTo(before: FeatureArea, after: FeatureArea): { scopes: string[]; paths: string[] } {
   const scopes = new Set(before.scopes);
   const paths = new Set(before.paths);

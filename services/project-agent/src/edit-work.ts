@@ -15,6 +15,8 @@
 //   asks for an edit to the failing files, in the failing feature's fork, or in the originating fork
 //   for a failure on main. Its files route by charter and may split. A newer block run of the same
 //   feature replaces the open next steps; a passing one does them.
+//   A feature Penguin opened has no builder in this routing, so its next steps reach the steward of
+//   its person.
 // - `migration`: a part of a split's migration plan that the declared rewrite rules do not write
 //   (migration-plans.ts), through `openEditTask`. A running feature's own changes go to its builder;
 //   code on main goes to the steward of the scope's DRI, in the feature Penguin opened for the plan.
@@ -249,13 +251,15 @@ function syncFixes(deps: EditWorkDeps, approved: readonly PartRoute[], routing: 
 
 /**
  * A block run of `featureId` reported: a failing run's ladder decisions for an agent (steps 4 and 5)
- * replace the feature's open next steps; a passing run does them.
+ * replace the feature's open next steps; a passing run does them. `adjust` may narrow the routing, as
+ * for a feature Penguin opened, whose next steps reach the steward of its person (penguin-land.ts).
  */
 export async function blockReported(
   deps: EditWorkDeps,
   featureId: string,
   run: { readonly runId: string; readonly checkpoint: string; readonly passed: boolean },
   decisions: readonly LadderDecision[],
+  adjust?: (routing: EditRoutingContext) => EditRoutingContext,
 ): Promise<void> {
   const prefix = `next:${featureId}:`;
   if (run.passed) {
@@ -265,7 +269,8 @@ export async function blockReported(
   const scopeMap = await deps.scopeMap();
   deps.roster.sync(scopeMap, deps.features.list());
   const sources = nextStepSources(deps, featureId, run, decisions);
-  deps.tasks.replace(prefix, sources, editRouting(deps, scopeMap, availability(deps)), "dropped", `block run ${run.runId} no longer shows the failure`);
+  const routing = editRouting(deps, scopeMap, availability(deps));
+  deps.tasks.replace(prefix, sources, adjust === undefined ? routing : adjust(routing), "dropped", `block run ${run.runId} no longer shows the failure`);
   for (const person of new Set(deps.tasks.forFeature(featureId).map((task) => task.person))) deps.notify(person);
 }
 

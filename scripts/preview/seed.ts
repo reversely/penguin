@@ -20,6 +20,7 @@ import { promisify } from "node:util";
 import { generateSigningKeyPair } from "@penguin/issues";
 import {
   BlockChecker,
+  blockPass,
   checkTools,
   CombinedRunner,
   fetchRepoBranches,
@@ -41,6 +42,7 @@ import {
   isMigrationPlanId,
   routesToOriginator,
   type ContractWorkView,
+  type LadderDecision,
   type Plan,
   type RetiringSymbol,
   type ReviewForm,
@@ -57,7 +59,7 @@ import { buildBoard } from "../../services/project-agent/src/board.ts";
 import { checkpointBaseline, checkpointChange, type RepoHistoryReader } from "../../services/project-agent/src/combined-run-schedule.ts";
 import { contractWork, ContractSplitStore, recordSplit, scheduleSort, type ContractSplitDeps } from "../../services/project-agent/src/contract-split.ts";
 import { buildFeaturePage, buildFeaturePlan, buildPersonScopes, buildTeamView, type DashboardViewDeps } from "../../services/project-agent/src/dashboard-views.ts";
-import { openFeature, recordFeatureRepo, reportFeatureCheckpoint, type FeatureDeps } from "../../services/project-agent/src/feature-open.ts";
+import { openFeature, recordFeatureRepo, recordPenguinCheckpoint, reportFeatureCheckpoint, type FeatureDeps } from "../../services/project-agent/src/feature-open.ts";
 import { FeatureStore, signFeatureRecord } from "../../services/project-agent/src/feature-store.ts";
 import { FixGrantStore } from "../../services/project-agent/src/fix-write.ts";
 import { buildIdentitiesPage } from "../../services/project-agent/src/identities-page.ts";
@@ -89,6 +91,7 @@ import {
   ownChange,
   protectedChangeRequests,
   ProtectedChangeStore,
+  unconfirmedProtected,
   type ConfirmDeps,
 } from "../../services/project-agent/src/protected-change.ts";
 import { fileDiffs } from "../../services/project-agent/src/repo-diff.ts";
@@ -96,14 +99,28 @@ import { edgesReported, requestScopeEdges, ScopeEdgeStore } from "../../services
 import { closeRemoved, countReported, requestRetiringCount, type CountOutcome, type RetiringCountDeps } from "../../services/project-agent/src/retiring-count.ts";
 import { EditRoster } from "../../services/project-agent/src/edit-roster.ts";
 import { EditTaskStore } from "../../services/project-agent/src/edit-tasks.ts";
-import { editRouting, editTaskView, syncEditWork } from "../../services/project-agent/src/edit-work.ts";
+import { blockReported, editRouting, editTaskView, syncEditWork, type EditWorkDeps } from "../../services/project-agent/src/edit-work.ts";
+import {
+  BlockQueueStore,
+  featureLanded,
+  landFailed,
+  reportBlockRun,
+  requestPenguinLand,
+  type BlockReportResult,
+  type FeatureBlocks,
+  type LandDeps,
+} from "../../services/project-agent/src/block-land.ts";
+import { BlockStore } from "../../services/project-agent/src/block-store.ts";
+import { landPenguinFeatures, PenguinLandStore, type PenguinLandAttempt } from "../../services/project-agent/src/penguin-land.ts";
 import {
   carryContract,
+  migrationBlockLanded,
   migrationsChecked,
   migrationsCounted,
   migrationTrialReported,
   MigrationStore,
   rewritesReported,
+  stewardsFor,
   type MigrationDeps,
 } from "../../services/project-agent/src/migration-plans.ts";
 import { RetiringStore } from "../../services/project-agent/src/retiring-store.ts";
@@ -168,6 +185,10 @@ export class PreviewProject {
   readonly editTasks: EditTaskStore;
   readonly roster: EditRoster;
   readonly fixGrants: FixGrantStore;
+  /** The FeatureAgents' block runs, kept in the preview's one database, and the ProjectAgent's queue of them. */
+  readonly blocks: BlockStore;
+  readonly blockQueue: BlockQueueStore;
+  readonly penguinLands: PenguinLandStore;
   /**
    * True to propose the split's migration plans after each count, as the ProjectAgent does: each plan's
    * rewrites and trials then run on the check runner. Off by default, since a scenario that does not
@@ -226,6 +247,9 @@ export class PreviewProject {
     this.editTasks = new EditTaskStore(this.sql, { now });
     this.roster = new EditRoster(this.sql, this.identities);
     this.fixGrants = new FixGrantStore(this.sql, now);
+    this.blocks = new BlockStore(this.sql, now);
+    this.blockQueue = new BlockQueueStore(this.sql, now);
+    this.penguinLands = new PenguinLandStore(this.sql, now);
     let sessions: SessionStore | undefined;
     this.index = new IssueIndex(this.sql, { assignmentsChanged: (issueId, added, removed) => sessions?.assignmentsChanged(issueId, added, removed) });
     sessions = new SessionStore(this.sql, this.identities, {
@@ -740,6 +764,181 @@ export class PreviewProject {
       // A migration part's trial is decided by its own plan (migration-plans.ts).
       if (recorded.status === "recorded" && isMigrationPlanId(recorded.trial.planId)) await migrationTrialReported(this.migrationDeps(), recorded.trial);
     }
+  }
+
+  /**
+   * What landing a block reads, as the ProjectAgent wires it (block-land.ts). The fixture's repository
+   * stands in for Artifacts: the base repo's branch is `main`, and a fork's branch is its repo name.
+   */
+  landDeps(): LandDeps {
+    const agent = (): FeatureBlocks => ({
+      latestPlan: (id) => this.plans.latestPlan(id),
+      fixWrites: (id) => this.plans.fixWrites(id),
+      openBlockRun: (input) => this.blocks.open(input),
+      claimBlockRuns: (runner) => ({ runs: this.blocks.claim(runner), waiting: this.blocks.hasWaiting() }),
+    });
+    return {
+      features: this.features,
+      heartbeat: (caller, sessionId) => this.sessions.heartbeat(caller, sessionId),
+      charter: (handle, person) => {
+        const identity = this.identities.byHandle(handle);
+        return identity === undefined ? undefined : { handle: identity.handle, person: identity.ownerId ?? person, scopes: [...identity.charterScopes], paths: [...identity.charterPaths] };
+      },
+      agent,
+      readRepo: async (name, read) =>
+        read({
+          ...gitReader(this.repo),
+          log: async ({ ref, limit }) =>
+            this.git("log", "--first-parent", "--format=%H", `-n${limit}`, name === "base" ? ref : name)
+              .split("\n")
+              .filter(Boolean)
+              .map((hash) => ({ hash })),
+        }),
+      baseRepo: "base",
+      branch: "main",
+      queue: this.blockQueue,
+      unconfirmedProtected: (id) => unconfirmedProtected(this.protectedChanges, id),
+      sign: (record) => this.#sign(record),
+      notify: this.#notify,
+    };
+  }
+
+  /**
+   * Penguin lands each feature it opened whose parts are all written (penguin-land.ts), as the
+   * ProjectAgent's sweep does: the fork's head recorded as its checkpoint, then the land itself with
+   * the charter of the steward of the feature's person.
+   */
+  async landPenguinFeatures(): Promise<PenguinLandAttempt[]> {
+    this.tick();
+    const history = gitHistory(this.repo);
+    const land = this.landDeps();
+    return landPenguinFeatures({
+      migrations: this.migrations,
+      lands: this.penguinLands,
+      features: this.features,
+      tasks: this.editTasks,
+      forkHead: async (repo) => this.git("rev-parse", repo),
+      mainHead: async () => this.git("rev-parse", "main"),
+      checkpoint: async (feature, sha) => {
+        const recorded = await recordPenguinCheckpoint(
+          {
+            ...this.featureDeps(),
+            readChange: (_repo, commit) => checkpointChange(history, history, commit),
+            protectedChanges: (reporting, commit) =>
+              checkProtectedChanges(
+                {
+                  ...this.protectedDeps(),
+                  readOwnChange: (_repo, at) => ownChange(gitReader(this.repo), history, at),
+                  readDiffs: async (_repo, files) => (await fileDiffs(gitReader(this.repo), files, () => null)).files,
+                },
+                reporting,
+                commit,
+                this.scopeMap,
+              ),
+          },
+          feature,
+          sha,
+        );
+        return recorded.status === "ok" ? recorded.feature : undefined;
+      },
+      factsWaiting: (feature) => feature.latestCheckpointSha !== null && this.facts.forCheckpoint(feature.id, feature.latestCheckpointSha)?.state === "pending",
+      charter: (person) => {
+        const steward = this.roster.stewardOf(person);
+        return steward === undefined ? undefined : land.charter(steward.handle, person);
+      },
+      land: (featureId, charter) => requestPenguinLand(land, featureId, charter),
+      sign: (record) => this.#sign(record),
+      notify: this.#notify,
+    });
+  }
+
+  /**
+   * The check runner claims every waiting block run and checks it on its merged trees (block-run.ts);
+   * each report is recorded and a passing land is promoted, as the FeatureAgent does. The push moves
+   * main only from the commit the block was checked against. A promotion then lands the feature, its
+   * migration plan when it is a block, and counts the remaining callers, as the ProjectAgent does. A
+   * failed check's agent steps become next-step edit tasks, a feature Penguin opened's for the steward
+   * of its person. Answers each report's outcome.
+   */
+  async blockPass(): Promise<BlockReportResult[]> {
+    const repo = await this.#runner();
+    const scratch = `${repo}-scratch`;
+    const impact = pythonImpactAnalyzer({ repoPath: repo, python: PYTHON, env: ENV });
+    const notify = this.#notify;
+    const outcomes: BlockReportResult[] = [];
+    const work = {
+      tasks: this.editTasks,
+      roster: this.roster,
+      features: this.features,
+      scopeMap: async () => this.scopeMap,
+      running: () => [],
+      notify,
+    } as unknown as EditWorkDeps;
+    const pass = await blockPass({
+      claim: async () => this.blocks.claim(RUNNER.bridgeId),
+      report: async (report) => {
+        const recorded = await reportBlockRun(
+          {
+            store: this.blocks,
+            fixWrites: (id) => this.plans.fixWrites(id),
+            port: {
+              signBlockRecord: async (featureId, type, payload) => {
+                const record = await this.#sign(this.features.draftRecord(featureId, type, { penguin: true }, payload));
+                this.features.addRecord(record);
+                return record.record_id;
+              },
+              acquirePromotion: async (featureId, runId) => this.blockQueue.acquire(featureId, runId),
+              releasePromotion: async (runId) => this.blockQueue.release(runId),
+              featureLanded: async (featureId, promotion) => {
+                await migrationBlockLanded(this.migrationDeps(), featureId, promotion.mainAfter);
+                await featureLanded(
+                  { features: this.features, queue: this.blockQueue, retirePlan: () => undefined, recheckLocks: async () => undefined, notify },
+                  featureId,
+                  promotion,
+                );
+                await this.promoted(featureId, promotion.mainAfter, true);
+              },
+              landFailed: async (featureId) => landFailed({ features: this.features, notify }, featureId),
+              retryLand: async () => ({ status: "rejected", reason: "busy", message: "the preview makes one push at a time" }),
+              expandPromoted: async () => undefined,
+              retryExpand: async () => ({ status: "rejected", reason: "busy", message: "the preview makes one push at a time" }),
+              blockReported: async (featureId, run, decisions: readonly LadderDecision[]) =>
+                blockReported(work, featureId, run, decisions, this.migrations.openedByPenguin(featureId) ? stewardsFor(this.migrations) : undefined),
+            },
+            // Main moves only from the commit the block was checked against, in one step.
+            push: async (run) => {
+              const head = this.git("rev-parse", "main");
+              if (head !== run.mainBefore) return { status: "moved", head, durationMs: 0 };
+              this.moveMain(run.checkpoint);
+              return { status: "pushed", packBytes: 0, durationMs: 0 };
+            },
+            seal: async () => 0,
+          },
+          RUNNER,
+          report.runId,
+          JSON.parse(JSON.stringify(report)),
+        );
+        outcomes.push(recorded);
+        if (recorded.status === "rejected") throw new Error(`block ${report.runId}: ${recorded.message}`);
+        return recorded as never;
+      },
+      fetchRepo: (fork) => fetchRepoBranches(repo, () => localRemote(this.repo), fork),
+      combined: new CombinedRunner({
+        repoPath: repo,
+        runner: new TestRunner({ repoPath: repo, env: ENV, scratchDir: scratch, consent: () => true }),
+        impact,
+        checks: new BlockChecker({
+          repoPath: repo,
+          scratchDir: scratch,
+          tools: checkTools({ ruff: RUFF, env: ENV, python: PYTHON }),
+          dependencies: pythonDependencyAnalyzer({ repoPath: repo, python: PYTHON, env: ENV }),
+        }),
+      }),
+      repoPath: repo,
+    });
+    const failed = pass.runs.find((run) => run.error !== null);
+    if (failed !== undefined) throw new Error(`block run ${failed.runId}: ${failed.error}`);
+    return outcomes;
   }
 
   /** The newest plan of a feature, or undefined. */

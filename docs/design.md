@@ -425,8 +425,9 @@ Penguin sorts each feature checkpoint's contract diff and decides between a spli
     main, `contract-<owner>-<feature>`. It signs the `contract_proposed` record there with
     `origin`, `places: []` and `approved_by: penguin`. The removal becomes a `contract` edit task for
     that DRI's steward. The originating feature's `contractStep` shows the symbol `approved` with
-    the carrying feature as `carrier`. When the carrier's block reaches main, its facts run closes
-    the symbol as removed. A symbol in no scope, or in a scope with no owner, stays `no_callers`.
+    the carrying feature as `carrier`. Once the steward's removal is done, Penguin lands the carrier
+    itself ([Block promotion in the build](#block-promotion-in-the-build), Penguin's own features).
+    When the carrier's block reaches main, its facts run closes the symbol as removed. A symbol in no scope, or in a scope with no owner, stays `no_callers`.
   - **Closing.** When the originating feature's block reaches main, each approved symbol that the
     landed checkpoint's contract diff removes (its facts run) closes under a signed
     `symbols_removed` record. The symbol leaves the `RetiringSymbol` table. A later checkpoint that
@@ -523,8 +524,10 @@ Penguin proposes the migrate step's plans itself (`services/project-agent/src/mi
 - **The block.** Each plan names its block feature, `migrate-<owner>-<feature>` (with `-<n>` from
   the owner's second plan). Penguin opens it from main, with a fork, when the plan has code on main,
   as the fork the runner's write or the steward's edit goes into. A part on main in a second scope
-  widens the block's area under a signed `declare_area` record. When the block feature reaches main,
-  the plan is `landed` under a signed `migration_landed` record.
+  widens the block's area under a signed `declare_area` record. Penguin asks for the block's land
+  itself once every live part on main is written
+  ([Block promotion in the build](#block-promotion-in-the-build), Penguin's own features). When the
+  block feature reaches main, the plan is `landed` under a signed `migration_landed` record.
 - **Features Penguin opens.** A block feature or a contract carrier is an `open_feature` record
   authored by Penguin, owned by the DRI it works for, forked from main through the Artifacts binding
   with the same name and `PENGUIN_FEATURE_FORK_DEFAULT_BRANCH_ONLY` setting as the Worker's forks.
@@ -846,7 +849,8 @@ agent becomes an edit task for one of them.
 
   A mechanical part asks for no task: the check runner writes it. A feature Penguin opened from main
   (a migration plan's block or a contract carrier) has no builder in routing, so its edits reach the
-  steward of the scope's DRI. While an overlap lock holds such a feature's start, the bridge's
+  steward of the scope's DRI. The next steps of such a feature's failed block go to the steward of
+  its person the same way. While an overlap lock holds such a feature's start, the bridge's
   claim leaves an edit into its fork in the queue. The FeatureAgent reports each
   block run's decisions through `blockReported` on the ProjectAgent.
 - **One routing decision per task.** `EditTaskStore.open` routes a source once and keeps one row
@@ -943,6 +947,27 @@ No view carries an agent's transcript. A task's `outcome` is one line the bridge
   checked, `promotion_refused` and `land_returned`. Each `block_checked` record states the time from
   the request to the report. Each `promotion` record states that time and the time from the report to
   main moved.
+- **Penguin's own features.** A feature Penguin opened from main, a migration plan's block or a
+  contract carrier ([Migration plans in the build](#migration-plans-in-the-build)), has no agent to
+  call `land_feature`. Every part it carries already passed its trial and approval, so Penguin asks
+  for the land itself (`services/project-agent/src/penguin-land.ts`). A block is ready when every live
+  part of its plan whose place is a scope on main is `written`. A carrier is ready when its `contract`
+  edit task is done and none of its tasks is open. Penguin then reads the head of the feature's fork.
+  It records that head as the feature's checkpoint under a signed `checkpoint_area` record of its own,
+  with the protected-path confirmations and the contract diff's facts run an agent's checkpoint asks
+  for (`recordPenguinCheckpoint`). A carrier waits for that facts run to report, because the promotion
+  closes the removed symbols from it. Penguin then asks for the land with no session
+  (`requestPenguinLand`): the same readiness checks, block run and promotion with Penguin's own write
+  token on main. The `land_requested` record is authored by Penguin. The run carries the charter of
+  the steward of the feature's person, so the ladder sends each failing check's next step to that
+  steward (`blockReported` with the routing that leaves out the feature's builder). Penguin sweeps
+  after a migration part is written, after an edit task into such a feature reports and after a
+  carrier's facts run reports. Load: each fork head gets at most one block run (the `PenguinLand`
+  table). A failed block waits for a new head, which the steward's kept next-step commit makes. A land
+  refused before its run, such as `behind_main` or `protected_path_unconfirmed`, is kept with its
+  reason under one signed `land_returned` record per head and reason. Penguin asks for it again at
+  the next sweep. No agent works in such a fork, so nobody merges main into it yet: a block whose fork does
+  not hold main's head waits (#143).
 - **Plan checks.** A checkpoint of a running feature whose area meets another feature's announced plan
   asks for a `plan_check` run of that plan's block (Build step 3). It runs the same checks, keeps its
   record and never moves main. A land run supersedes a waiting plan check; a plan check waits while a

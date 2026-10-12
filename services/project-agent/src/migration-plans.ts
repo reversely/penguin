@@ -39,13 +39,15 @@
 //    is `closed` under a signed `migration_closed` record, with nothing to promote, and a caller found
 //    later opens the owner's next plan. Each plan with code on main names its own block feature,
 //    `migrate-<owner>-<feature>`, which Penguin opens from main as the fork that part's fix is written
-//    into. When that feature's block reaches main, the plan is `landed` (`migrationBlockLanded`).
+//    into. Once every live part on main is written, Penguin lands that feature itself (penguin-land.ts).
+//    When its block reaches main, the plan is `landed` (`migrationBlockLanded`).
 // 7. **Contract after the originating feature landed.** A landed fork is read-only, so when no caller
 //    of a retiring symbol is left and its originating feature no longer runs, `carryContract` opens a
 //    short-lived feature from main for the DRI of each scope that defines the symbols,
 //    `contract-<owner>-<feature>`. It signs the contract proposal there: its plan has no places, so
-//    Penguin approves it. The removal becomes a `contract` edit task for that DRI's steward. When the
-//    carrying feature's block reaches main, retiring-count.ts `closeRemoved` closes the symbols.
+//    Penguin approves it. The removal becomes a `contract` edit task for that DRI's steward. Once that
+//    task is done, Penguin lands the carrier itself (penguin-land.ts). When the carrying feature's
+//    block reaches main, retiring-count.ts `closeRemoved` closes the symbols.
 //
 // Features Penguin opens go through the overlap lock like any other feature (overlap-lock.ts): while
 // a lock holds a block or carrier's start, no edit task into its fork is claimed and the runner
@@ -299,6 +301,16 @@ export class MigrationStore {
     );
   }
 
+  /** Every feature Penguin opened from main, oldest first: a plan's block or a contract carrier. */
+  penguinFeatures(): { readonly featureId: string; readonly kind: "block" | "contract"; readonly origin: string; readonly person: string }[] {
+    return this.#db.exec(`SELECT * FROM PenguinFeature ORDER BY created_at, feature_id`).map((row) => ({
+      featureId: String(row["feature_id"]),
+      kind: String(row["kind"]) as "block" | "contract",
+      origin: String(row["origin"]),
+      person: String(row["person"]),
+    }));
+  }
+
   /** Whether Penguin opened `featureId` from main. */
   openedByPenguin(featureId: string): boolean {
     return this.#db.exec(`SELECT 1 AS one FROM PenguinFeature WHERE feature_id = ?`, featureId).length > 0;
@@ -357,7 +369,7 @@ const short = (sha: string): string => sha.slice(0, 12);
 const placeWords = (place: PlanPlace): string => (place.kind === "scope" ? `scope ${place.scope} on main` : `feature ${place.feature}'s own changes`);
 
 /** Routing that leaves out the builder of each feature Penguin opened, so its edits reach a steward. */
-function stewardsFor(store: MigrationStore): (routing: EditRoutingContext) => EditRoutingContext {
+export function stewardsFor(store: MigrationStore): (routing: EditRoutingContext) => EditRoutingContext {
   return (routing) => ({ ...routing, builderOf: (featureId) => (store.openedByPenguin(featureId) ? undefined : routing.builderOf(featureId)) });
 }
 
@@ -1077,7 +1089,7 @@ export async function carryContract(
         places: scopeList.map((scope) => ({ scope })),
         instructions:
           `Remove ${listed} from feature ${carrierId}'s fork: no caller is left on main or in any running feature's own changes (counted after promotion ${short(count.promotion)}), ` +
-          `and feature ${origin}, which retired them, no longer runs. Report the removal as a checkpoint and call land_feature; Penguin approved the removal and promotes the block.`,
+          `and feature ${origin}, which retired them, no longer runs. Commit the removal in one commit; Penguin approved it, and once Penguin keeps the commit it lands the block itself.`,
         verifier: "The removal's facts run shows each symbol removed; the block checks run every scope's tests on the merged trees before main moves.",
         evidence: owned.map(({ contract, replacement }) => `${contract}, replaced by ${replacement}`),
         ref: { origin, carrier: carrierId },

@@ -21,8 +21,8 @@ import { parseScopeMap } from "@penguin/scope-map";
 
 import { claimEditTasks, type EditWorkDeps } from "../../../services/project-agent/src/edit-work.ts";
 import type { FixWriteDeps } from "../../../services/project-agent/src/fix-write.ts";
-import { migrationWrites } from "../../../services/project-agent/src/migration-plans.ts";
 import { buildFixture, PreviewProject } from "../../../scripts/preview/seed.ts";
+import { migrationTasksSettled, migrationWrites } from "../../../services/project-agent/src/migration-plans.ts";
 
 const ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 
@@ -266,4 +266,112 @@ test("each person's bridge claims the migration edits one run per fork, and ever
     t.diagnostic(`${fork}: ${writes.map((grant) => `${grant.writer === "task" ? `edit ${grant.partId}` : `runner ${grant.partId}`} ${turn(grant)}`).join("; ")}`);
   }
   t.diagnostic(`${forks.length} forks take migration writes; ${open.filter((grant) => grant.state === "granted").length} hold a run; ${contended} have a write waiting its turn`);
+});
+
+const PINS = JSON.parse(readFileSync(join(ROOT, "examples", "money-minor-units", "pins.json"), "utf8")) as {
+  fixes: Record<string, string>;
+  wave_fixes: Record<string, string>;
+};
+
+/**
+ * The fixture's own fix for a part on main: the first fix commit of pins.json (the waves' fixes first)
+ * that changes one of the part's files and whose parent holds the part's scope exactly as the block's
+ * head does, so its change applies unaltered. Undefined when the fixture holds none: the task is then
+ * not done, and no code is invented.
+ */
+function fixtureFix(part: MigrationPlanView["parts"][number], head: string): { commit: string; files: string[] } | undefined {
+  const scopePaths = preview.scopeMap.scopes.get(part.scopes[0] as string)?.paths ?? [];
+  const inScope = (path: string) => scopePaths.some((prefix) => path.startsWith(prefix));
+  const blob = (at: string, path: string) => {
+    try {
+      return preview.git("rev-parse", `${at}:${path}`);
+    } catch {
+      return null;
+    }
+  };
+  for (const commit of new Set([...Object.values(PINS.wave_fixes), ...Object.values(PINS.fixes)])) {
+    const changed = preview.git("diff", "--name-only", `${commit}^`, commit).split("\n").filter(Boolean);
+    if (!changed.some((path) => part.files.includes(path))) continue;
+    const files = changed.filter(inScope);
+    if (files.every((path) => blob(`${commit}^`, path) === blob(head, path))) return { commit, files };
+  }
+  return undefined;
+}
+
+/** The steward's commit on the block's branch: the block's head with `files` as the fixture's `commit` has them. */
+function commitFix(block: string, fix: { commit: string; files: string[] }): string {
+  const head = preview.git("rev-parse", `feature-${block}`);
+  const index = join(preview.repo, ".git", `index-${block}`);
+  const run = (...args: string[]) => execFileSync("git", ["-C", preview.repo, ...args], { encoding: "utf8", env: { ...process.env, GIT_INDEX_FILE: index } }).trim();
+  run("read-tree", head);
+  for (const path of fix.files) {
+    const entry = run("ls-tree", fix.commit, "--", path);
+    if (entry === "") run("update-index", "--force-remove", path);
+    else run("update-index", "--add", "--cacheinfo", `${entry.split(/\s+/u)[0]},${entry.split(/\s+/u)[2]},${path}`);
+  }
+  const tree = run("write-tree");
+  const message = preview.git("log", "-1", "--format=%B", fix.commit);
+  const commit = run("-c", "user.name=steward", "-c", "user.email=steward@example.com", "commit-tree", tree, "-p", head, "-m", message);
+  preview.git("update-ref", `refs/heads/feature-${block}`, commit);
+  return commit;
+}
+
+test("each plan's block feature lands once its parts on main are written, from the fixture's own fix commits", async (t: TestContext) => {
+  const plans = preview.migrations.plans(EXPAND.id).filter((plan) => live(plan).some((part) => part.place.kind === "scope"));
+  assert.ok(plans.length > 0, "a plan has code on main");
+  // Each part on main is the steward's edit task in the plan's block; the fixture's fix, where it holds one, is its commit.
+  for (const plan of plans) {
+    for (const part of live(plan).filter((each) => each.place.kind === "scope")) {
+      const head = preview.git("rev-parse", `feature-${plan.block}`);
+      const fix = part.state === "task" ? fixtureFix(part, head) : undefined;
+      const [task] = preview.editTasks.forSource(`migrate:${part.partId}`);
+      t.diagnostic(
+        `${plan.block} ${part.partId} (${placeName(part)}, ${part.uses} uses in ${part.files.join(", ")}): ${task?.handle ?? "no task"}; ` +
+          (fix === undefined ? "the fixture holds no fix commit for these files that applies to the block" : `the fixture's fix ${fix.commit.slice(0, 12)} changes ${fix.files.join(", ")}`),
+      );
+      if (fix === undefined || task === undefined) continue;
+      const commit = commitFix(plan.block, fix);
+      preview.editTasks.close(task.sourceKey, "done", `the fixture's fix ${fix.commit.slice(0, 12)}`, commit);
+    }
+  }
+  await migrationTasksSettled(preview.migrationDeps());
+  const written = (plan: MigrationPlanView) =>
+    live(preview.migrations.plan(plan.planId) as MigrationPlanView)
+      .filter((part) => part.place.kind === "scope")
+      .every((part) => part.state === "written");
+  const mainBefore = preview.git("rev-parse", "main");
+  const attempts = await preview.landPenguinFeatures();
+  // Penguin asks to land exactly the blocks whose parts on main are all written, each once.
+  assert.deepEqual(attempts.map((each) => each.feature).sort(), plans.filter(written).map((plan) => plan.block).sort());
+  for (const attempt of attempts) {
+    t.diagnostic(`land of ${attempt.feature} at ${attempt.checkpoint.slice(0, 12)}: ${attempt.status}${attempt.reason === null ? "" : ` (${attempt.reason})`}`);
+    // A land refused before its run is on the block's timeline with its reason.
+    const returned = preview.features.records(attempt.feature).map((stored) => JSON.parse(stored.file) as { type: string; payload: { reason?: string } });
+    if (attempt.status === "rejected") assert.ok(returned.some((each) => each.type === "land_returned" && each.payload.reason === attempt.reason), attempt.feature);
+  }
+  const started = performance.now();
+  const outcomes = await preview.blockPass();
+  t.diagnostic(`block runs: ${outcomes.length} in ${Math.round(performance.now() - started)} ms`);
+  for (const outcome of outcomes) {
+    if (outcome.status !== "recorded") continue;
+    const run = preview.blocks.get(outcome.runId);
+    const featureId = run?.featureId as string;
+    const failing = preview.blocks.checks(outcome.runId).filter((check) => check.result !== "passed");
+    const steps = preview.editTasks.forFeature(featureId).filter((task) => task.kind === "next_step" && task.sourceKey.startsWith(`next:${featureId}:`));
+    t.diagnostic(
+      `${featureId}: ${outcome.passed ? "passed" : "failed"}, ${outcome.state}; ${failing.length} failing checks` +
+        (failing.length === 0 ? "" : ` (${failing.map((check) => `${check.target} ${check.check}`).join(", ")})`) +
+        `; next steps ${steps.map((task) => `${task.handle ?? task.person} in ${task.target}`).join(", ") || "none"}`,
+    );
+    if (outcome.passed) {
+      assert.equal(preview.git("rev-parse", "main"), run?.checkpoint, "main moved to the block's checkpoint");
+      assert.equal(preview.migrations.planOfBlock(featureId)?.state, "landed");
+    } else {
+      assert.equal(preview.features.get(featureId)?.state, "building");
+      assert.equal(preview.git("rev-parse", "main"), mainBefore, "a failed block does not move main");
+    }
+  }
+  const landed = plans.filter((plan) => preview.migrations.plan(plan.planId)?.state === "landed").map((plan) => plan.block);
+  t.diagnostic(`blocks on main: ${landed.length} of ${plans.length} (${landed.join(", ") || "none"})`);
+  describePlans(t, "after Penguin's lands");
 });

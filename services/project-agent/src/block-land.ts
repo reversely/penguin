@@ -394,6 +394,19 @@ export async function requestLand(deps: LandDeps, caller: string, sessionId: str
 }
 
 /**
+ * Penguin lands a feature it opened from main once every part it carries is written (penguin-land.ts):
+ * the same readiness checks and block run as `land_feature`, with no session. `charter` is the
+ * steward's of the feature's person, the DRI it works for, so the ladder routes failures to that steward.
+ */
+export async function requestPenguinLand(deps: LandDeps, featureId: string, charter: CharterView): Promise<LandOutcome> {
+  const feature = deps.features.get(featureId);
+  if (feature === undefined) return rejected("not_found", `no feature has id ${featureId}`);
+  const prepared = await prepareLand(deps, feature, undefined);
+  if (isRejection(prepared)) return prepared;
+  return openLand(deps, prepared, charter, { penguin: true }, "penguin");
+}
+
+/**
  * Penguin lands the feature again after a promotion main refused (a race): the same checks on main's
  * new head. When the feature may no longer land as it is (most often because main moved past its
  * checkpoint), the feature goes back to `building` with a signed `land_returned` record.
