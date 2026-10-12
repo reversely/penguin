@@ -403,7 +403,7 @@ test("the block exit check: main is never red across a scripted run with several
       await each.fetchRepo("base");
       await each.fetchRepo(`feature-${each.feature.id}`);
       const merged = (await runGit(each.work, ["merge-tree", "--write-tree", "refs/remotes/base/main", `refs/remotes/feature-${each.feature.id}/main`])).trim().split("\n")[0] as string;
-      const commit = (await runGit(each.work, ["commit-tree", merged, "-p", "refs/remotes/base/main", "-p", `refs/remotes/feature-${each.feature.id}/main`, "-m", "merge check"])).trim();
+      const commit = (await runGit(each.work, ["-c", `user.name=${each.id}`, "-c", `user.email=${each.id}@penguin.invalid`, "commit-tree", merged, "-p", "refs/remotes/base/main", "-p", `refs/remotes/feature-${each.feature.id}/main`, "-m", "merge check"])).trim();
       const red = await redScopes(each.work, commit);
       assert.deepEqual(red, [], `${each.feature.id} merged with main is red`);
       step(`${each.feature.id} merges main cleanly`, { mergedTree: merged, redScopes: red });

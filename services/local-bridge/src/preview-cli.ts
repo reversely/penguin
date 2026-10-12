@@ -55,7 +55,9 @@ export async function runPreviewCommand(args: readonly string[], io: CliIo, stat
     // A read token: Penguin holds every bridge to read on another person's fork.
     await readRemotes(state)(penguinRemote(fork)).git(dir, (url) => ["fetch", "--quiet", "--no-tags", "--end-of-options", url, "+refs/heads/*:refs/remotes/feature/*"]);
     const target = values.commit ?? "refs/remotes/feature/main";
-    await runGit(dir, ["checkout", "--quiet", "--detach", "--end-of-options", target]);
+    // `target` is a checked object ID or a fixed ref, so it never reads as an option. Git 2.43 refuses
+    // `--end-of-options` after `checkout --detach`.
+    await runGit(dir, ["checkout", "--quiet", "--detach", target]);
     const head = (await runGit(dir, ["rev-parse", "HEAD"])).trim();
     io.write(`${JSON.stringify({ feature, fork, dir, commit: head })}\n`);
     return 0;
