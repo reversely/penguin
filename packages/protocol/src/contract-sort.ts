@@ -16,6 +16,7 @@
 // or in a running feature's own changes (`forks[].uses`) in any other scope, or in no scope. The sort
 // reads the report only: nothing here runs code.
 
+import type { MigrationPlanView } from "./migration.ts";
 import type { CodemodEdit } from "./resolution.ts";
 import type { ContractStepEntry, RetiringSymbol } from "./retiring.ts";
 import type { ImpactChangeKind, ImpactLocation, ImpactReport, ImpactSymbolKind, ImpactUse } from "./impact.ts";
@@ -269,6 +270,11 @@ export interface ContractWorkView {
    * its contract step (retiring.ts); empty when it retires none.
    */
   readonly contractStep: readonly ContractStepEntry[];
+  /**
+   * The migration plans Penguin proposed for this feature's retiring symbols, one per owner group,
+   * each with its parts (migration.ts); empty when it has none.
+   */
+  readonly migration: readonly MigrationPlanView[];
   /** The feature's next step, in one paragraph. */
   readonly nextStep: string;
 }

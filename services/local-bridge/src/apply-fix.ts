@@ -118,6 +118,8 @@ export interface RewriteOutcome {
   readonly refused: readonly { readonly rule: string; readonly message: string }[];
   readonly files: readonly PlanRewriteFile[];
   readonly error: string | null;
+  /** The changed files as a unified diff against the commit; null when nothing changed or the run failed. */
+  readonly patch?: string | null;
 }
 
 /** A fix the request itself rules out; nothing ran. */
@@ -338,7 +340,12 @@ export class FixApplier {
       const after = (await runGit(worktree, ["hash-object", "--", path])).trim();
       if (before !== after) files.push({ path, before, after, rules: rulesOf.get(path) ?? [] });
     }
-    return { refused, files, error: null };
+    // The rewrite as a unified diff of the changed files, which a migration part keeps as its patch.
+    const patch =
+      files.length === 0
+        ? null
+        : await runGit(worktree, ["-c", "core.quotePath=false", "diff", "--no-color", "--no-ext-diff", "--no-renames", "HEAD", "--", ...files.map((file) => file.path)]);
+    return { refused, files, error: null, patch };
   }
 
   async #inWorktree(request: FixRequest, worktree: string): Promise<{

@@ -37,9 +37,17 @@ export const RETIRING_SCHEMA: readonly string[] = [
     removed_promotion TEXT, removed_record TEXT)`,
 ];
 
+/** Columns added to ContractStep after its first release; each is added where a stored table lacks it. */
+const CONTRACT_STEP_COLUMNS: readonly (readonly [string, string])[] = [
+  // The feature Penguin opened from main to carry the removal when the originating feature no longer runs.
+  ["carrier_feature", "carrier_feature TEXT"],
+];
+
 /** A symbol Penguin proposed removing, as the ContractStep table keeps it. */
 export interface ContractStepRow extends RetiringSymbol {
   readonly feature: string;
+  /** The feature that carries the removal: the originating feature, or one Penguin opened from main. */
+  readonly carrier: string;
   readonly state: "approved" | "removed";
   readonly recordId: string;
   readonly promotion: string;
@@ -68,6 +76,7 @@ function stepRow(row: Row): ContractStepRow {
     contract: String(row["contract"]),
     replacement: String(row["replacement"]),
     feature: String(row["feature_id"]),
+    carrier: row["carrier_feature"] === null || row["carrier_feature"] === undefined ? String(row["feature_id"]) : String(row["carrier_feature"]),
     state: String(row["state"]) as ContractStepRow["state"],
     recordId: String(row["record_id"]),
     promotion: String(row["promotion"]),
@@ -85,6 +94,11 @@ export class RetiringStore {
     this.#db = db;
     this.#now = now;
     for (const statement of RETIRING_SCHEMA) db.exec(statement);
+    // Column names and definitions come from the constant above, never from input.
+    const present = new Set(db.exec(`PRAGMA table_info(ContractStep)`).map((row) => row["name"]));
+    for (const [name, definition] of CONTRACT_STEP_COLUMNS) {
+      if (!present.has(name)) db.exec(`ALTER TABLE ContractStep ADD COLUMN ${definition}`);
+    }
   }
 
   /** Every retiring symbol of the project, by contract. */
@@ -177,23 +191,30 @@ export class RetiringStore {
     });
   }
 
-  /** The symbols Penguin approved removing whose removal has not reached main, of one feature or of all. */
+  /**
+   * The symbols Penguin approved removing whose removal has not reached main, of all or of the one
+   * feature that carries the removal: the originating feature, or the feature Penguin opened for it.
+   */
   approvedSteps(featureId?: string): ContractStepRow[] {
     const rows =
       featureId === undefined
         ? this.#db.exec(`SELECT * FROM ContractStep WHERE state = 'approved' ORDER BY contract`)
-        : this.#db.exec(`SELECT * FROM ContractStep WHERE state = 'approved' AND feature_id = ? ORDER BY contract`, featureId);
+        : this.#db.exec(`SELECT * FROM ContractStep WHERE state = 'approved' AND COALESCE(carrier_feature, feature_id) = ? ORDER BY contract`, featureId);
     return rows.map(stepRow);
   }
 
-  /** Penguin approved removing `symbols` of `featureId`, after the count `runId`, under the signed record `recordId`. */
-  approveRemoval(featureId: string, symbols: readonly RetiringSymbol[], recordId: string, runId: number, promotion: string): void {
+  /**
+   * Penguin approved removing `symbols` of `featureId`, after the count `runId`, under the signed record
+   * `recordId`. `carrier` names the feature Penguin opened from main to carry it, when `featureId` no
+   * longer runs.
+   */
+  approveRemoval(featureId: string, symbols: readonly RetiringSymbol[], recordId: string, runId: number, promotion: string, carrier: string | null = null): void {
     const now = this.#now();
     this.#db.transaction(() => {
       for (const symbol of symbols) {
         this.#db.exec(
-          `INSERT OR REPLACE INTO ContractStep (contract, replacement, feature_id, state, record_id, promotion, run_id, proposed_at, removed_promotion, removed_record)
-           VALUES (?, ?, ?, 'approved', ?, ?, ?, ?, NULL, NULL)`,
+          `INSERT OR REPLACE INTO ContractStep (contract, replacement, feature_id, state, record_id, promotion, run_id, proposed_at, removed_promotion, removed_record, carrier_feature)
+           VALUES (?, ?, ?, 'approved', ?, ?, ?, ?, NULL, NULL, ?)`,
           symbol.contract,
           symbol.replacement,
           featureId,
@@ -201,6 +222,7 @@ export class RetiringStore {
           promotion,
           runId,
           now,
+          carrier,
         );
       }
     });
@@ -252,6 +274,7 @@ export class RetiringStore {
           promotion: count === undefined ? null : String(count["promotion"]),
           countRun: count === undefined ? null : Number(count["run_id"]),
           recordId: step?.recordId ?? null,
+          carrier: step === undefined || step.carrier === step.feature ? null : step.carrier,
           removedPromotion: step?.removedPromotion ?? null,
           removedRecordId: step?.removedRecordId ?? null,
         };

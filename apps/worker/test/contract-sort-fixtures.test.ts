@@ -139,6 +139,6 @@ describe("case 4, money in minor units: Ines's float-to-Money change", () => {
       preview.retiring.list().map((each) => each.contract),
       ["shared/money/__init__.py::display", "shared/money/__init__.py::price", "shared/money/__init__.py::total"],
     );
-    assert.match((await preview.contract(ines.id)).nextStep, /^The expand step is on main \([0-9a-f]{12}\)\. Retiring: .* Migrate: call impact/u);
+    assert.match((await preview.contract(ines.id)).nextStep, /^The expand step is on main \([0-9a-f]{12}\)\. Retiring: .* Migrate: Penguin proposes one migration plan per owner group/u);
   });
 });

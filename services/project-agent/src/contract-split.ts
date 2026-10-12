@@ -33,6 +33,7 @@ import {
   type ContractSplitView,
   type ContractStepEntry,
   type ContractWorkView,
+  type MigrationPlanView,
   type RetiringSymbol,
 } from "@penguin/protocol";
 import type { ScopeMap } from "@penguin/scope-map";
@@ -129,6 +130,8 @@ export interface ContractSplitDeps {
   readonly notify?: (personId: string) => void;
   /** Each symbol the feature retires with its count and contract step (retiring-count.ts); absent is none. */
   readonly contractSteps?: (featureId: string) => readonly ContractStepEntry[];
+  /** The migration plans Penguin proposed for the feature's retiring symbols (migration-plans.ts); absent is none. */
+  readonly migrationPlans?: (featureId: string) => readonly MigrationPlanView[];
 }
 
 /** The scopes `person` owns in the scope map: the author's scopes of the sort. */
@@ -294,13 +297,16 @@ function expandFirst(entries: readonly ContractSortEntry[], sort: ContractSortRe
     .join(" ");
 }
 
-function migrate(split: ContractSplitView): string {
+function migrate(split: ContractSplitView, plans: readonly MigrationPlanView[]): string {
   const retiring = split.retiring.map((each) => `${each.contract} for ${each.replacement}`);
+  const parts = plans.reduce((sum, plan) => sum + plan.parts.length, 0);
   return [
     `The expand step is on main (${short(split.promotion ?? "")}).`,
     retiring.length === 0 ? "" : `Retiring: ${names(retiring)}.`,
     split.unretired.length === 0 ? "" : `Not retiring: ${names(split.unretired.map((each) => `${each.symbol} (${each.reason})`))}.`,
-    "Migrate: call impact for the remaining callers grouped by owner, then propose_plan with one part per place.",
+    plans.length === 0
+      ? "Migrate: Penguin proposes one migration plan per owner group once the check runner counts the remaining callers."
+      : `Migrate: Penguin proposed ${plural(plans.length, "migration plan")} with ${plural(parts, "part")}, one plan per owner group; the runner writes the parts the declared rules rewrite whole and each other part is an edit task for its builder or steward.`,
   ]
     .filter((sentence) => sentence !== "")
     .join(" ");
@@ -323,7 +329,7 @@ export function contractNextStep(view: Omit<ContractWorkView, "nextStep">, sort:
   const approved = view.contractStep.filter((each) => each.state === "approved");
   if (approved.length > 0) return contract(approved);
   if (view.split?.state === "expand_first") return expandFirst(view.split.entries, sort);
-  if (view.split?.state === "retiring") return migrate(view.split);
+  if (view.split?.state === "retiring") return migrate(view.split, view.migration);
   if (view.decision === "split") return expandFirst((sort?.entries ?? []).filter((entry) => entry.sort === "incompatible"), sort);
   if (view.state === "no_checkpoint") return "Penguin sorts your feature's contract diff at its first checkpoint; report one with report_checkpoint.";
   if (view.state === "waiting") return `Penguin sorts checkpoint ${short(view.checkpoint ?? "")} once the check runner reports facts run ${view.factsRun}.`;
@@ -339,7 +345,7 @@ export function contractNextStep(view: Omit<ContractWorkView, "nextStep">, sort:
 const ORDER = { incompatible: 0, behaviour: 1, compatible: 2, additive: 3 } as const;
 
 /** How Penguin sorted `feature`'s latest checkpoint, with its split and next step. Reads only. */
-export function contractWork(deps: Pick<ContractSplitDeps, "facts" | "splits" | "contractSteps">, feature: Feature, scopeMap: ScopeMap): ContractWorkView {
+export function contractWork(deps: Pick<ContractSplitDeps, "facts" | "splits" | "contractSteps" | "migrationPlans">, feature: Feature, scopeMap: ScopeMap): ContractWorkView {
   const { run, sort } = sortLatest(deps, feature, scopeMap);
   const state: ContractWorkView["state"] =
     feature.latestCheckpointSha === null ? "no_checkpoint" : sort !== null ? "sorted" : run?.state === "reported" ? "failed" : "waiting";
@@ -355,6 +361,7 @@ export function contractWork(deps: Pick<ContractSplitDeps, "facts" | "splits" | 
     omitted: Math.max(0, entries.length - CONTRACT_WORK_ENTRIES),
     split: deps.splits.get(feature.id) ?? null,
     contractStep: deps.contractSteps?.(feature.id) ?? [],
+    migration: deps.migrationPlans?.(feature.id) ?? [],
   };
   return { ...view, nextStep: contractNextStep(view, sort) };
 }

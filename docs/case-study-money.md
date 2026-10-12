@@ -195,8 +195,50 @@ the last migrate wave every function still has callers:
 | `percent_off()` | 6 | 6 | 0 |
 
 No count reaches zero, so Penguin proposes no contract step. Each function's state is
-`callers_left`. The expand wave that declared the six functions has also landed, so its fork could
-not carry the removal at zero.
+`callers_left`. The expand wave that declared the six functions has also landed. At zero, Penguin
+would open a feature from main for each defining scope's DRI: Ines for `shared/money` and Tomas for
+`orders/model.py`. Each DRI's steward would get the removal
+([design.md](design.md#sorting-and-splitting-in-the-build), Contract).
+
+### Migration plans
+
+After each count Penguin proposes one migration plan per owner group
+([design.md](design.md#migration-plans-in-the-build)). `apps/worker/test/money-migration.test.ts`
+runs it on the fixture.
+
+| After | Callers | Plans | Parts | Written by the runner | Edit tasks |
+|---|---|---|---|---|---|
+| `money-type` | 98 | 11 | 34 | 10 | 24 |
+| `money-messaging-mobile` | 59 | 10 | 25 | 10 | 15 |
+| Noor's pagination checkpoint | 59 + 3 | 10 | 26 | 10 | 16 |
+
+The migrate waves moved the callers on main of nine scopes, so those parts are dropped and Lena's
+plan is left with none. After the last wave, the 25 live parts cover all 59 callers:
+
+| Owner | Parts |
+|---|---|
+| ade | `partial-refunds`, `store-credit` |
+| ines | scope `money` |
+| jun | `basket-size`, `cohort-ltv`, `store-league` |
+| kofi | `instant-payouts`, `weekly-statements` |
+| mei | `business-accounts`, `credit-notes`, `pdf-layout` |
+| noor | `cart-sync`, `order-history`, then `pagination` |
+| priya | `japan-launch`, `saved-carts`, `tip-jar` |
+| rahul | `bottle-deposit`, `tax-exempt` |
+| sam | `order-shipped`, `refund-email`, `weekly-digest` |
+| tomas | `reorder`, `split-shipments`, `substitutions`, scope `orders` |
+
+- **Written by the runner.** The plan's seven rules leave no use of a retiring function in 10
+  places, all running features' own changes. The other 15 are edit tasks: 11 places where the rules
+  leave uses, 3 where they rewrite nothing and the orders scope, whose `line_total()` and
+  `order_total()` have no rule.
+- **Approved.** Penguin approves none. 9 of the 10 runner parts fail their scope's tests on the
+  trial tree. In `store-league` the `display` rule turns `money.display(amount)` into
+  `amount.display()`, but `amount` is still a float there. Those 9 go to their owners in person.
+  Kofi's `instant-payouts` passes `test:payouts` and waits for the payouts review form.
+- **A later caller.** Noor's pagination checkpoint adds 3 uses. Its retiring-calls check adds the
+  place to Noor's open plan with one `migration_joined` record. The rules leave 2 of the uses, so
+  it is an edit task for the pagination feature's builder.
 
 ## What it took
 

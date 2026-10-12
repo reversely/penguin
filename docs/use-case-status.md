@@ -45,13 +45,17 @@ not work yet), **rule needed** (the procedure does not yet say what should happe
 | Expand promoted on its own | works | #115 live proof (on helpful-fix data) |
 | Fixture modelled as one split feature | gap | The fixture still models hand-built waves (#118) |
 | Retire: new float calls get the replacement as next step | works | #113, Noor's pagination |
-| Migrate: migration parts proposed per owner group | rule needed | Penguin computes the groups (`migrationGroups`) but nothing proposes the plans (#131) |
-| Migration edits run by each owner's steward or builder | gap | #128, #129 |
+| Migrate: migration parts proposed per owner group | works | After the `money-type` expand's count (98 callers) Penguin proposes 11 plans with 34 parts. After the last migrate wave (59 callers) 10 plans hold 25 live parts, which cover all 59 callers: Ade 2, Ines 1, Jun 3, Kofi 2, Mei 3, Noor 2, Priya 3, Rahul 2, Sam 3, Tomas 4 (`apps/worker/test/money-migration.test.ts`, #131) |
+| A later caller joins its owner's open plan | works | Noor's pagination checkpoint adds 3 uses; its retiring-calls check adds the place to Noor's open plan under one `migration_joined` record. Once a plan landed, a later place opens the owner's next plan (`services/project-agent/test/migration-plans.test.ts`) |
+| Rule-shaped parts written by the runner | works | The runner's rewrite of each place leaves no use in 10 of the 25 parts; their patches are the parts' fixes and each is tried on its trial tree |
+| Rule-shaped parts approved by Penguin | rule needed | 0 of 10 approved. 9 fail their scope's tests on the trial tree: the `display` rule rewrites `money.display(amount)` to `amount.display()` where `amount` is still a float (store-league), so a rule that leaves no use can still break. They go to their owners in person. Kofi's instant-payouts part passes `test:payouts` and waits for the payouts review form, which no steward has sent. The PRD does not say whether a failing rule-shaped part goes to its owner or back to an agent as an edit task, nor whether a Penguin-written part needs a review form |
+| Migration edits run by each owner's steward or builder | partial | 15 of the 25 parts (16 with pagination) are `migration` edit tasks: each running feature's own changes to its builder, the money and orders scopes on main to Ines's and Tomas's stewards in the plans' block features. No bridge ran them on the fixture (#129) |
+| Each migration plan lands as its own block | gap | Each plan names its block feature and Penguin opens it from main for code on main; no promotion moves that block to main yet. A plan with only running-feature places has no code of its own for a block |
 | Rahul's tax part routes to Rahul | works | #107, #122 |
 | Clean wave parts approved by Penguin | works | Preview: Lena's promotions part and Mei's invoicing part, 2 of 2, with the fixture's forms and each scope's own tests inside its place (#126, `apps/worker/test/money-waves.test.ts`) |
 | Jun confirms the protected revenue report | works | #112 |
-| Contract when no caller is left | partial | #117 counts callers after each promotion and proposes at zero; the money fixture still has 59 callers after the waves (14 on main, 45 in readers' own changes), moved by #131 |
-| Contract after the originating feature has landed | rule needed | #131 (steward of the defining scope's DRI) |
+| Contract when no caller is left | partial | #117 counts callers after each promotion and proposes at zero; the money fixture still has 59 callers after the waves (14 on main, 45 in readers' own changes); #131 puts every one of them in a migration plan. No plan has reached main yet |
+| Contract after the originating feature has landed | works | Penguin opens `contract-<owner>-<feature>` from main for the DRI of each defining scope, signs a no-places `contract_proposed` there approved by Penguin and gives the removal to that DRI's steward as a `contract` edit task (`services/project-agent/test/migration-plans.test.ts`). Not reached on the fixture: callers remain |
 | Runner fetches 40 forks | works | #119 live proof (20 forks) |
 
 ## Across cases

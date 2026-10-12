@@ -198,7 +198,7 @@ export interface BridgeDirectory {
   /** Claims the waiting agent tool requests; refused unless `caller` holds the runner role. */
   claimToolRuns(caller: BridgeCaller): Promise<ToolRunClaim> | ToolRunClaim;
   /** Attaches the runner's result to tool request `runId`; refused unless `caller` holds the runner role. */
-  reportToolRun(caller: BridgeCaller, runId: number, result: unknown): Promise<ToolReportOutcome> | ToolReportOutcome;
+  reportToolRun(caller: BridgeCaller, runId: number, result: unknown, repos?: ProjectRepos): Promise<ToolReportOutcome> | ToolReportOutcome;
   /** Claims the writes of approved mechanical plan parts; refused unless `caller` holds the runner role. */
   claimFixWrites(
     caller: BridgeCaller,
@@ -798,7 +798,7 @@ async function reportToolRun(request: Request, runId: number, handlers: BridgeHa
   }
   const body = await readObject(request);
   if (body === undefined) return invalid("", "must be a JSON object");
-  const outcome = await (await handlers.bridges()).reportToolRun({ bridgeId: bridge.bridgeId, role: bridge.role }, runId, body);
+  const outcome = await (await handlers.bridges()).reportToolRun({ bridgeId: bridge.bridgeId, role: bridge.role }, runId, body, handlers.projectRepos);
   if (outcome.status === "rejected") {
     return json({ error: outcome.reason, message: outcome.message }, REVIEW_REJECTION_STATUS[outcome.reason] ?? 409);
   }

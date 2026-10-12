@@ -318,7 +318,8 @@ feature's latest checkpoint under `contract`:
 | `decision` | `split` when an entry is incompatible, `plan` when an entry is a behaviour change and none is incompatible, `none` otherwise |
 | `counts`, `entries` | Each entry's `sort` (`additive`, `compatible`, `incompatible` or `behaviour`), its `breaks` (`rename`, `move`, `keyword-rename`, `removed`, `signature` or `type`), its `callers` outside your developer's scopes and a one-sentence `reason`. At most 100 entries, incompatible first; `omitted` counts the rest |
 | `split` | The feature's split: `expand_first`, then `retiring` once the expand reached main, with each retiring name and its replacement |
-| `contractStep` | Each symbol your feature retires with its callers at Penguin's count after the last promotion: on main and in each running feature's own changes. `state` is `counting`, `callers_left`, `no_callers`, `approved` or `removed` |
+| `contractStep` | Each symbol your feature retires with its callers at Penguin's count after the last promotion: on main and in each running feature's own changes. `state` is `counting`, `callers_left`, `no_callers`, `approved` or `removed`. `carrier` names the feature Penguin opened from main to carry the removal once your feature no longer runs |
+| `migration` | The migration plans Penguin proposed for your retiring symbols, one per owner group, each with its parts: the place, its uses, the writer (`runner` or `task`), the reason and the state ([design.md](design.md#migration-plans-in-the-build)) |
 | `nextStep` | What to do next, in one paragraph |
 
 An incompatible entry makes the next step start with "Expand first" and list the entries. For a
@@ -327,7 +328,10 @@ Penguin's codemod writes the alias or forwarding function that keeps the old nam
 changed type, a breaking signature or a removed symbol, write the parallel function beside the old
 one under a new name. Report that expand as a checkpoint and call `land_feature` with `expand: true`.
 Name the parallel functions in its `retiring`. Once the expand reaches main, the next step lists the
-names now retiring and asks for the migration plan. A behaviour change keeps the merge plan:
+names now retiring. Penguin proposes the migration plans itself after its next count of the
+remaining callers, one per owner group: the check runner writes each part the declared rewrite rules
+rewrite whole. Every other part reaches the place's builder or the steward of the scope's DRI as an
+edit task. A behaviour change keeps the merge plan:
 the next step asks for `propose_plan`. `report_checkpoint` on a feature fork answers the facts run it
 sorts under `contractSort`.
 
@@ -335,7 +339,9 @@ Penguin counts the callers of every retiring symbol after each promotion of main
 one of your feature's retiring symbols is left, Penguin approves removing it with no person asked.
 The next step then starts with "Contract" and names the symbols. Remove them from your fork, report
 the removal as a checkpoint and call `land_feature`. Once the block reaches main, each removed
-symbol's state is `removed`. A caller that comes back before then withdraws the approval.
+symbol's state is `removed`. A caller that comes back before then withdraws the approval. When your
+feature has landed by then, Penguin opens a short-lived feature from main for the DRI of each scope
+that defines the symbols and gives the removal to that DRI's steward.
 
 ## Merge plans
 

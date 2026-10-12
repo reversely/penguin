@@ -13,7 +13,9 @@
 //   uses. An agent's `impact` call also lists the remaining callers on main and in each other
 //   running feature's own changes, grouped by owner, from a second analysis. Penguin's own count
 //   after a promotion (`search: "callers"`) runs only that second analysis, on main at the promotion
-//   and every running feature, and reports it as the result's impact.
+//   and every running feature, and reports it as the result's impact. Penguin's rewrite of a split's
+//   migration parts (`search: "rewrite"`) applies the declared rules to each place and reports each
+//   place's patch with the uses it leaves (`runMigrationRewrite`).
 // - `check` runs a combined run with the block checks (combined-run.ts): the checkpoint merged onto
 //   its baseline (`main`) and onto each other running feature's fork, keyed by the feature id. A
 //   person with two running features gets two merged trees, each tested in that person's scopes. Each failed or erred
@@ -27,8 +29,18 @@
 // A request whose forks or commits cannot be fetched stays claimed until its lease runs out and is
 // then run again. A tool that runs and fails is reported as `error`.
 
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import {
   boundToolResult,
+  countIsComplete,
+  MIGRATION_LIMITS,
+  parsePatch,
+  type MigrationRewritePlace,
+  type PlanFileDiff,
+  type PlanPlace,
   selectAffectedForks,
   TOOL_RESULT_LIMITS,
   TOOL_RESULT_SCHEMA_VERSION,
@@ -45,7 +57,7 @@ import {
   type RewriteRule,
   type ToolCaller,
 } from "@penguin/protocol";
-import { runGit } from "@penguin/git-analysis";
+import { commitMergedTree, runGit } from "@penguin/git-analysis";
 import type { ScopeMap } from "@penguin/scope-map";
 
 import type { FixApplier } from "./apply-fix.ts";
@@ -54,6 +66,7 @@ import type { CombinedRunner } from "./combined-run.ts";
 import type { ImpactAnalyzer } from "./impact-analysis.ts";
 import type { ClaimedToolRun, ToolRunReply } from "./penguin-client.ts";
 import { charterPaths, classifyCheck, DEFAULT_ROUND_LIMIT, loadIdentities, routingContext } from "./resolution.ts";
+import { patchedTree } from "./patch-tree.ts";
 import { hasCommit } from "./runner-repo.ts";
 import { failureText, noteFailure, type FailRun, type FailureNote } from "./run-failure.ts";
 
@@ -183,6 +196,7 @@ async function runImpact(options: ToolPassOptions, claim: ClaimedToolRun): Promi
   const retiring = retiringOf(claim);
   if (retiring.length > 0 && claim.input["search"] === "own") return runRetiringCheck(options, claim, scopeMap, retiring);
   if (retiring.length > 0 && claim.input["search"] === "callers") return runCallerCount(options, claim, scopeMap, retiring);
+  if (retiring.length > 0 && claim.input["search"] === "rewrite") return runMigrationRewrite(options, claim, retiring);
   const forks = claim.forks.map((other) => ({ id: other.feature, sha: other.checkpoint, scopes: ownedScopes(scopeMap, other.person) }));
   const impact: ImpactReport = await options.impact({ base: claim.base, head: claim.checkpoint, forks });
   const using = selectAffectedForks(impact);
@@ -225,6 +239,107 @@ async function runCallerCount(options: ToolPassOptions, claim: ClaimedToolRun, s
     `${plural(uses, "caller")} of ${plural(retiring.length, "retiring symbol")} on main and in the own changes of ${plural(claim.forks.length, "running feature")}` +
     (impact.complete ? "" : "; the report is incomplete");
   return { ...emptyResult(claim), impact, migration, summary: bounded(summary) };
+}
+
+/** One place Penguin's rewrite request names: its target and the files whose uses the rules may rewrite. */
+interface RewritePlaceInput {
+  readonly place: PlanPlace;
+  readonly target: string;
+  readonly paths: readonly string[];
+}
+
+const clipError = (text: string): string => text.slice(0, MIGRATION_LIMITS.errorLength);
+
+/**
+ * Penguin's rewrite of a split's migration parts (`search: "rewrite"`, migration.ts): for each place,
+ * the declared rules applied to its files in a throwaway worktree of its target (main at the request's
+ * baseline, or the running feature's fork head), as a patch. The patches are then applied, without a
+ * checkout, to commits kept only in the runner's repository, and one analysis of those commits counts
+ * the uses of a retiring symbol each place still holds. Nothing is pushed.
+ */
+async function runMigrationRewrite(options: ToolPassOptions, claim: ClaimedToolRun, retiring: readonly RetiringDeclaration[]): Promise<AgentToolResult> {
+  const places = (Array.isArray(claim.input["places"]) ? (claim.input["places"] as RewritePlaceInput[]) : []).slice(0, MIGRATION_LIMITS.places);
+  const rules = retiring.flatMap((each) => each.rules);
+  const contracts: Record<string, string> = {};
+  for (const contract of new Set(rules.map(rewriteRuleContractPath))) {
+    try {
+      contracts[contract] = await runGit(options.repoPath, ["show", `${claim.base}:${contract}`]);
+    } catch {
+      // Absent on main: the codemod refuses the rule.
+    }
+  }
+  const heads = new Map(claim.forks.map((fork) => [fork.feature, fork.checkpoint]));
+  const rewritten: { input: RewritePlaceInput; sha: string | null; files: MigrationRewritePlace["files"]; patch: string | null; error: string | null }[] = [];
+  for (const input of places) {
+    const sha = input.target === "main" ? claim.base : (heads.get(input.target) ?? null);
+    if (sha === null) {
+      rewritten.push({ input, sha, files: [], patch: null, error: `feature ${input.target} is not a running feature with a checkpoint` });
+      continue;
+    }
+    const paths = [...input.paths].slice(0, MIGRATION_LIMITS.files);
+    const outcome = await options.fixes.rewrite({ commit: sha, paths, allowed: paths, rules, contracts });
+    const patch = outcome.patch ?? null;
+    const error = outcome.error ?? (patch !== null && new TextEncoder().encode(patch).length > MIGRATION_LIMITS.patchBytes ? "the patch is over its size limit" : null);
+    rewritten.push({ input, sha, files: outcome.files.map((file) => ({ path: file.path, rules: [...file.rules] })), patch: error === null ? patch : null, error: error === null ? null : clipError(error) });
+  }
+
+  // The uses left: each target's patches applied to a commit of its own, then one analysis.
+  const scratch = await mkdtemp(join(tmpdir(), "penguin-migration-"));
+  const after = new Map<string, string>();
+  try {
+    const byTarget = new Map<string, { sha: string; files: PlanFileDiff[] }>();
+    for (const entry of rewritten) {
+      if (entry.sha === null || entry.patch === null) continue;
+      const parsed = parsePatch(entry.patch);
+      if (!parsed.ok) {
+        entry.error = clipError(`the rewrite's patch does not parse: ${parsed.message}`);
+        entry.patch = null;
+        continue;
+      }
+      const known = byTarget.get(entry.input.target) ?? { sha: entry.sha, files: [] };
+      known.files.push(...parsed.files);
+      byTarget.set(entry.input.target, known);
+    }
+    for (const [target, { sha, files }] of byTarget) {
+      const tree = await patchedTree(options.repoPath, sha, files, await mkdtemp(join(scratch, "tree-")));
+      if (tree.ok) after.set(target, await commitMergedTree(options.repoPath, tree.tree, [sha]));
+    }
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+  const main = after.get("main") ?? claim.base;
+  const forkTargets = [...new Set(places.map((each) => each.target).filter((target) => target !== "main" && heads.has(target)))];
+  let residual: ImpactReport | null = null;
+  let residualError: string | null = null;
+  try {
+    residual = await options.impact({
+      base: main,
+      head: main,
+      forks: forkTargets.map((id) => ({ id, sha: after.get(id) ?? (heads.get(id) as string), scopes: [], since: claim.base })),
+      symbols: retiring.map((each) => each.contract),
+    });
+    if (!countIsComplete(residual)) residualError = "the analysis of the rewritten trees is incomplete";
+  } catch (error) {
+    residualError = clipError(`the analysis of the rewritten trees failed: ${(error as Error).message}`);
+  }
+  const left = (input: RewritePlaceInput): number => {
+    if (residual === null) return 0;
+    const place = input.place;
+    if (place.kind === "scope") return retiringUses(residual.headUses, retiring).filter(({ use }) => use.scope === place.scope).length;
+    return retiringUses(residual.forks.find((fork) => fork.id === place.feature)?.uses ?? [], retiring).length;
+  };
+  const rewrites: MigrationRewritePlace[] = rewritten.map((entry) => ({
+    place: entry.input.place,
+    target: entry.input.target,
+    sha: entry.sha ?? claim.base,
+    files: entry.files.slice(0, MIGRATION_LIMITS.files),
+    patch: entry.patch,
+    residual: left(entry.input),
+    error: entry.error ?? residualError,
+  }));
+  const written = rewrites.filter((each) => each.error === null && each.patch !== null && each.residual === 0).length;
+  const summary = `the declared rules rewrite ${plural(written, "place")} of ${plural(rewrites.length, "place")} with no use of a retiring symbol left`;
+  return { ...emptyResult(claim), rewrites, summary: bounded(summary) };
 }
 
 /**

@@ -913,6 +913,7 @@ export function createPenguinMcpServer(
         "the next step \"Expand first\" with the entries listed; a behaviour change keeps the merge plan. `contractStep` lists " +
         "each symbol your feature retires with its callers at Penguin's count after the last promotion; once none is left, " +
         "Penguin approves removing it. The next step then starts with \"Contract\": remove it, report a checkpoint and land. " +
+        "`migration` lists the migration plans Penguin proposed for those symbols, one per owner group, with each part's writer and state. " +
         "`editTasks` lists the edit tasks Penguin routed to this session's identity by charter and delivered at a safe checkpoint: " +
         "a review form to send with submit_review, an approved fix to write with fix_token, or a next step after a failed check " +
         "to make in `fork`, changing only `files` or the paths of `scopes`; Penguin's checks named in `verifier` then run. " +

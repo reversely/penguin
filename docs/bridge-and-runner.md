@@ -879,6 +879,16 @@ and every other running feature's fork with read tokens into the runner's reposi
   feature with a checkpoint, the promoted one included. The runner runs one analysis of main with
   each fork's own changes since that commit, searched for the retiring symbols. It reports that
   analysis as `impact` with the migration groups under `migration`.
+- A request Penguin records after a count with `search: "rewrite"` is the rewrite of a split's
+  migration parts ([design.md](design.md#migration-plans-in-the-build)). It is claimed like a count.
+  Its input names the originating feature's retiring symbols with their rules. It also names each
+  place: `main` or a running feature, with the files whose uses the rules may rewrite. For each place the
+  runner applies the rules to those files at main's commit or at the feature's fork head, in a
+  throwaway worktree, with the codemod, the lint autofix and the formatter. It keeps the change as
+  a unified diff. It applies each target's patches to a commit kept only in the runner's
+  repository, with no checkout. One analysis of those commits then searches for the retiring
+  symbols. It reports, per place under `rewrites`, the files and rules, the patch, the uses left
+  (`residual`) and any error. Nothing is pushed.
 - `check` runs the [block checks](#block-checks) on the checkpoint merged onto its baseline and onto
   each other running feature's fork at its head, with every fix written into it, as a land merges
   onto it. Each merged tree is named by its feature id, so a person with

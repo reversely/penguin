@@ -33,7 +33,7 @@ import type { BlockRunTarget } from "@penguin/protocol";
 import type { Feature, FeatureStore } from "./feature-store.ts";
 import type { BridgeCaller } from "./issue-index.ts";
 import { RUNNING_STATES } from "./overlap-lock.ts";
-import { CALLERS_SEARCH, PENGUIN_SESSION } from "./retiring-count.ts";
+import { CALLERS_SEARCH, PENGUIN_SESSION, REWRITE_SEARCH } from "./retiring-count.ts";
 
 /** Another running feature's fork the checks merge the checkpoint onto, a target of its own. */
 export interface ClaimedFork {
@@ -96,7 +96,8 @@ const isRunnerTool = (tool: AgentToolName): tool is RunnerToolName => tool !== "
 /**
  * A count request of Penguin's own after a promotion (retiring-count.ts): main at the promotion, held
  * by the promoted feature's fork, with `forks`: every running feature, the promoted one included. No
- * agent's charter applies; the count routes nothing.
+ * agent's charter applies; the count routes nothing. Penguin's rewrite request of a split's migration
+ * parts (migration-plans.ts) is claimed the same way.
  */
 function countClaim(run: AgentToolRun, feature: Feature, forks: readonly ClaimedFork[]): ClaimedToolRun {
   return {
@@ -134,7 +135,7 @@ export async function claimToolRuns(deps: ToolRunnerDeps, caller: BridgeCaller):
   const runs: ClaimedToolRun[] = [];
   for (const run of listing.runs) {
     const feature = features.find((item) => item.id === run.featureId);
-    if (feature !== undefined && run.sessionId === PENGUIN_SESSION && run.input["search"] === CALLERS_SEARCH) {
+    if (feature !== undefined && run.sessionId === PENGUIN_SESSION && (run.input["search"] === CALLERS_SEARCH || run.input["search"] === REWRITE_SEARCH)) {
       // An empty `own` leaves out no running feature.
       runs.push(countClaim(run, feature, await forks("")));
       continue;

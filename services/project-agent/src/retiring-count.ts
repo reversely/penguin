@@ -11,9 +11,11 @@
 //    (retiring-store.ts). A symbol with no caller in a complete report is proposed for removal on its
 //    originating feature while that feature is running. The proposal is a signed `contract_proposed`
 //    record: the plan has no places, so no part needs a person (section 4.3) and Penguin approves it.
-//    The feature's next step names the symbols to remove (contract-split.ts). A symbol whose
-//    originating feature is no longer running stays retiring with no callers. An approved symbol
-//    whose caller came back loses the approval with a signed `contract_withdrawn` record.
+//    The feature's next step names the symbols to remove (contract-split.ts). When the originating
+//    feature is no longer running, its landed fork is read-only, so `carry` (migration-plans.ts)
+//    opens a short-lived feature from main for the DRI of each scope that defines the symbols, signs
+//    the same proposal there and gives the removal to that DRI's steward as an edit task. An approved
+//    symbol whose caller came back loses the approval with a signed `contract_withdrawn` record.
 // 3. **Close.** When the originating feature's block reaches main (`closeRemoved`), each approved
 //    symbol the landed checkpoint's contract diff removes leaves the retiring symbols, under a signed
 //    `symbols_removed` record. A later checkpoint that calls it no longer gets a retiring-calls step;
@@ -41,6 +43,8 @@ import type { RetiringStore } from "./retiring-store.ts";
 export const PENGUIN_SESSION = "penguin";
 /** The `search` of a count request's input. */
 export const CALLERS_SEARCH = "callers";
+/** The `search` of Penguin's rewrite request of a split's migration parts (migration-plans.ts). */
+export const REWRITE_SEARCH = "rewrite";
 
 export interface RetiringCountDeps {
   readonly features: FeatureStore;
@@ -50,6 +54,16 @@ export interface RetiringCountDeps {
   readonly facts: PlanFactsStore;
   readonly sign: (record: UnsignedFeatureRecord) => Promise<FeatureRecord>;
   readonly notify?: (personId: string) => void;
+  /**
+   * Carries the removal of `symbols` whose originating feature `featureId` is no longer running
+   * (migration-plans.ts `carryContract`): the proposals it signed, one per carrying feature. Absent,
+   * such symbols stay retiring with no callers.
+   */
+  readonly carry?: (
+    featureId: string,
+    symbols: readonly RetiringSymbol[],
+    count: { readonly promotion: string; readonly runId: number },
+  ) => Promise<readonly { readonly feature: string; readonly contracts: readonly string[]; readonly recordId: string }[]>;
 }
 
 /** What one count changed: the callers of each symbol (null when incomplete) with the features proposed or withdrawn. */
@@ -141,8 +155,13 @@ export async function countReported(deps: RetiringCountDeps, run: AgentToolRun):
   const free = declared.filter((each) => callers.get(each.contract) === 0 && !held.has(each.contract));
   for (const [featureId, symbols] of byFeature(free)) {
     const feature = deps.features.get(featureId);
-    // The removal is written on the originating feature's fork; a landed fork is read-only.
-    if (feature === undefined || !RUNNING_STATES.has(feature.state)) continue;
+    if (feature === undefined) continue;
+    // The removal is written on the originating feature's fork; a landed fork is read-only, so a
+    // feature Penguin opens from main carries it instead.
+    if (!RUNNING_STATES.has(feature.state)) {
+      if (deps.carry !== undefined) proposed.push(...(await deps.carry(featureId, symbolsOf(symbols), { promotion, runId: run.id })).map((each) => ({ ...each, contracts: [...each.contracts] })));
+      continue;
+    }
     const record = await deps.sign(
       deps.features.draftRecord(featureId, "contract_proposed", { penguin: true }, {
         promotion,

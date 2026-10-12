@@ -1,7 +1,8 @@
 // Edit tasks and who runs them (PRD 0.5 core concepts and section 4.4a).
 //
-// An edit task is one edit Penguin needs made: a migration part, an approved fix written into a fork,
-// a next step after a failed check, or a review form. It names the fork it edits, the files or scopes,
+// An edit task is one edit Penguin needs made: a migration part, the removal of a split's retiring
+// symbols in a feature Penguin opened for it (`contract`), an approved fix written into a fork, a next
+// step after a failed check, or a review form. It names the fork it edits, the files or scopes,
 // Penguin's instructions and the checks that verify it.
 //
 // Each person has one steward: an ordinary identity Penguin creates, `@<person>/steward`, whose
@@ -18,7 +19,7 @@ import { FIX_WRITE_SPEC_SCHEMA, type FixWriteSpec } from "./fix-write.ts";
 import { IDENTITY_HANDLE_MAX_LENGTH } from "./operation-schema.ts";
 import { checkSchema, type JsonSchema, type SchemaError } from "./schema-check.ts";
 
-export const EDIT_TASK_KINDS = ["migration", "fix", "next_step", "review"] as const;
+export const EDIT_TASK_KINDS = ["migration", "contract", "fix", "next_step", "review"] as const;
 export type EditTaskKind = (typeof EDIT_TASK_KINDS)[number];
 
 /**

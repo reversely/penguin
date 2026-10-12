@@ -260,8 +260,8 @@ describe("sorting each checkpoint's contract diff and splitting the feature", ()
     assert.equal(
       contractWork(deps, feature(), scopeMap).nextStep,
       `The expand step is on main (${MAIN_AFTER.slice(0, 12)}). Retiring: shared/money/api.py::price for shared/money/api.py::price_minor, ` +
-        "shared/money/api.py::total for shared/money/api.py::total_minor. Migrate: call impact for the remaining callers grouped by owner, " +
-        "then propose_plan with one part per place.",
+        "shared/money/api.py::total for shared/money/api.py::total_minor. Migrate: Penguin proposes one migration plan per owner group " +
+        "once the check runner counts the remaining callers.",
     );
     // A second promotion report retires nothing more.
     await retireSplit(deps, "money-minor", MAIN_AFTER);

@@ -15,7 +15,11 @@
 //   asks for an edit to the failing files, in the failing feature's fork, or in the originating fork
 //   for a failure on main. Its files route by charter and may split. A newer block run of the same
 //   feature replaces the open next steps; a passing one does them.
-// - `migration`: opened by the migration plans of a split (#131) through `openEditTask`.
+// - `migration`: a part of a split's migration plan that the declared rewrite rules do not write
+//   (migration-plans.ts), through `openEditTask`. A running feature's own changes go to its builder;
+//   code on main goes to the steward of the scope's DRI, in the feature Penguin opened for the plan.
+// - `contract`: the removal of retiring symbols whose originating feature no longer runs, for the
+//   steward of the DRI of the defining scope, in a feature Penguin opened from main (migration-plans.ts).
 //
 // Penguin syncs the plan sources and settles every task before each read that shows them, so every
 // view sees the current state; a source is routed once, when it opens.
@@ -280,11 +284,16 @@ function findingLine(finding: LadderDecision["evidence"]["findings"][number]): s
   return `${place}${finding.code === null ? "" : `${finding.code} `}${finding.message}`;
 }
 
-/** Opens one source's tasks from outside this module, such as a migration part (#131). */
-export async function openEditTask(deps: EditWorkDeps, source: EditSource): Promise<EditTask[]> {
+/**
+ * Opens one source's tasks from outside this module, such as a migration part (migration-plans.ts).
+ * `adjust` may narrow the routing, such as leaving out the builder of a feature Penguin opened, so
+ * an edit to a scope on main reaches the steward of the scope's DRI.
+ */
+export async function openEditTask(deps: EditWorkDeps, source: EditSource, adjust?: (routing: EditRoutingContext) => EditRoutingContext): Promise<EditTask[]> {
   const scopeMap = await deps.scopeMap();
   deps.roster.sync(scopeMap, deps.features.list());
-  const opened = deps.tasks.open(source, editRouting(deps, scopeMap, availability(deps)));
+  const routing = editRouting(deps, scopeMap, availability(deps));
+  const opened = deps.tasks.open(source, adjust === undefined ? routing : adjust(routing));
   for (const person of new Set(opened.map((task) => task.person))) deps.notify(person);
   return opened;
 }

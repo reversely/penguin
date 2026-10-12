@@ -33,7 +33,16 @@ import {
   TestRunner,
   toolPass,
 } from "@penguin/local-bridge";
-import { boundReviewRecord, routesToOriginator, type ContractWorkView, type Plan, type RetiringSymbol, type ReviewForm, type RewriteRule } from "@penguin/protocol";
+import {
+  boundReviewRecord,
+  isMigrationPlanId,
+  routesToOriginator,
+  type ContractWorkView,
+  type Plan,
+  type RetiringSymbol,
+  type ReviewForm,
+  type RewriteRule,
+} from "@penguin/protocol";
 import { parseScopeMap, type ScopeMap } from "@penguin/scope-map";
 
 import type { DashboardBackend } from "../../apps/worker/src/dashboard.ts";
@@ -79,6 +88,18 @@ import {
 } from "../../services/project-agent/src/protected-change.ts";
 import { fileDiffs } from "../../services/project-agent/src/repo-diff.ts";
 import { closeRemoved, countReported, requestRetiringCount, type CountOutcome, type RetiringCountDeps } from "../../services/project-agent/src/retiring-count.ts";
+import { EditRoster } from "../../services/project-agent/src/edit-roster.ts";
+import { EditTaskStore } from "../../services/project-agent/src/edit-tasks.ts";
+import { editRouting } from "../../services/project-agent/src/edit-work.ts";
+import {
+  carryContract,
+  migrationsChecked,
+  migrationsCounted,
+  migrationTrialReported,
+  MigrationStore,
+  rewritesReported,
+  type MigrationDeps,
+} from "../../services/project-agent/src/migration-plans.ts";
 import { RetiringStore } from "../../services/project-agent/src/retiring-store.ts";
 import { claimReviews, recordReview } from "../../services/project-agent/src/review-record.ts";
 import { ReviewStore, submitReview } from "../../services/project-agent/src/review-submit.ts";
@@ -135,6 +156,15 @@ export class PreviewProject {
   readonly forks: OwnerForkStore;
   readonly retiring: RetiringStore;
   readonly splits: ContractSplitStore;
+  readonly migrations: MigrationStore;
+  readonly editTasks: EditTaskStore;
+  readonly roster: EditRoster;
+  /**
+   * True to propose the split's migration plans after each count, as the ProjectAgent does: each plan's
+   * rewrites and trials then run on the check runner. Off by default, since a scenario that does not
+   * look at migration would spend minutes on them.
+   */
+  migrationPlans = false;
   /** True to sort each checkpoint's contract diff, as the ProjectAgent does; each sort is a facts run. */
   sortContracts = false;
   readonly steps: SeedStep[] = [];
@@ -182,6 +212,9 @@ export class PreviewProject {
     this.forks = new OwnerForkStore(this.sql, now);
     this.retiring = new RetiringStore(this.sql, now);
     this.splits = new ContractSplitStore(this.sql, now);
+    this.migrations = new MigrationStore(this.sql, now);
+    this.editTasks = new EditTaskStore(this.sql, { now });
+    this.roster = new EditRoster(this.sql, this.identities);
     let sessions: SessionStore | undefined;
     this.index = new IssueIndex(this.sql, { assignmentsChanged: (issueId, added, removed) => sessions?.assignmentsChanged(issueId, added, removed) });
     sessions = new SessionStore(this.sql, this.identities, {
@@ -309,12 +342,47 @@ export class PreviewProject {
       retiring: this.retiring,
       notify: this.#notify,
       contractSteps: (id) => this.retiring.contractSteps(id),
+      migrationPlans: (id) => this.migrations.plans(id),
+    };
+  }
+
+  /** What the split's migration plans read and write, as the ProjectAgent wires them (migration-plans.ts). */
+  migrationDeps(): MigrationDeps {
+    return {
+      store: this.migrations,
+      features: this.features,
+      runs: this.tools,
+      retiring: this.retiring,
+      trials: this.trials,
+      reviews: this.reviews,
+      scopeMap: async () => this.scopeMap,
+      sign: (record) => this.#sign(record),
+      // As edit-work.ts openEditTask: the roster brought up to date, then the source routed once.
+      openTask: async (source, adjust) => {
+        this.roster.sync(this.scopeMap, this.features.list());
+        return this.editTasks.open(source, adjust(editRouting({ roster: this.roster, features: this.features }, this.scopeMap)));
+      },
+      adminMode: this.adminMode,
+      // The fixture's repository stands in for Artifacts: a fork of main is a branch at main's head.
+      fork: async (featureId) => {
+        this.git("update-ref", `refs/heads/feature-${featureId}`, this.git("rev-parse", "main"));
+        return `feature-${featureId}`;
+      },
+      notify: this.#notify,
     };
   }
 
   /** What counting the callers of retiring symbols and the contract step read and write, as the ProjectAgent wires it. */
   countDeps(): RetiringCountDeps {
-    return { features: this.features, runs: this.tools, retiring: this.retiring, facts: this.facts, sign: (record) => this.#sign(record), notify: this.#notify };
+    return {
+      features: this.features,
+      runs: this.tools,
+      retiring: this.retiring,
+      facts: this.facts,
+      sign: (record) => this.#sign(record),
+      notify: this.#notify,
+      carry: (featureId, symbols, count) => carryContract(this.migrationDeps(), featureId, symbols, count),
+    };
   }
 
   /** Each count of Penguin's own the runner reported, with what it changed. */
@@ -510,6 +578,13 @@ export class PreviewProject {
         // A count of Penguin's own goes on to the contract step, as the ProjectAgent's report does.
         const counted = await countReported(this.countDeps(), recorded.run);
         if (counted !== undefined) this.counts.push({ runId, outcome: counted });
+        // The split's migration plans follow each count, retiring-calls check and rewrite, as the ProjectAgent's report does.
+        if (this.migrationPlans) {
+          const deps = this.migrationDeps();
+          await migrationsCounted(deps, recorded.run);
+          await migrationsChecked(deps, recorded.run);
+          await rewritesReported(deps, recorded.run);
+        }
         return recorded as never;
       },
       fetchFork: (fork) => fetchRepoBranches(repo, () => localRemote(this.repo), fork),
@@ -631,6 +706,8 @@ export class PreviewProject {
         report,
       );
       if (recorded.status === "rejected") throw new Error(`trial ${request.trialId}: ${recorded.message}`);
+      // A migration part's trial is decided by its own plan (migration-plans.ts).
+      if (recorded.status === "recorded" && isMigrationPlanId(recorded.trial.planId)) await migrationTrialReported(this.migrationDeps(), recorded.trial);
     }
   }
 

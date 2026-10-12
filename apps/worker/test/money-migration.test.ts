@@ -1,0 +1,187 @@
+// The migration plans of the money split (#131, PRD 0.5 section 4.2 step 2, Migrate) on the
+// money-minor-units fixture's own data, through the ProjectAgent's modules and the check runner's
+// programs as the preview seed wires them (scripts/preview/seed.ts). The expand wave's plan marks the
+// float API retiring; after each promotion Penguin counts the remaining callers and proposes one
+// migration plan per owner group; the check runner rewrites each place the declared rules cover and
+// counts the uses left; each part the rules write whole is tried on its trial tree and decided by the
+// approval checks; every other part is an edit task. Noor's pagination then adds a caller midway and
+// joins Noor's open plan. Expected features and owners are read from larder.json; every number the
+// diagnostics print is the runs' own.
+
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { before, test, type TestContext } from "node:test";
+import { fileURLToPath } from "node:url";
+
+import { migrationPlaceKey, type MigrationPlanView, type RetiringSymbol, type RewriteRule } from "@penguin/protocol";
+import { parseScopeMap } from "@penguin/scope-map";
+
+import { buildFixture, PreviewProject } from "../../../scripts/preview/seed.ts";
+
+const ROOT = fileURLToPath(new URL("../../../", import.meta.url));
+
+interface LarderFeature {
+  readonly id: string;
+  readonly owner: string;
+  readonly role: string;
+  readonly agent: string;
+  readonly area?: readonly string[];
+  readonly commits: readonly { readonly tag?: string }[];
+}
+const LARDER = JSON.parse(readFileSync(join(ROOT, "examples", "money-minor-units", "larder.json"), "utf8")) as {
+  features: LarderFeature[];
+  plan: { rules: RewriteRule[] };
+};
+const feature = (id: string) => LARDER.features.find((each) => each.id === id) as LarderFeature;
+const CALLERS = LARDER.features.filter((each) => each.role === "reader" || each.role === "midway");
+const MIGRATE_WAVES = LARDER.features.filter((each) => each.role === "wave").slice(1, -1);
+
+/** The float API the expand wave leaves beside Money, as money-retiring.test.ts declares it. */
+const RETIRING: RetiringSymbol[] = [
+  { contract: "shared/money/__init__.py::price", replacement: "shared/money/__init__.py::Money" },
+  { contract: "shared/money/__init__.py::total", replacement: "shared/money/__init__.py::Money.sum" },
+  { contract: "shared/money/__init__.py::display", replacement: "shared/money/__init__.py::Money.display" },
+  { contract: "shared/money/discounts.py::percent_off", replacement: "shared/money/discounts.py::discounted" },
+  { contract: "orders/model.py::line_total", replacement: "orders/model.py::line_total_minor" },
+  { contract: "orders/model.py::order_total", replacement: "orders/model.py::order_total_minor" },
+];
+
+interface SeedIdentity {
+  readonly handle: string;
+  readonly owner: string;
+  readonly vendor: string;
+  readonly job: string;
+  readonly charter_scopes: readonly string[];
+}
+
+let preview: PreviewProject;
+let identities: SeedIdentity[];
+const agentOf = (each: LarderFeature) => identities.find((identity) => identity.handle === `@${each.owner}/${each.agent}`) as SeedIdentity;
+const EXPAND = feature("money-type");
+
+before(async () => {
+  const repo = await buildFixture("money-minor-units");
+  const git = (path: string): unknown => JSON.parse(execFileSync("git", ["-C", repo, "show", `main:${path}`], { encoding: "utf8" }));
+  const owners = (git("penguin/owners.json") as { owners: { id: string }[] }).owners.map((owner) => owner.id);
+  preview = new PreviewProject("money-minor-units", repo, parseScopeMap(git("penguin/scopes.json"), { ownerIds: owners }));
+  identities = (git("penguin/identities.json") as { identities: SeedIdentity[] }).identities;
+  preview.seedIdentities(identities);
+  preview.migrationPlans = true;
+  preview.moveMain(preview.git("rev-parse", "feature-promotion-stacking"));
+  for (const each of CALLERS) {
+    await preview.open(agentOf(each), each.id, { scopes: each.area ?? agentOf(each).charter_scopes });
+    await preview.checkpoint(each.id, `feature-${each.id}-${each.commits[0]?.tag}`);
+  }
+});
+
+const live = (plan: MigrationPlanView) => plan.parts.filter((part) => part.state !== "dropped");
+const placeName = (part: MigrationPlanView["parts"][number]) => (part.place.kind === "scope" ? `scope ${part.place.scope}` : part.place.feature);
+
+/** The plans and parts of the money split as one diagnostic block. */
+function describePlans(t: TestContext, when: string): void {
+  const plans = preview.migrations.plans(EXPAND.id).filter((plan) => live(plan).length > 0);
+  const parts = plans.flatMap(live);
+  const by = (state: string) => parts.filter((part) => part.state === state).length;
+  t.diagnostic(
+    `${when}: ${plans.length} plans, ${parts.length} parts; runner ${parts.filter((part) => part.writer === "runner").length}, ` +
+      `edit tasks ${parts.filter((part) => part.writer === "task").length}; approved ${by("approved")}, in person ${by("in_person")}, ` +
+      `waiting for forms ${by("waiting_review")}, in trial ${by("trial")}, at a task ${by("task")}, rewriting ${by("rewriting")}`,
+  );
+  for (const plan of plans) {
+    t.diagnostic(`  ${plan.owner} (${plan.block}): ${live(plan).map((part) => `${placeName(part)} ${part.uses} uses, ${part.writer ?? "-"} ${part.state}${part.reason === null ? "" : ` (${part.reason})`}`).join("; ")}`);
+  }
+}
+
+/** `featureId`'s block reaches main; Penguin counts, then the runner makes its rewrites and trials. */
+async function promote(t: TestContext, featureId: string): Promise<number> {
+  const started = performance.now();
+  const runId = await preview.promoted(featureId, preview.git("rev-parse", `feature-${featureId}`), true);
+  assert.ok(runId !== undefined, `${featureId}: the promotion asked for a count`);
+  const counted = performance.now();
+  // The count proposed plans and asked for one rewrite; the runner makes it, then each part's trial.
+  await preview.runnerPass();
+  const rewritten = performance.now();
+  await preview.trialPass();
+  const ms = (from: number, to: number) => Math.round(to - from);
+  t.diagnostic(`${featureId}: count ${ms(started, counted)} ms, rewrites ${ms(counted, rewritten)} ms, trials ${ms(rewritten, performance.now())} ms`);
+  return runId;
+}
+
+/** The count of `runId`, as the runner reported it. */
+const countOf = (runId: number) => preview.counts.find((each) => each.runId === runId)?.outcome.counts ?? null;
+
+test("after the expand, Penguin proposes one migration plan per owner group, with one part per place", async (t: TestContext) => {
+  await preview.open(agentOf(EXPAND), EXPAND.id, { scopes: EXPAND.area });
+  for (const lock of preview.overlaps.locksOn(EXPAND.id)) await preview.approveStart(lock.personId, lock.featureId, EXPAND.id);
+  await preview.checkpoint(EXPAND.id, `feature-${EXPAND.id}-checkpoint`);
+  const outcome = await preview.propose(EXPAND.id, [], LARDER.plan.rules, RETIRING);
+  assert.equal(outcome.status, "stored", JSON.stringify(outcome).slice(0, 2_000));
+  preview.features.setState(EXPAND.id, ["opening", "building", "landing"], "landed");
+  const runId = await promote(t, EXPAND.id);
+
+  const count = preview.tools.get(runId)?.outcome?.migration;
+  assert.ok(count, "the count carries the owner groups");
+  const plans = preview.migrations.plans(EXPAND.id);
+  // One plan per owner group of the count, each holding exactly the group's places.
+  assert.deepEqual(
+    plans.map((plan) => [plan.owner, plan.parts.map((part) => migrationPlaceKey(part.place))]),
+    count.groups.map((group) => [group.owner, group.places.map((each) => migrationPlaceKey(each.place))]),
+  );
+  // Every caller the count found is in a part.
+  const callers = countOf(runId)?.reduce((sum, each) => sum + each.callers, 0);
+  assert.equal(plans.flatMap((plan) => plan.parts).reduce((sum, part) => sum + part.uses, 0), callers);
+  // Each part has its writer: the runner or an edit task.
+  assert.ok(plans.flatMap((plan) => plan.parts).every((part) => part.writer !== null), "every part was routed");
+  describePlans(t, `after ${EXPAND.id} (${callers} callers)`);
+});
+
+test("after the migrate waves, the remaining callers are all in the open plans' live parts", async (t: TestContext) => {
+  let last = 0;
+  for (const wave of MIGRATE_WAVES) {
+    await preview.open(agentOf(wave), wave.id, { scopes: wave.area });
+    for (const lock of preview.overlaps.locksOn(wave.id)) await preview.approveStart(lock.personId, lock.featureId, wave.id);
+    await preview.checkpoint(wave.id, `feature-${wave.id}`);
+    preview.features.setState(wave.id, ["opening", "building", "landing"], "landed");
+    last = await promote(t, wave.id);
+  }
+  const counts = countOf(last);
+  assert.ok(counts, "the last count is complete");
+  const callers = counts.reduce((sum, each) => sum + each.callers, 0);
+  const plans = preview.migrations.plans(EXPAND.id);
+  const parts = plans.flatMap(live);
+  assert.equal(parts.reduce((sum, part) => sum + part.uses, 0), callers, "every remaining caller is in a live part");
+  const groups = preview.tools.get(last)?.outcome?.migration?.groups ?? [];
+  assert.deepEqual(
+    plans.filter((plan) => live(plan).length > 0).map((plan) => [plan.owner, live(plan).map((part) => migrationPlaceKey(part.place))]),
+    groups.map((group) => [group.owner, group.places.map((each) => migrationPlaceKey(each.place))]),
+  );
+  // Each running reader is a part of its own person's plan.
+  for (const each of CALLERS.filter((caller) => caller.role === "reader")) {
+    assert.ok(
+      plans.some((plan) => plan.owner === each.owner && live(plan).some((part) => part.place.kind === "feature" && part.place.feature === each.id)),
+      `${each.id} is in ${each.owner}'s plan`,
+    );
+  }
+  describePlans(t, `after ${MIGRATE_WAVES.at(-1)?.id} (${callers} callers)`);
+});
+
+test("Noor's pagination adds callers midway and joins Noor's open plan", async (t: TestContext) => {
+  const noor = preview.migrations.plans(EXPAND.id).find((plan) => plan.owner === "noor" && plan.state !== "landed");
+  assert.ok(noor, "Noor has an open plan");
+  await preview.checkpoint("pagination", "feature-pagination-checkpoint");
+  await preview.runnerPass();
+  await preview.runnerPass();
+  await preview.trialPass();
+  const after = preview.migrations.plan(noor.planId);
+  const part = after?.parts.find((each) => each.place.kind === "feature" && each.place.feature === "pagination");
+  assert.ok(part, "pagination joined Noor's plan");
+  const joined = preview.features
+    .records(EXPAND.id)
+    .map((stored) => JSON.parse(stored.file) as { type: string; payload: { plan?: string } })
+    .filter((each) => each.type === "migration_joined" && each.payload.plan === noor.planId);
+  assert.equal(joined.length, 1);
+  t.diagnostic(`pagination: ${part.uses} uses of ${part.contracts.join(", ")}; ${part.writer} ${part.state} (${part.reason})`);
+  describePlans(t, "after pagination's second checkpoint");
+});

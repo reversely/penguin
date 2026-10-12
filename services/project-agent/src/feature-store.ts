@@ -77,7 +77,10 @@ export interface Feature {
  * by block-land.ts. A person's confirmation of the lines the feature's own change writes under a
  * path they protect is written by protected-change.ts. The contract step Penguin proposes when no caller
  * of a retiring symbol is left, its withdrawal when a caller comes back and the symbols its block
- * removed are written by retiring-count.ts.
+ * removed are written by retiring-count.ts. A split's migration plan per owner group, a place joining
+ * it, who writes each part, Penguin's decision on each part's trial and the plan's block landing are
+ * written by migration-plans.ts, which also opens features from main for Penguin's own work and signs
+ * the contract step a feature Penguin opened carries.
  */
 export type FeatureRecordType =
   | "open_feature"
@@ -109,7 +112,12 @@ export type FeatureRecordType =
   | "expand_promotion"
   | "contract_proposed"
   | "contract_withdrawn"
-  | "symbols_removed";
+  | "symbols_removed"
+  | "migration_proposed"
+  | "migration_joined"
+  | "migration_routed"
+  | "migration_part_decided"
+  | "migration_landed";
 
 export interface FeatureRecord {
   readonly schema_version: 1;

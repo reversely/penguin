@@ -275,7 +275,7 @@ export function contractRemoved(impact: ImpactReport, contract: string): boolean
 /**
  * Where the contract step of one retiring symbol stands (PRD 0.5 section 4.2 step 2, Contract):
  * `counting` before a complete count, `callers_left` while a caller remains, `no_callers` when none is
- * left but the originating feature is no longer running to carry the removal, `approved` once Penguin
+ * left and no removal is approved yet, `approved` once Penguin
  * proposed and approved removing it, `removed` once the originating feature's block removed it.
  */
 export type ContractStepState = "counting" | "callers_left" | "no_callers" | "approved" | "removed";
@@ -292,6 +292,8 @@ export interface ContractStepEntry extends RetiringSymbol {
   readonly countRun: number | null;
   /** The signed `contract_proposed` record, once approved. */
   readonly recordId: string | null;
+  /** The feature Penguin opened from main to carry the removal, when the originating feature no longer runs; null otherwise. */
+  readonly carrier: string | null;
   /** Main's commit after the block that removed it, and the signed `symbols_removed` record. */
   readonly removedPromotion: string | null;
   readonly removedRecordId: string | null;

@@ -176,6 +176,16 @@ import {
 } from "./block-land.ts";
 import { requestExpand, retryExpand, type ExpandDeps } from "./expand-promotion.ts";
 import { closeRemoved, countReported, requestRetiringCount, type RetiringCountDeps } from "./retiring-count.ts";
+import {
+  carryContract,
+  migrationBlockLanded,
+  migrationsChecked,
+  migrationsCounted,
+  migrationTrialReported,
+  MigrationStore,
+  rewritesReported,
+  type MigrationDeps,
+} from "./migration-plans.ts";
 import { checkpointRecord, parseBreakLimit, proposePlan, type ProposePlanInput, type ProposePlanOutcome } from "./propose-plan.ts";
 import { claimToolRuns, recordToolResult, type ToolReportOutcome, type ToolRunClaim } from "./agent-tool-runner.ts";
 import { reviewResult } from "./part-checks.ts";
@@ -237,6 +247,8 @@ import {
   EDIT_RUN_MINUTES_DEFAULT,
   identitiesChangedMessage,
   inboxChangedMessage,
+  isMigrationPlanId,
+  type RetiringSymbol,
   parseBackgroundRunCap,
   parseCombinedRunEvent,
   parseEditRunMinutes,
@@ -465,10 +477,23 @@ export {
   type EditWorkDeps,
 } from "./edit-work.ts";
 export {
+  carryContract,
+  migrationBlockLanded,
+  migrationsChecked,
+  migrationsCounted,
+  migrationTrialReported,
+  MigrationStore,
+  MIGRATION_SCHEMA,
+  rewritesReported,
+  type MigrationDeps,
+  type MigrationPart,
+} from "./migration-plans.ts";
+export {
   CALLERS_SEARCH,
   closeRemoved,
   countReported,
   PENGUIN_SESSION,
+  REWRITE_SEARCH,
   requestRetiringCount,
   type CountOutcome,
   type RetiringCountDeps,
@@ -843,6 +868,8 @@ interface ProjectAgentEnv {
   readonly PENGUIN_BACKGROUND_RUN_CAP?: string;
   /** Minutes one background run holds its edit task and its token. Defaults to EDIT_RUN_MINUTES_DEFAULT. */
   readonly PENGUIN_EDIT_RUN_MINUTES?: string;
+  /** Whether a fork Penguin makes for a feature it opens keeps only the default branch, as the Worker's forks do. */
+  readonly PENGUIN_FEATURE_FORK_DEFAULT_BRANCH_ONLY?: string;
 }
 
 /** A land's answer as the ProjectAgent returns it across RPC: the run without its full request. */
@@ -939,6 +966,7 @@ export class ProjectAgent extends Agent {
   #fixGrants: FixGrantStore | undefined;
   #planCoverage: PlanCoverageStore | undefined;
   #retiring: RetiringStore | undefined;
+  #migrations: MigrationStore | undefined;
   #splits: ContractSplitStore | undefined;
   #blockQueue: BlockQueueStore | undefined;
   #editTasks: EditTaskStore | undefined;
@@ -2054,7 +2082,9 @@ export class ProjectAgent extends Agent {
     ));
     if (outcome.status === "recorded") {
       const featureId = outcome.trial.featureId;
-      await this.#featuresChanging(this.#planStep(() => approveCleanParts(this.#planApprovalDeps(repos), featureId)));
+      // A migration part's trial is decided by its own plan (migration-plans.ts); any other by the feature's plan.
+      if (isMigrationPlanId(outcome.trial.planId)) await this.#featuresChanging(this.#planStep(() => migrationTrialReported(this.#migrationDeps(repos), outcome.trial)));
+      else await this.#featuresChanging(this.#planStep(() => approveCleanParts(this.#planApprovalDeps(repos), featureId)));
     }
     return outcome;
   }
@@ -2185,21 +2215,86 @@ export class ProjectAgent extends Agent {
    * safe checkpoint. A count of Penguin's own after a promotion goes on to the contract step
    * (retiring-count.ts); a failure there is logged and never fails the report.
    */
-  async reportToolRun(caller: BridgeCaller, runId: number, result: unknown): Promise<ToolReportOutcome> {
+  async reportToolRun(caller: BridgeCaller, runId: number, result: unknown, repos?: ProjectRepos): Promise<ToolReportOutcome> {
     const outcome = recordToolResult(this.#toolStore(), caller, runId, result);
     if (outcome.status === "recorded") {
       try {
-        const counted = await this.#planStep(() => countReported(this.#countDeps(), outcome.run));
+        const counted = await this.#planStep(() => countReported(this.#countDeps(repos), outcome.run));
         if (counted !== undefined && counted.proposed.length + counted.withdrawn.length > 0) this.#liveFeed().featuresChanged();
       } catch (error) {
         console.error(JSON.stringify({ event: "retiring_count_failed", run: runId, error: String(error).slice(0, 200) }));
+      }
+      // A count, a checkpoint's retiring-calls check or a rewrite request moves the split's migration
+      // plans, which read the scope map from the project's repos.
+      if (repos !== undefined) {
+        try {
+          const deps = this.#migrationDeps(repos);
+          const changed = await this.#planStep(async () => [
+            ...(await migrationsCounted(deps, outcome.run)),
+            ...(await migrationsChecked(deps, outcome.run)),
+            ...(await rewritesReported(deps, outcome.run)),
+          ]);
+          if (changed.length > 0) this.#liveFeed().featuresChanged();
+        } catch (error) {
+          console.error(JSON.stringify({ event: "migration_plans_failed", run: runId, error: String(error).slice(0, 200) }));
+        }
       }
     }
     return outcome;
   }
 
-  /** What counting the callers of retiring symbols and the contract step read and write (retiring-count.ts). */
-  #countDeps(): RetiringCountDeps {
+  /** The split's migration plans and the contract step a feature Penguin opens carries (migration-plans.ts). */
+  #migrationDeps(repos: ProjectRepos): MigrationDeps {
+    return {
+      store: this.#migrationStore(),
+      features: this.#featureStore(),
+      runs: this.#toolStore(),
+      retiring: this.#retiringStore(),
+      trials: this.#partTrialStore(),
+      reviews: this.#reviewStore(),
+      scopeMap: () => this.#scopeMap(repos),
+      sign: async (record) => signFeatureRecord(record, (await this.#loadServiceKey()).privateKey),
+      openTask: (source, adjust) => openEditTask(this.#editWorkDeps(repos), source, adjust),
+      adminMode: this.#adminMode(),
+      fork: (featureId) => this.#forkFromMain(repos, featureId),
+      notify: (person) => sendToOwner(this.getConnections<{ owner?: string }>(), person, inboxChangedMessage()),
+    };
+  }
+
+  /**
+   * Forks main into the feature's repo for a feature Penguin opened, as the Worker forks one an agent
+   * opens (apps/worker/src/repos.ts `forkFeatureRepo`): the name carries the base repo's deployment
+   * prefix. A fork that already exists is kept. Null when the fork cannot be made.
+   */
+  async #forkFromMain(repos: ProjectRepos, featureId: string): Promise<string | null> {
+    const prefix = repos.base.endsWith("base") ? repos.base.slice(0, -"base".length) : "";
+    const name = `${prefix}feature-${featureId}`;
+    const defaultBranchOnly = (this.env as unknown as ProjectAgentEnv).PENGUIN_FEATURE_FORK_DEFAULT_BRANCH_ONLY !== "false";
+    try {
+      await withRepo(this.env.ARTIFACTS, repos.base, (base) => base.fork(name, { description: `Penguin feature ${featureId}`, defaultBranchOnly }));
+      return name;
+    } catch (error) {
+      try {
+        await withRepo(this.env.ARTIFACTS, name, async () => undefined);
+        return name;
+      } catch {
+        console.error(JSON.stringify({ event: "penguin_fork_failed", feature: featureId, error: String(error).slice(0, 200) }));
+        return null;
+      }
+    }
+  }
+
+  #migrationStore(): MigrationStore {
+    this.#migrations ??= new MigrationStore(this.#database());
+    return this.#migrations;
+  }
+
+  /**
+   * What counting the callers of retiring symbols and the contract step read and write
+   * (retiring-count.ts). With the project's repos, a feature that no longer runs hands its contract
+   * step to a feature Penguin opens from main (migration-plans.ts).
+   */
+  #countDeps(repos?: ProjectRepos): RetiringCountDeps {
     return {
       features: this.#featureStore(),
       runs: this.#toolStore(),
@@ -2207,6 +2302,7 @@ export class ProjectAgent extends Agent {
       facts: this.#planFactsStore(),
       sign: async (record) => signFeatureRecord(record, (await this.#loadServiceKey()).privateKey),
       notify: (personId) => sendToOwner(this.getConnections<{ owner?: string }>(), personId, inboxChangedMessage()),
+      ...(repos === undefined ? {} : { carry: (featureId: string, symbols: readonly RetiringSymbol[], count: { readonly promotion: string; readonly runId: number }) => carryContract(this.#migrationDeps(repos), featureId, symbols, count) }),
     };
   }
 
@@ -2611,6 +2707,7 @@ export class ProjectAgent extends Agent {
       retiring: this.#retiringStore(),
       notify: (personId) => sendToOwner(this.getConnections<{ owner?: string }>(), personId, inboxChangedMessage()),
       contractSteps: (featureId) => this.#retiringStore().contractSteps(featureId),
+      migrationPlans: (featureId) => this.#migrationStore().plans(featureId),
     };
   }
 
@@ -2878,6 +2975,11 @@ export class ProjectAgent extends Agent {
     // Penguin's approvals of the block's parts stand once it lands, so their reversible items go.
     for (const person of new Set(this.#inboxStore().blockLanded(featureId))) notify(person);
     featureLandedTasks(this.#editTaskStore(), featureId);
+    try {
+      await migrationBlockLanded(this.#migrationDeps(repos), featureId, promotion.mainAfter);
+    } catch (error) {
+      console.error(JSON.stringify({ event: "migration_landed_failed", feature: featureId, error: String(error).slice(0, 200) }));
+    }
     await this.#featuresChanging(featureLanded(
       {
         features: this.#featureStore(),

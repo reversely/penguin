@@ -222,7 +222,8 @@ The procedure moves conflict handling to the start of the work. Each step below 
    marks the old contracts as retiring, each with its replacement. A checkpoint whose own changes
    call a retiring symbol gets a next step naming the replacement
    ([Routing](#routing-and-the-resolution-ladder)). Penguin lists the remaining callers on main and
-   in running features' own changes, grouped by owner, as the migration's parts. Software
+   in running features' own changes, grouped by owner. It proposes one migration plan per owner
+  group. Software
    Engineering at Google, chapter 22, describes both: Rosie "shards [a large change] based upon
    project boundaries and ownership rules". Google's review tooling reports a change "when an engineer
    introduces a new use of a deprecated object", to prevent "backsliding".
@@ -355,7 +356,9 @@ The procedure moves conflict handling to the start of the work. Each step below 
     feature as a fork of its own changes since that baseline. `migrationGroups` groups the uses:
     a use on main is a place of its scope, owned by the scope's owner; a use in a running feature's
     own changes is a place of that feature, owned by its person. The result's `migration` lists one
-    group per owner. An agent asks from a checkpoint at main's head to see main as it is.
+    group per owner. An agent asks from a checkpoint at main's head to see main as it is. Penguin
+    turns the same groups into migration plans after each count
+    ([Migration plans in the build](#migration-plans-in-the-build)).
 - **Limits.** A commit subject is cut at 300 characters, a docstring at 500 and an assertion or error
   line at 300. A note may hold 2,000 characters and a plan 128 parts. Penguin keeps every such string
   as data. The MCP answer puts each one inside `personWritten`.
@@ -415,8 +418,14 @@ Penguin sorts each feature checkpoint's contract diff and decides between a spli
     The feature's next step starts with "Contract" and names the symbols to remove. The agent removes
     them, reports the removal as a checkpoint and calls `land_feature`. Penguin promotes the block.
   - **Withdrawal.** A later count that finds a caller of an approved symbol withdraws the approval
-    with a signed `contract_withdrawn` record. A symbol whose originating feature has landed stays
-    retiring with the state `no_callers`, because a landed fork is read-only.
+    with a signed `contract_withdrawn` record.
+  - **The originating feature landed.** A landed fork is read-only, so it cannot carry the removal.
+    For the DRI of each scope that defines the symbols, Penguin opens a short-lived feature from
+    main, `contract-<owner>-<feature>`. It signs the `contract_proposed` record there with
+    `origin`, `places: []` and `approved_by: penguin`. The removal becomes a `contract` edit task for
+    that DRI's steward. The originating feature's `contractStep` shows the symbol `approved` with
+    the carrying feature as `carrier`. When the carrier's block reaches main, its facts run closes
+    the symbol as removed. A symbol in no scope, or in a scope with no owner, stays `no_callers`.
   - **Closing.** When the originating feature's block reaches main, each approved symbol that the
     landed checkpoint's contract diff removes (its facts run) closes under a signed
     `symbols_removed` record. The symbol leaves the `RetiringSymbol` table. A later checkpoint that
@@ -438,7 +447,8 @@ Penguin sorts each feature checkpoint's contract diff and decides between a spli
   | `counts`, `complete` | The number of entries of each sort; false when the impact report was incomplete |
   | `entries`, `omitted` | Each `ContractSortEntry`: `symbol`, `path`, `line`, `kind`, `change`, `sort`, `breaks`, `scope`, `contract`, `to`, `keyword`, `callers` and `reason`. Incompatible entries come first, at most 100; `omitted` counts the rest |
   | `split` | Null without a split; otherwise `state` (`expand_first` or `retiring`), the `checkpoint` that last added an entry, its `entries`, the `replacements` the agent named, the `promotion` commit, the `retiring` pairs, the `unretired` names with reasons and the `recordId` of its last signed record |
-  | `contractStep` | Each symbol the feature retires: `contract`, `replacement`, `state` (`counting`, `callers_left`, `no_callers`, `approved` or `removed`), `callers` at the last count (null before a complete count), `onMain`, the running `features` with their uses, the `promotion` and `countRun` of that count, the `recordId` of the `contract_proposed` record and the `removedPromotion` and `removedRecordId` once removed |
+  | `contractStep` | Each symbol the feature retires: `contract`, `replacement`, `state` (`counting`, `callers_left`, `no_callers`, `approved` or `removed`), `callers` at the last count (null before a complete count), `onMain`, the running `features` with their uses, the `promotion` and `countRun` of that count, the `recordId` of the `contract_proposed` record, the `carrier` feature Penguin opened when the originating feature no longer runs (else null) and the `removedPromotion` and `removedRecordId` once removed |
+  | `migration` | Each migration plan of the feature's retiring symbols, a `MigrationPlanView` ([Migration plans in the build](#migration-plans-in-the-build)) |
   | `nextStep` | The agent's next step in one paragraph |
 - **On the fixtures.** Each sort comes from the fixture's checkpoint against main
   (`apps/worker/test/contract-sort-fixtures.test.ts`). On identity unification, Priya's checkpoint
@@ -449,6 +459,55 @@ Penguin sorts each feature checkpoint's contract diff and decides between a spli
   change. On money in minor units, Ines's checkpoint removes `display()`, changes the parameters of
   `price()` and changes the types of `total()`. All three have callers in other scopes and sort
   incompatible, so Penguin splits the feature.
+
+#### Migration plans in the build
+
+Penguin proposes the migrate step's plans itself (`services/project-agent/src/migration-plans.ts`,
+`packages/protocol/src/migration.ts`).
+
+- **One plan per owner group.** Each complete count after a promotion groups the remaining callers
+  of each originating feature's own retiring symbols by owner (`migrationGroups`). Each group
+  becomes one plan of that feature, `migrate:<feature>:<owner>:<n>`, with one part per place: a
+  scope on main, owned by its DRI, or a running feature's own changes, owned by its person. A plan
+  is a signed `migration_proposed` record on the originating feature with the owner, the plan's
+  block, the promotion, the count, the ids of the feature's rewrite rules and each place with its
+  uses, contracts and rules. A plan carries only its originating feature's declarations. Load: one
+  record per plan, never one per part.
+- **A later caller.** A place found at a later count, or at a checkpoint's retiring-calls check,
+  joins its owner's plan while that plan has not landed, under a signed `migration_joined` record.
+  Once the owner's plan landed, the place opens the owner's next plan, `<n>` plus one. A complete
+  count that finds no caller left in a place drops its part.
+- **Who writes a part.** A part whose contracts have declared rules waits for one rewrite request
+  of Penguin's own per count (`impact` with `search: "rewrite"`). The check runner applies the rules
+  to the place's files at its target, main at the count or the feature's fork head, in a throwaway
+  worktree. It keeps the patch, applies every place's patch to a commit kept only in its own
+  repository and runs one analysis to count the uses of a retiring symbol each place still holds
+  ([bridge-and-runner.md](bridge-and-runner.md#agent-tools-on-the-runner)). A part whose rules
+  leave no use is the runner's: its patch is its fix. Any other part is a `migration` edit task
+  ([Edit tasks in the build](#edit-tasks-in-the-build)). One signed `migration_routed` record per
+  plan names each part's writer and why: no rule for its contracts, the rules rewrite nothing, the
+  rules leave uses, or the runner could not run them.
+- **Trial and approval.** A runner part's trial applies its patch to its target and merges main at
+  the count ([Part trials](#part-trials)). Penguin reads the trial with the checks of
+  [Penguin's approval in the build](#penguins-approval-in-the-build). Every check clean approves the
+  part. A failed check sends it to its owner in person. A part waiting only for review forms asks
+  the steward of each scope's DRI for one with a `review` task. Each decision is a signed
+  `migration_part_decided` record. A plan whose live parts are all approved is `approved`.
+- **The block.** Each plan names its block feature, `migrate-<owner>-<feature>` (with `-<n>` from
+  the owner's second plan). Penguin opens it from main, with a fork, when the plan has code on main
+  for a steward to edit. A fix to a running feature's own changes goes into that feature's fork.
+  When the block feature reaches main, the plan is `landed` under a signed `migration_landed`
+  record.
+- **Features Penguin opens.** A block feature or a contract carrier is an `open_feature` record
+  authored by Penguin, owned by the DRI it works for, forked from main through the Artifacts binding
+  with the same name and `PENGUIN_FEATURE_FORK_DEFAULT_BRANCH_ONLY` setting as the Worker's forks.
+  It is not checked against running features for an overlapping start.
+- **The view.** `contract.migration` in `get_work` and on the feature page lists each plan:
+  `planId`, `feature`, `owner`, `seq`, `state` (`open`, `approved`, `landed`), `block`,
+  `promotion`, `recordId` and its `parts`. Each part has `partId`, `place`, `scopes`, `uses`,
+  `files`, `contracts`, `rules`, `writer` (`runner` or `task`), `reason`, `state` (`rewriting`,
+  `task`, `trial`, `waiting_review`, `approved`, `in_person`, `landed` or `dropped`) and
+  `approvedBy`. The runner's patch stays out of the view.
 
 ### Advance notice
 
@@ -690,16 +749,19 @@ agent becomes an edit task for one of them.
   plus the paths of the area's other scopes. The charter follows the area as checkpoints grow it.
   Charters are cut at 32 scopes and 64 paths. A builder handle another identity already holds moves
   to `-2`, then `-3`.
-- **Sources** (`services/project-agent/src/edit-work.ts`). Four kinds of work open tasks:
+- **Sources** (`services/project-agent/src/edit-work.ts`). Five kinds of work open tasks:
 
   | Kind | Opened by | Routed | Done when |
   |---|---|---|---|
   | `review` | A plan part revision waiting on its owner, one task per scope of the part | The steward of the scope's DRI, or of the fallback standing in | A review form for that scope reaches the plan's feature; the part leaving `pending` without one drops it |
   | `fix` | An approved behavioural part whose place is a running feature | The whole part to the target feature's builder, else the steward of the target's person: an approved patch is written as one commit, so it never splits | The write is kept as a `fix_write` record |
   | `next_step` | A failed block run's decision at ladder step 4 or 5, one source per failing target and check | Each failing file by charter, in the failing feature's fork, or in the originating fork for a failure on main | A newer run of the feature no longer shows it, a passing run, or the feature reaching main |
-  | `migration` | A migration part of a split, through `openEditTask` | Each file by charter in the target fork | The bridge's commit is kept |
+  | `migration` | A part of a split's migration plan that the declared rewrite rules do not write whole, through `openEditTask` ([Migration plans in the build](#migration-plans-in-the-build)) | A running feature's own changes: each file by charter in that feature's fork, its builder first. Code on main: the steward of the scope's DRI, in the plan's block feature | The bridge's commit is kept |
+  | `contract` | The removal of retiring symbols whose originating feature no longer runs | The steward of the DRI of the scope that defines them, in the feature Penguin opened from main to carry it | The bridge's commit is kept |
 
-  A mechanical part asks for no task: the check runner writes it. The FeatureAgent reports each
+  A mechanical part asks for no task: the check runner writes it. A feature Penguin opened from main
+  (a migration plan's block or a contract carrier) has no builder in routing, so its edits reach the
+  steward of the scope's DRI. The FeatureAgent reports each
   block run's decisions through `blockReported` on the ProjectAgent.
 - **One routing decision per task.** `EditTaskStore.open` routes a source once and keeps one row
   per identity or person. A source that opens again while its tasks are open is not routed again.

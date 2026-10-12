@@ -12,6 +12,7 @@
 
 import { BLOCK_CHECK_LIMITS, BLOCK_CHECK_NAMES, BLOCK_CHECK_SCHEMA, type BlockCheck } from "./block-check.ts";
 import { IMPACT_REPORT_SCHEMA, type ImpactReport } from "./impact.ts";
+import { MIGRATION_REWRITES_SCHEMA, type MigrationRewritePlace } from "./migration.ts";
 import type { MigrationGroup } from "./retiring.ts";
 import { AGENT_TOOLS, FAILURE_KINDS, FIX_KINDS, type AgentToolName, type LadderDecision, type ToolRunRecord } from "./resolution.ts";
 import { checkSchema, type JsonSchema } from "./schema-check.ts";
@@ -52,6 +53,11 @@ export interface AgentToolResult {
    * remaining callers on main and in their own changes, grouped by owner. Absent otherwise.
    */
   readonly migration?: { readonly groups: readonly MigrationGroup[]; readonly unowned: number };
+  /**
+   * For Penguin's rewrite request of a split's migration parts (migration.ts): each place's rewrite by
+   * the declared rules, with its patch and the uses left. Absent otherwise.
+   */
+  readonly rewrites?: readonly MigrationRewritePlace[];
   readonly fix: ToolRunRecord | null;
   /** The runner's ref that keeps the fix commit, such as `refs/penguin/fixes/<commit>`; null without one. */
   readonly fixRef: string | null;
@@ -142,8 +148,9 @@ export const TOOL_RESULT_SCHEMA: JsonSchema = {
   $schema: "https://json-schema.org/draft/2020-12/schema",
   title: "Penguin agent tool result",
   ...RESULT,
-  // `migration` is optional: only an impact request that searched for retiring symbols carries it.
-  properties: { ...(RESULT["properties"] as Record<string, JsonSchema>), migration: MIGRATION },
+  // `migration` and `rewrites` are optional: only an impact request that searched for retiring
+  // symbols carries the first, and only Penguin's rewrite request the second.
+  properties: { ...(RESULT["properties"] as Record<string, JsonSchema>), migration: MIGRATION, rewrites: MIGRATION_REWRITES_SCHEMA },
 };
 
 export type ParsedToolResult = { readonly ok: true; readonly result: AgentToolResult } | { readonly ok: false; readonly problems: string[] };
@@ -171,6 +178,7 @@ export function parseToolResult(value: unknown): ParsedToolResult {
   if (result.tool === "impact" && retiringSteps !== result.decisions.length) problems.push("/decisions an impact result carries only retiring-calls steps");
   if (result.tool === "check" && retiringSteps > 0) problems.push("/decisions a check result carries no retiring-calls steps");
   if (result.tool !== "impact" && result.migration !== undefined) problems.push(`/migration a ${result.tool} result carries no migration groups`);
+  if (result.tool !== "impact" && result.rewrites !== undefined) problems.push(`/rewrites a ${result.tool} result carries no rewrites`);
   if (result.tool !== "apply_fix" && (result.fix !== null || result.fixRef !== null)) problems.push(`/fix a ${result.tool} result carries no fix`);
   if (result.impact !== null && (result.impact.base !== result.base || result.impact.head !== result.checkpoint)) {
     problems.push("/impact names other commits than the result");
