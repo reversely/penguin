@@ -64,19 +64,21 @@ export interface CaseCommit {
   readonly fix: CommitFix | null;
   /** A commit of the originating feature that answers a requested change to the part for a scope. */
   readonly revises: CommitFix | null;
-  /**
-   * The tag a side commit is built on, for a running feature's second fix in the larder data: the
-   * fix the waves write, beside the one-block fix on the branch. Null for a commit on the branch.
-   */
-  readonly after: string | null;
 }
 
 /**
  * The fixture's roles, normalised: `originating` changes what others depend on, `running` and
  * `reader` are under way and read it, `same-area` works in the originating area, `midway` starts
- * touching it later, `late-starter` opens after the plan and `unaffected` does neither.
+ * touching it later, `late-starter` opens after the plan or the expand, `unaffected` does neither and
+ * `migration` is the block Penguin opens from main for one owner's code on main in a split.
  */
-export type FeatureRole = "originating" | "running" | "reader" | "same-area" | "midway" | "late-starter" | "unaffected" | "wave";
+export type FeatureRole = "originating" | "running" | "reader" | "same-area" | "midway" | "late-starter" | "unaffected" | "migration";
+
+/** A split's rewrite rules and retiring symbols, as the originating agent declares them with the expand. */
+export interface SplitData {
+  readonly rules: readonly Record<string, unknown>[];
+  readonly retiring: readonly { readonly contract: string; readonly replacement: string }[];
+}
 
 export interface CaseFeature {
   readonly id: string;
@@ -120,17 +122,16 @@ interface LarderFile {
     readonly title: string;
     readonly start: "base" | "main";
     readonly area: readonly string[];
-    readonly commits: readonly { readonly tag?: string; readonly after?: string; readonly fix?: CommitFix }[];
+    readonly commits: readonly { readonly tag?: string; readonly fix?: CommitFix }[];
   }[];
   readonly promotions: readonly { readonly feature: string }[];
+  readonly split: SplitData & { readonly feature: string };
 }
 
 interface Pins {
   readonly branches: Readonly<Record<string, string>>;
   readonly tags: Readonly<Record<string, string>>;
   readonly fixes: Readonly<Record<string, string>>;
-  /** In the larder data: the test each fix commit of the waves makes pass, to that commit. */
-  readonly wave_fixes?: Readonly<Record<string, string>>;
 }
 
 function readJson<T>(path: string): T {
@@ -140,8 +141,9 @@ function readJson<T>(path: string): T {
 /** A feature's builder handle, as the fixtures' identities name it. */
 const builderHandle = (feature: { readonly owner: string; readonly id: string }): string => `@${feature.owner}/${feature.id}`;
 
-/** The fixture's word for a revision of an originating commit in the larder data. */
+/** The larder data's word for a revision, and for the migration a reader's builder writes. */
 const REVISION = "revision";
+const MIGRATION = "migration";
 
 interface CaseData {
   readonly name: string;
@@ -153,15 +155,13 @@ interface CaseData {
   readonly invariants: readonly FixtureInvariant[];
   readonly features: readonly CaseFeature[];
   readonly promotions: readonly string[];
+  readonly split: SplitData | null;
   readonly reviewForms: readonly ReviewFormFile[];
   readonly baseSha: string;
   readonly baseDate: string;
 }
 
-/**
- * A commit's SHA: its tag's, or for the feature's one untagged commit, the branch head's. A commit
- * built `after` an earlier tag sits beside the branch, so it carries a tag of its own.
- */
+/** A commit's SHA: its tag's, or for the feature's one untagged commit, the branch head's. */
 function commitSha(tagged: string | undefined, head: string | undefined, untagged: number, where: string): string {
   const sha = tagged ?? (untagged === 1 ? head : undefined);
   if (sha === undefined) throw new Error(`${where}: an untagged commit has no pinned SHA unless it is the feature's only one, the branch head`);
@@ -179,6 +179,8 @@ export class CaseFixture implements CaseData {
   readonly features: readonly CaseFeature[];
   /** Features that reach main before the originating feature opens, in order. */
   readonly promotions: readonly string[];
+  /** The split the originating feature declares with its expand; null for a case with a merge plan. */
+  readonly split: SplitData | null;
   readonly reviewForms: readonly ReviewFormFile[];
   /** The commit main holds when the project is set up. */
   readonly baseSha: string;
@@ -196,6 +198,7 @@ export class CaseFixture implements CaseData {
     this.invariants = data.invariants;
     this.features = data.features;
     this.promotions = data.promotions;
+    this.split = data.split;
     this.reviewForms = data.reviewForms;
     this.baseSha = data.baseSha;
   }
@@ -249,7 +252,6 @@ export class CaseFixture implements CaseData {
             `${name}/${feature.id}`,
           ),
           tag: commit.tag ?? null,
-          after: null,
           fix: commit.fix ?? null,
           revises: commit.revises ?? null,
         })),
@@ -265,6 +267,7 @@ export class CaseFixture implements CaseData {
       invariants: readJson<{ invariants: FixtureInvariant[] }>(join(penguin, "invariants.json")).invariants,
       features,
       promotions: [],
+      split: null,
       reviewForms,
       baseSha: pins.branches[file.base.branch] as string,
       baseDate: file.base.date,
@@ -282,7 +285,8 @@ export class CaseFixture implements CaseData {
         ? []
         : [{ handle: `@${person.id}/steward`, owner: person.id, vendor: person.vendor ?? "claude-code", job: STEWARD_JOB, charter_scopes: owned(person.id) }],
     );
-    const builders = larder.features.map((feature): FixtureIdentity => {
+    // A block Penguin opens for code on main has no builder: the owner's steward writes it.
+    const builders = larder.features.filter((feature) => feature.role !== "migration").map((feature): FixtureIdentity => {
       const borrowed = feature.area.filter((scope) => !owned(feature.owner).includes(scope));
       return {
         handle: builderHandle(feature),
@@ -309,7 +313,6 @@ export class CaseFixture implements CaseData {
           `${name}/${feature.id}`,
         ),
         tag: commit.tag ?? null,
-        after: commit.after ?? null,
         fix: commit.fix !== undefined && commit.fix.kind !== REVISION ? commit.fix : null,
         revises: commit.fix?.kind === REVISION ? commit.fix : null,
       })),
@@ -323,7 +326,9 @@ export class CaseFixture implements CaseData {
       identities,
       invariants: larder.invariants,
       features,
-      promotions: larder.promotions.map((promotion) => promotion.feature),
+      // The promotions before the originating feature's own: those main holds when it opens.
+      promotions: larder.promotions.map((promotion) => promotion.feature).slice(0, Math.max(0, larder.promotions.findIndex((promotion) => promotion.feature === larder.split.feature))),
+      split: { rules: larder.split.rules, retiring: larder.split.retiring },
       reviewForms,
       baseSha: pins.tags["base"] as string,
       baseDate: larder.base.date,
@@ -373,9 +378,19 @@ export class CaseFixture implements CaseData {
     return feature.area.scopes.flatMap((scope) => this.scope(scope).paths);
   }
 
-  /** A running feature's checkpoints, which its own agent publishes: its tagged commits on the branch. */
+  /** A running feature's checkpoints, which its own agent publishes: its tagged commits that fix nothing. */
   checkpointsOf(feature: CaseFeature): CaseCommit[] {
-    return feature.commits.filter((commit) => commit.tag !== null && commit.after === null);
+    return feature.commits.filter((commit) => commit.tag !== null && commit.fix === null && commit.revises === null);
+  }
+
+  /** The migration a running feature's builder writes in a split: its commit of kind migration. */
+  migrationOf(feature: CaseFeature): CaseCommit | undefined {
+    return feature.commits.find((commit) => commit.fix?.kind === MIGRATION);
+  }
+
+  /** The blocks of a split, in the order the fixture promotes them. */
+  get blocks(): CaseFeature[] {
+    return this.features.filter((feature) => feature.role === "migration");
   }
 
   /** A running feature's fix in the one-block plan: its untagged commit, the branch head, which the originating agent writes. */
@@ -404,8 +419,7 @@ export class CaseFixture implements CaseData {
       ...this.invariants.map((invariant) => invariant.id),
       ...Object.values(this.pins.branches),
       ...Object.values(this.pins.tags),
-      ...Object.values(this.pins.wave_fixes ?? {}),
-      ...[...Object.keys(this.pins.fixes), ...Object.keys(this.pins.wave_fixes ?? {})].flatMap((nodeId) => [nodeId, nodeId.split("::").at(-1) as string]),
+      ...Object.keys(this.pins.fixes).flatMap((nodeId) => [nodeId, nodeId.split("::").at(-1) as string]),
     ];
   }
 }

@@ -15,12 +15,14 @@ import { promisify } from "node:util";
 
 import type { Browser, BrowserContext, Page } from "@playwright/test";
 
+import { stewardHandle } from "@penguin/protocol";
+
 import { Runner } from "../../e2e/support/runner.ts";
 import { Dashboard, type PartRequest } from "./dashboard.ts";
 import { CaseFixture, loginOf, type CaseCommit, type CaseFeature } from "./fixture.ts";
 import { caseMetrics, metricsReport, type CaseEvidence, type FixWriteEvidence, type LadderDecision, type PromotionCheck } from "./metrics.ts";
 import { POLLING_TOOLS, Person, type AgentSession } from "./person.ts";
-import { LocalStack } from "./stack.ts";
+import { bounded, LocalStack } from "./stack.ts";
 
 const run = promisify(execFile);
 
@@ -188,6 +190,8 @@ export class CaseRun {
           ...(identity.charter_paths === undefined ? {} : { charterPaths: identity.charter_paths }),
           autoAccept: true,
         });
+        // Penguin creates each DRI's steward itself, chartered on the scopes the person is DRI for.
+        if (created.status === 422 && identity.handle === stewardHandle(person.id) && created.body?.["reason"] === "handle_taken") continue;
         if (created.status !== 201) throw new Error(`${identity.handle}: HTTP ${created.status} ${JSON.stringify(created.body)}`);
       }
       this.people.set(person.id, await Person.set(this.stack.url, this.stack.deployer, person.id, this.#fixtureRepo));
@@ -197,11 +201,12 @@ export class CaseRun {
   async tearDown(): Promise<string[]> {
     // Remote URLs name the account; the log keeps the repo name only.
     await writeFile(join(this.options.outDir, "runner.log"), this.runnerLog.join("\n").replace(/https:\/\/[^\s/]+\/git\/[^\s/]+\//gu, "<artifacts>/"));
-    await this.#context?.close();
-    for (const person of this.people.values()) if (this.stack !== undefined) await person.dispose(this.stack.deployer);
+    // Each step before the repos' deletion waits a bounded time, so the deletion always runs.
+    await bounded(30_000, async () => this.#context?.close());
+    for (const person of this.people.values()) if (this.stack !== undefined) await bounded(30_000, () => person.dispose(this.stack.deployer));
     if (this.runner !== undefined) {
-      await this.stack.deployer.revokeBridge(this.runner.bridgeId).catch(() => undefined);
-      await this.runner.dispose();
+      await bounded(30_000, () => this.stack.deployer.revokeBridge(this.runner.bridgeId));
+      await bounded(30_000, () => this.runner.dispose());
     }
     const deleted = this.stack === undefined ? [] : await this.stack.stop();
     if (this.#root !== "") await rm(this.#root, { recursive: true, force: true });
@@ -521,6 +526,112 @@ export class CaseRun {
       await this.session(feature).report(commit);
       this.published.set(feature.id, commit);
     }
+  }
+
+  // Split -------------------------------------------------------------------------------------------
+
+  /**
+   * The originating agent proposes the plan of its expand checkpoint: no part, the split's rewrite
+   * rules and its retiring symbols. Penguin stores it once the facts run shows no place.
+   */
+  async proposeExpand(): Promise<Record<string, any>> {
+    const split = this.fixture.split;
+    if (split === null) throw new Error(`${this.fixture.name} declares no split`);
+    const agent = this.originAgent;
+    return this.until("the expand plan's facts run", async () => {
+      const answer = await agent.answer("propose_plan", { feature: this.origin.id, parts: [], rules: split.rules, retiring: split.retiring });
+      if (answer.value["missing"]?.some((item: { code: string }) => item.code === "waiting_for_runner")) return undefined;
+      if (answer.value["status"] !== "stored") throw new Error(`the expand plan was not stored: ${JSON.stringify(answer.value).slice(0, 3_000)}`);
+      return answer.value;
+    });
+  }
+
+  /**
+   * land_feature with expand: true. A checkpoint that adds to another person's scope waits on that
+   * person once: each such person approves the start on the dashboard and the agent asks again.
+   * Returns once main holds the expand.
+   */
+  async landExpand(onOwner?: (person: string) => Promise<void>): Promise<string> {
+    const agent = this.originAgent;
+    const head = this.published.get(this.origin.id) as string;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const asked = await agent.answer("land_feature", { feature: this.origin.id, expand: true });
+      if (!asked.isError) break;
+      if (asked.value["error"] !== "waiting_on_owner") throw new Error(`land_feature with expand was refused: ${JSON.stringify(asked.value).slice(0, 2_000)}`);
+      for (const person of this.fixture.people.map((each) => each.id)) {
+        await this.dashboard.signIn(person);
+        const waiting = ((await this.dashboard.get("/api/overlaps")).requests as { feature: string; blockedFeature: string }[]).filter((each) => each.blockedFeature === this.origin.id);
+        for (const request of waiting) {
+          await onOwner?.(person);
+          const approved = await this.dashboard.post("/api/overlaps/approve", { feature: request.feature, blockedFeature: request.blockedFeature });
+          if (approved.status !== 200) throw new Error(`${person}'s approval of the expand answered HTTP ${approved.status}`);
+          this.notes.push(`The expand adds to a scope ${person} is DRI for; ${person} approved it once on the dashboard.`);
+        }
+      }
+    }
+    const mainBefore = await this.person(this.origin.owner).headOf("base");
+    await this.until("the expand's promotion", async () => ((await this.person(this.origin.owner).headOf("base")) === head ? true : undefined));
+    this.promotions.push({ feature: this.origin.id, mainBefore, mainAfter: head, redScopes: await this.person(this.origin.owner).redScopes(head) });
+    return head;
+  }
+
+  /** The originating feature's split as get_work answers it: its migration plans and contract step. */
+  async splitWork(): Promise<Record<string, any>> {
+    return ((await this.originAgent.work())["contract"] ?? {}) as Record<string, any>;
+  }
+
+  /** Waits until Penguin has proposed the split's migration plans; returns them. */
+  async migrationPlans(): Promise<Record<string, any>[]> {
+    return this.until("Penguin's migration plans", async () => {
+      const plans = ((await this.splitWork())["migration"] ?? []) as Record<string, any>[];
+      return plans.length > 0 ? plans : undefined;
+    });
+  }
+
+  /** A running feature's builder writes the feature's migration from the fixture and reports it. */
+  async migrateFeature(feature: CaseFeature): Promise<Record<string, any> | undefined> {
+    const commit = this.fixture.migrationOf(feature);
+    if (commit === undefined) return undefined;
+    return this.publish(feature, commit);
+  }
+
+  /**
+   * A block Penguin opened from main for one owner's code on main: the owner's steward joins it,
+   * pushes the fixture's commits, submits the fixture's review form for a commit that has one, and
+   * lands the block. `onReview` sees each review once the runner recorded it.
+   */
+  async landBlock(block: CaseFeature, onReview?: (commit: CaseCommit, reviewId: number) => Promise<void>): Promise<Record<string, any>> {
+    const steward = this.fixture.identities.find((identity) => identity.handle === stewardHandle(block.owner));
+    if (steward === undefined) throw new Error(`no steward for ${block.owner}`);
+    await this.until(`Penguin's block ${block.id}`, async () => ((await this.featurePage(block.id, block.owner))?.feature !== undefined ? true : undefined));
+    const session = await this.person(block.owner).startSession(block, steward);
+    await session.open();
+    for (const commit of block.commits) {
+      await this.publish(block, commit);
+      const scope = commit.fix?.scope ?? commit.revises?.scope;
+      const form = this.fixture.reviewForms.find((file) => file.name === `${scope}-${commit.tag}`);
+      if (form === undefined || scope === undefined) continue;
+      const answer = await session.answer("submit_review", { feature: block.id, scope, form: { riskyInputs: [], storedDataMarker: null, ...form.form } });
+      if (answer.isError) throw new Error(`${steward.handle}'s review of ${block.id} was refused: ${JSON.stringify(answer.value).slice(0, 1_500)}`);
+      const reviewId = answer.value["reviewId"] as number;
+      await this.until(`the runner's record of review ${reviewId}`, async () => {
+        const page = await this.featurePage(block.id, block.owner);
+        return (page.reviews as { reviewId: number; state: string }[]).some((each) => each.reviewId === reviewId && each.state !== "pending") ? true : undefined;
+      });
+      await onReview?.(commit, reviewId);
+    }
+    return this.land(block);
+  }
+
+  /** Once no caller is left, Penguin approved the contract step: the originating agent removes the old names and lands. */
+  async contract(): Promise<Record<string, any>> {
+    await this.until("Penguin's contract step", async () => {
+      const steps = ((await this.splitWork())["contractStep"] ?? []) as { state: string }[];
+      return steps.length > 0 && steps.every((step) => step.state === "approved") ? true : undefined;
+    });
+    const removal = this.origin.commits.at(-1) as CaseCommit;
+    await this.publish(this.origin, removal);
+    return this.land(this.origin);
   }
 
   // Evidence ----------------------------------------------------------------------------------------

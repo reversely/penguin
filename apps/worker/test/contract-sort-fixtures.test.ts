@@ -13,8 +13,6 @@ import { fileURLToPath } from "node:url";
 
 import type { ContractSortEntry, ContractWorkView } from "@penguin/protocol";
 
-import { retireSplit, splitReplacements } from "../../../services/project-agent/src/contract-split.ts";
-import { buildFeaturePage } from "../../../services/project-agent/src/dashboard-views.ts";
 import { buildFixture, builderOf, fixtureScopeMap, PreviewProject, type ExampleName } from "../../../scripts/preview/seed.ts";
 
 const ROOT = fileURLToPath(new URL("../../../", import.meta.url));
@@ -82,61 +80,50 @@ describe("case 2, the helpful fix: start_of_day to UTC", () => {
   });
 });
 
-describe("case 4, money in minor units: Ines's float-to-Money change", () => {
-  test("the float price functions are incompatible, so Penguin splits the feature and the old names retire after the expand", async () => {
-    const larder = JSON.parse(readFileSync(join(ROOT, "examples", "money-minor-units", "larder.json"), "utf8")) as {
-      features: { id: string; owner: string; commits: { tag?: string }[] }[];
-    };
+describe("case 4, money in minor units: Ines's split", () => {
+  const larder = JSON.parse(readFileSync(join(ROOT, "examples", "money-minor-units", "larder.json"), "utf8")) as {
+    features: { id: string; owner: string; role: string; commits: { tag?: string }[] }[];
+    promotions: { feature: string }[];
+    split: { feature: string; retiring: { contract: string }[] };
+  };
+  const ines = larder.features.find((each) => each.id === larder.split.feature) as (typeof larder.features)[number];
+
+  test("the expand only adds, so Penguin records no split and the feature has nothing to sort as incompatible", async () => {
     const { preview, identities } = await previewOf("money-minor-units");
-    const ines = larder.features.find((each) => each.id === "money-minor-units");
-    assert.ok(ines);
     // Main as Ines found it: Lena's stacking promoted.
-    preview.moveMain(preview.git("rev-parse", "feature-promotion-stacking"));
+    preview.moveMain(preview.git("rev-parse", `feature-${larder.promotions[0]?.feature}`));
     preview.sortContracts = true;
-    const agent = identities.find((identity) => identity.handle === builderOf(ines)) as SeedIdentity;
-    await preview.open(agent, ines.id, { scopes: agent.charter_scopes });
+    await preview.open(identities.find((identity) => identity.handle === builderOf(ines)) as SeedIdentity, ines.id, { scopes: ["money", "orders"] });
     await preview.checkpoint(ines.id, `feature-${ines.id}-${ines.commits[0]?.tag}`);
     await preview.factsPass();
     const work = await preview.contract(ines.id);
-
-    // Against main with Lena's stacking promoted, Ines's checkpoint changes these three of the float
-    // API; percent_off already took its stacking signature on main.
-    const FLOAT_API = ["shared.money.display", "shared.money.price", "shared.money.total"];
-    assert.deepEqual(
-      sorts(work, FLOAT_API),
-      FLOAT_API.map((symbol) => [symbol, "incompatible"]),
-    );
-    assert.deepEqual(
-      FLOAT_API.map((symbol) => entry(work, symbol)?.breaks),
-      ["removed", "signature", "type"],
-    );
-    for (const symbol of FLOAT_API) assert.ok((entry(work, symbol)?.callers ?? 0) > 0, `${symbol} has callers outside Ines's scopes`);
-    assert.equal(entry(work, "shared.money.Money")?.sort, "additive");
-    assert.deepEqual([work.decision, work.split?.state, work.split?.entries.map((each) => each.symbol)], ["split", "expand_first", FLOAT_API]);
-    assert.match(work.nextStep, /^Expand first: 3 incompatible contract changes with callers outside your scopes: /u);
-    // The feature page's API carries the same view, for the page to show the split's stage.
-    const page = await buildFeaturePage(preview.viewDeps(), ines.id, ines.owner);
-    assert.deepEqual([page?.contract?.decision, page?.contract?.split?.state], ["split", "expand_first"]);
-    // No float function is a rename, move or keyword rename: the agent writes each parallel function.
-    assert.match(work.nextStep, /write the parallel function beside the old one/u);
-    assert.doesNotMatch(work.nextStep, /expand: true;/u);
-
-    // The fixture's expand wave (money-type) is that parallel API; once it reaches main, the float
-    // functions retire with the replacements the wave adds.
-    // land_feature's retiring names them; Penguin checks each is an old name of the split.
-    const named = splitReplacements(preview.splits.get(ines.id), [
-      { contract: "shared/money/__init__.py::price", replacement: "shared/money/__init__.py::Money" },
-      { contract: "shared/money/__init__.py::total", replacement: "shared/money/__init__.py::Money.sum" },
-      { contract: "shared/money/__init__.py::display", replacement: "shared/money/__init__.py::Money.display" },
+    assert.deepEqual([work.state, work.decision, work.split, work.counts?.incompatible], ["sorted", "none", null, 0]);
+    assert.ok(work.counts !== null && work.counts.additive > 0);
+    assert.deepEqual(sorts(work, ["shared.money.Money", "orders.model.line_total_minor", "orders.model.order_total_minor", "shared.money.discounts.discounted"]), [
+      ["shared.money.Money", "additive"],
+      ["orders.model.line_total_minor", "additive"],
+      ["orders.model.order_total_minor", "additive"],
+      ["shared.money.discounts.discounted", "additive"],
     ]);
-    assert.ok(Array.isArray(named), String(named));
-    preview.splits.name(ines.id, named);
-    const retired = await retireSplit(preview.splitDeps(), ines.id, preview.git("rev-parse", "feature-money-type"));
-    assert.deepEqual([retired?.state, retired?.unretired], ["retiring", []]);
-    assert.deepEqual(
-      preview.retiring.list().map((each) => each.contract),
-      ["shared/money/__init__.py::display", "shared/money/__init__.py::price", "shared/money/__init__.py::total"],
-    );
-    assert.match((await preview.contract(ines.id)).nextStep, /^The expand step is on main \([0-9a-f]{12}\)\. Retiring: .* Migrate: Penguin proposes one migration plan per owner group/u);
+    assert.match(work.nextStep, /^No contract change needs a split or a merge plan: \d+ additive/u);
+  });
+
+  test("the contract checkpoint removes the float API with no caller left, so each removal is compatible", async () => {
+    const { preview, identities } = await previewOf("money-minor-units");
+    // Main as the last block left it, just before Ines's contract.
+    const last = larder.promotions.at(-2)?.feature as string;
+    const block = larder.features.find((each) => each.id === last) as (typeof larder.features)[number];
+    preview.moveMain(preview.git("rev-parse", `feature-${block.id}-${block.commits.at(-1)?.tag}^{commit}`));
+    preview.sortContracts = true;
+    await preview.open(identities.find((identity) => identity.handle === builderOf(ines)) as SeedIdentity, ines.id, { scopes: ["money", "orders"] });
+    await preview.checkpoint(ines.id, `feature-${ines.id}-${ines.commits.at(-1)?.tag}`);
+    await preview.factsPass();
+    const work = await preview.contract(ines.id);
+    // The contract also drops the CENT constants the float functions rounded with.
+    const removed = work.entries.filter((entry) => entry.breaks === "removed").map((entry) => [entry.symbol, entry.sort, entry.callers]);
+    const retired = ["orders.model.line_total", "orders.model.order_total", "shared.money.discounts.percent_off", "shared.money.display", "shared.money.price", "shared.money.total"];
+    assert.ok(retired.every((symbol) => removed.some(([each]) => each === symbol)), JSON.stringify(removed));
+    assert.ok(removed.every(([, sort, callers]) => sort === "compatible" && callers === 0), JSON.stringify(removed));
+    assert.deepEqual([work.decision, work.split], ["none", null]);
   });
 });

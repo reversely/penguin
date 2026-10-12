@@ -13,9 +13,11 @@ creates a Git repository in TARGET:
   the feature's first commit. Each commit lays the files under ``features/<id>/<source>/`` over the
   branch's tree, so a source directory holds only the files the commit adds or changes. A commit with
   a ``tag`` also gets the lightweight tag ``feature-<id>-<tag>``.
-- A commit with ``after`` names the tag of an earlier commit of its feature. It is built on that
-  commit and keeps only its own tag; the branch head stays where it was. A running feature uses it
-  for a second fix of the same checkpoint: one per plan that reaches it.
+- A commit with ``"onto": "main"`` starts from main as it stands, as an agent that fetched main
+  first does; the branch's head must be in main's history. Ines's contract commit uses it.
+- A commit with ``"merge": "main"`` merges main into the branch first: its parents are main and the
+  branch's head, and its tree is main's tree with every file the branch's commits laid. A reader's
+  migration uses it, since the reader started from ``base`` and the replacements are on main.
 - A promotion moves ``main`` to a feature's head, as Penguin promotes a block in one push.
 
 Commits and promotions are applied in date order. Every value Git hashes is fixed (author, committer,
@@ -56,7 +58,7 @@ STARTS = frozenset({"base", "main"})
 ROLES = frozenset(
     {
         "originating",
-        "wave",
+        "migration",
         "same-area",
         "reader",
         "midway",
@@ -64,7 +66,7 @@ ROLES = frozenset(
         "late-starter",
     }
 )
-FIX_KINDS = frozenset({"mechanical", "behavioural", "revision"})
+FIX_KINDS = frozenset({"migration", "revision"})
 MAX_ID = 64
 MAX_TEXT = 2000
 MAX_PATH = 512
@@ -95,7 +97,8 @@ class CommitSpec:
     tag: str | None
     fix: dict | None
     fails_alone: list[str]
-    after: str | None = None
+    onto: str | None = None
+    merge: str | None = None
 
 
 @dataclass(frozen=True)
@@ -314,11 +317,13 @@ def check_commit(
             check.fail(f"{at}.fix", f"needs a scope and a kind in {sorted(FIX_KINDS)}")
         check.test_ids(fix.get("tests", []), f"{at}.fix.tests")
     fails_alone = check.test_ids(commit.get("fails_alone", []), f"{at}.fails_alone")
-    after = commit.get("after")
-    if after is not None:
-        check.id(after, f"{at}.after")
-        if commit.get("tag") is None:
-            check.fail(f"{at}.tag", "a commit built after another needs its own tag")
+    onto = commit.get("onto")
+    merge = commit.get("merge")
+    for key, value in (("onto", onto), ("merge", merge)):
+        if value not in (None, "main"):
+            check.fail(f"{at}.{key}", "can only be 'main'")
+    if onto is not None and merge is not None:
+        check.fail(f"{at}.merge", "a commit names either onto or merge")
     if len(check.problems) > before:
         return None
     return CommitSpec(
@@ -330,7 +335,8 @@ def check_commit(
         tag=commit.get("tag"),
         fix=fix,
         fails_alone=fails_alone,
-        after=after,
+        onto=onto,
+        merge=merge,
     )
 
 
@@ -366,11 +372,6 @@ def check_features(
             )
             if spec is None:
                 continue
-            if spec.after is not None and spec.after not in tags:
-                check.fail(
-                    f"{at}.commits[{j}].after",
-                    f"{spec.after!r} is not the tag of an earlier commit",
-                )
             if spec.tag is not None:
                 tags.add(spec.tag)
             date = datetime.fromisoformat(spec.date)
@@ -383,7 +384,7 @@ def check_features(
     return features, commits
 
 
-def check_plan(raw: dict, features: dict, scopes: dict, check: Checker) -> None:
+def check_split(raw: dict, features: dict, check: Checker) -> None:
     for i, promotion in enumerate(raw.get("promotions", [])):
         if promotion.get("feature") not in features:
             check.fail(
@@ -391,16 +392,16 @@ def check_plan(raw: dict, features: dict, scopes: dict, check: Checker) -> None:
                 f"{promotion.get('feature')!r} is not a feature",
             )
         check.date(promotion.get("date"), f"promotions[{i}].date")
-    plan = raw.get("plan", {})
-    if plan.get("feature") not in features:
-        check.fail("plan.feature", f"{plan.get('feature')!r} is not a feature")
-    for i, part in enumerate(plan.get("parts", [])):
-        if part.get("scope") not in scopes:
-            check.fail(
-                f"plan.parts[{i}].scope", f"{part.get('scope')!r} is not a scope"
-            )
-        if part.get("kind") not in {"mechanical", "behavioural"}:
-            check.fail(f"plan.parts[{i}].kind", "must be mechanical or behavioural")
+    split = raw.get("split", {})
+    if split.get("feature") not in features:
+        check.fail("split.feature", f"{split.get('feature')!r} is not a feature")
+    for i, each in enumerate(split.get("retiring", [])):
+        for key in ("contract", "replacement"):
+            value = each.get(key)
+            if not isinstance(value, str) or "::" not in value:
+                check.fail(f"split.retiring[{i}].{key}", "must be path::symbol")
+            else:
+                check.path(value.partition("::")[0], f"split.retiring[{i}].{key}")
 
 
 def load_larder(raw: object) -> Larder:
@@ -417,7 +418,7 @@ def load_larder(raw: object) -> Larder:
     scopes, scope_paths = check_scopes(raw, teams, check)
     check_invariants(raw, scope_paths, check)
     features, commits = check_features(raw, people, scopes, check)
-    check_plan(raw, features, scopes, check)
+    check_split(raw, features, check)
     if check.problems:
         raise LarderError(check.problems)
     return Larder(raw, people, teams, scopes, scope_paths, features, commits)
@@ -512,6 +513,9 @@ def identities_file(larder: Larder) -> dict:
         if dri_scopes(larder, person["id"])
     ]
     for feature in larder.features.values():
+        # A block Penguin opens for code on main has no builder: the owner's steward writes it.
+        if feature["role"] == "migration":
+            continue
         owned = set(dri_scopes(larder, feature["owner"]))
         builder = {
             "handle": builder_handle(feature),
@@ -531,7 +535,7 @@ def identities_file(larder: Larder) -> dict:
             builder["charter_paths"] = sorted(set(borrowed))
         identities.append(builder)
     return {
-        "$comment": "Agent identities generated from larder.json by build.py: one steward per person, chartered on every scope the person is DRI for, then one builder per feature, chartered on the scopes of the feature's area the person is DRI for and, in 'charter_paths', on the paths of the area's other scopes. Format as in the other fixtures. A feature that declares a scope another person is DRI for names it in its area in larder.json.",
+        "$comment": "Agent identities generated from larder.json by build.py: one steward per person, chartered on every scope the person is DRI for, then one builder per feature other than a block Penguin opens, chartered on the scopes of the feature's area the person is DRI for and, in 'charter_paths', on the paths of the area's other scopes. Format as in the other fixtures. A feature that declares a scope another person is DRI for names it in its area in larder.json.",
         "identities": identities,
     }
 
@@ -696,7 +700,7 @@ class ImportStream:
 
     def __init__(self) -> None:
         self.chunks: list[bytes] = []
-        self.parents: dict[int, int | None] = {}
+        self.parents: dict[int, list[int | None]] = {}
 
     def data(self, payload: bytes) -> None:
         self.chunks += [f"data {len(payload)}\n".encode(), payload, b"\n"]
@@ -708,9 +712,10 @@ class ImportStream:
         date: str,
         message: str,
         files: dict[str, bytes],
+        merged: int | None = None,
     ) -> int:
         mark = len(self.parents) + 1
-        self.parents[mark] = parent
+        self.parents[mark] = [parent, merged]
         signature = f"{person[0]} <{person[1]}> {raw_date(date)}"
         self.chunks.append(
             f"commit refs/penguin/import\nmark :{mark}\n"
@@ -718,6 +723,8 @@ class ImportStream:
         )
         self.data(message.encode())
         self.chunks.append(f"from :{parent}\n".encode() if parent else b"deleteall\n")
+        if merged is not None:
+            self.chunks.append(f"merge :{merged}\n".encode())
         for path, payload in sorted(files.items()):
             self.chunks.append(f"M 100644 inline {path}\n".encode())
             self.data(payload)
@@ -728,10 +735,16 @@ class ImportStream:
         self.chunks.append(f"reset {ref}\nfrom :{mark}\n\n".encode())
 
     def contains(self, mark: int, ancestor: int) -> bool:
-        while mark is not None:
-            if mark == ancestor:
+        """Whether ``ancestor`` is ``mark`` or reachable from it through any parent."""
+        seen, stack = set(), [mark]
+        while stack:
+            current = stack.pop()
+            if current is None or current in seen:
+                continue
+            if current == ancestor:
                 return True
-            mark = self.parents[mark]
+            seen.add(current)
+            stack.extend(self.parents[current])
         return False
 
     def run(self, target: Path) -> dict[int, str]:
@@ -818,6 +831,8 @@ def build(target: Path, larder: Larder | None = None) -> Built:
     tags = {base["tag"]: base_mark}
 
     commits = []
+    # Every file each branch's own commits laid, for a commit that merges main into the branch.
+    laid: dict[str, dict[str, bytes]] = {}
     for event in timeline(larder):
         if isinstance(event, dict):
             name = branch(event["feature"])
@@ -832,12 +847,20 @@ def build(target: Path, larder: Larder | None = None) -> Built:
             from_main = larder.features[event.feature]["start"] == "main"
             heads[name] = heads["main"] if from_main else base_mark
         files = source_files(HERE / "features" / event.feature / event.source)
-        parent = heads[name] if event.after is None else tags[f"{name}-{event.after}"]
+        laid[name] = {**laid.get(name, {}), **files}
+        parent, merged = heads[name], None
+        if event.onto == "main":
+            if not stream.contains(heads["main"], heads[name]):
+                raise SystemExit(
+                    f"main does not contain {name}, so it cannot start from main"
+                )
+            parent = heads["main"]
+        if event.merge == "main":
+            parent, merged, files = heads["main"], heads[name], laid[name]
         mark = stream.commit(
-            parent, author_of(larder, event), event.date, event.message, files
+            parent, author_of(larder, event), event.date, event.message, files, merged
         )
-        if event.after is None:
-            heads[name] = mark
+        heads[name] = mark
         commits.append((event, mark))
         if event.tag is not None:
             tags[f"{name}-{event.tag}"] = mark
@@ -856,25 +879,19 @@ def pins_of(larder: Larder, built: Built) -> dict:
     """The pins of a build: branch heads, tags and the commit that fixes each test."""
     branches = {"main", *(branch(feature) for feature in larder.features)}
 
-    def in_waves(spec: CommitSpec) -> bool:
-        return spec.after is not None or larder.features[spec.feature]["role"] == "wave"
-
-    def fixes_of(waves: bool) -> dict[str, str]:
-        return {
-            test: sha
-            for spec, sha in built.commits
-            if in_waves(spec) == waves
-            for test in (spec.fix or {}).get("tests", [])
-        }
+    fixes = {
+        test: sha
+        for spec, sha in built.commits
+        for test in (spec.fix or {}).get("tests", [])
+    }
 
     return {
-        "$comment": "Commit SHAs a build of this fixture produces; `python build.py TARGET --pins` prints them. 'branches' maps main and each feature-<id> branch to its head. 'tags' maps base and each feature-<id>-<tag> tag to its commit. 'fixes' maps the pytest node ID of each test a fix commit of the one-block attempt makes pass to that commit; 'wave_fixes' does the same for the waves' fix commits. tests/test_money_fixture_builder.py checks a fresh build against this file.",
+        "$comment": "Commit SHAs a build of this fixture produces; `python build.py TARGET --pins` prints them. 'branches' maps main and each feature-<id> branch to its head. 'tags' maps base and each feature-<id>-<tag> tag to its commit. 'fixes' maps the pytest node ID of each test a migration commit makes pass to that commit. tests/test_money_fixture_builder.py checks a fresh build against this file.",
         "branches": {ref: built.refs[ref] for ref in sorted(branches)},
         "tags": {
             ref: sha for ref, sha in sorted(built.refs.items()) if ref not in branches
         },
-        "fixes": dict(sorted(fixes_of(waves=False).items())),
-        "wave_fixes": dict(sorted(fixes_of(waves=True).items())),
+        "fixes": dict(sorted(fixes.items())),
     }
 
 

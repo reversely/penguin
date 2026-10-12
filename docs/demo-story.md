@@ -66,22 +66,29 @@ order.
 | `team` | 1 | The originating person | The team view |
 | `start-waits` | Case 4 only | The person whose running feature covers the area | The overlapping start in that person's inbox, before the approval |
 | `open` | 2 | The originating person | The feature page's declaration and the features that read it |
-| `returned` | Case 4 only | The originating person | The plan returned over the break limit, in that person's inbox |
 | `plan` | 3 | The originating person | The merge plan with its facts, the tools that produced them and the parts |
 | `review` | 5 | The author | The author's inbox card for the plan: the review form, the side-by-side run and the parts |
 | `approvals` | 4 | The originating person | The plan's parts with their states |
 | `revision` | 6 | The author | The card after a revision that still differs, one per such revision |
 | `revision-passes` | 7 | The author | The card after the last revision |
-| `midway` | Case 4 only | The originating person | The plan with the part Penguin added at a running feature's checkpoint |
 | `fixes` | 8 | The originating person | The fixes written into other forks |
 | `block-checks` | 9 | The originating person | The last `check` run before landing, by tool |
 | `promoted` | 10 | The originating person | The whole feature page after the promotion, with its record |
 
 In cases 2 and 3 no author asks for a change, so `revision` and `revision-passes` do not appear and
-`review` shows the first reviewed part its author approves. In case 4 a plan over the break limit goes
-back to Ines, so its frames end at `returned`. Today case 4 stops before Ines opens, at the promotion
-the fixture makes first ([walkthrough.md](walkthrough.md#where-the-cases-stop)), so it captures `team`
-only.
+`review` shows the first reviewed part its author approves.
+
+Case 4 is a split, so its frames after `open` follow the split's steps:
+
+| Frame | Seat | Shows |
+|---|---|---|
+| `expand-waits` | The DRI of a scope the expand adds to | The expand waiting on that person's approval in the inbox |
+| `expand` | The originating person | The feature page once main holds the expand |
+| `migrations` | The originating person | The migration plans Penguin proposed, one per owner |
+| `midway` | The originating person | The plans after the midway feature's checkpoint called a retiring function |
+| `review` | The owner of the tax block | The inbox after the review of the whole-order step |
+| `revision-passes` | The owner of the tax block | The inbox after the review of the per-line revision |
+| `promoted` | The originating person | The whole feature page after the contract lands, with its record |
 
 ## Rules for the frames
 

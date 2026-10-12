@@ -54,6 +54,22 @@ export async function deleteRepo(repoRoot: string, name: string): Promise<void> 
   await run("npx", ["wrangler", "artifacts", "repos", "delete", name, "--namespace", NAMESPACE, "-y"], { cwd: repoRoot });
 }
 
+/**
+ * Waits for `step` at most `ms`; past that the clean-up goes on without it. A Worker whose Artifacts
+ * binding stopped answering can hold a request, or a server close, open with no end.
+ */
+export async function bounded(ms: number, step: () => Promise<unknown>): Promise<boolean> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => resolve(false), ms);
+  });
+  try {
+    return await Promise.race([step().then(() => true, () => false), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** Runs `step`, retrying up to four more times after a failure such as a dropped connection. */
 export async function retried<T>(step: () => Promise<T>): Promise<T> {
   for (let attempt = 1; ; attempt++) {
@@ -232,14 +248,30 @@ export class LocalStack {
     });
   }
 
-  /** Stops the Worker and the double, deletes every repo under the prefix and the temporary folder. */
+  /**
+   * Stops the Worker and the double, deletes every repo under the prefix and the temporary folder.
+   * The namespace is listed again after each round of deletes, up to five rounds, since a listing may
+   * not hold every repo at once. Answers the repos deleted; `remaining` keeps the final listing under
+   * the prefix, which is empty when the clean-up finished.
+   */
   async stop(): Promise<string[]> {
-    await this.#stopWorker();
+    await bounded(30_000, () => this.#stopWorker());
     this.#log.end();
-    await this.#double.close();
+    await bounded(10_000, () => this.#double.close());
     await rm(this.#tempDir, { recursive: true, force: true });
-    const repos = await retried(() => reposWithPrefix(this.#options.repoRoot, this.prefix));
-    for (const name of repos) await retried(() => deleteRepo(this.#options.repoRoot, name));
-    return repos;
+    const deleted: string[] = [];
+    let remaining = await retried(() => reposWithPrefix(this.#options.repoRoot, this.prefix));
+    for (let round = 0; round < 5 && remaining.length > 0; round++) {
+      for (const name of remaining) {
+        await retried(() => deleteRepo(this.#options.repoRoot, name));
+        deleted.push(name);
+      }
+      remaining = await retried(() => reposWithPrefix(this.#options.repoRoot, this.prefix));
+    }
+    this.remaining = remaining;
+    return deleted;
   }
+
+  /** The repos under the prefix the last listing in `stop` found; null before `stop`. */
+  remaining: string[] | null = null;
 }

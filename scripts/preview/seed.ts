@@ -105,6 +105,7 @@ import {
   featureLanded,
   landFailed,
   reportBlockRun,
+  requestLand,
   requestPenguinLand,
   type BlockReportResult,
   type FeatureBlocks,
@@ -118,6 +119,7 @@ import {
   migrationBlockLanded,
   migrationsChecked,
   migrationsCounted,
+  migrationTasksSettled,
   migrationTrialReported,
   MigrationStore,
   rewritesReported,
@@ -223,10 +225,8 @@ export class PreviewProject {
   adminMode = false;
   /** The originating agent's last `propose_plan` answer for use cases 1 to 3. */
   planOutcome: ProposePlanOutcome | undefined;
-  /** Use case 4: Penguin's answer to the one-block attempt's plan. */
-  blockOutcome: ProposePlanOutcome | undefined;
-  /** Use case 4: Penguin's last answer to each wave's plan, in wave order. */
-  readonly waveOutcomes: WaveOutcome[] = [];
+  /** Use case 4: Penguin's answer to the plan Ines's agent proposes at the expand. */
+  splitOutcome: ProposePlanOutcome | undefined;
 
   constructor(fixture: ExampleName, repo: string, scopeMap: ScopeMap) {
     this.fixture = fixture;
@@ -1384,179 +1384,166 @@ async function featuresFixture(preview: PreviewProject): Promise<void> {
 interface LarderCommit {
   readonly source: string;
   readonly tag?: string;
-  readonly after?: string;
   readonly fix?: { readonly scope: string; readonly kind: string };
 }
 interface LarderFeature {
   readonly id: string;
   readonly owner: string;
   readonly role: string;
+  readonly start: string;
   /** The scopes the feature declares when it opens. */
   readonly area: readonly string[];
   readonly commits: readonly LarderCommit[];
 }
 
-/** What one wave's `propose_plan` answered, kept for the walkthrough and the tests. */
-export interface WaveOutcome {
-  readonly feature: string;
-  readonly outcome: ProposePlanOutcome;
+/** The larder data the money scenario reads. */
+export interface MoneyLarder {
+  readonly features: readonly LarderFeature[];
+  readonly promotions: readonly { readonly feature: string }[];
+  readonly split: { readonly feature: string; readonly rules: readonly RewriteRule[]; readonly retiring: readonly RetiringSymbol[] };
 }
 
 /**
- * Use case 4 (money in minor units) as docs/case-study-money.md runs it: every feature running at its
- * first checkpoint, Ines's one-block plan returned over the break limit, then the waves of the parallel
- * change in order. Each wave opens from main as the wave before left it, its overlapping starts are
- * approved, and its plan names a part per fix the fixture holds for it. Rahul's tax review runs on the
- * tax wave and its per-line revision; the contract wave's plan gains Noor's pagination at its second
- * checkpoint and Sun's late start opens after it. Main moves to each wave whose plan Penguin stored and
- * whose parts were approved. Lena's stacking reached main before Ines opened, so it is not running.
+ * Use case 4 (money in minor units) as docs/case-study-money.md runs it: every running feature at its
+ * first checkpoint; Ines's feature opens, its first checkpoint is the expand, and the plan Ines's agent
+ * proposes there names no place and declares the rewrite rules and the retiring float API. Main moves
+ * to the expand; Penguin counts the remaining callers and proposes one migration plan per owner
+ * group. Noor's pagination adds a float call midway and Sun's currency filter starts after the
+ * expand. Each part is then written as the fixture holds it: a reader's builder reports its migration
+ * as a checkpoint, and each owner's steward writes the block Penguin opened for code on main, which
+ * lands. Rahul's review of the tax block breaks tax-per-line on the whole-order step and holds on the
+ * per-line revision. When no caller is left Penguin proposes the contract, and Ines's contract lands.
  */
 async function moneyMinorUnits(preview: PreviewProject): Promise<void> {
-  const larder = JSON.parse(await readFile(join(ROOT, "examples", preview.fixture, "larder.json"), "utf8")) as {
-    features: LarderFeature[];
-    promotions: { feature: string }[];
-    plan: { feature: string; parts: { scope: string; kind: string }[]; rules: RewriteRule[] };
-  };
+  const larder = JSON.parse(await readFile(join(ROOT, "examples", preview.fixture, "larder.json"), "utf8")) as MoneyLarder;
   const identities = identitiesOf(preview);
   preview.seedIdentities(identities);
-  const agentOf = (feature: LarderFeature) => identities.find((identity) => identity.handle === builderOf(feature)) as SeedIdentity;
-  // A feature declares the scopes larder.json names for it.
-  const areaOf = (feature: LarderFeature) => feature.area;
-  const ref = (feature: LarderFeature, tag: string) => preview.git("rev-parse", `feature-${feature.id}-${tag}^{commit}`);
-  // The built repository's main is where the last wave left it; the run starts from main as Ines found it.
+  preview.sortContracts = true;
+  preview.migrationPlans = true;
+  const builder = (feature: LarderFeature) => identities.find((identity) => identity.handle === builderOf(feature)) as SeedIdentity;
+  const steward = (person: string) => identities.find((identity) => identity.handle === `@${person}/steward`) as SeedIdentity;
+  const tagOf = (feature: LarderFeature, tag: string) => `feature-${feature.id}-${tag}`;
+  const sha = (ref: string) => preview.git("rev-parse", `${ref}^{commit}`);
+  const byId = new Map(larder.features.map((feature) => [feature.id, feature]));
+  const origin = byId.get(larder.split.feature) as LarderFeature;
   const [stacking] = larder.promotions;
-  preview.moveMain(preview.git("rev-parse", `feature-${stacking?.feature}`));
-  const promoted = new Set(larder.promotions.map((promotion) => promotion.feature));
-  const origin = larder.features.find((feature) => feature.id === larder.plan.feature) as LarderFeature;
-  const waves = larder.features.filter((feature) => feature.role === "wave");
-  const early = larder.features.filter((feature) => feature.role !== "late-starter" && feature.role !== "wave" && feature !== origin && !promoted.has(feature.id));
-  const readers = early.filter((feature) => feature.commits.some((commit) => commit.fix !== undefined) && feature.role !== "same-area");
-  const midway = readers.filter((feature) => feature.role === "midway");
-
-  // Every feature that started before the one-block attempt, at its first checkpoint; the attempt last,
-  // so its overlap check finds the rest.
-  for (const feature of [...early, origin]) {
-    await preview.step(`open ${feature.id}`, () => preview.open(agentOf(feature), feature.id, { scopes: areaOf(feature) }));
-    await preview.step(`checkpoint ${feature.id}`, () => preview.checkpoint(feature.id, `feature-${feature.id}-${feature.commits[0]?.tag}`));
+  // Main as Ines found it: Lena's stacking promoted.
+  preview.moveMain(sha(`feature-${stacking?.feature}`));
+  const early = larder.features.filter(
+    (feature) => feature.start === "base" && feature.id !== stacking?.feature,
+  );
+  for (const feature of early) {
+    await preview.step(`open ${feature.id}`, () => preview.open(builder(feature), feature.id, { scopes: feature.area }));
+    await preview.step(`checkpoint ${feature.id}`, () => preview.checkpoint(feature.id, tagOf(feature, feature.commits[0]?.tag as string)));
   }
-  const approveStarts = async (feature: LarderFeature) => {
-    for (const lock of preview.overlaps.locksOn(feature.id)) {
-      await preview.step(`approve start of ${feature.id} beside ${lock.featureId}`, () => preview.approveStart(lock.personId, lock.featureId, feature.id));
-    }
-  };
-  await approveStarts(origin);
+
+  // Ines opens the split feature; each running feature in its area waits for its person's approval.
+  await preview.step(`open ${origin.id}`, () => preview.open(builder(origin), origin.id, { scopes: origin.area }));
+  for (const lock of preview.overlaps.locksOn(origin.id)) {
+    await preview.step(`approve start of ${origin.id} beside ${lock.featureId}`, () => preview.approveStart(lock.personId, lock.featureId, origin.id));
+  }
+  const expand = origin.commits[0]?.tag as string;
+  await preview.step(`checkpoint ${origin.id} ${expand}`, () => preview.checkpoint(origin.id, tagOf(origin, expand)));
   await preview.step("whats_near", () => preview.whatsNear(origin.id));
   if (preview.runnerTools) {
     await preview.step("impact", () => preview.runnerTool(origin.id, "impact"));
     await preview.step("check", () => preview.runnerTool(origin.id, "check"));
   }
+  // The expand only adds, so the plan has no place; it declares the rules and marks the float API retiring.
+  preview.splitOutcome = await preview.step("propose_plan at the expand", () => preview.propose(origin.id, [], larder.split.rules, larder.split.retiring));
+  if (preview.splitOutcome.status !== "stored") throw new Error(`expand plan: ${JSON.stringify(preview.splitOutcome).slice(0, 2_000)}`);
+  // Penguin promotes the expand on its own; the feature keeps building on its fork.
+  await preview.step(`promote ${origin.id}'s expand`, async () => {
+    await preview.promoted(origin.id, sha(tagOf(origin, expand)), false);
+    await preview.runnerPass();
+    await preview.trialPass();
+  });
 
-  // A running feature's part in a wave carries the fix the fixture holds for that wave: the commit
-  // tagged `fix`, built on the checkpoint it names, as a patch limited to the feature's scopes.
-  const waveFix = (feature: LarderFeature) => feature.commits.find((commit) => commit.after !== undefined);
-  const readerPart = (feature: LarderFeature, base: string, fix: string) => {
-    const paths = areaOf(feature).flatMap((scope) => preview.scopeMap.scopes.get(scope)?.paths ?? []);
-    return { place: { feature: feature.id }, patch: { base, diff: preview.diff(base, fix, paths) } };
-  };
-  const reported = (feature: LarderFeature) => preview.features.get(feature.id)?.latestCheckpointSha;
-  // A running feature whose own changes call nothing in the contract diff is not a place: its callers
-  // sit in files it carries from main, and it takes main's fix with main. The originating agent drops
-  // each part the facts answer `not_affected` and proposes the rest.
-  type Part = { readonly place: { readonly scope: string } | { readonly feature: string } };
-  const proposeAffected = async (featureId: string, label: string, parts: readonly Part[], rules: readonly RewriteRule[] = []) => {
-    const proposed = await preview.step(label, () => preview.propose(featureId, parts, rules));
-    const unaffected = new Set(proposed.status === "missing" ? proposed.missing.flatMap((item) => (item.code === "not_affected" && item.part !== undefined ? [item.part] : [])) : []);
-    if (unaffected.size === 0) return proposed;
-    const kept = parts.filter((_, index) => !unaffected.has(index));
-    return preview.step(`${label} without the unaffected features`, () => preview.propose(featureId, kept, rules));
-  };
+  // Noor's pagination calls the float API midway; Sun's currency filter starts after the expand.
+  for (const feature of larder.features.filter((each) => each.role === "midway")) {
+    const later = feature.commits.find((commit) => commit.tag === "checkpoint") as LarderCommit;
+    await preview.step(`checkpoint ${feature.id}`, async () => {
+      await preview.checkpoint(feature.id, tagOf(feature, later.tag as string));
+      await preview.runnerPass();
+      await preview.runnerPass();
+      await preview.trialPass();
+    });
+  }
+  for (const feature of larder.features.filter((each) => each.role === "late-starter")) {
+    await preview.step(`open ${feature.id}`, () => preview.open(builder(feature), feature.id, { scopes: feature.area }));
+    await preview.step(`checkpoint ${feature.id}`, () => preview.checkpoint(feature.id, tagOf(feature, feature.commits[0]?.tag as string)));
+  }
 
-  // The one-block attempt: a part per plan scope names the fix commit in Ines's fork, a part per reader
-  // its fork's own fix, at the checkpoint each reported. Its behavioural parts outnumber the break
-  // limit, so Penguin returns it to Ines; the returned plan stays in Ines's inbox.
-  const blockParts = [
-    ...larder.plan.parts.map((part) => ({ place: { scope: part.scope }, diff: { commit: ref(origin, `fix-${part.scope}`) } })),
-    ...readers.map((feature) => readerPart(feature, reported(feature) as string, `feature-${feature.id}`)),
-  ];
-  preview.blockOutcome = await proposeAffected(origin.id, "propose_plan for the one-block attempt", blockParts, larder.plan.rules);
-
-  // The waves, in order. A wave's parts: a part per fix commit of its own for another scope's code on
-  // main, and, for a wave whose change reaches running features, a part per feature with a fix for it.
-  for (const wave of waves) {
-    await preview.step(`open ${wave.id}`, () => preview.open(agentOf(wave), wave.id, { scopes: areaOf(wave) }));
-    await preview.step(`checkpoint ${wave.id}`, () => preview.checkpoint(wave.id, `feature-${wave.id}-checkpoint`));
-    await approveStarts(wave);
-    const scopeParts = wave.commits.flatMap((commit) =>
-      commit.fix === undefined || commit.fix.kind === "revision" ? [] : [{ place: { scope: commit.fix.scope }, diff: { commit: ref(wave, commit.tag as string) } }],
-    );
-    const last = wave === waves.at(-1);
-    // The contract wave reaches the running features whose own changes still call the float API: each
-    // reported checkpoint carries the fix the fixture holds for it.
-    const atFix = (feature: LarderFeature) => {
-      const fix = waveFix(feature);
-      return fix?.after !== undefined && ref(feature, fix.after) === reported(feature);
-    };
-    const fixed = last ? readers.filter(atFix) : [];
-    const parts = () => [
-      ...scopeParts,
-      ...fixed.map((feature) => readerPart(feature, reported(feature) as string, `feature-${feature.id}-${waveFix(feature)?.tag}`)),
-    ];
-    let proposed = await proposeAffected(wave.id, `propose_plan for ${wave.id}`, parts());
-
-    // Rahul's review of the tax wave: the whole-order step breaks tax-per-line, so the exception goes to
-    // Rahul; Ines's agent writes the per-line revision, the review on it holds, and the plan is proposed
-    // again at the revision.
-    const revision = wave.commits.find((commit) => commit.fix?.kind === "revision");
-    if (revision !== undefined) {
-      const index = wave.commits.indexOf(revision);
-      const reviewed = wave.commits[index - 1]?.tag as string;
-      const scope = revision.fix?.scope as string;
-      const reviewer = readers.find((feature) => agentOf(feature).charter_scopes.includes(scope)) as LarderFeature;
-      for (const [step, file] of [[reviewed, "tax-whole-order.json"], [revision.tag as string, "tax-per-line.json"]] as const) {
-        if (step !== wave.commits[0]?.tag) await preview.step(`checkpoint ${wave.id} ${step}`, () => preview.checkpoint(wave.id, `feature-${wave.id}-${step}`));
-        const form = JSON.parse(await readFile(join(ROOT, "examples", preview.fixture, "reviews", file), "utf8")) as ReviewForm;
-        await preview.step(`submit_review ${scope} at ${step}`, () => preview.review(reviewer.id, wave.id, scope, { ...form, riskyInputs: form.riskyInputs ?? [], storedDataMarker: form.storedDataMarker ?? null }));
-      }
-      proposed = await proposeAffected(wave.id, `propose_plan for ${wave.id} at ${revision.tag}`, parts());
+  // Each running feature's builder writes its migration and reports it as a checkpoint.
+  for (const plan of preview.migrations.plans(origin.id)) {
+    for (const part of plan.parts) {
+      if (part.place.kind !== "feature" || part.state === "dropped") continue;
+      const feature = byId.get(part.place.feature) as LarderFeature;
+      const migrate = feature.commits.find((commit) => commit.fix?.kind === "migration");
+      if (migrate === undefined) continue;
+      await preview.step(`migrate ${feature.id}`, async () => {
+        const written = await preview.checkpoint(feature.id, tagOf(feature, migrate.tag as string));
+        preview.editTasks.close(`migrate:${part.partId}`, "done", `${builderOf(feature)} reported the migration as a checkpoint`, written);
+      });
     }
+  }
 
-    // Noor's pagination reaches the contract wave's area at its second checkpoint; Ines's agent adds its
-    // part and proposes the plan again. Sun opens the late start after the plan was announced.
-    if (last) {
-      for (const feature of proposed.status === "stored" ? midway : []) {
-        await preview.step(`checkpoint ${feature.id}`, () => preview.checkpoint(feature.id, `feature-${feature.id}-checkpoint`));
-        fixed.push(feature);
+  await migrationTasksSettled(preview.migrationDeps());
+
+  // Each owner's steward writes the block Penguin opened for that owner's code on main, in the
+  // fixture's order: each commit starts from main as the last block left it. Rahul's agent reviews the
+  // tax block at each step with the fixture's form for it. Penguin lands each block once its parts on
+  // main are written (penguin-land.ts), and the check runner checks and promotes it.
+  const blocks = larder.promotions.map((promotion) => byId.get(promotion.feature) as LarderFeature).filter((feature) => feature.role === "migration");
+  for (const block of blocks) {
+    const plan = preview.migrations.planOfBlock(block.id);
+    if (plan === undefined) throw new Error(`Penguin opened no block ${block.id}`);
+    await preview.step(`open ${block.id} as ${block.owner}'s steward`, () => preview.open(steward(block.owner), block.id, { scopes: block.area }));
+    for (const commit of block.commits) {
+      const written = sha(tagOf(block, commit.tag as string));
+      preview.git("update-ref", `refs/heads/feature-${block.id}`, written);
+      await preview.step(`checkpoint ${block.id} ${commit.tag}`, () => preview.checkpoint(block.id, tagOf(block, commit.tag as string)));
+      const form = join(ROOT, "examples", preview.fixture, "reviews", `${commit.fix?.scope}-${commit.tag}.json`);
+      if (existsSync(form)) {
+        const parsed = JSON.parse(await readFile(form, "utf8")) as ReviewForm;
+        await preview.step(`submit_review ${commit.fix?.scope} at ${commit.tag}`, () => preview.review(block.id, block.id, commit.fix?.scope as string, parsed));
       }
-      if (proposed.status === "stored" && midway.length > 0) proposed = await proposeAffected(wave.id, `propose_plan for ${wave.id} with the midway feature`, parts());
-      for (const feature of larder.features.filter((each) => each.role === "late-starter")) {
-        await preview.step(`open ${feature.id}`, () => preview.open(agentOf(feature), feature.id, { scopes: areaOf(feature) }));
-        await preview.step(`checkpoint ${feature.id}`, () => preview.checkpoint(feature.id, `feature-${feature.id}-${feature.commits[0]?.tag}`));
+      for (const part of plan.parts.filter((each) => each.place.kind === "scope")) {
+        preview.editTasks.close(`migrate:${part.partId}`, "done", `${steward(block.owner).handle} wrote ${commit.tag}`, written);
       }
     }
-    preview.waveOutcomes.push({ feature: wave.id, outcome: proposed });
-    if (proposed.status !== "stored" || last) break;
-    // The agent of each part's scope reviews it with the fixture's form, `reviews/<scope>.json`, from a
-    // feature of the scope's owner that is running; a scope with no form gets no review.
-    for (const part of (await preview.plan(wave.id))?.parts ?? []) {
-      for (const scope of part.scopes) {
-        const file = join(ROOT, "examples", preview.fixture, "reviews", `${scope}.json`);
-        const reviewer = early.find((feature) => feature.owner === preview.scopeMap.scopes.get(scope)?.driId);
-        if (!existsSync(file) || reviewer === undefined) continue;
-        const form = JSON.parse(await readFile(file, "utf8")) as ReviewForm;
-        await preview.step(`submit_review ${scope} on ${wave.id}`, () => preview.review(reviewer.id, wave.id, scope, form));
-      }
+    await migrationTasksSettled(preview.migrationDeps());
+    for (const change of preview.protectedChanges.ofFeature(block.id).filter((row) => row.state === "pending")) {
+      await preview.step(`confirm ${block.id}'s protected lines as ${change.ownerId}`, () => preview.confirmProtected(change.ownerId, block.id));
     }
-    // Penguin approved each part whose checks are clean; each author approves a part still waiting on
-    // them once. Each person whose protected path the wave's own change writes confirms its lines; main
-    // moves to the wave's head and the wave has landed.
-    for (const part of (await preview.plan(wave.id))?.parts ?? []) {
-      if (part.approvalState === "pending") await preview.step(`approve ${part.partId}`, () => preview.decide(part.owner, wave.id, part.partId));
+    await preview.step(`land ${block.id}`, async () => {
+      await preview.landPenguinFeatures();
+      await preview.blockPass();
+      // The count after the promotion asked for rewrites and trials.
+      await preview.runnerPass();
+      await preview.trialPass();
+    });
+    if (preview.migrations.planOfBlock(block.id)?.state !== "landed") {
+      throw new Error(`${block.id} did not land: ${JSON.stringify(preview.features.records(block.id).map((kept) => JSON.parse(kept.file).type).slice(-8))}`);
     }
-    for (const change of preview.protectedChanges.ofFeature(wave.id).filter((row) => row.state === "pending")) {
-      await preview.step(`confirm ${wave.id}'s protected lines as ${change.ownerId}`, () => preview.confirmProtected(change.ownerId, wave.id));
-    }
-    preview.moveMain(preview.git("rev-parse", `feature-${wave.id}`));
-    preview.features.setState(wave.id, ["opening", "building", "landing"], "landed");
+  }
+
+  // No caller is left: Penguin approved the contract on Ines's feature, and Ines's agent removes the
+  // float API with its own tests, then lands the feature.
+  const contract = origin.commits.at(-1) as LarderCommit;
+  if (preview.retiring.contractSteps(origin.id).some((step) => step.state === "approved")) {
+    await preview.step(`checkpoint ${origin.id} ${contract.tag}`, async () => {
+      preview.git("update-ref", `refs/heads/feature-${origin.id}`, sha(tagOf(origin, contract.tag as string)));
+      await preview.checkpoint(origin.id, tagOf(origin, contract.tag as string));
+      // The checkpoint's facts run holds the contract diff that shows each symbol removed.
+      await preview.factsPass();
+    });
+    await preview.step(`land ${origin.id}`, async () => {
+      const asked = await requestLand(preview.landDeps(), origin.owner, preview.sessionOf.get(origin.id) as string, { feature: origin.id });
+      if (asked.status === "rejected") throw new Error(`land ${origin.id}: ${asked.message}`);
+      await preview.blockPass();
+      await preview.runnerPass();
+    });
   }
 }
 

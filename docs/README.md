@@ -9,7 +9,7 @@ the design section that replaces it.
 |---|---|
 | [../README.md](../README.md) | What Penguin is, the four use cases and what is built today |
 | [design.md](design.md) | The approved design: model, procedure, checks and routing, review harness, exceptions, interface |
-| [case-study-money.md](case-study-money.md) | One breaking change across fourteen people and forty running features, as a one-block attempt and seven waves |
+| [case-study-money.md](case-study-money.md) | One breaking change across fourteen people and forty running features, split into expand, migration blocks and contract |
 | [demo-story.md](demo-story.md) | The demo frames from one person's seat |
 | [architecture.md](architecture.md) | The pieces, who owns which state and how data moves between them |
 | [issues.md](issues.md) | Signed operation files, validation and rejection, the index, offline issues, pending push |
@@ -19,8 +19,8 @@ the design section that replaces it.
 | [bridge-and-runner.md](bridge-and-runner.md) | Installing `penguin-bridge`, checkpoints, the issue command line, runner mode |
 | [dashboard.md](dashboard.md) | Sign-in, the team view, feature pages, the approvals inbox, agent cards, the issue page, the local preview |
 | [deploy.md](deploy.md) | Cloudflare resources, secrets, variables, deploying and project setup |
-| [walkthrough.md](walkthrough.md) | The Playwright run of the first three use cases |
+| [walkthrough.md](walkthrough.md) | The Playwright run of the four use cases |
 | [fixture.md](fixture.md) | The identity-unification fixture |
 | [fixture-helpful-fix.md](fixture-helpful-fix.md) | The helpful-fix fixture |
 | [fixture-dependency-bump.md](fixture-dependency-bump.md) | The dependency-bump fixture |
-| [fixture-money.md](fixture-money.md) | The money-minor-units fixture: the case study's fourteen scopes, forty features and seven waves |
+| [fixture-money.md](fixture-money.md) | The money-minor-units fixture: the case study's teams, 29 scopes, forty features and the split |

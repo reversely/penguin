@@ -7,7 +7,6 @@ which tests fail where are in test_money_fixture_reproduction.py.
 
 import copy
 import importlib.util
-import itertools
 import json
 import subprocess
 import sys
@@ -97,12 +96,12 @@ def test_counts_match_the_case_study(built, penguin):
     people = [owner["id"] for owner in penguin["owners"]["owners"]]
     assert len(people) == 14
     assert {scope["dri"] for scope in scopes.values()} == set(people)
-    plan_scopes = {part["scope"] for part in RAW["plan"]["parts"]}
-    assert len(plan_scopes) == 9
-    kinds = [part["kind"] for part in RAW["plan"]["parts"]]
-    assert (kinds.count("mechanical"), kinds.count("behavioural")) == (6, 3)
+    roles = [f["role"] for f in RAW["features"]]
+    # Forty features run at once: Ines's split and the 39 others.
+    assert len(RAW["features"]) - roles.count("migration") == 40
+    assert roles.count("reader") == 23
 
-    # A fork is affected when its latest checkpoint changes a path in a scope of the plan.
+    # A reader's first checkpoint calls the float API in a scope other than money.
     def scope_of(path: str) -> str | None:
         for scope in scopes.values():
             for prefix in scope["paths"]:
@@ -112,43 +111,60 @@ def test_counts_match_the_case_study(built, penguin):
                     return scope["id"]
         return None
 
-    affected = set()
     for feature in RAW["features"]:
-        if feature["role"] in {"originating", "wave"}:
+        if feature["role"] != "reader":
             continue
-        checkpoint = f"feature-{feature['id']}-checkpoint"
-        start = "base" if feature["start"] == "base" else "main"
         changed = git(
-            repo, "diff", "--name-only", f"{start}...{checkpoint}"
+            repo, "diff", "--name-only", f"base...feature-{feature['id']}-checkpoint"
         ).splitlines()
-        if plan_scopes & {scope_of(path) for path in changed}:
-            affected.add(feature["id"])
-    assert len(affected) == 24
-    assert {
-        f["id"] for f in RAW["features"] if f["role"] in {"reader", "midway"}
-    } == affected
+        assert {scope_of(path) for path in changed} == set(feature["area"]), feature[
+            "id"
+        ]
 
 
-def test_mechanical_and_behavioural_fixes_match_the_plan():
+def test_the_split_is_one_feature_from_expand_to_contract(built):
+    """Ines's first commit is the expand on main and the last removes the float API from main."""
+    repo, _ = built
     (ines,) = [f for f in RAW["features"] if f["role"] == "originating"]
-    fixes = [c["fix"] for c in ines["commits"] if "fix" in c]
-    planned = {part["scope"]: part["kind"] for part in RAW["plan"]["parts"]}
-    on_main = {
-        fix["scope"]: fix["kind"]
-        for fix in fixes
-        if fix["scope"] in planned and fix["kind"] != "revision"
-    }
-    assert on_main == planned
-    assert [fix["scope"] for fix in fixes if fix["kind"] == "revision"] == ["tax"]
-    midway = [
-        c["fix"]
-        for f in RAW["features"]
-        if f["role"] == "midway"
-        for c in f["commits"]
-        if "fix" in c and "after" not in c
-    ]
-    assert [fix["kind"] for fix in midway] == ["mechanical"]
-    assert sum(kind == "mechanical" for kind in on_main.values()) + len(midway) == 7
+    assert RAW["split"]["feature"] == ines["id"]
+    expand, contract = (f"feature-{ines['id']}-{c['tag']}" for c in ines["commits"])
+    assert git(repo, "rev-parse", f"{expand}^") == git(
+        repo, "rev-parse", "feature-promotion-stacking"
+    )
+    # The expand only adds: every function main defined is still defined, with the same signature.
+    for path in (
+        "shared/money/__init__.py",
+        "shared/money/discounts.py",
+        "orders/model.py",
+    ):
+        before = git(repo, "show", f"{expand}^:{path}").splitlines()
+        after = set(git(repo, "show", f"{expand}:{path}").splitlines())
+        for line in before:
+            if line.startswith("def "):
+                assert line in after, (path, line)
+    # The contract starts from main as the last block left it, and main ends there.
+    blocks = [f for f in RAW["features"] if f["role"] == "migration"]
+    last = blocks[-1]
+    assert git(repo, "rev-parse", f"{contract}^") == git(
+        repo, "rev-parse", f"feature-{last['id']}-{last['commits'][-1]['tag']}"
+    )
+    assert git(repo, "rev-parse", "main") == git(repo, "rev-parse", contract)
+    shown = git(repo, "show", "main:shared/money/__init__.py")
+    assert "def price(" not in shown and "def display(self)" in shown
+
+
+def test_each_reader_migrates_on_main_merged_into_its_fork(built):
+    """A reader's migration merges main, which holds the expand, into the reader's fork."""
+    repo, _ = built
+    (ines,) = [f for f in RAW["features"] if f["role"] == "originating"]
+    expand = f"feature-{ines['id']}-{ines['commits'][0]['tag']}"
+    for feature in RAW["features"]:
+        if feature["role"] not in {"reader", "midway"}:
+            continue
+        migrate = f"feature-{feature['id']}-migrate"
+        parents = git(repo, "rev-list", "--parents", "-n1", migrate).split()[1:]
+        assert len(parents) == 2, feature["id"]
+        assert git(repo, "merge-base", "--is-ancestor", expand, migrate) == ""
 
 
 def test_invariants_name_tax_per_line_and_a_protected_revenue_file(penguin):
@@ -185,7 +201,7 @@ def test_identities_give_each_person_a_steward_and_each_feature_a_builder(pengui
     people = [owner["id"] for owner in penguin["owners"]["owners"]]
     handles = [i["handle"] for i in identities]
     assert handles == [f"@{person}/steward" for person in people] + [
-        f"@{f['owner']}/{f['id']}" for f in RAW["features"]
+        f"@{f['owner']}/{f['id']}" for f in RAW["features"] if f["role"] != "migration"
     ]
     assert len(set(handles)) == len(handles)
     dri_of = {s["id"]: s["dri"] for s in penguin["scopes"]["scopes"]}
@@ -269,10 +285,11 @@ HOSTILE = [
     (("features", 0, "commits", 0, "source"), "../../base"),
     (("features", 0, "commits", 0, "tag"), "--force"),
     (("features", 0, "commits", 0, "date"), "2026-03-05T10:00:00"),
-    (("features", 0, "commits", 1, "fix", "tests"), ["../tests/test_x.py::test_y"]),
+    (("features", 3, "commits", 1, "fix", "tests"), ["../tests/test_x.py::test_y"]),
     (("examples", 0, "file"), "orders/examples/invoice_tax.json"),
-    (("features", 3, "commits", 2, "after"), "--force"),
-    (("features", 3, "commits", 2, "after"), "fix"),
+    (("features", 3, "commits", 1, "merge"), "--force"),
+    (("features", 0, "commits", 1, "onto"), "base"),
+    (("split", "retiring", 0, "contract"), "../shared/money/__init__.py::price"),
 ]
 
 
@@ -287,7 +304,7 @@ def test_loader_accepts_the_fixture_data():
     larder = build.load_larder(copy.deepcopy(RAW))
     assert len(larder.scopes) == 29
     assert len(larder.teams) == 4
-    assert len(larder.features) == 47
+    assert len(larder.features) == 49
 
 
 def test_builder_refuses_a_hostile_larder_before_writing(tmp_path: Path, monkeypatch):
@@ -314,33 +331,3 @@ def test_builder_refuses_a_non_empty_target(tmp_path: Path):
 def test_builder_writes_only_inside_the_target(tmp_path: Path):
     assert run_builder(tmp_path / "repo").returncode == 0
     assert [p.name for p in tmp_path.iterdir()] == ["repo"]
-
-
-def test_waves_form_one_chain_from_main(built):
-    """Each wave starts where main stood and main moves to each wave's head in turn."""
-    repo, _ = built
-    waves = [f["id"] for f in RAW["features"] if f["role"] == "wave"]
-    assert waves[0] == "money-type" and waves[-1] == "money-contract"
-    for earlier, later in itertools.pairwise(waves):
-        first = f"feature-{later}-checkpoint^"
-        assert git(repo, "rev-parse", first) == git(
-            repo, "rev-parse", f"feature-{earlier}"
-        )
-    assert git(repo, "rev-parse", "main") == git(
-        repo, "rev-parse", f"feature-{waves[-1]}"
-    )
-
-
-def test_a_wave_fix_leaves_the_feature_branch_at_its_one_block_fix(built):
-    """A running feature's second fix is built on its checkpoint beside the first."""
-    repo, _ = built
-    for feature in RAW["features"]:
-        for commit in feature["commits"]:
-            if "after" not in commit:
-                continue
-            ref = f"feature-{feature['id']}"
-            side = f"{ref}-{commit['tag']}"
-            assert git(repo, "rev-parse", f"{side}^") == git(
-                repo, "rev-parse", f"{ref}-{commit['after']}"
-            )
-            assert git(repo, "rev-parse", ref) != git(repo, "rev-parse", side)

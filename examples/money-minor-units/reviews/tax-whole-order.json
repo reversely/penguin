@@ -3,18 +3,19 @@
     {
       "invariant": "tax-per-line",
       "verdict": "breaks",
-      "evidence": ["tax/tests/test_invoice.py::test_tax_rounded_per_line", "tax/invoice.py::invoice_tax"],
+      "evidence": [
+        "tax/tests/test_invoice.py::test_tax_rounded_per_line",
+        "tax/invoice.py::invoice_tax"
+      ],
       "storedData": "Issued invoices keep the tax they were issued with. New invoices for orders with several lines can differ by a cent from the per-line tax."
     },
     {
       "invariant": "tax-region-rate",
       "verdict": "holds",
-      "evidence": ["tax/tests/test_invoice.py::test_tax_uses_the_region_rate"],
-      "storedData": "Rates are unchanged; only their type moves from float to Decimal."
+      "evidence": [
+        "tax/tests/test_invoice.py::test_tax_uses_the_region_rate"
+      ],
+      "storedData": "Rates are unchanged: tax.rates keeps them as floats, and the tax is computed from their exact decimal value."
     }
-  ],
-  "storedDataMarker": {
-    "kind": "migration",
-    "evidence": "orders/model.py::Order::from_record"
-  }
+  ]
 }

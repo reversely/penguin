@@ -21,6 +21,7 @@ import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { CaseRun } from "./support/case-run.ts";
+import { bounded } from "./support/stack.ts";
 import { Dashboard } from "./support/dashboard.ts";
 import { CaseFixture, type CaseCommit } from "./support/fixture.ts";
 
@@ -58,9 +59,15 @@ for (const [index, fixture] of CASES.entries()) {
 
     test.afterAll(async () => {
       // A case that stopped partway still writes what it measured, with the failure among its notes.
-      if (run !== undefined && !run.resultsWritten) await run.writeResults().catch((error: Error) => run.notes.push(`results: ${error.message}`));
+      if (run !== undefined && !run.resultsWritten) {
+        const written = await bounded(120_000, () => run.writeResults());
+        if (!written) run.notes.push("The results could not be written within two minutes of the case stopping.");
+      }
       const deleted = run === undefined ? [] : await run.tearDown();
-      await writeFile(join(outDir, "cleanup.json"), `${JSON.stringify({ deletedRepos: deleted }, null, 2)}\n`);
+      // The final listing of the namespace under the case's prefix: every repo the case made is gone.
+      const remaining = run?.stack?.remaining ?? null;
+      await writeFile(join(outDir, "cleanup.json"), `${JSON.stringify({ deletedRepos: deleted, remainingRepos: remaining }, null, 2)}\n`);
+      expect(remaining, "repos left under the case's prefix after clean-up").toEqual([]);
     });
 
     test("1. open: the running features build, and the originating feature opens", async () => {
@@ -92,6 +99,7 @@ for (const [index, fixture] of CASES.entries()) {
     });
 
     test("2. plan: the originating agent proposes one fix per affected place", async () => {
+      test.skip(fixture.split !== null, "a split case lands its expand instead of a merge plan");
       await run.phase("plan", async () => {
         // The fixes for code on main go into the fork as commits; the plan's facts stay those of the
         // reported checkpoint, the change itself, and the plan names each fix commit.
@@ -112,7 +120,7 @@ for (const [index, fixture] of CASES.entries()) {
     });
 
     test("3. advance notice: each author's agent reviews, and each author decides on the dashboard", async () => {
-      test.skip(run.returned !== undefined, "the plan was returned over the break limit");
+      test.skip(fixture.split !== null || run.returned !== undefined, "a split case has no merge plan, or the plan was returned over the break limit");
       await run.phase("advance notice", async () => {
         const parts = [...run.parts.values()];
         // Nobody else decides a part: another person's approval and a body naming its approver are refused.
@@ -188,7 +196,7 @@ for (const [index, fixture] of CASES.entries()) {
     });
 
     test("4. build: the originating agent writes each approved fix into the affected fork", async () => {
-      test.skip(run.returned !== undefined, "the plan was returned over the break limit");
+      test.skip(fixture.split !== null || run.returned !== undefined, "a split case has no merge plan, or the plan was returned over the break limit");
       await run.phase("build", async () => {
         await run.writeFixes();
         for (const write of run.fixWrites) expect(write.matchesFixture, `${write.part} in ${write.fork} is the fixture's fix`).toBe(true);
@@ -199,7 +207,7 @@ for (const [index, fixture] of CASES.entries()) {
     });
 
     test("5. land: the block passes every check and main moves in one push", async () => {
-      test.skip(run.returned !== undefined, "the plan was returned over the break limit");
+      test.skip(fixture.split !== null || run.returned !== undefined, "a split case has no merge plan, or the plan was returned over the break limit");
       await run.phase("land", async () => {
         await run.publishOriginUpTo(() => false);
         const head = run.published.get(origin.id) as string;
@@ -217,6 +225,59 @@ for (const [index, fixture] of CASES.entries()) {
         await dashboard.frame("promoted", "How does it end?", origin.owner, featurePath(origin.id));
         const tokenRefusal = await run.originAgent.refused("feature_token", { feature: origin.id });
         run.notes.push(`After the promotion, feature_token on the landed fork answered ${tokenRefusal["error"]}.`);
+      });
+    });
+
+    test("2. expand: the expand checkpoint reaches main on its own and the old names retire", async () => {
+      test.skip(fixture.split === null, "the case keeps a merge plan");
+      await run.phase("expand", async () => {
+        const plan = await run.proposeExpand();
+        expect(plan["parts"].length, "the expand reaches no place").toBe(0);
+        await run.landExpand(async (person) => {
+          await dashboard.frame("expand-waits", `Why does ${display(origin.owner)}'s expand wait for ${display(person)}?`, person, "/inbox", (page) =>
+            page.locator('section[aria-labelledby="approvals-overlaps"]'),
+          );
+        });
+        await dashboard.frame("expand", "What reached main first?", origin.owner, featurePath(origin.id), CaseRun.sections.declaration);
+      });
+    });
+
+    test("3. migrate: Penguin proposes one migration plan per owner, and each owner's code moves over", async () => {
+      test.skip(fixture.split === null, "the case keeps a merge plan");
+      await run.phase("migrate", async () => {
+        const plans = await run.migrationPlans();
+        run.notes.push(`Penguin proposed ${plans.length} migration plans after the expand, one per owner group.`);
+        await dashboard.frame("migrations", "Who moves which code off the old names?", origin.owner, featurePath(origin.id), CaseRun.sections.plan);
+        // A running feature that adds a call to a retiring name midway gets the replacement as its next step.
+        for (const feature of fixture.features.filter((each) => each.role === "midway")) {
+          const [, next] = fixture.checkpointsOf(feature);
+          if (next === undefined) continue;
+          const answer = await run.publish(feature, next);
+          run.notes.push(`${feature.id}'s checkpoint answered with ${JSON.stringify(answer["nextSteps"] ?? answer["retiring"] ?? null).slice(0, 600)}.`);
+          await dashboard.frame("midway", `What did ${display(feature.owner)}'s checkpoint add to the migration?`, origin.owner, featurePath(origin.id), CaseRun.sections.plan);
+        }
+        // A feature opened after the expand starts from main with the new names in place.
+        for (const feature of fixture.features.filter((each) => each.role === "late-starter")) {
+          await run.openFeature(feature);
+          await run.publish(feature, fixture.checkpointsOf(feature)[0] as CaseCommit);
+        }
+        // Each running feature's builder writes its own migration; each owner's steward lands the block for code on main.
+        for (const feature of fixture.features.filter((each) => fixture.migrationOf(each) !== undefined)) await run.migrateFeature(feature);
+        for (const block of fixture.blocks) {
+          await run.landBlock(block, async (commit) => {
+            const revision = commit.revises !== null;
+            await dashboard.frame(revision ? "revision-passes" : "review", `What does ${display(block.owner)}'s review of ${commit.tag} show?`, block.owner, "/inbox");
+          });
+        }
+      });
+    });
+
+    test("5. contract: with no caller left, the old names leave main", async () => {
+      test.skip(fixture.split === null, "the case keeps a merge plan");
+      await run.phase("contract", async () => {
+        const landed = await run.contract();
+        expect(landed["state"], "the contract landed").toBe("landed");
+        await dashboard.frame("promoted", "How does it end?", origin.owner, featurePath(origin.id));
       });
     });
 

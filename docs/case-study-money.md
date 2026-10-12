@@ -1,9 +1,11 @@
 # Case study: moving every price to integer minor units
 
 This case follows one breaking change through Penguin on a team of fourteen people with about sixty
-agents and about forty features in progress at once. The change does not fit one plan, so its author
-splits it into waves by parallel change. Every count below comes from `propose_plan`, Penguin's caller
-counts and the review harness run on the fixture in [fixture-money.md](fixture-money.md).
+agents and about forty features in progress at once. The change alters contracts that nine scopes
+and 23 running features call, so it reaches main as a split: the expand first, then each owner's
+code in its own block, then the removal of the old shape. Every count below comes from the preview
+seed's run of the fixture in [fixture-money.md](fixture-money.md): `propose_plan`, Penguin's caller
+counts, its migration plans and the review harness.
 
 ## Team
 
@@ -36,257 +38,135 @@ unit: `1000` charges 10 USD. `10` charges 10 JPY, because JPY is a zero-decimal 
 ([Stripe currencies](https://docs.stripe.com/currencies)). Ines's feature replaces float prices with
 `Money(amount_minor, currency)`.
 
-## One-block attempt
+## Open
 
-Every feature is its own fork of main in Artifacts. Ines's agent opens the feature "Money in minor
-units" and declares its area: `shared/money` with the `price()`, `total()` and `display()` contracts.
-Two running features already work inside `shared/money`, so Penguin blocks the start until each of
-their people approves:
+Every feature is its own fork of main in Artifacts. Lena's promotion stacking reached main before
+Ines starts. Ines's agent opens the feature "Money in minor units" and declares its area: the money
+and orders scopes. Four running features already work there, so Penguin holds the start until each
+of their people approves. Hugo approves beside the rounding-mode bump, which touches another money
+function. Tomas approves beside the three orders features Tomas runs.
 
-- Hugo's agent is bumping the decimal library's rounding mode. Hugo approves, because the two changes
-  touch different functions.
-- Lena's agent is adding promotion stacking, which edits a money helper. Lena declines, because both
-  edit the same helper. Penguin queues Ines's feature behind Lena's. Lena's feature reaches main first.
+## Expand
 
-Ines's checkpoint changes `price()` and `total()` to return `Money` and removes `display()`. Ines's
-agent proposes a plan with a fix for each place the change reaches. Penguin finds 32 places:
+Ines's agent writes the new shape beside the old one as the feature's first checkpoint. `Money` holds
+a whole number of the currency's minor unit, with `sum()`, `times()`, `scaled()`, `major()` and
+`display()`. `discounted()` sits beside `percent_off()`. `line_total_minor()` and
+`order_total_minor()` sit beside `line_total()` and `order_total()` in orders. Nothing that exists
+changes.
 
-- **Code on main.** The nine scopes that call the money contracts: checkout, orders, refunds,
-  invoicing, tax, payouts, analytics, messaging and mobile-api.
-- **Running features.** The 23 features whose own changes call the money contracts.
-
-All 32 fixes are behavioural. Each one rewrites test data or expectations, or makes a choice per
-call such as the yen's currency, which no rewrite rule writes. All 32 parts also need a person: no
-facts run has tested any of their fixes, since each fix comes after the checkpoint Ines's agent
-reported. The project's break limit is 10, so Penguin returns the plan to Ines with a signed
-`plan_returned` record. The returned plan stays in Ines's inbox.
-
-## Waves by parallel change
-
-Ines's agent splits the change into waves by parallel change: expand, migrate, then contract
-([Fowler, ParallelChange](https://martinfowler.com/bliki/ParallelChange.html)). Each wave is its own
-feature, opened from main as the wave before it left main. Each wave has its own plan. Once its parts
-are approved, Penguin moves main to the wave's head in one push. Every scope's tests pass on main between waves.
-
-| Wave | Feature | Moves | Places | Behavioural | Starts approved | Penguin's answer |
-|---|---|---|---|---|---|---|
-| 1. Expand | `money-type` | Adds `Money` and Money functions beside the float ones | 0 | 0 | 4: Hugo, Tomas (3) | Stored |
-| 2. Migrate | `money-checkout` | `checkout` | 1: promotions on main | 1 | 3: Priya (3) | Stored |
-| 3. Migrate | `money-tax` | `tax` | 1: invoicing on main | 1 | 2: Rahul (2) | Stored |
-| 4. Migrate | `money-refunds-payouts` | `refunds`, `payouts` | 0 | 0 | 4: Ade (2), Kofi (2) | Stored |
-| 5. Migrate | `money-analytics` | `analytics` | 0 | 0 | 3: Jun (3) | Stored |
-| 6. Migrate | `money-messaging-mobile` | `messaging`, `mobile-api` | 0 | 0 | 6: Sam (3), Noor (3) | Stored |
-| 7. Contract | `money-contract` | Removes the float API | 24: orders on main and 23 running features | 24 | 1: Hugo | Returned |
-
-### Wave 1: expand
-
-The expand wave adds `Money`, `Money.sum()` and `discounted()` to `shared/money`. It adds
-`line_total_minor()` and `order_total_minor()` to `orders`. No existing function or class changes,
-so the impact graph finds no caller and the plan has no place. The float functions keep working, so
-no running feature breaks.
+Penguin sorts the checkpoint's contract diff: 25 additive entries, no changed signature and no
+changed stored data shape. Ines's agent proposes the plan at that checkpoint. The facts run finds no
+place, so the plan holds no part. The plan declares seven rewrite rules and marks six contracts
+retiring, each with its replacement: `price()` for `Money`, `total()` for `Money.sum()`, `display()`
+for `Money.display()`, `percent_off()` for `discounted()`, `line_total()` for `line_total_minor()`
+and `order_total()` for `order_total_minor()`. Penguin signs one `retire_symbols` record. The expand
+reaches main on its own, while Ines's feature keeps building on its fork.
 
 A stored order line keeps its unit price in dollars, as the order store records it. A Money field on
-`Line` would change the class. Penguin's impact graph would then list every `Line(...)` call as a
-caller, including the tests of every scope that reads orders. `line_total_minor()` reads the stored price into the order's
-currency instead.
+`Line` would change the class and every `Line(...)` call with it. `line_total_minor()` reads the
+stored price into the order's currency instead, so no stored shape changes and no scope needs a
+migration marker.
 
-The wave adds functions to `orders/model.py`, so Tomas approves its start beside the three running
-features Tomas owns in `orders`. Hugo approves it beside the rounding-mode feature.
+## Retire
 
-### Waves 2 to 6: migrate
+From the expand on, each checkpoint gets one retiring-calls check of its own changes. Noor's
+pagination reports its second checkpoint, which adds `money.display(line_total(line))`. The check
+answers two next steps. The `display` rule rewrites the `display()` call, so that step goes to
+Penguin's codemod. No rule covers `line_total()`, so that step goes to Noor's builder with
+`line_total_minor()` named as the replacement.
 
-Each migrate wave moves one scope, or two, off the float API. Its own change rewrites that scope's
-code and tests to import `Money` by name and to call the Money functions. The wave changes no float
-function, so the running features in that scope keep working. Their people approve the wave's start
-beside their features, 18 approvals across the five waves.
+Sun opens "Currency filter in search" after the expand. Sun's agent writes against `Money` from the
+first commit and calls nothing that retires, so no plan reaches it.
 
-A migrate wave's places are the other scopes on main that call what it changes:
+## Migrate
 
-- **Checkout.** `cart_total()`, `charge_amount()` and `total_line()` take the cart's currency. The
-  charge is the total's `amount_minor`, so a yen cart is charged at face value. Lena's promotion
-  stacking on main calls `cart_total()`, so the plan has one part for promotions, which Lena approves.
-- **Tax.** Tax becomes `Money` with `Decimal` rates. Invoicing on main adds the tax to the order
-  total, so the plan has one part for invoicing, which Mei approves.
-- **Refunds and payouts.** Refunds sum line totals in the order's currency. Store fees round half up
-  in the minor unit, as the store agreement says. No other scope calls them on main.
-- **Analytics.** Revenue is reported per currency, so amounts in different currencies are never
-  added together. The wave edits `analytics/revenue_report.py`, the file Jun protects in the
-  scope's `protected_paths`. The wave's plan has no parts, because no other scope on main calls
-  what it changes. Penguin checks the wave's own change at its checkpoint anyway: the files that
-  differ from its merge base with main. The change rewrites the protected file, so Jun gets a
-  `protected_path` item with the file's changed lines. The wave cannot land until Jun confirms
-  them. Jun confirms, and main moves to the wave's head.
-- **Messaging and mobile API.** Receipts and order payloads read totals as `Money`. Their tests
-  pass unchanged, because they compare the displayed text and the minor amount.
+After each promotion Penguin counts the callers of the six retiring functions, on main and in every
+running feature's own changes. A use inside a retiring function's own module or its scope's tests is
+no caller: those tests leave with the function. The count after the expand finds 84: 39 on main in
+nine scopes and 45 in the 23 readers. Penguin proposes one migration plan per owner group, ten plans
+with 32 parts. Noor's pagination later joins Noor's plan.
+
+| Owner | Places | Uses |
+|---|---|---|
+| Ade | `partial-refunds`, `store-credit`, refunds on main | 5 |
+| Jun | `basket-size`, `cohort-ltv`, `store-league`, analytics on main | 12 |
+| Kofi | `instant-payouts`, `weekly-statements`, payouts on main | 11 |
+| Lena | promotions on main | 2 |
+| Mei | `business-accounts`, `credit-notes`, `pdf-layout`, invoicing on main | 14 |
+| Noor | `cart-sync`, `order-history`, mobile-api on main, then `pagination` | 7, then 3 more |
+| Priya | `japan-launch`, `saved-carts`, `tip-jar`, checkout on main | 6 |
+| Rahul | `bottle-deposit`, `tax-exempt`, tax on main | 4 |
+| Sam | `order-shipped`, `refund-email`, `weekly-digest`, messaging on main | 15 |
+| Tomas | `reorder`, `split-shipments`, `substitutions` | 8 |
+
+The rules rewrite every use in 10 parts, so the check runner writes those and tries each on its
+trial tree. Kofi's `instant-payouts` part passes `test:payouts`, so Penguin approves it with no
+person asked. 9 fail their scope's tests there and become edit tasks with the failing check. In
+`store-league`, for one, the `display` rule turns `money.display(amount)` into `amount.display()`
+while `amount` is still a float. The other 22 parts are edit tasks from the start: each reader's own
+changes go to its builder. Each owner's code on main goes to that owner's steward in a block Penguin
+opens from main.
+
+Each reader's builder moves its module onto `Money` and keeps the module's results, so its tests
+pass unchanged. Tomas's plan holds only readers, so it closes once their migrations are written. Each
+steward's block keeps the types of its scope's own contracts, so no other scope on main breaks when
+the block reaches main: `cart_total()` still answers dollars, computed in `Money`. Penguin lands each
+block once its parts are written. The callers left after each promotion:
+
+| Block reaching main | Callers left |
+|---|---|
+| Priya's checkout | 36 |
+| Ade's refunds | 33 |
+| Mei's invoicing | 25 |
+| Rahul's tax | 23 |
+| Kofi's payouts | 15 |
+| Jun's analytics | 11 |
+| Sam's messaging | 5 |
+| Noor's mobile API | 2 |
+| Lena's promotions | 0 |
+
+The count after Priya's block is the first after the readers migrated, so it drops their 45 uses at
+once.
 
 ### Rahul's revision
 
-The tax wave's first checkpoint rounds the order's subtotal once. Rahul's agent submits a review form
-for tax. Penguin runs `invoice_tax_minor` on main and on the wave's fork over 5,000 recorded orders.
-Invoice tax differs on 1,633 of them by one or two cents. No single-line order differs. The form
-marks the invariant "Tax is rounded per line item" broken, so the exception goes to Rahul. Rahul asks
-for per-line rounding. Ines's agent writes the revision as the wave's next checkpoint. On the rerun 10
-orders still differ by one cent. Each has one line whose exact tax is half a cent, which main's float
-arithmetic rounds down. The revision equals exact decimal arithmetic on all 5,000 orders. The review
-holds. Ines's agent proposes the plan again at the revision.
+Rahul's steward first computes tax on the order's subtotal and rounds once. Rahul's agent submits a
+review form for tax on that step. Penguin runs `invoice_tax_minor` on main and on the block over
+5,000 recorded orders. Invoice tax differs on 1,633 of them by one or two cents. No single-line order
+differs. The form marks the invariant "Tax is rounded per line item" broken, so the exception goes to
+Rahul. Rahul asks for per-line rounding. The steward writes it as the block's next commit. On the
+rerun 10 orders still differ by one cent. Each has one line whose exact tax is half a cent, which
+main's float arithmetic rounds down. The revision equals exact decimal arithmetic on all 5,000
+orders. The review holds and the block lands.
 
-### Wave 7: contract
+Tax only reads orders and stores nothing derived from them. The split changes no stored shape, so
+Rahul's forms name no migration marker.
 
-The contract wave removes `price()`, `total()`, `display()` and `percent_off()` from `shared/money`.
-After the migrate waves, one caller of the float API is left on main: `orders`, whose
-`line_total()` and `order_total()` call `price()` and `total()`. Its fix removes those two functions.
+## Contract
 
-The migrate waves changed main's code, never the running features' own changes. The 23 running
-features that call the float API in the modules they add still call it, so each is a place of the
-contract wave. Their 23 fixes and the orders fix make 24 parts needing a person, over the limit of
-10, so Penguin returns the contract wave's plan to Ines as well.
-
-Two moments depend on the contract wave's plan being announced:
-
-- **Noor's pagination.** Noor's second checkpoint adds an order-lines page that calls
-  `line_total()`. The contract plan was returned, so no announced plan gains a part for it. The
-  feature's own change makes it a place of the next contract plan.
-- **Sun's late start.** Sun opens "currency filter in search" after the contract plan. Sun's agent
-  writes against `Money` from the first commit and imports it by name, so the feature calls nothing
-  the contract wave removes.
-
-### Retiring the float API
-
-The expand wave's plan can also mark the float API retiring: `price()`, `total()`, `display()`,
-`percent_off()`, `line_total()` and `order_total()`, each with its Money replacement. Penguin keeps
-the six declarations as signed project data. From then on each checkpoint gets one retiring-calls
-check of its own changes.
-
-- **Noor's pagination.** Noor's second checkpoint adds `money.display(line_total(line))`. Its check
-  gives two next steps. The plan's `display` rule rewrites the `display()` call, so that step is
-  Penguin's codemod, step 3. No rule covers `line_total()`, so that step goes to Noor's agent at step
-  4 with `line_total_minor()` named as the replacement.
-- **The remaining callers.** After the migrate waves, Ines's agent asks for the remaining callers.
-  Penguin lists 24 places in 9 owner groups. The 23 readers and the pagination feature sit in
-  their own people's groups. The money and orders scopes on main still use the float functions, but
-  only in their own tests of them. Those uses are no callers: the contract step removes them with
-  the functions. Each group is one owner's set of migration parts.
-
-[fixture-money.md](fixture-money.md#retiring-the-float-api) lists each group with its uses.
-
-### Counting callers after each promotion
-
-After each wave's block reaches main, Penguin counts the callers of the six retiring functions on
-main and in the running features' own changes, in one analysis per promotion
-([design.md](design.md#sorting-and-splitting-in-the-build), Contract). A use in a function's own
-module or in a test file of the scope that defines it is no caller: the contract step removes it
-with the function. The counts on the fixture:
-
-| Promotion | Callers | On main | In running features |
-|---|---|---|---|
-| `money-type` | 84 | 39 | 45 |
-| `money-checkout` | 79 | 34 | 45 |
-| `money-tax` | 69 | 24 | 45 |
-| `money-refunds-payouts` | 58 | 13 | 45 |
-| `money-analytics` | 54 | 9 | 45 |
-| `money-messaging-mobile` | 45 | 0 | 45 |
-
-The migrate waves moved callers on main only. The 45 uses in the 23 readers' own changes stay. After
-the last migrate wave no caller is left on main:
-
-| Retiring function | Callers | On main | Running features calling it | Own uses in its scope's tests |
-|---|---|---|---|---|
-| `line_total()` | 6 | 0 | 3 | 2 |
-| `order_total()` | 10 | 0 | 5 | 2 |
-| `display()` | 10 | 0 | 10 | 1 |
-| `price()` | 12 | 0 | 12 | 2 |
-| `total()` | 7 | 0 | 7 | 1 |
-| `percent_off()` | 0 | 0 | 0 | 6 |
-
-`percent_off()` reaches zero at the count after the `money-checkout` wave, whose promotions fix
-moved its one caller outside the money scope. The expand wave that declared it has landed, so
-Penguin opens `contract-ines-money-type` from main for Ines, the DRI of `shared/money`, and gives
-the removal to Ines's steward as a `contract` task naming `shared/money/tests/test_discounts.py`
-and `shared/money/tests/test_money.py`. The fixture holds no commit that removes `percent_off()`
-alone, so the task stays open. The other five functions are `callers_left` until the readers move.
-At zero, Penguin would open a feature from main for each defining scope's DRI: Ines for
-`shared/money` and Tomas for `orders/model.py`. Each DRI's steward would get the removal
-([design.md](design.md#sorting-and-splitting-in-the-build), Contract).
-
-### Migration plans
-
-After each count Penguin proposes one migration plan per owner group
-([design.md](design.md#migration-plans-in-the-build)). `apps/worker/test/money-migration.test.ts`
-runs it on the fixture.
-
-| After | Callers | Plans | Parts | Written by the runner | Edit tasks |
-|---|---|---|---|---|---|
-| `money-type` | 84 | 10 | 32 | 10 | 22 |
-| `money-messaging-mobile` | 45 | 9 | 23 | 10 | 13 |
-| Noor's pagination checkpoint | 45 + 3 | 9 | 24 | 10 | 14 |
-
-| After | Approved by Penguin | Edit tasks from a failed trial | Edit tasks in all | In person |
-|---|---|---|---|---|
-| `money-messaging-mobile` | 1 | 9 | 22 | 0 |
-| Noor's pagination checkpoint | 1 | 9 | 23 | 0 |
-
-The migrate waves moved the callers on main of nine scopes, so those parts are dropped and Lena's
-plan is left with none. The money and orders scopes' own tests are no callers, so Ines has no plan
-and Tomas's plan has no part on main. After the last wave, the 23 live parts cover all 45 callers:
-
-| Owner | Parts |
-|---|---|
-| ade | `partial-refunds`, `store-credit` |
-| jun | `basket-size`, `cohort-ltv`, `store-league` |
-| kofi | `instant-payouts`, `weekly-statements` |
-| mei | `business-accounts`, `credit-notes`, `pdf-layout` |
-| noor | `cart-sync`, `order-history`, then `pagination` |
-| priya | `japan-launch`, `saved-carts`, `tip-jar` |
-| rahul | `bottle-deposit`, `tax-exempt` |
-| sam | `order-shipped`, `refund-email`, `weekly-digest` |
-| tomas | `reorder`, `split-shipments`, `substitutions` |
-
-- **Written by the runner.** The plan's seven rules leave no use of a retiring function in 10
-  places, all running features' own changes. The other 13 are edit tasks: the places where the
-  rules leave uses or rewrite nothing.
-- **Approved.** A part the rules write in full needs no review form. Its trial runs its scope's
-  tests and the scope's side-by-side run over its declared examples. Penguin approves 1 of the 10:
-  Kofi's `instant-payouts` passes `test:payouts` with no protected difference. The check runner's
-  write of it into Kofi's fork is queued.
-- **Edit tasks from a failed trial.** The other 9 fail their scope's tests on the trial tree. In
-  `store-league` the `display` rule turns `money.display(amount)` into `amount.display()`, but
-  `amount` is still a float there. Each of the 9 becomes a `migration` edit task for the feature's
-  builder with the failing test attached. With the 13 parts the rules do not write in full, 22 of
-  the 23 parts are edit tasks.
-- **People.** No part reaches a person. A part reaches one only when its edit task's run fails or a
-  check no edit settles fails, such as a protected path.
-- **A later caller.** Noor's pagination checkpoint adds 3 uses. Its retiring-calls check adds the
-  place to Noor's open plan with one `migration_joined` record. The rules leave 2 of the uses, so
-  it is an edit task for the pagination feature's builder.
+When a retiring function has no caller left on main or in any running feature's own changes, Penguin
+proposes removing it on Ines's feature. The plan has no place, so Penguin approves it with no person
+asked. `price()` reaches zero after Kofi's block, `total()` after Jun's, `line_total()` after Sam's,
+`order_total()` and `display()` after Noor's and `percent_off()` after Lena's. Ines's agent removes
+all six with their own tests as the feature's last checkpoint. Its contract diff shows each removed
+with no caller. The feature lands and Penguin closes the six retiring records under one signed
+`symbols_removed` record.
 
 ## What it took
 
 | | Count |
 |---|---|
-| Plans returned over the break limit | 2: the one-block attempt (32) and the contract wave (24) |
-| Plans stored | 6: the expand wave and five migrate waves |
-| Parts approved in the migrate waves | 2, both by a person: Lena for promotions, Mei for invoicing |
-| Parts Penguin approved | 0: each stored part fails a check (below) |
-| Protected-path confirmations | 1: Jun for the analytics wave's `analytics/revenue_report.py` |
-| Starts approved beside a running feature | 1 for the one-block attempt and 23 for the waves |
-| Times main moved | 6, one per stored wave, each with every scope's tests passing |
+| Starts approved beside a running feature | 4: Hugo once and Tomas three times |
+| Plans with places proposed by Ines's agent | 0: the expand's plan has none |
+| Migration plans Penguin proposed | 10, one per owner. One more for Ade held a part that the next count dropped |
+| Migration parts | 33: 23 readers' own changes, Noor's pagination and 9 owners' code on main |
+| Parts written by the runner, by the rules | 10: Penguin approved Kofi's `instant-payouts`; 9 failed their trial |
+| Edit tasks for builders and stewards | 32 |
 | Review exceptions | 1: Rahul's broken `tax-per-line` invariant on the whole-order step |
-| Callers of the float API left on main before the contract wave | 1 scope: orders |
-| Callers of the retiring functions after the last migrate wave | 45, all in 23 running features; 14 more uses on main are the money and orders scopes' own tests |
+| Protected-path confirmations | 0: Jun's own steward writes the analytics block |
+| Times main moved | 12: Lena's stacking, the expand, 9 blocks and the contract |
+| Callers of the float API on main at the end | 0 |
 
-Penguin approves a part only when each of its checks is clean ([design.md](design.md#penguins-approval-in-the-build)).
-Both stored parts pass, and Penguin approves each. Each part's trial applies its fix commit to main
-merged with the wave's checkpoint ([design.md](design.md#part-trials)). Promotions' tests and
-invoicing's tests pass on those trees. Lena's and Mei's agents each submit a form for their scope,
-citing tests that exist on the trial tree, and each trial accepts it. Lena's fix edits
-`promotions/tests/test_stacking.py` as well as `promotions/stacking.py`; both lie in the promotions
-scope, so the fix stays inside its place. Rahul's tax review is a review of the tax wave's own change,
-so its broken invariant still reaches Rahul as a review exception.
-
-The waves moved the nine scopes on main one or two at a time, with at most one part needing a person
-per plan. The running features' own float calls stay in place until the contract wave, so that wave
-carries the same 23 feature fixes the one-block attempt carried.
-
-Every step lives as a signed record in the project's record repo in Artifacts: each plan, each
-return, each approval and its reason, Rahul's review and revision, Jun's confirmation of the
-protected lines, each promotion.
+Every step lives as a signed record in the project's record repo in Artifacts: the expand's plan and
+its retiring declarations, each migration plan and its routing, Rahul's review and revision, each
+contract step and the removal.

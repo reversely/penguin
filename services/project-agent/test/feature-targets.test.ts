@@ -43,13 +43,15 @@ before(() => {
   root = realpathSync(mkdtempSync(join(tmpdir(), "penguin-money-targets-")));
   repo = join(root, "larder");
   execFileSync(PYTHON, [join(MONEY, "build.py"), repo]);
+  // Main as Ines found it when she reported her expand: Lena's promotion stacking on base.
+  execFileSync("git", ["-C", repo, "update-ref", "refs/heads/main", "feature-promotion-stacking"]);
   const pins = JSON.parse(readFileSync(join(MONEY, "pins.json"), "utf8")) as { branches: Record<string, string>; tags: Record<string, string> };
   checkpoint = (id) => pins.tags[`feature-${id}-checkpoint`] as string;
   const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" });
   scopeMap = parseScopeMap(JSON.parse(git("show", `${pins.branches["main"]}:penguin/scopes.json`)));
   const data = JSON.parse(readFileSync(join(MONEY, "larder.json"), "utf8")) as { features: { id: string; owner: string; role: string }[] };
-  // The features running when Ines opened the one-block attempt: not the later waves or the late starter.
-  const running = data.features.filter((feature) => feature.role !== "wave" && feature.role !== "late-starter");
+  // The features running when Ines opens her split: not the blocks Penguin opens later or the late starter.
+  const running = data.features.filter((feature) => feature.role !== "migration" && feature.role !== "late-starter");
   // Each feature's area is what its checkpoint touched, as a checkpoint report records it.
   features = running.map(({ id, owner }, index) => ({
     id,
@@ -65,7 +67,7 @@ before(() => {
 
 after(() => rmSync(root, { recursive: true, force: true }));
 
-describe("the money fixture's thirty-nine features running beside the one-block attempt", () => {
+describe("the money fixture's thirty-nine features running beside Ines's split", () => {
   test("an agent's check on Ines's feature merges onto each of the 38 other features, not one per person", () => {
     const forks = otherForks(features, ORIGIN);
     assert.equal(features.length, 39);
@@ -87,7 +89,8 @@ describe("the money fixture's thirty-nine features running beside the one-block 
       "ines",
       checkpoint(ORIGIN),
     );
-    assert.deepEqual(outcome.changedScopes, ["money"]);
+    // The expand adds to shared/money and orders/model.py.
+    assert.deepEqual(outcome.changedScopes, ["money", "orders"]);
     assert.deepEqual(outcome.withoutCheckpoint, []);
     assert.deepEqual(outcome.scheduled.map((run) => run.target).sort(), READERS);
     for (const run of outcome.scheduled) {
@@ -128,7 +131,10 @@ describe("the money fixture's thirty-nine features running beside the one-block 
     const request = factsRequest(origin, "b".repeat(40), scopeMap, features, []);
     const [main, ...others] = request.targets;
     assert.deepEqual([main?.id, main?.person], [PLAN_MAIN_TARGET, null]);
-    assert.deepEqual(others.map((target) => target.id).sort(), READERS);
+    // Tomas's three orders features work in orders, which the expand itself changes: they are
+    // same-area features, not readers, so the facts run does not list them.
+    const ORDERS = ["reorder", "split-shipments", "substitutions"];
+    assert.deepEqual(others.map((target) => target.id).sort(), READERS.filter((id) => !ORDERS.includes(id)));
     for (const target of others) assert.equal(target.person, features.find((feature) => feature.id === target.id)?.personId);
   });
 });

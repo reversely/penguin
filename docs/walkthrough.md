@@ -55,6 +55,21 @@ by folder name, separated by commas.
 5. **Land.** The originating agent publishes its remaining commits, calls `check` and then
    `land_feature`. The walkthrough runs every scope's test command on main's new head.
 
+Case 4 is a split, so it runs these steps in place of steps 2 to 5:
+
+1. **Expand.** The originating agent proposes the plan of its first checkpoint, the expand, with no
+   part and with the split's rewrite rules and retiring contracts from `larder.json`. It then calls
+   `land_feature` with `expand: true`. The expand adds to orders, so Penguin asks the DRI of orders
+   once. That person approves on the dashboard and the agent asks again. The walkthrough waits until
+   main holds the expand and runs every scope's test command there.
+2. **Migrate.** The walkthrough waits for Penguin's migration plans. The midway feature publishes its
+   later checkpoint, which calls a retiring function. The late starter opens and publishes. Each
+   reader's builder publishes its migration. For each block in the fixture's order, the owner's
+   steward joins the block Penguin opened from main, pushes the fixture's commits and submits the
+   fixture's review form for a commit that has one. The steward then lands the block.
+3. **Contract.** Once Penguin's contract step is approved on every retiring contract, the originating
+   agent publishes its last commit, which removes the old shape. It then lands the commit.
+
 Each case also runs two refusals. A person who does not own a part posts an approval of it. Its owner
 posts an approval that names its own approver. Before landing, the originating agent pushes to main
 with its fork token. After landing, it asks for a token on the landed fork.
@@ -95,7 +110,7 @@ Each case writes to `test-results/walkthrough/<fixture>/`, or to `<dir>/<fixture
 | `metrics.md` | The metrics with their definitions, people's decisions, time per phase, fix writes and notes |
 | `runner.log` | Each runner pass's summary, with remote URLs cut to the repo name |
 | `worker.log` | The Worker's console output, with the generated secrets removed |
-| `cleanup.json` | The Artifacts repos the run deleted |
+| `cleanup.json` | The Artifacts repos the run deleted and the final listing of the namespace under the case's prefix |
 
 A case that stops partway still writes `results.json` and `metrics.md`, with the failure in its
 notes. `test-results/walkthrough/report.json` holds each phase's result and duration.
@@ -109,9 +124,9 @@ notes. `test-results/walkthrough/report.json` holds each phase's result and dura
 | 3 | The block failed at land on a dependency diff that failed main and Ana's fork. The dependency diff is now a passing fact. `tests/integration/dependency-bump-block.test.ts` passes the block with Ana's fix in Ana's fork. The walkthrough has not run the case since |
 | 4 | The block run of the promotion the fixture makes before Ines opens stops on the check runner. The runner fetches the 38 forks into one repository with Git protocol version 1. Once that repository holds 14 forks, Artifacts answers each further fetch with `fetch-pack: protocol error: bad band #78`. The same fetches with protocol version 2 succeed |
 
-In case 4 the walkthrough plays the one-block attempt only. It reads the wave features (role `wave`)
-and each running feature's waves fix (a commit with `after`, beside the branch) but opens none of
-them.
+Teardown deletes every repo under the case's prefix and lists the namespace again, up to five
+rounds, since one listing may not hold every repo. `cleanup.json` keeps the final listing in
+`remainingRepos`. The case fails unless it is empty.
 
 A check runner pass that stops a run partway reports it to Penguin, which frees it for the next
 pass ([bridge-and-runner.md](bridge-and-runner.md#failed-runs)). The walkthrough stops the case at

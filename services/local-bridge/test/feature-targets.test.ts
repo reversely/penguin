@@ -137,10 +137,12 @@ describe("the money-minor-units fixture", () => {
     root = await realpath(await mkdtemp(join(tmpdir(), "penguin-money-")));
     repo = join(root, "larder");
     execFileSync(PYTHON, [join(MONEY, "build.py"), repo]);
+    // Main as Ines found it when she reported her expand: Lena's promotion stacking on base.
+    execFileSync("git", ["-C", repo, "update-ref", "refs/heads/main", "feature-promotion-stacking"]);
     pins = JSON.parse(readFileSync(join(MONEY, "pins.json"), "utf8"));
     const data = JSON.parse(readFileSync(join(MONEY, "larder.json"), "utf8")) as { features: { id: string; owner: string; role: string }[] };
-    // The features running when Ines opened the one-block attempt: not the later waves or the late starter.
-    const running = data.features.filter((feature) => feature.role !== "wave" && feature.role !== "late-starter");
+    // The features running when Ines opens her split: not the blocks Penguin opens later or the late starter.
+    const running = data.features.filter((feature) => feature.role !== "migration" && feature.role !== "late-starter");
     owners = new Map(running.map((feature) => [feature.id, feature.owner]));
   });
 
@@ -156,7 +158,7 @@ describe("the money-minor-units fixture", () => {
     const { checker, targets: checked } = recordingChecker();
     const report = await new CombinedRunner({ repoPath: repo, runner, checks: checker }).run({
       checkpointSha: pins.tags[`feature-${origin}-checkpoint`] as string,
-      // Main as the one-block attempt found it: Lena's promotion stacking on base.
+      // Main as Ines found it: Lena's promotion stacking on base.
       baselineSha: pins.branches["feature-promotion-stacking"] as string,
       targets,
     });
@@ -168,9 +170,11 @@ describe("the money-minor-units fixture", () => {
     assert.deepEqual(checked.map(({ id }) => id).sort(), [MAIN_TARGET, ...targets.map((target) => target.id)].sort());
     assert.ok(checked.every(({ merged }) => merged !== null), "every feature merges cleanly with Ines's checkpoint");
 
-    // The 24 features in the nine scopes that read money run their tests, each on its own tree.
+    // The 24 features in the nine scopes that read money or orders run their tests, each on its own tree.
     const tested = report.results.filter((result): result is TestedResult => result.status === "passed");
-    assert.equal(tested.length, 24);
+    // The expand changes shared/money and orders, so Tomas's three orders features run the tests of
+    // both scopes their trees touch: 27 results for 24 features.
+    assert.equal(tested.length, 27);
     assert.equal(new Set(tested.map((result) => result.target)).size, 24);
     assert.equal(new Set(ran.map((run) => run.sha)).size, 24);
     const byPerson = new Map<string, string[]>();

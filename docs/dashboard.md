@@ -425,12 +425,10 @@ Jun's two parts wait on Jun. On the helpful fix Priya's agent proposes the plan 
 that adds `start_of_local_day`, and the plan holds the patches for Jun's weekly report and Sam's
 reminders. Each feature's tests pass on its trial tree and both reviews hold, with no difference on
 the 2 recorded examples each fork declares. Penguin approves both parts, and Jun and Sam each get a
-`penguin_approved` item. On money in minor units the one-block plan is returned
-over the default break limit of 10 and stays in Ines's inbox. The seed then runs the seven waves of
-[case-study-money.md](case-study-money.md): each wave opens from main as the wave before left it. The
-seed approves each overlapping start. Lena's and Mei's agents submit the fixture's forms for
-promotions and invoicing, and Penguin approves both stored parts
-([case-study-money.md](case-study-money.md#what-it-took)). The seed then moves main to the
-wave's head. Rahul's tax review raises the broken `tax-per-line` invariant on the tax wave's first
-checkpoint and holds on its revision. The contract wave's plan is returned with 24 parts needing a person
-and stays in Ines's inbox beside the one-block plan.
+`penguin_approved` item. On money in minor units the seed runs Ines's split as
+[case-study-money.md](case-study-money.md) tells it. Hugo and Tomas approve Ines's start. The expand
+reaches main with a plan of no place. Penguin then proposes ten migration plans, one per owner.
+Each reader's builder reports its migration. Each owner's steward writes the block Penguin
+opened for that owner's code on main, and Penguin lands each block. Rahul's tax review raises the broken
+`tax-per-line` invariant on the block's whole-order step and holds on its revision. Once no caller is
+left, Ines's contract lands.

@@ -211,14 +211,13 @@ The procedure moves conflict handling to the start of the work. Each step below 
 5. **Break limit.** If a plan has more parts needing a person than the project's limit (default 10),
    Penguin returns it to its author to split or restructure. A part needs a person when it fails a
    condition of [Advance notice](#advance-notice) step 3.
-6. **Waves.** The author splits a returned change into waves by parallel change, each its own
-   feature and plan. The expand wave adds the new shape beside the old one and changes no existing
-   symbol, so its plan has no place. Each migrate wave moves one scope or a small group onto the new
-   shape as its own change. Its places are the other scopes on main that call what it changes. The
-   running features inside the scopes it moves are same-area features, whose people approve its
-   start. The contract wave removes the old shape. Its places are the callers left on main and in
-   running features' own changes. [case-study-money.md](case-study-money.md) runs the waves on the
-   money fixture.
+6. **Split.** A change to contracts that other scopes and running features call reaches main as one
+   feature in three steps. Its first checkpoint is the expand: the new shape beside the old one,
+   changing no existing symbol, so its plan has no place. The old contracts then retire. Penguin
+   proposes one migration plan per owner for the callers left (step 7). Each owner's code on main
+   moves over in its own block, keeping the types of its scope's own contracts so no other scope
+   breaks. The feature's last checkpoint removes the old shape once no caller is left.
+   [case-study-money.md](case-study-money.md) runs the split on the money fixture.
 7. **Retiring symbols.** Once the expand step has put the new shape beside the old one, its plan
    marks the old contracts as retiring, each with its replacement. A checkpoint whose own changes
    call a retiring symbol gets a next step naming the replacement
