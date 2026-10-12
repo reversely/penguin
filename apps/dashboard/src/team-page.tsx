@@ -11,11 +11,11 @@
 // The shell reads the team for the view (useTeam), because the person hues every page shows come from
 // its people: one read gives the squares and every badge the same hues.
 
-import type { Board, IdentitiesPage, TeamFeature, TeamPerson, TeamView } from "@penguin/protocol";
-import { useMemo, type ReactNode } from "react";
+import { ROLE_TOP, type Board, type IdentitiesPage, type PersonScopes, type TeamFeature, type TeamPerson, type TeamView } from "@penguin/protocol";
+import { useCallback, useMemo, type ReactNode } from "react";
 
 import { Agent, AgentDirectory } from "./agent-directory.tsx";
-import { fetchBoard, fetchIdentities, fetchTeam } from "./api.ts";
+import { fetchBoard, fetchIdentities, fetchPersonScopes, fetchTeam } from "./api.ts";
 import { PersonAvatar, PersonHuesProvider, usePersonHue } from "./avatar.tsx";
 import { assignPersonHues } from "./character.ts";
 import { exceptionText } from "./feature-view.ts";
@@ -25,7 +25,10 @@ import { STATE_LABEL } from "./issue-view.ts";
 import { linkHandler } from "./links.ts";
 import { useArrivals } from "./motion.tsx";
 import { featurePath, personPath } from "./routes.ts";
+import { ScopePill } from "./pills.tsx";
 import { queueCounts } from "./pipeline-view.ts";
+import { RoleTables } from "./role-tables.tsx";
+import { ROLE_ROWS, roleCount, roleScopes } from "./role-view.ts";
 import { StageStrip } from "./timeline.tsx";
 import { idleAgents, INVOLVEMENT_LABEL, personIssues, teamPeople, type PersonIssue } from "./team-view.ts";
 import type { Live } from "./use-live.ts";
@@ -72,9 +75,11 @@ interface Props {
   /** The person whose view is open, or null for the whole team. */
   readonly person: string | null;
   readonly navigate: (path: string) => void;
+  readonly live: Live;
+  readonly onSignedOut: () => void;
 }
 
-export function TeamPage({ team, person, navigate }: Props) {
+export function TeamPage({ team, person, navigate, live, onSignedOut }: Props) {
   const { view, board } = team;
   if (view.kind === "failed") {
     return (
@@ -89,7 +94,18 @@ export function TeamPage({ team, person, navigate }: Props) {
   // The view arrives before the squares paint, so no square grows after it shows.
   if (view.kind === "loading") return <div className="team" aria-busy="true" />;
   if (person === null) return <TeamMapView view={view.value} navigate={navigate} />;
-  return <PersonView view={view.value} board={board.kind === "ready" ? board.value : undefined} person={person} navigate={navigate} />;
+  return <PersonPage view={view.value} board={board.kind === "ready" ? board.value : undefined} person={person} navigate={navigate} live={live} onSignedOut={onSignedOut} />;
+}
+
+/**
+ * The person view with its role tables, read from GET /api/people/<id>/scopes again on every live
+ * message, as the team view is.
+ */
+function PersonPage({ live, onSignedOut, ...props }: Omit<PersonProps, "scopes"> & { readonly live: Live; readonly onSignedOut: () => void }) {
+  const read = useCallback(() => fetchPersonScopes(props.person), [props.person]);
+  const scopes = useRead(read, `${live.revision}:${live.featuresRevision}:${live.status === "live"}`, onSignedOut);
+  const shown = scopes.kind === "ready" && scopes.value.person === props.person ? scopes.value : scopes.kind === "failed" ? null : undefined;
+  return <PersonView {...props} scopes={shown} />;
 }
 
 /** The team as read, without the fetch, so it renders on the server in a test. */
@@ -138,36 +154,42 @@ function PersonSquare({ person, navigate }: { readonly person: TeamPerson; reado
 }
 
 /**
- * The person's role as rows of scope names; a row with nothing to name is left out, except Owns. The
- * last row is the person's steward, which takes the edits to the scopes they own, with its queue.
+ * The person's role as rows: Owns, Reads and Read by, each with its count and its top scopes by call
+ * sites as pills in their DRIs' hues, then how many more the person page lists. A row with no scope is
+ * left out, except Owns. With `steward`, the last row is the person's steward, which takes the edits
+ * to the scopes they own, with its queue.
  */
-function Role({ person, navigate }: { readonly person: TeamPerson; readonly navigate: (path: string) => void }) {
-  const { scopes, dependents, dependencies } = person.role;
+function Role({ person, navigate, scopes = true }: { readonly person: TeamPerson; readonly navigate: (path: string) => void; readonly scopes?: boolean }) {
+  const { role } = person;
   const steward = person.steward ?? null;
-  const rows = [
-    { label: "Owns", scopes, others: false },
-    { label: "Read by", scopes: dependents, others: true },
-    { label: "Reads", scopes: dependencies, others: true },
-  ].filter((row, index) => index === 0 || row.scopes.length > 0);
+  const rows = scopes ? ROLE_ROWS.filter((row) => row.key === "owns" || roleCount(role, row.key) > 0) : [];
+  if (rows.length === 0 && steward === null) return null;
+  const path = personPath(person.id);
   return (
     <dl className="role">
-      {rows.map((row) => (
-        <div key={row.label} className="role-row">
-          <dt>{row.label}</dt>
-          <dd>
-            {row.scopes.length === 0 ? (
-              <span className="muted">None</span>
-            ) : (
-              row.scopes.map((scope) => (
-                <span key={scope.id} className="role-scope" title={scope.id}>
-                  {scope.name}
-                  {row.others ? <span className="role-owner"> {scope.ownerId}</span> : null}
-                </span>
-              ))
-            )}
-          </dd>
-        </div>
-      ))}
+      {rows.map((row) => {
+        const count = roleCount(role, row.key);
+        const shown = roleScopes(role, row.key).slice(0, ROLE_TOP);
+        return (
+          <div key={row.key} className="role-row">
+            <dt>
+              {row.label} <span className="tab-count">{count}</span>
+            </dt>
+            <dd className="role-pills">
+              {count === 0 ? (
+                <span className="muted">None</span>
+              ) : (
+                shown.map((scope) => <ScopePill key={scope.id} name={scope.name} owner={scope.ownerId} title={`${scope.id} ${scope.ownerId} ${scope.calls} call sites`} />)
+              )}
+              {count > shown.length ? (
+                <a className="role-more" href={path} onClick={linkHandler(navigate, path)}>
+                  {count - shown.length} more
+                </a>
+              ) : null}
+            </dd>
+          </div>
+        );
+      })}
       {steward === null ? null : (
         <div className="role-row steward-row">
           <dt>Steward</dt>
@@ -236,10 +258,12 @@ interface PersonProps {
   readonly board: Board | undefined;
   readonly person: string;
   readonly navigate: (path: string) => void;
+  /** The person's full role; undefined while it is read, null when the read failed. */
+  readonly scopes: PersonScopes | null | undefined;
 }
 
-/** One person: their role, their features, their agents and the issues that involve them. */
-export function PersonView({ view, board, person, navigate }: PersonProps) {
+/** One person: their role as tables, their features, their agents and the issues that involve them. */
+export function PersonView({ view, board, person, navigate, scopes }: PersonProps) {
   const hue = usePersonHue(person);
   const found = view.people.find((entry) => entry.id === person);
   const issues = useMemo(() => (board === undefined ? [] : personIssues(board, person)), [board, person]);
@@ -270,7 +294,16 @@ export function PersonView({ view, board, person, navigate }: PersonProps) {
         <h2 id="person-role" className="team-section-heading">
           Role
         </h2>
-        <Role person={found} navigate={navigate} />
+        {scopes === undefined ? (
+          <div className="role-tables" aria-busy="true" />
+        ) : scopes === null ? (
+          <p className="notice" role="alert">
+            Please reload the page
+          </p>
+        ) : (
+          <RoleTables role={scopes.role} teams={view.teams ?? []} navigate={navigate} />
+        )}
+        <Role person={found} navigate={navigate} scopes={false} />
       </section>
       <section className={`team-section person-${hue}`} aria-labelledby="person-features">
         <h2 id="person-features" className="team-section-heading">

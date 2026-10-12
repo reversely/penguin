@@ -689,7 +689,76 @@ def test_a_malformed_request_is_refused(request_body):
         impact.parse_request(request_body)
 
 
-def test_the_command_line_reports_a_missing_commit_without_a_traceback(repo: Repo):
+def test_edges_must_be_a_boolean():
+    with pytest.raises(impact.RequestError):
+        impact.parse_request({"base": "a" * 40, "head": "a" * 40, "edges": "yes"})
+
+
+# Scope dependencies read from the code (scopeEdges).
+
+
+def edges_of(repo: Repo, sha: str) -> list[dict]:
+    request = impact.parse_request({"base": sha, "head": sha, "edges": True})
+    return impact.analyse(impact.GitRepo(str(repo.path)), request)["scopeEdges"]
+
+
+def test_edges_count_each_scope_s_imports_calls_and_references_of_another(
+    repo: Repo,
+):
+    sha = repo.commit(
+        base_files(
+            **{
+                "core/store.py": "class Store:\n    def get(self):\n        return 1\n\n\ndef make():\n    return Store()\n",
+                "core/helpers.py": "from core.store import make\n\n\ndef twice():\n    return make(), make()\n",
+                "app/a.py": (
+                    "from core.store import Store, make\n"
+                    "import core.helpers\n\n\n"
+                    "def run(store: Store):\n"
+                    "    make()\n"
+                    "    core.helpers.twice()\n"
+                    "    return store.get()\n"
+                ),
+                "other/__init__.py": "",
+                "other/o.py": "from app.a import run\n\nHANDLER = run\n",
+                "loose.py": "from core.store import make\nmake()\n",
+            }
+        )
+    )
+    assert edges_of(repo, sha) == [
+        {
+            "consumer": "app",
+            "provider": "core",
+            "calls": 3,
+            "imports": 3,
+            "references": 1,
+        },
+        {
+            "consumer": "other",
+            "provider": "app",
+            "calls": 0,
+            "imports": 1,
+            "references": 1,
+        },
+    ]
+
+
+def test_a_report_carries_no_edges_unless_asked(repo: Repo):
+    sha = repo.commit(base_files(**{"app/a.py": "from core import x\n"}))
+    assert "scopeEdges" not in run(repo, sha, sha)
+
+
+def test_edges_name_scopes_and_counts_only(repo: Repo):
+    sha = repo.commit(
+        base_files(
+            **{
+                "core/secret_name.py": "def secret_name():\n    return 1\n",
+                "app/a.py": "from core.secret_name import secret_name\nsecret_name()\n",
+            }
+        )
+    )
+    text = json.dumps(edges_of(repo, sha))
+    assert "secret_name" not in text and "app/a.py" not in text
+
     repo.commit(base_files())
     result = subprocess.run(
         [sys.executable, "-I", str(ANALYSER), "--repo", str(repo.path)],
@@ -800,6 +869,26 @@ def test_identity_unification_lists_the_importers_of_the_identity_map(tmp_path: 
         scope_paths = {use["scope"] for use in fork["uses"]}
         assert importers, fork["id"]
         assert scope_paths == set(fork["scopes"])
+
+
+def test_identity_unification_derives_each_declared_dependency_from_main(
+    tmp_path: Path,
+):
+    target = tmp_path / "identity-unification"
+    pins = build_fixture("identity-unification", target)
+    main = pins["branches"]["main"]
+    request = impact.parse_request({"base": main, "head": main, "edges": True})
+    report = impact.analyse(impact.GitRepo(str(target)), request)
+    derived = {(edge["consumer"], edge["provider"]) for edge in report["scopeEdges"]}
+    scopes = json.loads((target / "penguin" / "scopes.json").read_text())["scopes"]
+    declared = {
+        (scope["id"], dependency["scope"])
+        for scope in scopes
+        for dependency in scope.get("depends_on", [])
+    }
+    assert declared and declared <= derived
+    assert all(edge["imports"] > 0 for edge in report["scopeEdges"])
+    assert report["complete"] is True
 
 
 def test_dependency_bump_lists_payments_as_a_user_of_the_upgraded_client(

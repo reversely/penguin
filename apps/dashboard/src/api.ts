@@ -10,6 +10,7 @@ import type {
   IssuePage,
   OverlapRequest,
   OverlapRequests,
+  PersonScopes,
   PlanInbox,
   ReviewDifferences,
   TeamView,
@@ -181,6 +182,11 @@ export async function writeIdentity(path: string, body: Readonly<Record<string, 
 /** Every person with their role, their features with each state and agents, and their idle agents. */
 export async function fetchTeam(): Promise<TeamView> {
   return getJson<TeamView>("/api/team");
+}
+
+/** One person's role with every list in full, for the person page's tables. */
+export async function fetchPersonScopes(person: string): Promise<PersonScopes> {
+  return getJson<PersonScopes>(`/api/people/${encodeURIComponent(person)}/scopes`);
 }
 
 /** A feature's page as the signed-in person may see it, or undefined for no such feature. */

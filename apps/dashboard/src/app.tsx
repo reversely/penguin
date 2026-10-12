@@ -167,7 +167,7 @@ function Page({ route, session, live, approvals, team, navigate, onSignedOut }: 
     return <IssuePageView key={route.issueId} issueId={route.issueId} viewer={session.owner} live={live} navigate={navigate} onSignedOut={onSignedOut} />;
   }
   if (route?.page === "team") {
-    return <TeamPage team={team} person={route.person} navigate={navigate} />;
+    return <TeamPage team={team} person={route.person} navigate={navigate} live={live} onSignedOut={onSignedOut} />;
   }
   if (route?.page === "feature") {
     return <FeaturePageView key={route.featureId} featureId={route.featureId} viewer={session.owner} team={team.view.kind === "ready" ? team.view.value : undefined} live={live} navigate={navigate} onSignedOut={onSignedOut} />;

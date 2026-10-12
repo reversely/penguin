@@ -50,13 +50,67 @@ export interface DashboardScope {
   readonly fallbackIds?: readonly string[];
 }
 
-/** A person's role in `penguin/scopes.json`: the scopes they are DRI for and how those meet everyone else's. */
+/**
+ * One scope in a person's role with what its dependency rests on (#134). A dependency is derived when
+ * the impact graph of main at the last promotion shows one scope's files importing, calling or
+ * referencing the other's, and declared when `depends_on` in `penguin/scopes.json` names it.
+ */
+export interface RoleScope extends DashboardScope {
+  /** Call sites over the edges the row stands for: for an owned scope, other people's calls into it. */
+  readonly calls: number;
+  /** Import, call and reference sites over the same edges. */
+  readonly uses: number;
+  /** The code at the last derivation shows the dependency. */
+  readonly derived: boolean;
+  /** `depends_on` names the dependency; for an owned scope, always true. */
+  readonly declared: boolean;
+  /** The person's own scopes on the edges the row stands for, by id; empty for an owned scope. */
+  readonly via: readonly string[];
+  /** The main commit at which the row's counts last changed; null when no derivation has seen it. */
+  readonly updatedAt: string | null;
+  readonly updatedPromotion: string | null;
+}
+
+/** The derivation the counts come from: one per promotion of main, on the check runner. */
+export interface RoleDerivation {
+  /** The main commit the edges were read from. */
+  readonly promotion: string;
+  readonly derivedAt: string;
+  /** False when the analysis truncated its list, so a missing edge proves nothing. */
+  readonly complete: boolean;
+}
+
+/** How many scopes each role row holds in full. */
+export interface RoleCounts {
+  readonly owns: number;
+  readonly reads: number;
+  readonly readBy: number;
+}
+
+/**
+ * A person's role in `penguin/scopes.json`: the scopes they are DRI for and how those meet everyone
+ * else's. On the team view each list holds the top ROLE_TOP scopes by call sites, and `counts` holds
+ * every row's full size; GET /api/people/<id>/scopes answers the full lists.
+ */
 export interface PersonRole {
-  readonly scopes: readonly DashboardScope[];
-  /** Other people's scopes that depend on one of the person's scopes. */
-  readonly dependents: readonly DashboardScope[];
-  /** Other people's scopes that one of the person's scopes depends on. */
-  readonly dependencies: readonly DashboardScope[];
+  readonly scopes: readonly RoleScope[];
+  /** Other people's scopes that read one of the person's scopes. */
+  readonly dependents: readonly RoleScope[];
+  /** Other people's scopes that one of the person's scopes reads. */
+  readonly dependencies: readonly RoleScope[];
+  /** Each list's full size. Absent from an older Worker, which sent every scope. */
+  readonly counts?: RoleCounts;
+  /** The last derivation, or null before the first promotion. Absent from an older Worker. */
+  readonly derivation?: RoleDerivation | null;
+}
+
+/** How many scopes of each role row the team view carries, ranked by call sites. */
+export const ROLE_TOP = 3;
+
+/** GET /api/people/<id>/scopes: one person's full role, every list in full, ranked by call sites. */
+export interface PersonScopes {
+  readonly person: string;
+  readonly role: PersonRole;
 }
 
 /** An agent as every surface outside its agent card names it: its handle and its person. */

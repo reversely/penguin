@@ -27,9 +27,13 @@ export function PersonPill({ id, navigate }: { readonly id: string; readonly nav
 }
 
 /** A scope as a pill in its owner's hue; a scope with no known owner takes the neutral pill. */
-export function ScopePill({ name, owner }: { readonly name: string; readonly owner: string | null }) {
+export function ScopePill({ name, owner, title }: { readonly name: string; readonly owner: string | null; readonly title?: string }) {
   const hue = usePersonHue(owner ?? "");
-  return <span className={owner === null ? "pill" : `pill pill-scope person-${hue}`}>{name}</span>;
+  return (
+    <span className={owner === null ? "pill" : `pill pill-scope person-${hue}`} title={title}>
+      {name}
+    </span>
+  );
 }
 
 /** A status as a pill in its tone's fixed colour. */

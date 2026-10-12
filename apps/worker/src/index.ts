@@ -114,6 +114,7 @@ export default {
             },
             featurePlan: async (owner, featureId) => agent.featurePlan(owner, featureId, repos),
             team: async (owner) => agent.teamView(owner, repos),
+            personScopes: async (person) => agent.personScopes(person, repos),
             featurePage: async (owner, featureId) => agent.featurePage(owner, featureId, repos),
             reviewDifferences: async (reviewId) => agent.reviewDifferences(reviewId),
             overlapRequests: async (owner) => agent.overlapRequests(owner),

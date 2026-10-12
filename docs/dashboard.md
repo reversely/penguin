@@ -58,10 +58,13 @@ identity owner. The ProjectAgent builds the answer (`services/project-agent/src/
 Each square holds:
 
 - the person's name and avatar in their hue, linking to the person's view;
-- the person's role in `penguin/scopes.json`, by scope name: Owns lists their scopes, Read by lists
-  other people's scopes that depend on theirs and Reads lists the scopes theirs depend on. Each scope
-  another person owns carries that person's id. A row with no scope is left out, except Owns, which
-  says None. A last Steward row shows the person's steward, which opens its agent card. Beside it
+- the person's role as rows: Owns (the scopes they are DRI for), Reads (other people's scopes theirs
+  read) and Read by (other people's scopes that read theirs). Each row shows its count, such as
+  `Read by 27`, then its top three scopes by call sites as pills in their DRIs' hues, then a link
+  such as `24 more` to the person view. The dependencies come from main's code at the last promotion
+  plus the declared `depends_on` entries
+  ([design.md](design.md#scope-dependencies-from-the-code)). A row with no scope is left out, except
+  Owns, which says None. A last Steward row shows the person's steward, which opens its agent card. Beside it
   sits the steward's queue of edit tasks from `steward` in `GET /api/team`: `1 of 2 running` against the person's cap,
   then `3 queued` and `1 asked` (in the attention colour) when any. A person with no steward has no
   Steward row;
@@ -91,9 +94,27 @@ feature page shows the last reason on the run's failed job.
 
 ### Person view
 
-`/?person=<id>` shows the person's role, their features as on the square, their agents on no feature
-and every issue that involves them, open issues first. Each issue row carries why it is there:
-Assigned, Review, Reply or Session to start.
+`/?person=<id>` shows the person's role as tables, their features as on the square, their agents on
+no feature and every issue that involves them, open issues first. Each issue row carries why it is
+there: Assigned, Review, Reply or Session to start.
+
+The role reads `GET /api/people/<id>/scopes` once and again on every live message. A line names the
+main commit the dependencies were read from (`Read from main at <commit>`), or says that Reads show
+declared dependencies until the next promotion of main. A search field (scope, scope id, DRI or team)
+and the source filters (All, Derived, Declared, Not in code, each with its count) narrow the tables;
+the source filters leave Owns whole. Owns, Reads and Read by each get a table:
+
+| Column | Holds |
+|---|---|
+| Scope | The scope's name. For Reads and Read by it also names the person's own scopes the dependency runs through (`via`) |
+| Owner | The scope's DRI as a pill, linking to their view, with the owning team's name for a declared team |
+| Call sites | Call sites over the dependency's edges; for Owns, other people's calls into the scope |
+| Source | Derived, Declared, or both; a declared dependency with no use in the code adds Not in code in the attention colour. Owns reads Declared |
+| Updated | The main commit at which the row's counts last changed, with the time on hover |
+
+A table opens ranked by call sites. Each column header sorts by that column and a second click
+reverses it. Each table scrolls inside itself on a phone. The person's steward row follows the
+tables.
 
 ## Feature page
 
@@ -375,7 +396,8 @@ self-hosted. Every value from an issue, identity, record, commit, docstring, rev
 React text, so markup in a title, body, name or handle shows as text and runs nothing. Each API route
 answers only as the session's person. The approvals list only that person's items. A feature page
 and `GET /api/features/<id>/plan` send a part's changed lines and patch only to the people they
-concern: the feature's person, the part's owner and that owner's delegate. No route returns an agent's
+concern: the feature's person, the part's owner and that owner's delegate. A role's dependencies in
+`GET /api/team` and `GET /api/people/<id>/scopes` carry scope names and counts, never code. No route returns an agent's
 session transcript; Penguin holds none.
 
 ## Local preview

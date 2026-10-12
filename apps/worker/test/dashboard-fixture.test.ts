@@ -10,7 +10,7 @@
 import assert from "node:assert/strict";
 import { before, test } from "node:test";
 
-import type { FeaturePage, OverlapRequests, PlanInbox, TeamView, ViewerPlan } from "@penguin/protocol";
+import { ROLE_TOP, type FeaturePage, type OverlapRequests, type PlanInbox, type TeamView, type ViewerPlan } from "@penguin/protocol";
 
 import { handleDashboardRoute } from "../src/dashboard.ts";
 import { parseOwnerMap } from "../src/github-oauth.ts";
@@ -125,5 +125,7 @@ test("the team view states each feature's one word and highlights only exception
   }
   const tomas = team.people.find((person) => person.id === "tomas");
   assert.deepEqual(tomas?.role.scopes.map((scope) => scope.id), ["orders"]);
-  assert.ok((tomas?.role.dependents.length ?? 0) > 3);
+  // The team view carries the top scopes of each row and every row's full count (#134).
+  assert.ok((tomas?.role.counts?.readBy ?? 0) > 3);
+  assert.equal(tomas?.role.dependents.length, ROLE_TOP);
 });

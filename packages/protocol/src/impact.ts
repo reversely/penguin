@@ -131,6 +131,20 @@ export interface ImpactReport {
   readonly complete: boolean;
   readonly truncated: boolean;
   readonly files: { readonly base: number; readonly head: number; readonly parsed: number };
+  /** With `edges: true` in the request: every pair of scopes whose code uses the other's in the head tree. */
+  readonly scopeEdges?: readonly ImpactScopeEdge[];
+}
+
+/**
+ * One scope's files using another scope's modules or definitions in one tree: the count of use sites
+ * of each kind. It names two scope ids and three counts, never a path, a line or a symbol.
+ */
+export interface ImpactScopeEdge {
+  readonly consumer: string;
+  readonly provider: string;
+  readonly calls: number;
+  readonly imports: number;
+  readonly references: number;
 }
 
 const SHA = { type: "string", pattern: "^[0-9a-f]{40}(?:[0-9a-f]{24})?$" };
@@ -235,7 +249,16 @@ export const IMPACT_REPORT_SCHEMA: JsonSchema = {
       head: { type: "integer", minimum: 0 },
       parsed: { type: "integer", minimum: 0 },
     }),
-  }),
+    scopeEdges: list(
+      record({
+        consumer: NAME,
+        provider: NAME,
+        calls: { type: "integer", minimum: 0 },
+        imports: { type: "integer", minimum: 0 },
+        references: { type: "integer", minimum: 0 },
+      }),
+    ),
+  }, ["scopeEdges"]),
 };
 
 /** Where a value breaks IMPACT_REPORT_SCHEMA; empty when it is a valid report. */

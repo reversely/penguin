@@ -34,6 +34,7 @@ import type { Feature, FeatureStore } from "./feature-store.ts";
 import type { BridgeCaller } from "./issue-index.ts";
 import { RUNNING_STATES } from "./overlap-lock.ts";
 import { CALLERS_SEARCH, PENGUIN_SESSION, REWRITE_SEARCH } from "./retiring-count.ts";
+import { isEdgesRequest } from "./scope-edges.ts";
 
 /** Another running feature's fork the checks merge the checkpoint onto, a target of its own. */
 export interface ClaimedFork {
@@ -138,6 +139,11 @@ export async function claimToolRuns(deps: ToolRunnerDeps, caller: BridgeCaller):
     if (feature !== undefined && run.sessionId === PENGUIN_SESSION && (run.input["search"] === CALLERS_SEARCH || run.input["search"] === REWRITE_SEARCH)) {
       // An empty `own` leaves out no running feature.
       runs.push(countClaim(run, feature, await forks("")));
+      continue;
+    }
+    // Main's scope dependencies read only main at the promotion, so no other fork is fetched.
+    if (feature !== undefined && isEdgesRequest(run)) {
+      runs.push(countClaim(run, feature, []));
       continue;
     }
     const identity = run.identityId === null ? undefined : deps.identity(run.identityId);

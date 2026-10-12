@@ -162,6 +162,12 @@ class Backend implements DashboardBackend {
     this.viewReads.push({ owner, featureId: null });
     return { people: [{ id: owner, role: { scopes: [], dependents: [], dependencies: [] }, features: [], idleAgents: [] }] };
   }
+  /** Each person whose full role was read, in order. */
+  readonly roleReads: string[] = [];
+  async personScopes(person: string) {
+    this.roleReads.push(person);
+    return { person, role: { scopes: [], dependents: [], dependencies: [], counts: { owns: 0, reads: 0, readBy: 0 }, derivation: null } };
+  }
   /** The feature pages the ProjectAgent holds, by id. */
   readonly pages = new Map<string, unknown>();
   async featurePage(owner: string, featureId: string) {
@@ -748,6 +754,19 @@ describe("the team view and a feature page", () => {
       { owner: "jun", featureId: "retention-dashboard" },
       { owner: "jun", featureId: "merge-ids" },
     ]);
+  });
+
+  test("a person's full role is read by the person the path names, and only with GET and a session", async () => {
+    const browser = new Browser();
+    assert.equal((await browser.request("/api/people/priya/scopes")).status, 401);
+    await browser.signIn("jun-gh");
+    const page = await browser.request("/api/people/priya/scopes");
+    assert.equal(page.status, 200);
+    assert.equal((await page.json()).person, "priya");
+    assert.equal((await browser.post("/api/people/priya/scopes", {})).status, 405);
+    assert.equal((await browser.request("/api/people/%E0%A4%A/scopes")).status, 404);
+    assert.equal((await browser.request("/api/people/a/b/scopes")).status, 404);
+    assert.deepEqual(browser.backend.roleReads, ["priya"]);
   });
 
   test("without a session both answer 401, while the feature page's HTML carries no data and loads", async () => {

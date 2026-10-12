@@ -15,7 +15,9 @@
 //   after a promotion (`search: "callers"`) runs only that second analysis, on main at the promotion
 //   and every running feature, and reports it as the result's impact. Penguin's rewrite of a split's
 //   migration parts (`search: "rewrite"`) applies the declared rules to each place and reports each
-//   place's patch with the uses it leaves (`runMigrationRewrite`).
+//   place's patch with the uses it leaves (`runMigrationRewrite`). Penguin's read of main's scope
+//   dependencies after a promotion (`search: "edges"`) runs one analysis of main with `edges: true`
+//   and reports the scope pairs with their counts (`runScopeEdges`).
 // - `check` runs a combined run with the block checks (combined-run.ts): the checkpoint merged onto
 //   its baseline (`main`) and onto each other running feature's fork, keyed by the feature id. A
 //   person with two running features gets two merged trees, each tested in that person's scopes. Each failed or erred
@@ -192,6 +194,7 @@ function retiringOf(claim: ClaimedToolRun): RetiringDeclaration[] {
 }
 
 async function runImpact(options: ToolPassOptions, claim: ClaimedToolRun): Promise<AgentToolResult> {
+  if (claim.input["search"] === "edges") return runScopeEdges(options, claim);
   const scopeMap = await loadScopeMap(options.repoPath, claim.checkpoint);
   const retiring = retiringOf(claim);
   if (retiring.length > 0 && claim.input["search"] === "own") return runRetiringCheck(options, claim, scopeMap, retiring);
@@ -239,6 +242,19 @@ async function runCallerCount(options: ToolPassOptions, claim: ClaimedToolRun, s
     `${plural(uses, "caller")} of ${plural(retiring.length, "retiring symbol")} on main and in the own changes of ${plural(claim.forks.length, "running feature")}` +
     (impact.complete ? "" : "; the report is incomplete");
   return { ...emptyResult(claim), impact, migration, summary: bounded(summary) };
+}
+
+/**
+ * Penguin's read of main's scope dependencies after a promotion (`search: "edges"`): one analysis of
+ * main at the promotion with `edges: true`. The report names scope ids and counts, no code.
+ */
+async function runScopeEdges(options: ToolPassOptions, claim: ClaimedToolRun): Promise<AgentToolResult> {
+  const impact = await options.impact({ base: claim.base, head: claim.base, forks: [], edges: true });
+  const edges = impact.scopeEdges ?? [];
+  const summary =
+    `${edges.length} scope ${edges.length === 1 ? "dependency" : "dependencies"} read from main at ${claim.base.slice(0, 12)}` +
+    (impact.complete ? "" : "; the report is incomplete");
+  return { ...emptyResult(claim), impact, summary: bounded(summary) };
 }
 
 /** One place Penguin's rewrite request names: its target and the files whose uses the rules may rewrite. */

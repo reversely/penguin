@@ -18,7 +18,7 @@ reads only the records that concern their own features and scopes.
 |---|---|
 | Team | A group of people with a lead, usually the engineering manager. A team owns scopes. The lead sees every exception in the team's scopes and decides none of them |
 | Person | A member of one or more teams. A person runs features and is the DRI (directly responsible individual) for some of the team's scopes. A person approves an overlapping start in their area and the part of a plan that touches a scope they answer for |
-| Scope | A part of the codebase owned by one team, with one DRI and a fallback order of other team members: paths, contracts and declared invariants. One scope depends on another when it reads the other's data or calls its contracts |
+| Scope | A part of the codebase owned by one team, with one DRI and a fallback order of other team members: paths, contracts and declared invariants. One scope depends on another when it reads the other's data or calls its contracts. Penguin reads these dependencies from the code at each promotion of main and keeps the declared ones beside them ([Scope dependencies from the code](#scope-dependencies-from-the-code)) |
 | Feature | One unit of work heading to main. Each feature is a fork of main in Cloudflare Artifacts, created when the feature opens. A feature declares its area: the scopes, paths and contracts it expects to touch |
 | Agent identity | A named agent a person creates, such as `@ines/money`, with a job and a charter. The charter lists the scopes and paths the identity may change. Identities follow the model of Grok Bot ([Grok Bot](https://docs.x.ai/grok-bot/bots)) |
 | Session | One running agent working as an identity on one feature |
@@ -89,7 +89,8 @@ The API the team views read (#136 renders them):
 | Field | Where | Holds |
 |---|---|---|
 | `teams` | `GET /api/team` (`TeamView`) | Every team that owns a scope, sorted by id: `id`, `name`, `lead`, `members`, `implicit` (true for a one-person team) and `scopes`, each with `id`, `name`, `dri` and `fallback` |
-| `role.scopes` | `GET /api/team` (`TeamPerson`) | The scopes the person is DRI for |
+| `role` | `GET /api/team` (`TeamPerson`) | The person's top three scopes by call sites in each of `scopes` (DRI for), `dependencies` (reads) and `dependents` (read by), with `counts` of each full list and the `derivation` they come from ([Scope dependencies from the code](#scope-dependencies-from-the-code)) |
+| `role` | `GET /api/people/<id>/scopes` (`PersonScopes`) | The same role with every list in full, for the person page's tables |
 | `ownerId`, `teamId`, `fallbackIds` | Every `DashboardScope` | The scope's DRI, its team and its fallback order |
 | `teamExceptions` | `GET /api/plan-parts` (`PlanInbox`) | For each team the viewer leads, every exception in its scopes: `kind` (`plan_part`, `protected_path` or `review_exception`), `team`, `feature`, `ref`, `scopes`, `waitingOn`, `state` and `raisedAt`. It carries no changed lines. A one-person team adds nothing, as its owner sees their own items already |
 
@@ -994,6 +995,7 @@ with its commit and scopes, then what the analysis found.
 | Removed exports | Each name a module exported at base that an import of the module at head can no longer reach |
 | Stored data shapes | Field lists before and after for each dataclass, `NamedTuple`, `TypedDict` and `Enum` whose fields change |
 | Uses | Each import, call or reference of a changed symbol, with its file and line. Head uses lie outside the changed files. Fork uses lie inside the fork's scopes. A fork asked with `since` lists only uses in files it changed since its merge base with that commit. The rest count as `carried` |
+| Scope edges | Asked with `edges: true`: each pair of scopes where the consumer's files at head import, call or reference the provider's modules and definitions, with the count of each kind of use site. No path, line or symbol |
 
 Names resolve through imports and re-exports. A re-export in `__all__` that points at another
 definition counts as a change to the re-exported name. In the dependency bump, `shared/http.py`
@@ -1012,6 +1014,44 @@ report lists `start_of_day()` as modified with an unchanged signature. It lists 
 `analytics/weekly.py` and Sam's call in `messaging/reminders.py`, so both forks run tests. On
 identity unification it lists the `Profile` field change and the new required `identity` parameter
 of `Profile.set`. It lists every analytics and messaging file that imports the identity map.
+
+#### Scope dependencies from the code
+
+A person's role on the dashboard lists the scopes they own, the scopes those read and the scopes that
+read them. Hand-written `depends_on` entries drift from the code as a codebase grows, so Penguin reads
+the dependencies from main itself (`services/project-agent/src/scope-edges.ts`):
+
+1. **Request.** Each promotion of main records one `impact` request of Penguin's own with
+   `search: "edges"`, beside the count of retiring callers. The check runner runs
+   `analysis:python-impact` on main at the promotion with `edges: true`. Every module and definition
+   in a scope's paths is watched, and one pass per file resolves each import, call and reference
+   through the tree's aliases. A use inside its own scope or in a file no scope holds makes no edge.
+2. **Store.** The ProjectAgent keeps one row per pair of scopes (`ScopeEdge`) with its call, import
+   and reference counts and the promotion at which those counts last changed. An edge the next
+   complete report no longer shows stays with zero counts, marked out of the code at that promotion.
+   An incomplete report adds and updates edges and removes none. A report older than the stored one is
+   ignored.
+3. **Read.** `GET /api/team` and `GET /api/people/<id>/scopes` build each person's role from the
+   stored rows and the scope map's `depends_on` entries in one pass, with no runner call.
+
+Each scope in a role carries its call sites, its use sites and where the dependency comes from:
+
+| Source | When |
+|---|---|
+| Derived | The code at the last derivation shows the edge and `depends_on` does not name it |
+| Derived and declared | Both show it |
+| Declared | Only `depends_on` names it, and no promotion has been read yet |
+| Not in code | Only `depends_on` names it and the last derivation found no use of it in the code. The row shows Declared and Not in code |
+
+Owns counts other people's call sites into each owned scope. Reads and Read by leave out the person's
+own scopes, and each row names which of the person's scopes it runs through (`via`). Each list is
+ranked by call sites, then use sites, then name. On the helpful fix, main's code shows analytics
+importing ingestion's events, while messaging's declared dependency on ingestion has no use in the
+code: messaging's row shows Declared and Not in code.
+
+The rows carry scope ids and counts only, so no code, path or symbol reaches the ProjectAgent or the
+dashboard. Derivation runs once per promotion on the check runner; the team view reads the stored rows
+in the same request as the rest of the view.
 
 #### The checks on merged trees
 

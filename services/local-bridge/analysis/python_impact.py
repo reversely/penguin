@@ -12,6 +12,11 @@ The request may add ``"symbols": ["path::name", ...]``: contracts to search for 
 changed, such as the retiring symbols of a parallel change. Their uses are reported beside the uses
 of the change itself, so ``base`` equal to ``head`` lists only them.
 
+The request may add ``"edges": true``: the report then carries ``scopeEdges``, one entry per pair of
+scopes where a file in the consumer scope's paths imports, calls or references a module or definition
+in the provider scope's paths of the ``head`` tree, with the count of use sites of each kind. An edge
+names two scope ids and three counts, never a path, a line or a symbol.
+
 A fork with ``since`` (main's commit) reports only the uses in files the fork added or changed since
 its merge base with ``since``. A use in a file the fork carries unchanged from main is main's caller,
 which the fork takes with main; the report counts those as ``carried``.
@@ -1427,6 +1432,8 @@ class AnalysisRequest:
     forks: tuple[ForkRequest, ...]
     # Contracts (path::name) searched for as if they had changed.
     symbols: tuple[str, ...] = ()
+    # Whether the report carries the head tree's scope dependencies (``scope_edges``).
+    edges: bool = False
 
 
 def parse_request(raw: object) -> AnalysisRequest:
@@ -1483,8 +1490,11 @@ def parse_request(raw: object) -> AnalysisRequest:
         raise RequestError(
             f"symbols must list at most {MAX_SYMBOLS} contracts as path::name in a Python module"
         )
+    edges = raw.get("edges", False)
+    if not isinstance(edges, bool):
+        raise RequestError("edges must be true or false")
     return AnalysisRequest(
-        raw["base"], raw["head"], tuple(forks), tuple(sorted(set(symbols_raw)))
+        raw["base"], raw["head"], tuple(forks), tuple(sorted(set(symbols_raw))), edges
     )
 
 
@@ -1495,6 +1505,47 @@ def watched_symbols(symbols: tuple[str, ...]) -> dict[str, str]:
         path, name = contract.split("::")
         watched[f"{module_name(path)}.{name}"] = path
     return watched
+
+
+EDGE_COUNTS = {"call": "calls", "import": "imports", "reference": "references"}
+
+
+def scope_edges(tree: Tree, limits: Limits, truncated: list[bool]) -> list[dict]:
+    """Each pair of scopes where one scope's files use another's modules or definitions, with counts.
+
+    Every module and definition in a file some scope holds is watched, so one ``UseFinder`` pass per
+    file resolves each import, call and reference through the tree's aliases, as the search for a
+    changed symbol does. A use inside its own scope, or in a file no scope holds, makes no edge.
+    """
+    watched = {
+        name: source.path
+        for name, (_, source) in tree.definitions.items()
+        if tree.scopes.scope_of(source.path) is not None
+    }
+    for module, source in tree.modules.items():
+        if tree.scopes.scope_of(source.path) is not None:
+            watched[module] = source.path
+    counts: dict[tuple[str, str], dict[str, int]] = {}
+    for path in sorted(tree.files):
+        source = tree.files[path]
+        consumer = tree.scopes.scope_of(path)
+        if source.facts is None or consumer is None:
+            continue
+        finder = UseFinder(tree, source, watched)
+        finder.visit(source.facts.tree)
+        for _, symbol, kind in finder.uses:
+            provider = tree.scopes.scope_of(watched[symbol])
+            if provider is None or provider == consumer:
+                continue
+            edge = counts.setdefault(
+                (consumer, provider), {"calls": 0, "imports": 0, "references": 0}
+            )
+            edge[EDGE_COUNTS[kind]] += 1
+    edges = [
+        {"consumer": consumer, "provider": provider, **kinds}
+        for (consumer, provider), kinds in sorted(counts.items())
+    ]
+    return _cap(edges, limits, truncated)
 
 
 def unanalysed_paths(base: Tree, head: Tree) -> list[str]:
@@ -1602,6 +1653,9 @@ def analyse(
         if not error["path"] or error["path"] in changed_paths
     ]
     errors.sort(key=lambda error: (error["tree"], error["path"], error["kind"]))
+    edges = (
+        {"scopeEdges": scope_edges(head, limits, truncated)} if request.edges else {}
+    )
     return {
         "schemaVersion": SCHEMA_VERSION,
         "tool": TOOL,
@@ -1624,6 +1678,7 @@ def analyse(
             "head": len(head.files),
             "parsed": len(cache),
         },
+        **edges,
     }
 
 

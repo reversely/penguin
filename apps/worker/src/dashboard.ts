@@ -30,6 +30,9 @@
  *     person's features.
  *   - GET /api/team: every person with their role in the scope map, their features with each one's
  *     one-word state and agents, and their idle agents (TeamView in @penguin/protocol).
+ *   - GET /api/people/<id>/scopes: one person's role with every list in full, each scope with its
+ *     call sites, whether the code shows it and whether `depends_on` declares it (PersonScopes in
+ *     @penguin/protocol). It carries scope names and counts, no code.
  *   - GET /api/features/<id>/page: the feature page as the signed-in person may see it (FeaturePage in
  *     @penguin/protocol): a part's changed lines only for the feature's person, the part's owner and
  *     that owner's delegate; 404 for no such feature.
@@ -143,6 +146,8 @@ export interface DashboardBackend {
   featurePlan(owner: string, featureId: string): Promise<unknown>;
   /** The team view for `owner` as plain JSON (TeamView in @penguin/protocol). */
   team(owner: string): Promise<unknown>;
+  /** One person's full role with every list in full (PersonScopes in @penguin/protocol). */
+  personScopes(person: string): Promise<unknown>;
   /** The feature page as `owner` may see it (FeaturePage in @penguin/protocol), or undefined. */
   featurePage(owner: string, featureId: string): Promise<unknown>;
   /** Every differing input of a review's side-by-side run (ReviewDifferences in @penguin/protocol), or undefined. */
@@ -659,6 +664,12 @@ async function handleApi(
     if (request.method !== "GET") return methodNotAllowed("GET");
     return json(await (await handlers.dashboard()).team(session.owner));
   }
+  const person = personSegment(url.pathname);
+  if (person !== undefined) {
+    if (request.method !== "GET") return methodNotAllowed("GET");
+    if (person === null) return json({ error: "not found" }, 404);
+    return json(await (await handlers.dashboard()).personScopes(person));
+  }
   const reviewId = /^\/api\/reviews\/([1-9][0-9]{0,8})\/differences$/.exec(url.pathname)?.[1];
   if (reviewId !== undefined) {
     if (request.method !== "GET") return methodNotAllowed("GET");
@@ -683,6 +694,20 @@ async function handleApi(
     return page === undefined ? json({ error: "not found" }, 404) : json(page);
   }
   return json({ error: "not found" }, 404);
+}
+
+/**
+ * The person a `/api/people/<id>/scopes` path names: undefined for any other path, null for an id that
+ * does not decode. The id is only a key into the scope map; it reaches no query or markup.
+ */
+function personSegment(pathname: string): string | null | undefined {
+  const raw = /^\/api\/people\/([^/]{1,256})\/scopes$/.exec(pathname)?.[1];
+  if (raw === undefined) return undefined;
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return null;
+  }
 }
 
 async function servePage(request: Request, url: URL, handlers: DashboardHandlers): Promise<Response> {

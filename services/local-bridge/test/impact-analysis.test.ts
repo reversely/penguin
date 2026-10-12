@@ -8,7 +8,7 @@ import { after, before, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { checkImpactReport, IMPACT_COMMAND_ID, selectAffectedForks } from "@penguin/protocol";
+import { checkImpactReport, IMPACT_COMMAND_ID, parseToolResult, selectAffectedForks, type AgentToolResult } from "@penguin/protocol";
 import {
   CombinedRunner,
   formatImpactReport,
@@ -16,6 +16,7 @@ import {
   pythonImpactAnalyzer,
   resolveAnalysisCommand,
   TestRunner,
+  toolPass,
   UnknownCommandError,
   ownerForkTargets,
 } from "@penguin/local-bridge";
@@ -74,6 +75,39 @@ describe("on the helpful-fix fixture", () => {
       assert.ok(fork.uses.length > 0);
       for (const use of fork.uses) assert.ok(text.includes(`${use.path}:${use.line} ${use.kind} ${use.symbol}`));
     }
+  });
+
+  test("Penguin's edges request reads main's scope dependencies through the analysis and reports scope ids and counts", async () => {
+    const main = pins.branches.main as string;
+    const reported: AgentToolResult[] = [];
+    const claim = { runId: 9, tool: "impact", feature: "utc-day", fork: "feature-utc-day", forks: [], base: main, checkpoint: main, input: { search: "edges", promotion: main } };
+    const pass = await toolPass({
+      claim: async () => [claim] as never,
+      report: async (_, result) => {
+        reported.push(result);
+        return { status: "recorded" } as never;
+      },
+      fetchFork: async () => {},
+      impact: analyzer(),
+      combined: {} as never,
+      fixes: {} as never,
+      repoPath: repo,
+    });
+    assert.equal(pass.runs[0]?.error, null);
+    const [result] = reported;
+    const parsed = parseToolResult(result);
+    assert.ok(parsed.ok, parsed.ok ? "" : parsed.problems.join("; "));
+    const edges = result?.impact?.scopeEdges ?? [];
+    // Analytics imports ingestion's events on main. Messaging declares ingestion in depends_on, but
+    // its code on main uses none of it: the declared edge is absent from the code.
+    assert.deepEqual(
+      edges.map(({ consumer, provider }) => [consumer, provider]),
+      [["analytics", "ingestion"]],
+    );
+    assert.ok((edges[0]?.imports ?? 0) > 0);
+    assert.match(result?.summary ?? "", /^\d+ scope dependenc(y|ies) read from main at [0-9a-f]{12}$/u);
+    // Main's own uses are no change: the report lists no changed symbol and no use site.
+    assert.deepEqual([result?.impact?.changes, result?.impact?.headUses], [[], []]);
   });
 
   test("a combined run tests only the dependent owners the impact graph selects", async () => {

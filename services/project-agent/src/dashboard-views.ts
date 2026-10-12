@@ -34,7 +34,8 @@ import {
   type FeaturePage,
   type FeaturePlanView,
   type FeatureStateWord,
-  type PersonRole,
+  type PersonScopes,
+  ROLE_TOP,
   type Plan,
   type TeamPerson,
   type TeamScopeSummary,
@@ -54,6 +55,7 @@ import { breakView, newestReviews, returnedPayload, type PartRoute, type PlanRou
 import type { ReviewStore, StoredReview } from "./review-submit.ts";
 import { reviewView } from "./review-view.ts";
 import type { RunFailure } from "./run-failures.ts";
+import { dashboardScope, personRole, roleIndex, type ScopeEdgeSnapshot } from "./scope-edges.ts";
 import type { Session } from "./session-store.ts";
 
 export interface DashboardViewDeps {
@@ -86,6 +88,8 @@ export interface DashboardViewDeps {
   readonly protectedChanges?: (featureId: string) => readonly { readonly ownerId: string; readonly state: "pending" | "confirmed" }[];
   /** The feature's split, when Penguin split its contract change (ContractSplitStore.get). */
   readonly split?: (featureId: string) => ContractSplitView | undefined;
+  /** The scope dependencies stored from the last derivation (ScopeEdgeStore.snapshot); absent, only declared ones show. */
+  readonly scopeEdges?: () => ScopeEdgeSnapshot;
 }
 
 /**
@@ -196,28 +200,16 @@ export function featureExceptions(
   return exceptions;
 }
 
-const byName = (a: DashboardScope, b: DashboardScope) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
-
-/** A scope as the dashboard names it: `ownerId` is its DRI. */
-function dashboardScope(scopeMap: ScopeMap, id: string): DashboardScope {
-  const found = scopeMap.scopes.get(id);
-  return { id, name: found?.name ?? id, ownerId: found?.driId ?? "", teamId: found?.teamId ?? "", fallbackIds: found?.fallbackIds ?? [] };
+/**
+ * The person's role with every list in full, for the person page (GET /api/people/<id>/scopes): one
+ * read of the stored edges and the scope map.
+ */
+export async function buildPersonScopes(deps: Pick<DashboardViewDeps, "scopeMap" | "scopeEdges">, person: string): Promise<PersonScopes> {
+  const index = roleIndex(await deps.scopeMap(), deps.scopeEdges?.() ?? NO_EDGES);
+  return { person, role: personRole(index, person) };
 }
 
-/** The scopes the person is DRI for, the scopes that depend on them and the scopes they depend on. */
-export function personRole(scopeMap: ScopeMap, person: string): PersonRole {
-  const all = [...scopeMap.scopes.values()];
-  const ref = ({ id }: (typeof all)[number]): DashboardScope => dashboardScope(scopeMap, id);
-  const own = all.filter((scope) => scope.driId === person);
-  const ownIds = new Set(own.map((scope) => scope.id));
-  const providers = new Set(own.flatMap((scope) => scope.dependsOn.map((dependency) => dependency.providerScopeId)));
-  const others = all.filter((scope) => scope.driId !== person);
-  return {
-    scopes: own.map(ref).sort(byName),
-    dependents: others.filter((scope) => scope.dependsOn.some((dependency) => ownIds.has(dependency.providerScopeId))).map(ref).sort(byName),
-    dependencies: others.filter((scope) => providers.has(scope.id)).map(ref).sort(byName),
-  };
-}
+const NO_EDGES: ScopeEdgeSnapshot = { derivation: null, edges: [] };
 
 const identityPerson = (identity: Identity): string => identity.ownerId ?? identity.teamOwners[0] ?? "";
 
@@ -263,6 +255,7 @@ export async function buildTeamView(deps: DashboardViewDeps, viewer: string): Pr
     };
   });
   const teams = teamSummaries(scopeMap);
+  const roles = roleIndex(scopeMap, deps.scopeEdges?.() ?? NO_EDGES);
   const people = new Set<string>([
     ...dris(scopeMap),
     ...teams.flatMap((team) => [team.lead, ...team.members]),
@@ -274,7 +267,7 @@ export async function buildTeamView(deps: DashboardViewDeps, viewer: string): Pr
     people: ordered.map(
       (id): TeamPerson => ({
         id,
-        role: personRole(scopeMap, id),
+        role: personRole(roles, id, ROLE_TOP),
         ...(deps.steward === undefined ? {} : { steward: deps.steward(id) }),
         features: teamFeatures.filter((feature) => feature.person === id),
         idleAgents: identities

@@ -89,7 +89,7 @@ import { IngestLedger, ingestPush, type IngestReport } from "./push-ingest.ts";
 import { rebuildIndex, type RebuildReport } from "./rebuild.ts";
 import { OWNERS_PATH, parseOwnersFile, parseScopeFile, SCOPE_MAP_PATH, TEAMS_PATH } from "./scope-file.ts";
 import { ReviewStore, submitReview, type ReviewInput, type ReviewOutcome, type StoredReview } from "./review-submit.ts";
-import { buildFeaturePage, buildFeaturePlan, buildTeamView, type DashboardViewDeps } from "./dashboard-views.ts";
+import { buildFeaturePage, buildFeaturePlan, buildPersonScopes, buildTeamView, type DashboardViewDeps } from "./dashboard-views.ts";
 import { claimReviews, recordReview, type ReviewClaim, type ReviewReportOutcome } from "./review-record.ts";
 import {
   claimPartTrials,
@@ -158,6 +158,7 @@ import {
 } from "./edit-work.ts";
 import { coverMidway, handOver, meeting, PlanCoverageStore } from "./plan-coverage.ts";
 import { RetiringStore } from "./retiring-store.ts";
+import { edgesReported, requestScopeEdges, ScopeEdgeStore } from "./scope-edges.ts";
 import { contractWork, ContractSplitStore, recordSplit, retireSplit, scheduleSort, type ContractSplitDeps } from "./contract-split.ts";
 import type { BlockRun } from "./block-store.ts";
 import {
@@ -277,6 +278,7 @@ import {
   type PlanFactsRequest,
   type ReviewDifferences,
   type TeamView,
+  type PersonScopes,
   type Promotion,
   type VerificationRunSpec,
   type ViewerPlan,
@@ -972,6 +974,7 @@ export class ProjectAgent extends Agent {
   #fixGrants: FixGrantStore | undefined;
   #planCoverage: PlanCoverageStore | undefined;
   #retiring: RetiringStore | undefined;
+  #scopeEdges: ScopeEdgeStore | undefined;
   #migrations: MigrationStore | undefined;
   #splits: ContractSplitStore | undefined;
   #blockQueue: BlockQueueStore | undefined;
@@ -2243,10 +2246,12 @@ export class ProjectAgent extends Agent {
   /**
    * Attaches the runner's result to waiting tool request `runId`; the session hears of it at its next
    * safe checkpoint. A count of Penguin's own after a promotion goes on to the contract step
-   * (retiring-count.ts); a failure there is logged and never fails the report.
+   * (retiring-count.ts); a failure there is logged and never fails the report. Penguin's read of
+   * main's scope dependencies goes to the stored edges the team view reads (scope-edges.ts).
    */
   async reportToolRun(caller: BridgeCaller, runId: number, result: unknown, repos?: ProjectRepos): Promise<ToolReportOutcome> {
     const outcome = recordToolResult(this.#toolStore(), caller, runId, result);
+    if (outcome.status === "recorded" && edgesReported(this.#scopeEdgeStore(), outcome.run)) this.#liveFeed().featuresChanged();
     if (outcome.status === "recorded") {
       try {
         const counted = await this.#planStep(() => countReported(this.#countDeps(repos), outcome.run));
@@ -2344,7 +2349,8 @@ export class ProjectAgent extends Agent {
   /**
    * After a promotion of `featureId` moved main to `mainAfter`: each symbol whose removal a landed
    * block carried closes as removed, then Penguin asks for one count of the remaining callers
-   * (retiring-count.ts). A failure is logged and never fails the promotion. Not a plan step: the
+   * (retiring-count.ts) and one read of main's scope dependencies (scope-edges.ts). A failure is
+   * logged and never fails the promotion. Not a plan step: the
    * promoting FeatureAgent waits on this call, and a plan step may be waiting on that FeatureAgent.
    */
   async #countAfterPromotion(featureId: string, mainAfter: string, landed: boolean): Promise<void> {
@@ -2353,6 +2359,11 @@ export class ProjectAgent extends Agent {
       requestRetiringCount(this.#countDeps(), featureId, mainAfter);
     } catch (error) {
       console.error(JSON.stringify({ event: "retiring_count_failed", feature: featureId, error: String(error).slice(0, 200) }));
+    }
+    try {
+      requestScopeEdges({ features: this.#featureStore(), runs: this.#toolStore() }, featureId, mainAfter);
+    } catch (error) {
+      console.error(JSON.stringify({ event: "scope_edges_failed", feature: featureId, error: String(error).slice(0, 200) }));
     }
   }
 
@@ -2458,6 +2469,12 @@ export class ProjectAgent extends Agent {
     return buildTeamView(await this.#dashboardViewDeps(repos), caller);
   }
 
+  /** One person's full role for the person page (dashboard-views.ts): the scope map and the stored edges, no runner call. */
+  async personScopes(person: string, repos: ProjectRepos): Promise<PersonScopes> {
+    const rules = await this.#reviewRules(repos);
+    return buildPersonScopes({ scopeMap: async () => rules.scopeMap, scopeEdges: () => this.#scopeEdgeStore().snapshot() }, person);
+  }
+
   /** One feature's page as `caller` may see it (dashboard-views.ts), or undefined for no such feature. */
   async featurePage(caller: string, featureId: string, repos: ProjectRepos): Promise<FeaturePage | undefined> {
     return buildFeaturePage(await this.#dashboardViewDeps(repos), featureId, caller);
@@ -2487,6 +2504,7 @@ export class ProjectAgent extends Agent {
       stoppedRuns: (featureId) => this.#runFailureStore().stopped(featureId),
       protectedChanges: (featureId) => this.#protectedChangeStore().ofFeature(featureId),
       split: (featureId) => this.#splitStore().get(featureId),
+      scopeEdges: () => this.#scopeEdgeStore().snapshot(),
     };
   }
 
@@ -2746,6 +2764,12 @@ export class ProjectAgent extends Agent {
   #planCoverageStore(): PlanCoverageStore {
     this.#planCoverage ??= new PlanCoverageStore(this.#database());
     return this.#planCoverage;
+  }
+
+  /** Main's scope dependencies from the last promotion's derivation (scope-edges.ts). */
+  #scopeEdgeStore(): ScopeEdgeStore {
+    this.#scopeEdges ??= new ScopeEdgeStore(this.#database());
+    return this.#scopeEdges;
   }
 
   /** The project's retiring symbols, declared by stored merge plans (retiring-store.ts). */

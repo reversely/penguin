@@ -56,7 +56,7 @@ import { AgentToolStore, requestRetiringCheck, requestTool, whatsNear, type Agen
 import { buildBoard } from "../../services/project-agent/src/board.ts";
 import { checkpointBaseline, checkpointChange, type RepoHistoryReader } from "../../services/project-agent/src/combined-run-schedule.ts";
 import { contractWork, ContractSplitStore, recordSplit, scheduleSort, type ContractSplitDeps } from "../../services/project-agent/src/contract-split.ts";
-import { buildFeaturePage, buildFeaturePlan, buildTeamView, type DashboardViewDeps } from "../../services/project-agent/src/dashboard-views.ts";
+import { buildFeaturePage, buildFeaturePlan, buildPersonScopes, buildTeamView, type DashboardViewDeps } from "../../services/project-agent/src/dashboard-views.ts";
 import { openFeature, recordFeatureRepo, reportFeatureCheckpoint, type FeatureDeps } from "../../services/project-agent/src/feature-open.ts";
 import { FeatureStore, signFeatureRecord } from "../../services/project-agent/src/feature-store.ts";
 import { FixGrantStore } from "../../services/project-agent/src/fix-write.ts";
@@ -92,6 +92,7 @@ import {
   type ConfirmDeps,
 } from "../../services/project-agent/src/protected-change.ts";
 import { fileDiffs } from "../../services/project-agent/src/repo-diff.ts";
+import { edgesReported, requestScopeEdges, ScopeEdgeStore } from "../../services/project-agent/src/scope-edges.ts";
 import { closeRemoved, countReported, requestRetiringCount, type CountOutcome, type RetiringCountDeps } from "../../services/project-agent/src/retiring-count.ts";
 import { EditRoster } from "../../services/project-agent/src/edit-roster.ts";
 import { EditTaskStore } from "../../services/project-agent/src/edit-tasks.ts";
@@ -160,6 +161,8 @@ export class PreviewProject {
   readonly index: IssueIndex;
   readonly forks: OwnerForkStore;
   readonly retiring: RetiringStore;
+  /** Main's scope dependencies from the last derivation, as the ProjectAgent keeps them. */
+  readonly scopeEdges: ScopeEdgeStore;
   readonly splits: ContractSplitStore;
   readonly migrations: MigrationStore;
   readonly editTasks: EditTaskStore;
@@ -217,6 +220,7 @@ export class PreviewProject {
     this.tools = new AgentToolStore(this.sql);
     this.forks = new OwnerForkStore(this.sql, now);
     this.retiring = new RetiringStore(this.sql, now);
+    this.scopeEdges = new ScopeEdgeStore(this.sql, now);
     this.splits = new ContractSplitStore(this.sql, now);
     this.migrations = new MigrationStore(this.sql, now);
     this.editTasks = new EditTaskStore(this.sql, { now });
@@ -410,8 +414,20 @@ export class PreviewProject {
     this.moveMain(sha);
     if (landed) await closeRemoved(this.countDeps(), featureId, sha);
     const runId = requestRetiringCount(this.countDeps(), featureId, sha);
-    if (runId !== undefined) await this.runnerPass();
+    const edges = requestScopeEdges({ features: this.features, runs: this.tools }, featureId, sha);
+    if (runId !== undefined || edges !== undefined) await this.runnerPass();
     return runId;
+  }
+
+  /**
+   * Reads main's scope dependencies with the check runner's analysis when no promotion in the seed
+   * asked for them, so the team view shows main as the fixture builds it.
+   */
+  async deriveMain(): Promise<void> {
+    if (this.scopeEdges.snapshot().derivation !== null) return;
+    const main = this.git("rev-parse", "main");
+    const report = await pythonImpactAnalyzer({ repoPath: this.repo, python: PYTHON, env: ENV })({ base: main, head: main, forks: [], edges: true });
+    this.scopeEdges.derived(report.scopeEdges ?? [], main, 0, report.complete);
   }
 
   /** The check runner makes every pending facts run; each report of a latest checkpoint is sorted, as the ProjectAgent does. */
@@ -587,6 +603,8 @@ export class PreviewProject {
       report: async (runId, result) => {
         const recorded = recordToolResult(this.tools, RUNNER, runId, result);
         if (recorded.status !== "recorded") throw new Error(`report ${runId}: ${JSON.stringify(recorded)}`);
+        // Main's scope dependencies go to the stored edges, as the ProjectAgent's report does.
+        edgesReported(this.scopeEdges, recorded.run);
         // A count of Penguin's own goes on to the contract step, as the ProjectAgent's report does.
         const counted = await countReported(this.countDeps(), recorded.run);
         if (counted !== undefined) this.counts.push({ runId, outcome: counted });
@@ -828,6 +846,7 @@ export class PreviewProject {
       split: (featureId) => this.splits.get(featureId),
       editTasks: (featureId) => this.editTasks.forFeature(featureId).map(editTaskView),
       steward: (person) => this.stewardView(person),
+      scopeEdges: () => this.scopeEdges.snapshot(),
     };
   }
 
@@ -903,6 +922,7 @@ export class PreviewProject {
         await this.syncEditWork();
         return buildTeamView(this.viewDeps(), owner);
       },
+      personScopes: async (person) => buildPersonScopes(this.viewDeps(), person),
       featurePage: async (owner, featureId) => {
         await this.syncEditWork();
         return buildFeaturePage(this.viewDeps(), featureId, owner);
@@ -1306,5 +1326,6 @@ export async function seed(fixture: FixtureName, options: { readonly runnerTools
   preview.runnerTools = options.runnerTools ?? true;
   if (fixture === "money-minor-units") await moneyMinorUnits(preview);
   else await featuresFixture(preview);
+  await preview.step("read main's scope dependencies", () => preview.deriveMain());
   return preview;
 }

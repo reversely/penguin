@@ -34,6 +34,8 @@ export interface ImpactRequest {
    * (retiring.ts in `@penguin/protocol`). With `base` equal to `head` the report lists only their uses.
    */
   readonly symbols?: readonly string[];
+  /** True asks for `scopeEdges`: every pair of scopes whose code uses the other's in the head tree. */
+  readonly edges?: boolean;
 }
 
 export type ImpactAnalyzer = (request: ImpactRequest) => Promise<ImpactReport>;

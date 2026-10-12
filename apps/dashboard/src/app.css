@@ -3552,8 +3552,150 @@ label.button:has(input:focus-visible) {
 
 .role-row {
   display: grid;
-  grid-template-columns: 4.5rem minmax(0, 1fr);
+  grid-template-columns: 5.5rem minmax(0, 1fr);
   gap: var(--space-2);
+}
+
+/* A row's top scopes as pills, wrapping, then the link to the rest on the person page. */
+.role dd.role-pills {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.role-pills .pill {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.role-more {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.5rem;
+  color: var(--ink-muted);
+  white-space: nowrap;
+}
+
+/* The person page's role: the derivation line, the filters, then one table per row of the role. */
+.role-tables {
+  display: grid;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.role-tables[aria-busy="true"] {
+  min-height: 12rem;
+}
+
+.role-derivation {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  font: var(--text-meta);
+}
+
+.role-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+}
+
+.role-search {
+  width: min(100%, 18rem);
+  min-height: 2.5rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--field);
+  color: var(--ink);
+  font: var(--text-ui);
+}
+
+.role-table-section {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.role-table-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  font: var(--text-ui);
+  font-weight: 500;
+}
+
+.role-table th {
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+.sort-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 2rem;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+/* The mark keeps its space on every column, so a header does not move when its sort turns on. */
+.sort-mark {
+  display: inline-flex;
+  visibility: hidden;
+}
+
+.sort-mark[data-active] {
+  visibility: visible;
+}
+
+.sort-mark[data-ascending] {
+  rotate: 180deg;
+}
+
+.role-scope-name {
+  color: var(--ink);
+}
+
+.role-via {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--space-1);
+  color: var(--ink-muted);
+}
+
+.role-owner-cell,
+.role-source {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.role-calls {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Phones zoom into a field set under 16px, and a touch screen takes a 44px target. */
+@media (max-width: 759.98px), (pointer: coarse) {
+  .role-search {
+    min-height: 2.75rem;
+    font-size: 1rem;
+  }
+
+  .sort-button,
+  .role-more {
+    min-height: 2.75rem;
+  }
 }
 
 .role dt {

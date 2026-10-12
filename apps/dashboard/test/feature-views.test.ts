@@ -123,15 +123,27 @@ test("markup and long strings in a team's people, scopes, features and agents re
       const navigate = () => {};
       return renderToStaticMarkup(createElement(Fragment, null,
         createElement(TeamMapView, { view, navigate }),
-        createElement(PersonView, { view, board: undefined, person: view.people[0].id, navigate })));
+        createElement(PersonView, { view, board: undefined, person: view.people[0].id, navigate, scopes: { person: view.people[0].id, role: view.people[0].role } })));
     }`);
-  const scope = { id: "tax", name: MARKUP, ownerId: "<b>rahul</b>" };
+  const scope = {
+    id: "tax",
+    name: MARKUP,
+    ownerId: "<b>rahul</b>",
+    teamId: SCRIPT,
+    calls: 2,
+    uses: 3,
+    derived: true,
+    declared: false,
+    via: [SCRIPT],
+    updatedAt: "2026-10-11T09:00:00.000Z",
+    updatedPromotion: "c".repeat(40),
+  };
   const agent = { handle: `@rahul/${SCRIPT}`, identityId: "identity-1", person: "<i>rahul</i>", online: true };
   const view = {
     people: [
       {
         id: "<s>rahul</s>",
-        role: { scopes: [scope], dependents: [scope], dependencies: [] },
+        role: { scopes: [scope], dependents: [scope], dependencies: [], counts: { owns: 1, reads: 0, readBy: 1 }, derivation: { promotion: "c".repeat(40), derivedAt: "2026-10-11T09:00:00.000Z", complete: true } },
         features: [{ id: UNBROKEN, person: "rahul", state: "planning", strip: { path: "plan", current: 1, stages: [{ key: "open", status: "passed", passed: 0, jobs: 0 }, { key: "plan", status: "person", passed: 0, jobs: 1 }] }, exceptions: [{ kind: "broken_invariant", scope: "tax", invariant: MARKUP }], agents: [agent], openedAt: "2026-10-11T09:00:00.000Z" }],
         idleAgents: [agent],
       },

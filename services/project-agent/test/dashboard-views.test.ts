@@ -8,7 +8,8 @@ import { parseScopeMap } from "@penguin/scope-map";
 
 import type { Plan } from "@penguin/protocol";
 
-import { buildFeaturePlan, featureExceptions, featureState, pageFile, personRole, type FeatureStateFacts } from "../src/dashboard-views.ts";
+import { buildFeaturePlan, featureExceptions, featureState, pageFile, type FeatureStateFacts } from "../src/dashboard-views.ts";
+import { personRole, roleIndex } from "../src/scope-edges.ts";
 import type { RunFailure } from "../src/run-failures.ts";
 import type { Feature, FeatureRecord, FeatureStore } from "../src/feature-store.ts";
 import type { StoredReview } from "../src/review-submit.ts";
@@ -74,14 +75,31 @@ test("a person's role names their scopes, the other scopes that read them and th
     ],
   });
   // A scope that names only an owner reads as that owner's one-person team, with the owner as DRI.
-  const ref = (id: string, name: string, owner: string) => ({ id, name, ownerId: owner, teamId: `person:${owner}`, fallbackIds: [] });
-  assert.deepEqual(personRole(scopeMap, "ines"), {
-    scopes: [ref("money", "Money", "ines")],
-    dependents: [ref("orders", "Orders", "tomas"), ref("tax", "Tax", "rahul")],
-    dependencies: [],
+  // Before any derivation each dependency is the declared one, with no call site counted.
+  const ref = (id: string, name: string, owner: string, via: string[] = []) => ({
+    id,
+    name,
+    ownerId: owner,
+    teamId: `person:${owner}`,
+    fallbackIds: [],
+    calls: 0,
+    uses: 0,
+    derived: false,
+    declared: true,
+    via,
+    updatedPromotion: null,
+    updatedAt: null,
   });
-  assert.deepEqual(personRole(scopeMap, "rahul").dependencies, [ref("money", "Money", "ines")]);
-  assert.deepEqual(personRole(scopeMap, "nobody"), { scopes: [], dependents: [], dependencies: [] });
+  const index = roleIndex(scopeMap, { derivation: null, edges: [] });
+  assert.deepEqual(personRole(index, "ines"), {
+    scopes: [ref("money", "Money", "ines")],
+    dependents: [ref("orders", "Orders", "tomas", ["money"]), ref("tax", "Tax", "rahul", ["money"])],
+    dependencies: [],
+    counts: { owns: 1, reads: 0, readBy: 2 },
+    derivation: null,
+  });
+  assert.deepEqual(personRole(index, "rahul").dependencies, [ref("money", "Money", "ines", ["tax"])]);
+  assert.deepEqual(personRole(index, "nobody"), { scopes: [], dependents: [], dependencies: [], counts: { owns: 0, reads: 0, readBy: 0 }, derivation: null });
 });
 
 test("the plan route sends a part's patch only to the feature's person, the part's owner and that owner's delegate", async () => {
