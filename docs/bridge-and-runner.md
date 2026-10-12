@@ -367,7 +367,7 @@ penguin-bridge runner --combined
    default `~/.penguin/combined`, created empty when missing:
    - claims and runs combined runs with the [block checks](#block-checks) on every merged tree
      (`combined-run-pass.ts`). `--python <path>` names the interpreter for the impact graph and
-     the dependency diff, default `python3`. `--ruff <path>` names ruff. Without it the runner uses `PENGUIN_RUFF`, then this repository's
+     the dependency diff, default `python3`, and the one the type check resolves imports against. `--ruff <path>` names ruff. Without it the runner uses `PENGUIN_RUFF`, then this repository's
      pinned ruff in `.venv/bin/ruff`, then `ruff` on `PATH`, because an older ruff elsewhere on `PATH`
      (such as an Anaconda install) formats differently;
    - lists and runs the facts runs of merge plans ([Plan facts runs](#plan-facts-runs)), reporting
@@ -785,8 +785,13 @@ ruff uses the repository's own settings when the merged tree's root holds `ruff.
 or a `pyproject.toml` with a `[tool.ruff]` table. Otherwise it runs with `--isolated`, so a
 configuration file in the runner's home directory never changes a result. File paths go to ruff
 after `--`, so a file named `-x.py` is read as a path. pyright comes from the `pyright` package that
-`npm install` puts beside the bridge. It resolves imports with the Python on `PATH`, or with
-`--python <path>`.
+`npm install` puts beside the bridge. It resolves imports against one interpreter's installed
+packages, passed as `--pythonpath`: `--python <path>` when the command or the runner names one, then
+`PENGUIN_PYTHON`, then this repository's uv environment, `.venv/bin/python`. Only when none exists
+does pyright search the host itself. A host's own Python decides the result otherwise: on a machine
+whose Python lacks pytest, every test file's `import pytest` is an error that a machine with pytest
+installed never reports. The type check's kept log starts with `python: <path>`, the interpreter it
+used.
 
 The type check and the tests run only for targets the impact graph selects. Every other target gets
 `not-affected` for both. Each tool runs with an argument vector, no shell, the scrubbed environment

@@ -262,12 +262,19 @@ describe("the section 5.1 checks on a block", () => {
 
 describe("penguin-bridge check on the fixtures", () => {
   let root: string;
+  const hostPath = process.env.PATH;
 
   before(async () => {
     root = await realpath(await mkdtemp(join(tmpdir(), "penguin-check-cli-")));
+    // The fixtures' test commands run `python -m pytest` from PATH, as a team's runner would; the
+    // uv environment's Python has pytest on every host, where a host's own `python` may not exist.
+    process.env.PATH = TEST_ENV.PATH;
   });
 
-  after(() => rm(root, { recursive: true, force: true }));
+  after(async () => {
+    process.env.PATH = hostPath;
+    await rm(root, { recursive: true, force: true });
+  });
 
   async function check(fixture: string, head: string, checkpoints: string[]): Promise<string> {
     const repo = join(root, fixture);
@@ -333,6 +340,28 @@ describe("the check tools", () => {
     assert.ok(performance.now() - started < 10_000);
     const missing = await checkTools({ ruff: join(dir, "no-such-ruff") }).lint(dir, ["-x.py"]);
     assert.match(missing.error ?? "", /could not start/);
+  });
+
+  test("pyright resolves imports through the configured interpreter, not the host's", async () => {
+    const tree = join(dir, "typed");
+    await mkdir(tree);
+    await writeFile(join(tree, "test_a.py"), "import pytest\n\n\ndef test_a() -> None:\n    pytest.skip()\n");
+    // An interpreter with no packages installed: pyright then cannot find pytest.
+    const bare = join(dir, "bare");
+    await runProgram(PYTHON, ["-m", "venv", "--without-pip", bare], dir, {});
+    const barePython = join(bare, "bin", "python");
+    const missing = (run: { findings: readonly { code: string | null }[] }) =>
+      run.findings.filter((item) => item.code === "reportMissingImports").length;
+
+    const pinned = await checkTools({ env: TEST_ENV, python: PYTHON }).typecheck(tree);
+    assert.equal(pinned.error, null, pinned.log);
+    assert.equal(pinned.python, PYTHON);
+    assert.ok(pinned.log.startsWith(`python: ${PYTHON}\n`));
+    assert.equal(missing(pinned), 0, pinned.log);
+
+    const unpinned = await checkTools({ env: TEST_ENV, python: barePython }).typecheck(tree);
+    assert.equal(unpinned.python, barePython);
+    assert.equal(missing(unpinned), 1, unpinned.log);
   });
 
   test("only findings the target's tree lacks count, matched without the line", () => {

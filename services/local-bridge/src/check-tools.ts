@@ -24,6 +24,8 @@ export interface ToolRun {
   /** `sha256:<hex>` of the tool's standard output and standard error. */
   readonly logRef: string;
   readonly log: string;
+  /** The interpreter pyright resolved imports against, or null for pyright's own search; type check only. */
+  readonly python?: string | null;
 }
 
 export interface CheckTools {
@@ -40,7 +42,7 @@ export interface CheckToolOptions {
   readonly ruff?: string;
   /** pyright's command-line script. Defaults to the `pyright` package installed beside the bridge. */
   readonly pyright?: string;
-  /** The interpreter whose installed packages pyright resolves imports against; defaults to pyright's own search. */
+  /** The interpreter whose installed packages pyright resolves imports against. Defaults to `defaultPython()`. */
   readonly python?: string;
   /** Environment the child starts from, before credentials are removed. Defaults to `process.env`. */
   readonly env?: NodeJS.ProcessEnv;
@@ -146,6 +148,18 @@ export function defaultRuff(env: NodeJS.ProcessEnv = process.env): string {
 }
 
 /**
+ * The interpreter pyright resolves imports against unless told otherwise: PENGUIN_PYTHON, then this
+ * repository's uv environment (`.venv/bin/python`), else undefined for pyright's own search. Without
+ * it the result depends on the host: a host whose own Python lacks pytest reports
+ * `reportMissingImports` on every test file that a host with pytest installed passes.
+ */
+export function defaultPython(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  if (env.PENGUIN_PYTHON) return env.PENGUIN_PYTHON;
+  const pinned = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", ".venv", "bin", "python");
+  return existsSync(pinned) ? pinned : undefined;
+}
+
+/**
  * The files `ruff format --check` would change. Older releases (0.12) print `Would reformat: <path>`;
  * newer ones (0.17) print a diagnostic whose location line reads ` --> <path>:<line>:<column>`. Each file is
  * listed once, with the first changed line when the output gives one.
@@ -166,6 +180,7 @@ export function parseFormatCheck(stdout: string): { path: string; line: number |
 /** The tools as programs: `ruff` and pyright run under Node, both with argument vectors. */
 export function checkTools(options: CheckToolOptions = {}): CheckTools {
   const ruff = options.ruff ?? defaultRuff();
+  const python = options.python ?? defaultPython(options.env);
   let ruffVersion: Promise<string | null> | undefined;
   const versionOfRuff = (cwd: string) =>
     (ruffVersion ??= runProgram(ruff, ["--version"], cwd, options).then(
@@ -229,9 +244,10 @@ export function checkTools(options: CheckToolOptions = {}): CheckTools {
       const script = options.pyright ?? installedPyright();
       if (script === undefined) {
         const tool = { name: "pyright", version: null, commandId: CHECK_COMMAND_IDS.typecheck };
-        return { tool, error: "pyright is not installed beside the bridge", findings: [], logRef: logRefOf(""), log: "" };
+        const error = "pyright is not installed beside the bridge";
+        return { tool, error, findings: [], logRef: logRefOf(""), log: "", python: python ?? null };
       }
-      const argv = [script, "--outputjson", ...(options.python === undefined ? [] : ["--pythonpath", options.python])];
+      const argv = [script, "--outputjson", ...(python === undefined ? [] : ["--pythonpath", python])];
       let version: string | null = null;
       const result = await run("pyright", CHECK_COMMAND_IDS.typecheck, process.execPath, argv, worktree, null, (outcome) => {
         // pyright exits 0 with no errors, 1 with errors, and 2 or 3 when it could not run.
@@ -253,7 +269,9 @@ export function checkTools(options: CheckToolOptions = {}): CheckTools {
           return "pyright printed no JSON report";
         }
       });
-      return { ...result, tool: { ...result.tool, version } };
+      // The kept log names the interpreter, so a result can be traced to the packages it saw.
+      const log = `python: ${python ?? "pyright's own search"}\n${result.log}`;
+      return { ...result, tool: { ...result.tool, version }, log, logRef: logRefOf(log), python: python ?? null };
     },
   };
 }

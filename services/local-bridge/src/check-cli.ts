@@ -69,7 +69,7 @@ export async function runCheckCommand(args: readonly string[], io: CliIo): Promi
     impact: pythonImpactAnalyzer({ repoPath: repo, python: values.python }),
     checks: new BlockChecker({
       repoPath: repo,
-      tools: checkTools({ ruff: values.ruff }),
+      tools: checkTools({ ruff: values.ruff, python: values.python }),
       dependencies: pythonDependencyAnalyzer({ repoPath: repo, python: values.python }),
     }),
   }).run({

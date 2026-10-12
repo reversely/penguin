@@ -236,6 +236,7 @@ export {
 } from "./block-checks.ts";
 export {
   checkTools,
+  defaultPython,
   defaultRuff,
   installedPyright,
   newFindings,

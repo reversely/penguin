@@ -254,7 +254,7 @@ async function testJobsPass(
   const impact = pythonImpactAnalyzer({ repoPath: repo, python: programs.python });
   const checks = new BlockChecker({
     repoPath: repo,
-    tools: checkTools({ ruff: programs.ruff }),
+    tools: checkTools({ ruff: programs.ruff, python: programs.python }),
     dependencies: pythonDependencyAnalyzer({ repoPath: repo, python: programs.python }),
   });
   const readRemotes = bridgeRemotes(stateDir, keyStore, fetchImpl, "read");
