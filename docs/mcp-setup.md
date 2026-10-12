@@ -221,8 +221,9 @@ feature fork ([design.md](design.md#steps-1-and-3-in-the-build)):
 | `fix_token` | `feature`, `part`, `revision` | `token`: a `write` token on the affected fork alone, with its remote and expiry; `write`: the parent to fast-forward, the paths, the commit message and the approved patch inside `personWritten` |
 | `report_fix_write` | `feature`, `part`, `revision`, `commit` | `written` with the signed record's id, or the reason Penguin refused the commit |
 
-Only the identity that proposed the plan gets the token, only for the part's current approved
-revision. `penguin-bridge fix-write` makes and pushes the commit from the `fix_token` answer on stdin
+The identity that proposed the plan gets the token, only for the part's current approved revision.
+The identity the part's `fix` edit task went to, the target feature's builder first, gets it the same
+way ([Edit tasks](#edit-tasks)). `penguin-bridge fix-write` makes and pushes the commit from the `fix_token` answer on stdin
 ([bridge-and-runner.md](bridge-and-runner.md#fix-writes)). A part that went back because its fork head
 moved arrives under `planDecisions` as `change_requested`; its `changeRequest.forkHead` names the head
 the revision applies to.
@@ -230,6 +231,34 @@ the revision applies to.
 A feature opened after a merge plan was announced gets the plan in `open_feature`'s `announcedPlans`
 when its area meets the plan's. A running feature whose checkpoint grows its area into an announced
 plan's gets a part in that plan; `report_checkpoint` lists it under `plansJoined`.
+
+## Edit tasks
+
+Penguin creates a steward for each person who owns a scope, `@<person>/steward`, chartered on every
+scope the person owns. It creates a builder for each feature at open, `@<person>/<feature>`,
+chartered on the feature's declared area. Register a session as either identity to take its edit
+tasks. Every edit Penguin needs goes to one of them by charter
+([design.md](design.md#edit-tasks-and-who-runs-them)): a review form, an approved fix to write, a
+next step after a failed block check or a migration part.
+
+A waiting task reaches a running session of its identity at the session's next safe checkpoint. A
+builder's task also reaches a session of the same person that works on the target feature.
+`get_work` lists the delivered tasks under `editTasks`:
+
+| Field | Holds |
+|---|---|
+| `taskId`, `kind`, `block` | The task, its kind (`review`, `fix`, `next_step`, `migration`) and the block it shares with the other half of a split task |
+| `feature`, `target`, `fork` | The feature whose work raised it and the fork it edits, `feature-<target>` |
+| `identity`, `via` | The identity it went to and why: `builder` or `steward` |
+| `files`, `scopes` | What the edit may change: these files, or the paths of these scopes |
+| `verifier` | Penguin's checks that verify the edit |
+| `personWritten.instructions` | Penguin's instructions, which quote the failing check's reason |
+
+The agent answers a `review` with `submit_review` and a `fix` with `fix_token` and
+`penguin-bridge fix-write`. It makes a `next_step` or a `migration` edit in the fork and reports the
+checkpoint. Penguin closes each task from the facts: the form arriving, the write being kept or the
+block check passing. `editQueue` counts the developer's `running`, `queued` and `asked` tasks against
+`cap`, the most background runs the developer's bridge holds at once.
 
 ## Agent tools for a feature
 

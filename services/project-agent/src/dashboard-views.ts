@@ -18,6 +18,8 @@ import {
   type ContractWorkView,
   type DashboardAgent,
   type DashboardScope,
+  type EditTaskView,
+  type StewardView,
   type FeatureException,
   type FeaturePage,
   type FeaturePlanView,
@@ -64,6 +66,10 @@ export interface DashboardViewDeps {
   readonly contract?: (feature: Feature) => ContractWorkView;
   /** The feature's runs the check runner failed up to the failure limit (RunFailureStore.stopped); absent, none. */
   readonly stoppedRuns?: (featureId: string) => readonly RunFailure[];
+  /** The edit tasks a feature raised or that edit its fork (edit-work.ts); absent, the page shows none. */
+  readonly editTasks?: (featureId: string) => readonly EditTaskView[];
+  /** A person's steward with their queue (edit-work.ts); absent, the team view shows none. */
+  readonly steward?: (person: string) => StewardView | null;
 }
 
 /** What a feature's state is read from. */
@@ -198,6 +204,7 @@ export async function buildTeamView(deps: DashboardViewDeps, viewer: string): Pr
       (id): TeamPerson => ({
         id,
         role: personRole(scopeMap, id),
+        ...(deps.steward === undefined ? {} : { steward: deps.steward(id) }),
         features: teamFeatures.filter((feature) => feature.person === id),
         idleAgents: identities
           .filter((identity) => identityPerson(identity) === id && !working.has(identity.handle))
@@ -382,6 +389,7 @@ export async function buildFeaturePage(deps: DashboardViewDeps, featureId: strin
     checks: checkRun === undefined ? null : toolRunView(checkRun),
     tools: runs.map(toolRunView),
     contract: deps.contract?.(feature) ?? null,
+    ...(deps.editTasks === undefined ? {} : { editTasks: deps.editTasks(featureId) }),
     records: deps.features.records(featureId).map((stored, index) => ({
       recordId: stored.recordId,
       type: records[index]?.type ?? "",

@@ -139,6 +139,21 @@ import {
   type FixWriteOutcome,
   type ForkReader,
 } from "./fix-write.ts";
+import { EditRoster } from "./edit-roster.ts";
+import { EditTaskStore, type EditReportOutcome, type EditSource, type EditTask } from "./edit-tasks.ts";
+import {
+  blockReported,
+  claimEditTasks,
+  deliverEditTasks,
+  editTaskView,
+  featureLandedTasks,
+  holdsFixTask,
+  openEditTask,
+  reportEditTask,
+  syncEditWork,
+  type EditClaim,
+  type EditWorkDeps,
+} from "./edit-work.ts";
 import { coverMidway, handOver, meeting, PlanCoverageStore } from "./plan-coverage.ts";
 import { RetiringStore } from "./retiring-store.ts";
 import { contractWork, ContractSplitStore, recordSplit, retireSplit, scheduleSort, type ContractSplitDeps } from "./contract-split.ts";
@@ -217,9 +232,17 @@ import {
 } from "./session-store.ts";
 import type { Delegates, FixLookup, IssueRecord, ReduceRejectReason, RejectReason, Thread } from "@penguin/issues";
 import {
+  BACKGROUND_RUN_CAP_DEFAULT,
+  EDIT_RUN_MINUTES_DEFAULT,
   identitiesChangedMessage,
   inboxChangedMessage,
+  parseBackgroundRunCap,
   parseCombinedRunEvent,
+  parseEditRunMinutes,
+  type EditQueue,
+  type EditTaskView,
+  type LadderDecision,
+  type StewardView,
   type ApprovalSpec,
   type Author,
   type BlockCheck,
@@ -412,6 +435,34 @@ export {
   type LandRejection,
 } from "./block-land.ts";
 export { onlyAddsFailures, requestExpand, retryExpand, type ExpandDeps, type ExpandInput } from "./expand-promotion.ts";
+export { EDIT_ROSTER_SCHEMA, EditRoster, type RosterRole } from "./edit-roster.ts";
+export {
+  BRIDGE_ONLINE_MS,
+  EDIT_TASK_SCHEMA,
+  EditTaskStore,
+  type EditReportOutcome,
+  type EditSource,
+  type EditTask,
+  type EditTaskStoreOptions,
+  type SessionFor,
+} from "./edit-tasks.ts";
+export {
+  allowedPaths,
+  blockReported,
+  claimEditTasks,
+  deliverEditTasks,
+  editRouting,
+  editTaskView,
+  featureLandedTasks,
+  holdsFixTask,
+  nextStepSources,
+  openEditTask,
+  reportEditTask,
+  sessionFor,
+  syncEditWork,
+  type EditClaim,
+  type EditWorkDeps,
+} from "./edit-work.ts";
 export {
   CALLERS_SEARCH,
   closeRemoved,
@@ -787,6 +838,10 @@ interface ProjectAgentEnv {
   readonly PENGUIN_PLAN_ROUND_LIMIT?: string;
   /** Failures of one claimed run before Penguin stops handing it out. Defaults to RUN_FAILURE_LIMIT_DEFAULT. */
   readonly PENGUIN_RUN_FAILURE_LIMIT?: string;
+  /** Background runs one person's bridge holds at once (PRD 0.5 section 4.4a). Defaults to BACKGROUND_RUN_CAP_DEFAULT. */
+  readonly PENGUIN_BACKGROUND_RUN_CAP?: string;
+  /** Minutes one background run holds its edit task and its token. Defaults to EDIT_RUN_MINUTES_DEFAULT. */
+  readonly PENGUIN_EDIT_RUN_MINUTES?: string;
 }
 
 /** A land's answer as the ProjectAgent returns it across RPC: the run without its full request. */
@@ -885,6 +940,8 @@ export class ProjectAgent extends Agent {
   #retiring: RetiringStore | undefined;
   #splits: ContractSplitStore | undefined;
   #blockQueue: BlockQueueStore | undefined;
+  #editTasks: EditTaskStore | undefined;
+  #editRoster: EditRoster | undefined;
   /** Plan proposals run one at a time, so no two take the same plan version or record sequence number. */
   #planSteps: Promise<unknown> = Promise.resolve();
   /** Overlap checks and approvals run one at a time, so no two race for a record's sequence number. */
@@ -1424,7 +1481,10 @@ export class ProjectAgent extends Agent {
    * waiting assignments route to it.
    */
   registerSession(caller: string, input: SessionInput): SessionOutcome {
-    return this.#armSweep(this.#sessionStore().register(caller, input));
+    const outcome = this.#armSweep(this.#sessionStore().register(caller, input));
+    // A new session has nothing in progress: registering is its first safe checkpoint.
+    if (outcome.status === "ok") this.#deliverEditTasks(outcome.session.id);
+    return outcome;
   }
 
   /** Records a session's heartbeat. A session with no heartbeat within the offline window goes offline. */
@@ -1485,6 +1545,7 @@ export class ProjectAgent extends Agent {
   sessionCheckpoint(owner: string, worktreeId: string): Delivery[] {
     const deliveries = this.#sessionStore().checkpointWorktree(owner, worktreeId);
     if (deliveries.length > 0) this.#armSweep({ status: "ok" });
+    for (const delivery of deliveries) this.#deliverEditTasks(delivery.sessionId);
     return deliveries;
   }
 
@@ -1585,6 +1646,7 @@ export class ProjectAgent extends Agent {
     const deps = { sessions: this.#sessionStore(), ...this.#checkpointDeps() };
     const outcome = await reportCheckpoint(deps, caller, sessionId, sha, fork);
     if (outcome.status === "ok") {
+      this.#deliverEditTasks(sessionId);
       await this.#scheduleCombinedRuns(caller, sha, fork, repos);
       await this.#scheduleVerificationsFor(caller, repos);
     }
@@ -1662,8 +1724,11 @@ export class ProjectAgent extends Agent {
    * signed `open_feature` record (feature-open.ts). With `sessionId`, the owner's session opens it and
    * joins it. The Worker then forks main and calls `recordFeatureRepo`.
    */
-  openFeature(owner: string, input: FeatureOpenInput, sessionId: string | null, repos: ProjectRepos): Promise<FeatureOpenOutcome> {
-    return this.#featuresChanging(openFeature(this.#featureDeps(repos), owner, input, sessionId));
+  async openFeature(owner: string, input: FeatureOpenInput, sessionId: string | null, repos: ProjectRepos): Promise<FeatureOpenOutcome> {
+    const outcome = await this.#featuresChanging(openFeature(this.#featureDeps(repos), owner, input, sessionId));
+    // Each feature gets its builder at open, chartered on its declared area (edit-roster.ts).
+    if (outcome.status === "opened") this.#editRosterStore().builder(outcome.feature, await this.#scopeMap(repos));
+    return outcome;
   }
 
   /** Records the fork the Worker made for a feature, which turns the feature to `building`. */
@@ -1706,6 +1771,7 @@ export class ProjectAgent extends Agent {
   ): Promise<FeatureCheckpointOutcome & { readonly planChecks?: readonly { readonly feature: string; readonly runId: string }[] }> {
     const outcome = await this.#recordFeatureCheckpoint(owner, sessionId, featureId, sha, repos);
     if (outcome.status !== "ok") return outcome;
+    if (sessionId !== null) this.#deliverEditTasks(sessionId);
     return { ...outcome, planChecks: await this.#checkPlansMet(outcome.feature, repos) };
   }
 
@@ -2260,7 +2326,11 @@ export class ProjectAgent extends Agent {
 
   async #dashboardViewDeps(repos: ProjectRepos): Promise<DashboardViewDeps> {
     const rules = await this.#reviewRules(repos);
+    // Every task's state is brought up to date before a view shows it.
+    await syncEditWork(this.#editWorkDeps(repos));
     return {
+      editTasks: (featureId) => this.#editTaskStore().forFeature(featureId).map(editTaskView),
+      steward: (person) => this.#stewardView(person),
       features: this.#featureStore(),
       overlaps: this.#overlapStore(),
       routes: this.#planRouteStore(),
@@ -2408,7 +2478,94 @@ export class ProjectAgent extends Agent {
       grants: this.#fixGrantStore(),
       scopeMap: () => this.#scopeMap(repos),
       readFork: (repo, use) => withRepo(this.env.ARTIFACTS, repo, (opened) => use(opened as unknown as ForkReader)),
+      // The identity a fix's edit task was routed to writes it too (PRD 0.5 section 4.4a).
+      holds: (sessionId, partId, revision) => holdsFixTask(this.#editTaskStore(), sessionId, partId, revision),
     };
+  }
+
+  // Edit tasks (PRD 0.5 section 4.4a, edit-work.ts).
+
+  /** For `get_work`: the edit tasks delivered to `caller`'s session and the person's queue; undefined for another person's session. */
+  async editTaskWork(caller: string, sessionId: string, repos: ProjectRepos): Promise<{ readonly tasks: EditTaskView[]; readonly queue: EditQueue } | undefined> {
+    if (this.sessionHeartbeat(caller, sessionId).status !== "ok") return undefined;
+    await syncEditWork(this.#editWorkDeps(repos));
+    return { tasks: this.#editTaskStore().forSession(sessionId).map(editTaskView), queue: this.#editTaskStore().queue(caller, this.#backgroundRunCap()) };
+  }
+
+  /**
+   * The bridge of `caller.ownerId` claims that person's waiting edit tasks, up to the project's cap of
+   * background runs. The Worker mints each task's token on its fork alone.
+   */
+  claimEditTasks(caller: { readonly bridgeId: string; readonly ownerId: string }, repos: ProjectRepos): Promise<EditClaim> {
+    return this.#planStep(() => claimEditTasks(this.#editWorkDeps(repos), caller.ownerId, caller.bridgeId));
+  }
+
+  /** The claiming bridge reports one run's end: done with its commit, failed or timed out. */
+  reportEditTask(caller: { readonly bridgeId: string; readonly ownerId: string }, taskId: number, body: unknown, repos: ProjectRepos): Promise<EditReportOutcome> {
+    return this.#planStep(() => reportEditTask(this.#editWorkDeps(repos), caller.ownerId, caller.bridgeId, taskId, body));
+  }
+
+  /** A block run of the feature reported (block-land.ts): its agent steps become next-step tasks, or a pass does them. */
+  async blockReported(featureId: string, run: { readonly runId: string; readonly checkpoint: string; readonly passed: boolean }, decisions: readonly LadderDecision[], repos: ProjectRepos): Promise<void> {
+    await blockReported(this.#editWorkDeps(repos), featureId, run, decisions);
+    this.#liveFeed().featuresChanged();
+  }
+
+  /** Opens an edit task from another source, such as a migration part of a split (#131). */
+  openEditTask(source: EditSource, repos: ProjectRepos): Promise<EditTask[]> {
+    return openEditTask(this.#editWorkDeps(repos), source);
+  }
+
+  /** Delivers the waiting edit tasks a running session counts for: its next safe checkpoint. */
+  #deliverEditTasks(sessionId: string): void {
+    const session = this.#sessionStore().get(sessionId);
+    if (session === undefined || session.status !== "running") return;
+    deliverEditTasks({ tasks: this.#editTaskStore(), features: this.#featureStore() }, session);
+  }
+
+  /** A person's steward and queue for the team view; null when the person has no steward yet. */
+  #stewardView(person: string): StewardView | null {
+    const charter = this.#editRosterStore().stewardOf(person);
+    const identity = charter === undefined ? undefined : this.#identityStore().byHandle(charter.handle);
+    if (identity === undefined) return null;
+    const tasks = this.#editTaskStore();
+    return { handle: identity.handle, identityId: identity.id, online: tasks.bridgeOnline(person), ...tasks.queue(person, this.#backgroundRunCap()) };
+  }
+
+  #editWorkDeps(repos: ProjectRepos): EditWorkDeps {
+    const minutes = parseEditRunMinutes((this.env as unknown as ProjectAgentEnv).PENGUIN_EDIT_RUN_MINUTES);
+    return {
+      tasks: this.#editTaskStore(),
+      roster: this.#editRosterStore(),
+      features: this.#featureStore(),
+      routes: this.#planRouteStore(),
+      grants: this.#fixGrantStore(),
+      reviews: (featureId) => this.#reviewStore().list(featureId),
+      scopeMap: () => this.#scopeMap(repos),
+      running: () => this.#sessionStore().running(),
+      fix: this.#fixWriteDeps(repos),
+      cap: this.#backgroundRunCap(),
+      leaseMs: minutes ?? EDIT_RUN_MINUTES_DEFAULT * 60_000,
+      notify: (person) => {
+        this.#liveFeed().featuresChanged();
+        sendToOwner(this.getConnections<{ owner?: string }>(), person, inboxChangedMessage());
+      },
+    };
+  }
+
+  /** PENGUIN_BACKGROUND_RUN_CAP, or the default when unset or out of range. */
+  #backgroundRunCap(): number {
+    return parseBackgroundRunCap((this.env as unknown as ProjectAgentEnv).PENGUIN_BACKGROUND_RUN_CAP) ?? BACKGROUND_RUN_CAP_DEFAULT;
+  }
+
+  #editTaskStore(): EditTaskStore {
+    this.#editTasks ??= new EditTaskStore(this.#database());
+    return this.#editTasks;
+  }
+
+  #editRosterStore(): EditRoster {
+    this.#editRoster ??= new EditRoster(this.#database(), this.#identityStore());
+    return this.#editRoster;
   }
 
   #fixGrantStore(): FixGrantStore {
@@ -2709,6 +2866,7 @@ export class ProjectAgent extends Agent {
     const notify = (personId: string) => sendToOwner(this.getConnections<{ owner?: string }>(), personId, inboxChangedMessage());
     // Penguin's approvals of the block's parts stand once it lands, so their reversible items go.
     for (const person of new Set(this.#inboxStore().blockLanded(featureId))) notify(person);
+    featureLandedTasks(this.#editTaskStore(), featureId);
     await this.#featuresChanging(featureLanded(
       {
         features: this.#featureStore(),

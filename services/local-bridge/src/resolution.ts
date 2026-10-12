@@ -11,18 +11,21 @@
 
 import { changedPathsBetween, runGit } from "@penguin/git-analysis";
 import {
+  charterHolds,
   classifyFailure,
   codemodPlan,
   describeEdit,
   MAIN_TARGET,
   type BlockCheck,
   type CharterView,
+  type EditCharter,
   type FixKind,
   type LadderDecision,
   type RecordedDecision,
   type ResolutionRecord,
   type RoutingContext,
   type ToolRunRecord,
+  stewardHandle,
 } from "@penguin/protocol";
 import { scopeForPath, type ScopeMap } from "@penguin/scope-map";
 
@@ -92,8 +95,20 @@ export async function loadIdentities(repoPath: string, sha: string): Promise<Ide
   );
 }
 
-/** The routing context of one originating identity, from the scope map and the identities. */
-export function routingContext(scopeMap: ScopeMap, identities: readonly IdentitySeed[], handle: string, roundLimit: number): RoutingContext {
+/**
+ * The routing context of one originating identity, from the scope map and the identities. A failing
+ * place outside the originating charter goes by PRD 4.4a step 1: to the builder of the target feature
+ * when `builders` names one whose charter holds the scope, else to the steward of the scope's owner,
+ * which Penguin keeps for every person who owns a scope. The ProjectAgent routes the task it opens
+ * from the decision again, with every builder's charter (edit-tasks.ts).
+ */
+export function routingContext(
+  scopeMap: ScopeMap,
+  identities: readonly IdentitySeed[],
+  handle: string,
+  roundLimit: number,
+  builders: ReadonlyMap<string, EditCharter> = new Map(),
+): RoutingContext {
   const own = identities.find((identity) => identity.handle === handle);
   if (own === undefined) throw new Error(`${IDENTITIES_FILE} names no identity ${handle}`);
   const charter: CharterView = { handle, person: own.owner, scopes: own.charterScopes, paths: own.charterPaths };
@@ -102,9 +117,11 @@ export function routingContext(scopeMap: ScopeMap, identities: readonly Identity
     roundLimit,
     scopeOf: (path) => scopeForPath(scopeMap, path),
     ownerOf: (scope) => scopeMap.scopes.get(scope)?.ownerId,
-    ownerAgentOf: (scope) => {
+    ownerAgentOf: (scope, target) => {
+      const builder = target === MAIN_TARGET ? undefined : builders.get(target);
+      if (builder !== undefined && charterHolds(builder, null, scope)) return builder.handle;
       const owner = scopeMap.scopes.get(scope)?.ownerId;
-      return identities.find((identity) => identity.owner === owner && identity.charterScopes.includes(scope))?.handle;
+      return owner === undefined ? undefined : stewardHandle(owner);
     },
   };
 }

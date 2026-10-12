@@ -68,6 +68,13 @@
  * - POST /fix-writes/<write id>, bridge token of the runner that claimed it: reports the pushed commit.
  *   Penguin reads it from the fork and keeps it as a signed `fix_write` record only when it is the
  *   approved patch applied to the granted head; anything else answers 400.
+ * - POST /edit-tasks/claim, bridge token of any bridge: claims the waiting edit tasks of the bridge's
+ *   person, up to PENGUIN_BACKGROUND_RUN_CAP running at once (PRD 0.5 section 4.4a). Each names its
+ *   fork, files, allowed paths, instructions and verifier, with a write token minted for that task on
+ *   that fork alone, for PENGUIN_EDIT_RUN_MINUTES. The answer also counts the person's queue.
+ * - POST /edit-tasks/<task id>, bridge token of the bridge that claimed it: reports the run as done
+ *   with its commit, failed or timed out. Penguin keeps a commit only when it changes the task's
+ *   allowed paths alone; a failure asks the person.
  * - POST /blocks/claim, bridge token of a runner bridge: claims the waiting block runs (PRD 0.4
  *   section 4.5): for each, the feature's checkpoint, main's head, main's branch and every other
  *   running feature's fork head, with the originating agent's charter. No token comes with a claim.
@@ -95,6 +102,8 @@ import type {
   BridgeRole,
   CheckpointOutcome,
   ClaimListing,
+  EditClaim,
+  EditReportOutcome,
   FixWriteOutcome,
   PartTrialClaim,
   PartTrialOutcome,
@@ -199,6 +208,16 @@ export interface BridgeDirectory {
   reportRunnerFixWrite(caller: BridgeCaller, writeId: number, body: unknown, repos: ProjectRepos): Promise<FixWriteOutcome>;
   /** Releases a run the runner failed and counts the failure; refused unless `caller` holds the run's claim. */
   reportRunFailure(caller: BridgeCaller, body: unknown): Promise<RunFailureOutcome>;
+  /** The bridge's person's waiting edit tasks, up to the project's cap of background runs. */
+  claimEditTasks(caller: EditCaller, repos: ProjectRepos): Promise<EditClaim>;
+  /** The claiming bridge reports one edit task's run. */
+  reportEditTask(caller: EditCaller, taskId: number, body: unknown, repos: ProjectRepos): Promise<EditReportOutcome>;
+}
+
+/** A bridge acting for its person on edit tasks: the person comes from the bridge token, never the request. */
+export interface EditCaller {
+  readonly bridgeId: string;
+  readonly ownerId: string;
 }
 
 /** Opening Huddle issues: the ProjectAgent's side over Durable Object RPC, and the Huddle repo fork. */
@@ -266,6 +285,8 @@ export interface BridgeOptions {
   readonly tokenTtlSeconds: number | undefined;
   /** The parsed PENGUIN_FIX_TOKEN_TTL_MINUTES in seconds, or undefined when the configured value is invalid. */
   readonly fixTokenTtlSeconds?: number | undefined;
+  /** The parsed PENGUIN_EDIT_RUN_MINUTES in seconds, or undefined when the configured value is invalid. */
+  readonly editTokenTtlSeconds?: number | undefined;
 }
 
 const NO_STORE = { "Cache-Control": "no-store" };
@@ -896,6 +917,52 @@ async function reportBlock(request: Request, runId: string, handlers: BridgeHand
   return json({ status: "recorded", runId, state, passed, recordId, promotion: promoted, retried }, 200);
 }
 
+/** Authenticates any registered bridge, or answers 401. */
+async function anyBridge(request: Request, handlers: BridgeHandlers): Promise<BridgeIdentity | Response> {
+  const token = bearerToken(request);
+  const bridge = token === undefined ? undefined : await (await handlers.bridges()).authenticateBridge(token);
+  return bridge ?? unauthorized();
+}
+
+/**
+ * Hands a bridge its person's waiting edit tasks, each with a write token minted for that task on its
+ * fork alone, for PENGUIN_EDIT_RUN_MINUTES, and the person's queue for the bridge's status line.
+ */
+async function claimEditTasks(request: Request, options: BridgeOptions, handlers: BridgeHandlers): Promise<Response> {
+  const bridge = await anyBridge(request, handlers);
+  if (bridge instanceof Response) return bridge;
+  if (request.method !== "POST") return methodNotAllowed("POST");
+  const ttl = options.editTokenTtlSeconds;
+  if (ttl === undefined) return json({ error: "misconfigured", message: "PENGUIN_EDIT_RUN_MINUTES must be a whole number of minutes from 1 to 60" }, 500);
+  const claim = await (await handlers.bridges()).claimEditTasks({ bridgeId: bridge.bridgeId, ownerId: bridge.ownerId }, handlers.projectRepos);
+  const tasks = [];
+  for (const spec of claim.tasks) {
+    // One token per task, on the task's fork alone; the plaintext goes to this answer only.
+    const token = await handlers.mintToken(spec.fork, "write", ttl);
+    const { fixWrite, ...fields } = spec;
+    tasks.push({
+      ...fields,
+      fixWrite: fixWrite === null ? null : fixWriteFields(fixWrite),
+      token: { token: token.token, remote: token.remote, scope: token.scope, expiresAt: token.expiresAt },
+    });
+  }
+  return json({ tasks, queue: claim.queue }, 200, NO_STORE);
+}
+
+const EDIT_REJECTION_STATUS: Readonly<Record<string, number>> = { invalid: 400, forbidden: 403, not_found: 404, conflict: 409 };
+
+async function reportEditTask(request: Request, taskId: number, handlers: BridgeHandlers): Promise<Response> {
+  const bridge = await anyBridge(request, handlers);
+  if (bridge instanceof Response) return bridge;
+  if (request.method !== "POST") return methodNotAllowed("POST");
+  const body = await readObject(request);
+  if (body === undefined) return invalid("", "must be a JSON object");
+  const outcome = await (await handlers.bridges()).reportEditTask({ bridgeId: bridge.bridgeId, ownerId: bridge.ownerId }, taskId, body, handlers.projectRepos);
+  if (outcome.status === "rejected") return json({ error: outcome.reason, message: outcome.message }, EDIT_REJECTION_STATUS[outcome.reason] ?? 409);
+  const { task } = outcome;
+  return json({ status: "recorded", taskId: task.id, state: task.state, askReason: task.askReason, commit: task.commit }, 200);
+}
+
 function huddleBody(status: "opened" | "existing", huddle: Huddle): Record<string, unknown> {
   const { issueId, triggerCommit, baselineSha, huddleRepo, openedAt } = huddle;
   return { status, issueId, triggerCommit, baselineSha, huddleRepo, openedAt };
@@ -935,6 +1002,9 @@ export async function handleBridgeRoute(
   if (url.pathname === "/fix-writes/claim") return claimFixWrites(request, options, handlers);
   const fixWriteId = /^\/fix-writes\/([1-9][0-9]{0,14})$/.exec(url.pathname)?.[1];
   if (fixWriteId !== undefined) return reportFixWrite(request, Number(fixWriteId), handlers);
+  if (url.pathname === "/edit-tasks/claim") return claimEditTasks(request, options, handlers);
+  const editTaskId = /^\/edit-tasks\/([1-9][0-9]{0,14})$/.exec(url.pathname)?.[1];
+  if (editTaskId !== undefined) return reportEditTask(request, Number(editTaskId), handlers);
   if (url.pathname === "/blocks/claim") return claimBlocks(request, handlers);
   if (url.pathname === "/runs/failures") return reportRunFailure(request, handlers);
   const blockRun = BLOCK_ROUTE.exec(url.pathname);

@@ -337,8 +337,8 @@ describe("the phase C exit check on the helpful-fix fixture", () => {
     }
     assert.match(output, /apply_fix-1 apply_fix fix:ruff-autofix by penguin: changed, lint: changed 1 file/);
     assert.match(output, /changed shared\/dates\.py/);
-    assert.match(output, /jun tests: step 5 behaviour -> owner-agent @jun\/reports, routed/);
-    assert.match(output, /sam tests: step 5 behaviour -> owner-agent @sam\/reminders, routed/);
+    assert.match(output, /jun tests: step 5 behaviour -> owner-agent @jun\/steward, routed/);
+    assert.match(output, /sam tests: step 5 behaviour -> owner-agent @sam\/steward, routed/);
     // --write moves Priya's branch to the autofix commit; the owners' checkpoints are tags and stay.
     const after = (await runGit(repo, ["rev-parse", "priya-lint"])).trim();
     assert.notEqual(after, before);

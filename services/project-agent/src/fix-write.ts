@@ -8,7 +8,10 @@
 //   (`Plan.proposedBy`): a session of that identity on the originating feature asks `fix_token` and gets
 //   a write token on the affected fork alone. A mechanical part, Penguin's codemod, is written by the
 //   check runner: its approval queues a write. The runner's claim gets a token minted for that part
-//   only. No other session, identity or bridge gets a token on another person's fork here.
+//   only. The identity a behavioural part's edit task was routed to (edit-tasks.ts, PRD 0.5 section
+//   4.4a: the target feature's builder first) may write it too: its session through `fix_token`, or
+//   its person's bridge through the task's claim. No other session, identity or bridge gets a token
+//   on another person's fork here.
 // - When. Only for the current revision of a part in the feature's newest plan, only while it is
 //   approved and not yet written. Anything else is refused and no token is minted. The Worker mints the
 //   token for minutes (PENGUIN_FIX_TOKEN_TTL_MINUTES); its plaintext never reaches this module.
@@ -219,6 +222,12 @@ export interface FixWriteDeps {
   /** Tells a person's open dashboards that their inbox or a plan they follow changed. */
   readonly notify: (personId: string) => void;
   readonly now?: () => number;
+  /**
+   * Whether session `sessionId` holds the open edit task that writes this revision of the part
+   * (edit-tasks.ts): the target feature's builder or a steward the task was routed to. Absent, only
+   * the originating agent writes.
+   */
+  readonly holds?: (sessionId: string, partId: string, revision: number) => boolean;
 }
 
 export type FixRejectReason = FeatureRejectReason | "not_approved" | "head_moved";
@@ -438,6 +447,7 @@ export async function agentFixGrant(
 ): Promise<FixGrantOutcome> {
   const live = heartbeat(caller, sessionId);
   if (live.status === "rejected") return live;
+  if (holdsTask(deps, sessionId, input)) return taskFixGrant(deps, input, live.session.handle);
   const featureId = parseFeatureId(input.feature);
   if (featureId === undefined) return rejected("invalid", "the feature id is not a valid feature id");
   const feature = deps.features.get(featureId);
@@ -461,6 +471,38 @@ export async function agentFixGrant(
   if (prepared.status === "ok") deps.grants.grant(grant.id, prepared.spec.parent, prepared.spec.rebased, null, null);
   else if (prepared.reason === "head_moved") deps.grants.withdraw(grant.id);
   return prepared;
+}
+
+/**
+ * The write of an approved behavioural part for `holder`, the identity its edit task was routed to
+ * (edit-tasks.ts): the same checks as `fix_token`, with the holder named as the writer in the commit
+ * message. The caller has checked that `holder` holds the task.
+ */
+export async function taskFixGrant(deps: FixWriteDeps, input: FixPartInput, holder: string): Promise<FixGrantOutcome> {
+  const approved = await approvedPart(deps, input);
+  if (isRejection(approved)) return approved;
+  if (approved.part.kind === "mechanical") {
+    return rejected("forbidden", `part ${approved.part.partId} is mechanical: Penguin's check runner writes it`);
+  }
+  const grant = deps.grants.open(approved.featureId, approved.plan.planId, approved.part, approved.target.id, "agent");
+  if (grant.state === "written") {
+    return rejected("conflict", `revision ${grant.revision} of part ${grant.partId} is already written as ${grant.commitSha}`);
+  }
+  const prepared = await prepare(deps, approved, grant, holder);
+  if (prepared.status === "ok") deps.grants.grant(grant.id, prepared.spec.parent, prepared.spec.rebased, null, null);
+  else if (prepared.reason === "head_moved") deps.grants.withdraw(grant.id);
+  return prepared;
+}
+
+/** `holder` reports the commit it pushed for a write `taskFixGrant` granted it. */
+export async function taskFixReport(deps: FixWriteDeps, input: FixPartInput, holder: string, commit: unknown): Promise<FixWriteOutcome> {
+  const grant = typeof input.part === "string" && typeof input.revision === "number" ? deps.grants.get(input.part, input.revision) : undefined;
+  if (grant === undefined || grant.writer !== "agent") return rejected("not_found", "no write was granted for that part and revision");
+  return recordFixWrite(deps, grant, holder, commit, holder);
+}
+
+function holdsTask(deps: FixWriteDeps, sessionId: string, input: FixPartInput): boolean {
+  return typeof input.part === "string" && typeof input.revision === "number" && deps.holds?.(sessionId, input.part, input.revision) === true;
 }
 
 /** On an approval: queues the check runner's write of a mechanical part on a running feature. */
@@ -508,6 +550,7 @@ export async function agentFixReport(
 ): Promise<FixWriteOutcome> {
   const live = heartbeat(caller, sessionId);
   if (live.status === "rejected") return live;
+  if (holdsTask(deps, sessionId, input)) return taskFixReport(deps, input, live.session.handle, input.commit);
   const featureId = parseFeatureId(input.feature);
   if (featureId === undefined) return rejected("invalid", "the feature id is not a valid feature id");
   if (deps.features.get(featureId)?.personId !== caller || deps.features.featureOfSession(sessionId) !== featureId) {
@@ -535,7 +578,7 @@ export async function runnerFixReport(deps: FixWriteDeps, caller: BridgeCaller, 
  * `fix_write` record; a commit that is not exactly the patch applied to the granted parent gets a
  * signed `fix_write_refused` record and is refused.
  */
-async function recordFixWrite(deps: FixWriteDeps, grant: FixGrant, writtenBy: string, commit: unknown): Promise<FixWriteOutcome> {
+async function recordFixWrite(deps: FixWriteDeps, grant: FixGrant, writtenBy: string, commit: unknown, holder?: string): Promise<FixWriteOutcome> {
   if (typeof commit !== "string" || !SHA.test(commit)) return rejected("invalid", "the commit must be a full 40-character SHA");
   if (grant.state === "written") return rejected("conflict", `revision ${grant.revision} of part ${grant.partId} is already written as ${grant.commitSha}`);
   if (grant.state !== "granted" || grant.parent === null) return rejected("conflict", `the write of part ${grant.partId} revision ${grant.revision} is not granted`);
@@ -544,8 +587,8 @@ async function recordFixWrite(deps: FixWriteDeps, grant: FixGrant, writtenBy: st
     deps.grants.withdraw(grant.id);
     return rejected("conflict", `part ${grant.partId} moved on since the write was granted: ${approved.message}`);
   }
-  if (grant.writer === "agent" && writtenBy !== approved.plan.proposedBy) {
-    return rejected("forbidden", `the write was granted to ${approved.plan.proposedBy}, the originating agent`);
+  if (grant.writer === "agent" && writtenBy !== approved.plan.proposedBy && writtenBy !== holder) {
+    return rejected("forbidden", `the write was granted to ${approved.plan.proposedBy}, the originating agent, or the holder of its edit task`);
   }
   const files = checkedFiles(approved, await deps.scopeMap());
   if (isRejection(files)) return files;

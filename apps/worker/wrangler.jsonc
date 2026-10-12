@@ -45,9 +45,15 @@
   // Penguin mints for PENGUIN_PROMOTION_TOKEN_TTL_MINUTES, uses for one push and revokes. Unset
   // means 5; a value other than a whole number from 1 to 15 refuses every promotion as misconfigured.
   // No bridge, MCP tool or dashboard route can ask for that token.
+  // Each person's bridge runs at most PENGUIN_BACKGROUND_RUN_CAP edit tasks at once (PRD 0.5 section
+  // 4.4a); further tasks queue. Unset means 2; a value other than a whole number from 1 to 8 means 2.
+  // A claimed edit task and its write token last PENGUIN_EDIT_RUN_MINUTES. Unset means 20; a value
+  // other than a whole number from 1 to 60 refuses every claim as misconfigured.
   "vars": {
     "GITHUB_OAUTH_CLIENT_ID": "Ov23liQdtDavAZ3IhIVQ",
+    "PENGUIN_BACKGROUND_RUN_CAP": "2",
     "PENGUIN_DASHBOARD_OWNERS": "reversely:priya",
+    "PENGUIN_EDIT_RUN_MINUTES": "20",
     "PENGUIN_FEATURE_FORK_DEFAULT_BRANCH_ONLY": "true",
     "PENGUIN_FEATURE_TOKEN_TTL_MINUTES": "30",
     "PENGUIN_FIX_TOKEN_TTL_MINUTES": "10",

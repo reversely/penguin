@@ -21,6 +21,9 @@ reads only the records that concern their own features and scopes.
 | Feature | One unit of work heading to main. Each feature is a fork of main in Cloudflare Artifacts, created when the feature opens. A feature declares its area: the scopes, paths and contracts it expects to touch |
 | Agent identity | A named agent a person creates, such as `@ines/money`, with a job and a charter. The charter lists the scopes and paths the identity may change. Identities follow the model of Grok Bot ([Grok Bot](https://docs.x.ai/grok-bot/bots)) |
 | Session | One running agent working as an identity on one feature |
+| Steward | One identity per person, `@<person>/steward`, which Penguin creates. Its charter lists every scope the person owns. It takes review forms and edits to those scopes that colleagues' work asks for |
+| Builder | One identity per feature, `@<person>/<feature>`, which Penguin creates when the feature opens. Its charter is the feature's declared area |
+| Edit task | One edit Penguin needs made: a migration part, an approved fix written into a fork, a next step after a failed check or a review form. It names the fork, the files or scopes, the instructions and the checks that verify it |
 | Merge plan | The plan written by the agent whose feature changes something other features depend on. It lists the change, each affected feature and scope, plus the fix proposed for each |
 | Block | Every write a merge plan makes: the originating feature's fork plus the fixes written into each affected fork. Penguin checks a block as one set and promotes it as one set |
 | Invariant | A plain statement a scope's owner declares once, such as "tax is rounded per line item". The statement must hold after every change |
@@ -579,6 +582,77 @@ reason too:
   person approves the revision. The fix is then written as above. The checkpoint's answer lists the
   part under `plansJoined`. The originating feature's sessions hear of it under `planDecisions`.
 
+### Edit tasks and who runs them
+
+Each person runs a steward and one builder per active feature. Every edit Penguin needs from an
+agent becomes an edit task for one of them.
+
+1. Penguin routes each place of a task by charter. A place in a feature's fork goes to that
+   feature's builder when the builder's charter holds it. Any other place goes to the steward of
+   the place's scope owner. A review form or an edit to a scope on main goes to that steward too.
+2. A task whose places fall under two charters becomes one task per charter. The tasks share one
+   block, so one block check covers them.
+3. A running session of the identity takes the task at its next safe checkpoint.
+4. With no such session, the person's bridge runs the identity headless in a fresh worktree of the
+   target fork.
+5. A person runs at most two background runs at once by default. Further tasks queue behind the
+   steward.
+6. The person is asked to start a session only when no identity can take the task: their bridge
+   is offline, the task is a review form, no charter holds the place, or a background run failed.
+
+#### Edit tasks in the build
+
+- **Stewards and builders** (`services/project-agent/src/edit-roster.ts`). Both are ordinary
+  identities in the identity store, owned by their person. Penguin keeps every scope owner's steward
+  chartered on exactly the scopes that person owns in `penguin/scopes.json`. The identity store
+  refuses a charter scope its owner does not own, so a steward's charter never holds another
+  person's scope. A feature's builder is created when the feature opens. Its charter scopes are the
+  declared area's scopes the person owns. Its charter paths are the area's paths plus the paths of
+  the area's scopes another person owns. The charter follows the area as checkpoints grow it.
+  Charters are cut at 32 scopes and 64 paths. A builder handle another identity already holds moves
+  to `-2`, then `-3`.
+- **Sources** (`services/project-agent/src/edit-work.ts`). Four kinds of work open tasks:
+
+  | Kind | Opened by | Routed | Done when |
+  |---|---|---|---|
+  | `review` | A plan part revision waiting on its owner, one task per scope of the part | The steward of the scope's owner | A review form for that scope reaches the plan's feature; the part leaving `pending` without one drops it |
+  | `fix` | An approved behavioural part whose place is a running feature | The whole part to the target feature's builder, else the steward of the target's person: an approved patch is written as one commit, so it never splits | The write is kept as a `fix_write` record |
+  | `next_step` | A failed block run's decision at ladder step 4 or 5, one source per failing target and check | Each failing file by charter, in the failing feature's fork, or in the originating fork for a failure on main | A newer run of the feature no longer shows it, a passing run, or the feature reaching main |
+  | `migration` | A migration part of a split, through `openEditTask` | Each file by charter in the target fork | The bridge's commit is kept |
+
+  A mechanical part asks for no task: the check runner writes it. The FeatureAgent reports each
+  block run's decisions through `blockReported` on the ProjectAgent.
+- **One routing decision per task.** `EditTaskStore.open` routes a source once and keeps one row
+  per identity or person. A source that opens again while its tasks are open is not routed again.
+  `routeEdit` in `packages/protocol/src/edit-task.ts` holds the rule.
+- **States.** `queued`, `delivered` (a session took it), `running` (the bridge claimed it), `asked`,
+  `done` and `dropped`. An asked task names why: `bridge_offline`, `needs_session` (a review form),
+  `no_identity`, `run_failed`, `run_timeout` or `lease_expired`. A task asked because the bridge was
+  offline returns to the queue when the bridge polls again. A task whose run failed waits for a
+  session.
+- **Delivery to a session.** A session's checkpoint, report of a checkpoint or registration
+  delivers every waiting task it counts for. A session of the task's identity counts. For a
+  builder's task, a session of the same person working on the target feature counts too. The bridge
+  never claims a task a running session counts for.
+- **The queue and the cap.** `PENGUIN_BACKGROUND_RUN_CAP` (default 2, at most 8) caps a person's
+  running tasks. The bridge claims the oldest waiting tasks first. A claim holds for
+  `PENGUIN_EDIT_RUN_MINUTES` (default 20, at most 60). A claim whose time runs out asks the person.
+  A bridge that polled in the last two minutes counts as online.
+- **The fix writer.** The identity a fix task went to may write the approved part. Its session asks
+  `fix_token` for the part as the originating agent does. The commit message names it as the
+  writer. Penguin checks the commit exactly as for the originating agent.
+- **Reads bring tasks up to date.** Before `get_work`, the team view and the feature page answer,
+  Penguin syncs the roster and the review and fix sources and settles every task's state.
+
+The API the dashboard reads (#124, #125 and #127 render it):
+
+| Field | Where | Holds |
+|---|---|---|
+| `editTasks` | `GET /api/features/<id>/page` (`FeaturePage`) | Every task the feature raised or that edits its fork, oldest first. Each `EditTaskView` has `id`, `kind`, `feature`, `target`, `block` (tasks of one source share it), `handle` (null while the person is asked), `person`, `via` (`builder`, `steward` or `person`), `state`, `askReason`, `files`, `scopes`, `instructions`, `verifier`, `outcome`, `commit`, `createdAt`, `updatedAt`. A queued task is a waiting branch on the feature's timeline |
+| `steward` | `GET /api/team` (`TeamPerson`) | The person's steward: `handle`, `identityId`, `online` (the bridge polled lately) and the queue `running`, `queued`, `asked`, `cap`. Null when the person has no steward |
+
+No view carries an agent's transcript. A task's `outcome` is one line the bridge builds from facts.
+
 ### Block promotion
 
 1. When the originating feature is ready, Penguin checks the block. It merges the originating fork
@@ -872,7 +946,7 @@ and reports it with `pushed: false`. Plan-part fixes are written into the affect
 On the helpful-fix fixture, Priya's agent calls `check` on Priya's checkpoint with Jun's and Sam's
 features running. With no manual run, the session's next safe checkpoint brings the block checks
 on `main`, `weekly-report` and `reminder-scheduling`. Jun's and Sam's tests fail. Both failures go to
-step 5, to `@jun/reports` and `@sam/reminders` (`apps/worker/test/tool-runner.test.ts`).
+step 5, to `@jun/steward` and `@sam/steward` (`apps/worker/test/tool-runner.test.ts`).
 
 ### Routing and the resolution ladder
 
@@ -913,9 +987,12 @@ Penguin applies there. A row for one check wins over a row for any check:
 wording, one actor, the fix's command ID and a one-line reason, with the check's summary and findings
 attached. The charter is the originating identity's `charter_scopes` and `charter_paths`. A failing
 place lies inside it when its file falls in a charter scope or under a charter path. A check that
-names no file is placed by the target's scopes. Step 5 goes to the identity of the scope's owner
-whose charter holds the scope. When the owner has none, the failure goes to the owner in person at
-step 6. A fix Penguin applied that did not clear its failure turns that failure into a behaviour
+names no file is placed by the target's scopes. Step 5 follows the routing of
+[Edit tasks](#edit-tasks-and-who-runs-them): the target feature's builder when the runner knows a
+builder whose charter holds the scope, else the steward of the scope's owner (`routingContext` in
+`services/local-bridge/src/resolution.ts`). A place in no scope goes to a person at step 6. The
+ProjectAgent turns each step 4 and step 5 decision into an edit task and routes it again with every
+builder's charter. A fix Penguin applied that did not clear its failure turns that failure into a behaviour
 change. A tool error goes to the originating feature's person.
 
 `codemodPlan` builds the codemod from the contract diff of `analysis:python-impact`. Each use a

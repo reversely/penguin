@@ -20,7 +20,15 @@
 
 import { McpServer, type CallToolResult } from "@modelcontextprotocol/server";
 import type { IssueRecord, Thread } from "@penguin/issues";
-import { FIX_KINDS, IDENTITY_HANDLE_MAX_LENGTH, OP_ID_PATTERN, SEGMENT_PATTERN, type ContractWorkView } from "@penguin/protocol";
+import {
+  FIX_KINDS,
+  IDENTITY_HANDLE_MAX_LENGTH,
+  OP_ID_PATTERN,
+  SEGMENT_PATTERN,
+  type ContractWorkView,
+  type EditQueue,
+  type EditTaskView,
+} from "@penguin/protocol";
 import * as z from "zod";
 
 type MaybePromise<T> = T | Promise<T>;
@@ -122,6 +130,15 @@ export interface McpProject {
   landWork?(caller: string, sessionId: string): MaybePromise<LandingWorkView | undefined>;
   /** How Penguin sorted the latest checkpoint of the caller's session's feature, with its split and next step; absent without features. */
   contractWork?(caller: string, sessionId: string, repos: { readonly issues: string; readonly base: string }): MaybePromise<ContractWorkView | undefined>;
+  /**
+   * The edit tasks delivered to the caller's session at a safe checkpoint and the person's queue (PRD
+   * 0.5 section 4.4a); absent without edit tasks, undefined for another owner's session.
+   */
+  editTaskWork?(
+    caller: string,
+    sessionId: string,
+    repos: { readonly issues: string; readonly base: string },
+  ): MaybePromise<{ readonly tasks: readonly EditTaskView[]; readonly queue: EditQueue } | undefined>;
   readIssue(
     id: string,
   ): MaybePromise<{ readonly issue: IssueRecord | undefined; readonly timeline: readonly OperationView[] }>;
@@ -883,7 +900,11 @@ export function createPenguinMcpServer(
         "(callers outside your scopes) or a behaviour change, your feature's split, and `nextStep`. An incompatible entry makes " +
         "the next step \"Expand first\" with the entries listed; a behaviour change keeps the merge plan. `contractStep` lists " +
         "each symbol your feature retires with its callers at Penguin's count after the last promotion; once none is left, " +
-        "Penguin approves removing it. The next step then starts with \"Contract\": remove it, report a checkpoint and land.",
+        "Penguin approves removing it. The next step then starts with \"Contract\": remove it, report a checkpoint and land. " +
+        "`editTasks` lists the edit tasks Penguin routed to this session's identity by charter and delivered at a safe checkpoint: " +
+        "a review form to send with submit_review, an approved fix to write with fix_token, or a next step after a failed check " +
+        "to make in `fork`, changing only `files` or the paths of `scopes`; Penguin's checks named in `verifier` then run. " +
+        "`editQueue` counts your developer's running, queued and asked tasks against the cap of background runs.",
       inputSchema: workInput,
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -905,6 +926,7 @@ export function createPenguinMcpServer(
       const plan = await project.planWork?.(owner, id);
       const landing = await project.landWork?.(owner, id);
       const contract = await project.contractWork?.(owner, id, { issues: repos.issues, base: repos.base });
+      const edits = await project.editTaskWork?.(owner, id, { issues: repos.issues, base: repos.base });
       return result({
         sessionId: id,
         identity: live.session.handle,
@@ -921,6 +943,7 @@ export function createPenguinMcpServer(
         ...(plan === undefined ? {} : planWorkFields(plan)),
         ...(project.landWork === undefined ? {} : { landing: landing === undefined ? null : landingFields(landing) }),
         ...(project.contractWork === undefined ? {} : { contract: contract ?? null }),
+        ...(edits === undefined ? {} : { editTasks: edits.tasks.map(editTaskFields), editQueue: edits.queue }),
       });
     },
   );
@@ -1410,6 +1433,27 @@ export function planNoticeFields(notices: PlanNoticesView): Record<string, unkno
  * A feature's landing as get_work reports it. Check summaries and the evidence behind each ladder
  * decision come from the repos and the tools' runs, so they are echoed only inside `personWritten`.
  */
+/**
+ * One edit task as get_work reports it. The instructions quote a failing check's reason, which can
+ * carry repository text such as a test's docstring, so they sit inside `personWritten`.
+ */
+export function editTaskFields(task: EditTaskView): Record<string, unknown> {
+  return {
+    taskId: task.id,
+    kind: task.kind,
+    feature: task.feature,
+    target: task.target,
+    fork: `feature-${task.target}`,
+    block: task.block,
+    identity: task.handle,
+    via: task.via,
+    files: [...task.files],
+    scopes: [...task.scopes],
+    verifier: task.verifier,
+    personWritten: { instructions: task.instructions },
+  };
+}
+
 export function landingFields(landing: LandingWorkView): Record<string, unknown> {
   return {
     feature: landing.feature,

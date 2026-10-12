@@ -12,6 +12,7 @@
 //    merged tree, with every scope's tests on main's (block-run.ts on the bridge). It reports to the
 //    FeatureAgent directly (POST /blocks/<run id>). Each failure carries its one next step from the
 //    resolution ladder (section 5.3); the feature goes back to `building` and the agent lands again.
+//    Each step an agent takes becomes an edit task routed by charter (edit-work.ts `blockReported`).
 // 3. When every check passes, the FeatureAgent promotes: it takes the project's one promotion slot,
 //    and moves main from the commit the block was checked against to the checkpoint in one push
 //    (main-push.ts), with a write token on main that it mints for minutes and revokes after the push.
@@ -36,6 +37,7 @@ import {
   type Author,
   type BlockRunTarget,
   type CharterView,
+  type LadderDecision,
   type Plan,
   type Promotion,
 } from "@penguin/protocol";
@@ -491,6 +493,11 @@ export interface BlockProjectPort {
   expandPromoted(featureId: string, promotion: Promotion): Promise<void>;
   /** Checks an expand again on main's new head after a refused push; see expand-promotion.ts retryExpand. */
   retryExpand(featureId: string, runId: string, charter: CharterView): Promise<{ readonly status: string; readonly runId?: string; readonly reason?: string; readonly message?: string }>;
+  /**
+   * A run's checks were recorded: the decisions the ladder gave an agent become edit tasks, and a
+   * passing run does the feature's open ones (edit-work.ts). Absent, no task opens.
+   */
+  blockReported?(featureId: string, run: { readonly runId: string; readonly checkpoint: string; readonly passed: boolean }, decisions: readonly LadderDecision[]): Promise<void>;
 }
 
 export interface BlockReportDeps {
@@ -564,6 +571,12 @@ export async function reportBlockRun(deps: BlockReportDeps, caller: BridgeCaller
     check_ms: checkMs,
   });
   deps.store.setRecord(runId, recordId);
+  try {
+    await deps.port.blockReported?.(run.featureId, { runId, checkpoint: run.checkpoint, passed: verdict.passed }, parsed.report.decisions);
+  } catch (error) {
+    // The report stands; the next run's report opens the tasks again.
+    console.error(JSON.stringify({ event: "edit_tasks_failed", run: runId, error: String(error).slice(0, 200) }));
+  }
   const result = { status: "recorded" as const, runId, passed: verdict.passed, recordId, promotion: null, retried: null };
   if (run.purpose === "plan_check") return { ...result, state: reported.state };
   if (!verdict.passed) {

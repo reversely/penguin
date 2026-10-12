@@ -234,8 +234,12 @@ export interface RoutingContext {
   readonly scopeOf: (path: string) => string | undefined;
   /** A scope's owner. */
   readonly ownerOf: (scope: string) => string | undefined;
-  /** The identity of the scope owner whose charter holds the scope, or undefined when there is none. */
-  readonly ownerAgentOf: (scope: string) => string | undefined;
+  /**
+   * The identity that adapts a failing place outside the originating charter (PRD 4.4a step 1): for a
+   * place in a running feature's fork (`target`), that feature's builder when its charter holds the
+   * scope, else the steward of the scope's owner; undefined when no identity's charter holds it.
+   */
+  readonly ownerAgentOf: (scope: string, target: string) => string | undefined;
   /** Rounds of fixes Penguin tries before the failure goes to a person (PRD section 7, default 3). */
   readonly roundLimit: number;
 }
@@ -330,7 +334,7 @@ export function classifyFailure(facts: FailureFacts, context: RoutingContext): L
     } else {
       const scope = outside.map((place) => place.scope).find((value) => value !== undefined);
       const owner = scope === undefined ? undefined : context.ownerOf(scope);
-      const agent = scope === undefined ? undefined : context.ownerAgentOf(scope);
+      const agent = scope === undefined ? undefined : context.ownerAgentOf(scope, check.target);
       if (agent !== undefined) {
         step = route.outsideCharter;
         actor = { kind: "owner-agent", id: agent };

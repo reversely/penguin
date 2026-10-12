@@ -1,7 +1,7 @@
 import { getAgentByName, routeAgentRequest } from "agents";
 import { serveMcp } from "@penguin/mcp";
 import { LIVE_OWNER_HEADER, type BlockProjectPort, type InboxReason } from "@penguin/project-agent";
-import { featureOfBlockRun } from "@penguin/protocol";
+import { featureOfBlockRun, parseEditRunMinutes } from "@penguin/protocol";
 
 import type { BlockReportAnswer } from "./bridges.ts";
 
@@ -40,7 +40,15 @@ type WorkerEnv = Env & {
   PENGUIN_FEATURE_TOKEN_TTL_MINUTES?: string;
   /** Lifetime in minutes of a write token on an affected fork for one approved plan part; 10 when unset. */
   PENGUIN_FIX_TOKEN_TTL_MINUTES?: string;
+  /** Minutes an edit task's background run holds its task and its token; 20 when unset. */
+  PENGUIN_EDIT_RUN_MINUTES?: string;
 };
+
+/** PENGUIN_EDIT_RUN_MINUTES in seconds: the lifetime of an edit task's token, as long as its claim holds. */
+function editTokenTtl(minutes: string | undefined): number | undefined {
+  const ms = parseEditRunMinutes(minutes);
+  return ms === undefined ? undefined : ms / 1000;
+}
 
 /** Opening features: the ProjectAgent's records, the fork through the binding and token minting. */
 function featurePorts(env: WorkerEnv, names: RepoNames): FeaturePorts {
@@ -74,6 +82,7 @@ export default {
         deployerToken: env.PENGUIN_DEPLOYER_TOKEN,
         tokenTtlSeconds: parseTokenTtl(env.PENGUIN_TOKEN_TTL_SECONDS),
         fixTokenTtlSeconds: parseFixTokenTtl(env.PENGUIN_FIX_TOKEN_TTL_MINUTES),
+        editTokenTtlSeconds: editTokenTtl(env.PENGUIN_EDIT_RUN_MINUTES),
         dashboard: {
           githubClientId: env.GITHUB_OAUTH_CLIENT_ID,
           githubClientSecret: env.GITHUB_OAUTH_CLIENT_SECRET,
@@ -175,6 +184,7 @@ export default {
                 retryLand: (feature, run, charter) => project.retryLand(feature, run, charter, repos),
                 expandPromoted: (feature, promotion) => project.expandPromoted(feature, promotion),
                 retryExpand: (feature, run, charter) => project.retryExpand(feature, run, charter, repos),
+                blockReported: (feature, run, decisions) => project.blockReported(feature, run, decisions, repos),
               };
               return (await agent.reportBlockRun(caller, runId, body, port, { base: names.base, prefix: names.prefix })) as BlockReportAnswer;
             },

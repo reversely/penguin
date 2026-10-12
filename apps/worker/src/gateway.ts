@@ -56,6 +56,8 @@ export interface GatewayOptions {
   tokenTtlSeconds?: number | undefined;
   /** Lifetime of a fix writer's token; undefined when PENGUIN_FIX_TOKEN_TTL_MINUTES is invalid. */
   fixTokenTtlSeconds?: number | undefined;
+  /** Lifetime of an edit task's token, its run's lease; undefined when PENGUIN_EDIT_RUN_MINUTES is invalid. */
+  editTokenTtlSeconds?: number | undefined;
   /** GitHub sign-in and the dashboard owner map; without them, sign-in answers 503 and /api 401. */
   dashboard?: DashboardOptions;
 }
@@ -152,7 +154,12 @@ export async function handleRequest(
   const bridgeResponse = await handleBridgeRoute(
     request,
     url,
-    { deployerToken: options.deployerToken, tokenTtlSeconds: options.tokenTtlSeconds, fixTokenTtlSeconds: options.fixTokenTtlSeconds },
+    {
+      deployerToken: options.deployerToken,
+      tokenTtlSeconds: options.tokenTtlSeconds,
+      fixTokenTtlSeconds: options.fixTokenTtlSeconds,
+      editTokenTtlSeconds: options.editTokenTtlSeconds,
+    },
     handlers,
   );
   if (bridgeResponse) return bridgeResponse;

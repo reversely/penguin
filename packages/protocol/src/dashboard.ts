@@ -10,6 +10,7 @@
 
 import type { BlockCheck } from "./block-check.ts";
 import type { ContractWorkView } from "./contract-sort.ts";
+import type { EditAskReason, EditQueue, EditRouteVia, EditTaskKind, EditTaskState } from "./edit-task.ts";
 import type { ImpactUse } from "./impact.ts";
 import type { Plan, PlanFactSource, PlanFileDiff, PlanInvariantFact, PlanPart, PlanPartKind, PlanPartState, PlanPlace } from "./plan.ts";
 import type { PlanPartFile } from "./plan-approval.ts";
@@ -73,9 +74,48 @@ export interface TeamFeature {
   readonly openedAt: string;
 }
 
+/**
+ * A person's steward with their queue of edit tasks (PRD 0.5 section 4.4a): the team view shows the
+ * counts on the steward. Absent from an older Worker.
+ */
+export interface StewardView extends EditQueue {
+  readonly handle: string;
+  readonly identityId: string;
+  readonly online: boolean;
+}
+
+/** One edit task as the feature page and `get_work` show it (edit-work.ts in the ProjectAgent). */
+export interface EditTaskView {
+  readonly id: number;
+  readonly kind: EditTaskKind;
+  /** The feature whose work raised the task. */
+  readonly feature: string;
+  /** The feature whose fork the task edits, or whose plan a review form reviews. */
+  readonly target: string;
+  /** The tasks of one source share it; one block check covers them. */
+  readonly block: string;
+  /** The identity that takes it, or null while its person is asked. */
+  readonly handle: string | null;
+  readonly person: string;
+  readonly via: EditRouteVia;
+  readonly state: EditTaskState;
+  readonly askReason: EditAskReason | null;
+  readonly files: readonly string[];
+  readonly scopes: readonly string[];
+  readonly instructions: string;
+  readonly verifier: string;
+  /** The run's one-line outcome; never a transcript. */
+  readonly outcome: string | null;
+  readonly commit: string | null;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
 export interface TeamPerson {
   readonly id: string;
   readonly role: PersonRole;
+  /** The person's steward and queue; null when the person has none, absent from an older Worker. */
+  readonly steward?: StewardView | null;
   /** The person's features, newest first. */
   readonly features: readonly TeamFeature[];
   /** The person's agents with no session on any of the person's features. */
@@ -361,6 +401,11 @@ export interface FeaturePage {
   readonly records: readonly FeatureRecordView[];
   /** How Penguin sorted the latest checkpoint's contract diff, the split and the next step (contract-sort.ts); absent from an older Worker. */
   readonly contract?: ContractWorkView | null;
+  /**
+   * The edit tasks the feature raised or that edit its fork, oldest first: waiting branches on the
+   * feature's timeline (#124). Absent from an older Worker.
+   */
+  readonly editTasks?: readonly EditTaskView[];
 }
 
 const text = (maxLength: number): JsonSchema => ({ type: "string", maxLength });

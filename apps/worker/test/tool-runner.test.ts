@@ -286,12 +286,12 @@ describe("the check runner's agent tools", () => {
     assert.ok(checks.every((check) => check.input.origin === checkpoints[PRIYA.id]));
     const failing = checks.filter((check) => check.result === "failed").map((check) => `${check.target} ${check.check}`);
     assert.deepEqual(failing.sort(), ["reminder-scheduling tests", "weekly-report tests"]);
-    // The failing tests lie outside @priya/batches's charter: step 5, to the scope owners' agents.
+    // The failing tests lie outside @priya/batches's charter: step 5, to the scope owners' stewards.
     assert.deepEqual(
       outcome?.decisions.map((decision) => [decision.target, decision.check, decision.step, decision.actor.id]).sort(),
       [
-        ["reminder-scheduling", "tests", 5, "@sam/reminders"],
-        ["weekly-report", "tests", 5, "@jun/reports"],
+        ["reminder-scheduling", "tests", 5, "@sam/steward"],
+        ["weekly-report", "tests", 5, "@jun/steward"],
       ],
     );
     assert.match(recorded?.summary ?? "", /^\d+ checks, 2 failing: /);
