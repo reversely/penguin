@@ -600,7 +600,11 @@ export class CaseRun {
     let last: unknown;
     await this.until(() => `the expand's promotion (last landing read: ${JSON.stringify(last).slice(0, 3_000)})`, async () => {
       if ((await this.person(this.origin.owner).headOf("base")) === head) return true;
-      last = (await agent.work())["landing"];
+      const landing = (await agent.work())["landing"];
+      last = landing;
+      // A failed expand run sends the feature back to building with its next steps: the case ends there.
+      const failed = (landing?.runs ?? []).find((each: { purpose: string; state: string }) => each.purpose === "expand" && each.state === "failed");
+      if (failed !== undefined && landing?.state === "building") throw new Error(`${this.origin.id}'s expand failed: ${JSON.stringify(failed).slice(0, 3_000)}`);
       return undefined;
     });
     this.promotions.push({ feature: this.origin.id, mainBefore, mainAfter: head, redScopes: await this.person(this.origin.owner).redScopes(head) });

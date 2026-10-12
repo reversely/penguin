@@ -131,7 +131,7 @@ Results of the run on gn100 against real Artifacts on 2026-10-12:
 | 1 | Promoted in 6.3 minutes. Jun asks for two changes on the part for analytics' code on main |
 | 2 | Promoted. Priya's agent reports the checkpoint that adds `start_of_local_day()` before it proposes the plan |
 | 3 | Promoted. Penguin approves Ana's parts itself: every check is clean |
-| 4 | Stops at the expand. Tomas, the DRI of a scope the expand adds to, approves it. The expand is then accepted and main does not move within 20 minutes |
+| 4 | Stops at the expand. Tomas, the DRI of a scope the expand adds to, approves it. The expand run then fails main's typecheck on the fixture's own negative test, `Money(12.99, "USD")` in `shared/money/tests/test_money.py`, and Penguin sends the step back to Ines's agent |
 
 Larder runs PRD cases 1 to 3 before case 4. The walkthrough runs those cases on their own fixtures,
 so for case 4 it opens the running features at the base, then moves main to the head of the last
