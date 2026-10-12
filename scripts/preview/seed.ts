@@ -419,6 +419,7 @@ export class PreviewProject {
       runs: this.tools,
       retiring: this.retiring,
       facts: this.facts,
+      scopeMap: async () => this.scopeMap,
       sign: (record) => this.#sign(record),
       notify: this.#notify,
       carry: (featureId, symbols, count) => carryContract(this.migrationDeps(), featureId, symbols, count),

@@ -182,11 +182,21 @@ function ContractNode({ plan, contract }: { readonly plan: FeaturePlanView | nul
         )}
         {retiring.length === 0 ? null : (
           <ul className="code-list" aria-label="Retiring">
-            {retiring.map((each) => (
-              <li key={each.contract}>
-                <span className="tag tag-data">retiring</span> <code>{each.contract}</code> <span className="muted">to</span> <code>{each.replacement}</code>
-              </li>
-            ))}
+            {retiring.map((each) => {
+              // The defining scope's own uses leave with the symbol in the contract step; they are no migration part.
+              const own = contract?.contractStep.find((step) => step.contract === each.contract);
+              return (
+                <li key={each.contract}>
+                  <span className="tag tag-data">retiring</span> <code>{each.contract}</code> <span className="muted">to</span> <code>{each.replacement}</code>
+                  {own === undefined || own.ownUses === 0 ? null : (
+                    <span className="muted">
+                      {" "}
+                      {counted(own.ownUses, "own use")} in {own.ownFiles.join(", ")}, removed with it
+                    </span>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         )}
         {entries.length === 0 ? null : (

@@ -383,13 +383,12 @@ calls `money.display(line_total(line))`. The retiring-calls check gives two step
 `apply_fix` with `rules: ["display"]` then writes `line_total(line).display()` in a commit kept on
 the check runner.
 
-From a checkpoint at main's head, Ines's agent calls `impact`. The migration groups list 26 places
-in 10 owner groups:
+From a checkpoint at main's head, Ines's agent calls `impact`. The migration groups list 24 places
+in 9 owner groups:
 
 | Owner | Places | Uses |
 |---|---|---|
 | ade | `partial-refunds`, `store-credit` | 2 |
-| ines | scope `money` | 10 |
 | jun | `basket-size`, `cohort-ltv`, `store-league` | 8 |
 | kofi | `instant-payouts`, `weekly-statements` | 3 |
 | mei | `business-accounts`, `credit-notes`, `pdf-layout` | 6 |
@@ -397,13 +396,15 @@ in 10 owner groups:
 | priya | `japan-launch`, `saved-carts`, `tip-jar` | 3 |
 | rahul | `bottle-deposit`, `tax-exempt` | 2 |
 | sam | `order-shipped`, `refund-email`, `weekly-digest` | 9 |
-| tomas | `reorder`, `split-shipments`, `substitutions`, scope `orders` | 12 |
+| tomas | `reorder`, `split-shipments`, `substitutions` | 8 |
 
-The 24 feature places are the 23 readers and the midway feature, each in its own person's group. The
-two places on main are tests: `shared/money/tests/test_money.py` and
-`shared/money/tests/test_discounts.py` test the retiring functions themselves.
-`orders/tests/test_model.py` tests `line_total()` and `order_total()`. Each reader carries 52 more
-uses from `base` in files it never changed; those belong to main.
+The 24 places are the 23 readers and the midway feature, each in its own person's group. Main
+still holds 14 uses, all in tests of the retiring functions themselves:
+`shared/money/tests/test_money.py` and `shared/money/tests/test_discounts.py` (10) and
+`orders/tests/test_model.py`, which tests `line_total()` and `order_total()` (4). Each is in a test
+file of the scope that defines the function, so it is no caller and no group holds it: the contract
+step removes it with the function. Each reader carries 52 more uses from `base` in files it never
+changed; those belong to main.
 
 ## Changing the fixture
 

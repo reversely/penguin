@@ -317,9 +317,12 @@ function contract(approved: readonly ContractStepEntry[]): string {
   const listed = names(approved.map((each) => each.contract));
   const counted = [...new Set(approved.map((each) => short(each.promotion ?? "")))].join(", ");
   const them = approved.length === 1 ? "it" : "them";
+  const own = [...new Set(approved.flatMap((each) => each.ownFiles))].sort();
   return (
     `Contract: no caller of ${listed} is left on main or in any running feature's own changes (counted after promotion ${counted}). ` +
-    `Penguin approved removing ${them}: the plan has no places, so no person is asked. Remove ${them} from your fork, report that as a ` +
+    `Penguin approved removing ${them}: the plan has no places, so no person is asked. Remove ${them} from your fork` +
+    (own.length === 0 ? "" : ` with ${approved.length === 1 ? "its" : "their"} own uses in the defining module and its scope's tests (${names(own)})`) +
+    `, report that as a ` +
     `checkpoint and call land_feature. Penguin promotes the block and closes each removed symbol's retiring record.`
   );
 }

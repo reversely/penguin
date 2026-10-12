@@ -161,9 +161,10 @@ check of its own changes.
   Penguin's codemod, step 3. No rule covers `line_total()`, so that step goes to Noor's agent at step
   4 with `line_total_minor()` named as the replacement.
 - **The remaining callers.** After the migrate waves, Ines's agent asks for the remaining callers.
-  Penguin lists 26 places in 10 owner groups. The 23 readers and the pagination feature sit in
-  their own people's groups. Two scopes on main, money (Ines) and orders (Tomas), still call the
-  float functions in their tests. Each group is one owner's set of migration parts.
+  Penguin lists 24 places in 9 owner groups. The 23 readers and the pagination feature sit in
+  their own people's groups. The money and orders scopes on main still use the float functions, but
+  only in their own tests of them. Those uses are no callers: the contract step removes them with
+  the functions. Each group is one owner's set of migration parts.
 
 [fixture-money.md](fixture-money.md#retiring-the-float-api) lists each group with its uses.
 
@@ -171,33 +172,39 @@ check of its own changes.
 
 After each wave's block reaches main, Penguin counts the callers of the six retiring functions on
 main and in the running features' own changes, in one analysis per promotion
-([design.md](design.md#sorting-and-splitting-in-the-build), Contract). The counts on the fixture:
+([design.md](design.md#sorting-and-splitting-in-the-build), Contract). A use in a function's own
+module or in a test file of the scope that defines it is no caller: the contract step removes it
+with the function. The counts on the fixture:
 
 | Promotion | Callers | On main | In running features |
 |---|---|---|---|
-| `money-type` | 98 | 53 | 45 |
-| `money-checkout` | 93 | 48 | 45 |
-| `money-tax` | 83 | 38 | 45 |
-| `money-refunds-payouts` | 72 | 27 | 45 |
-| `money-analytics` | 68 | 23 | 45 |
-| `money-messaging-mobile` | 59 | 14 | 45 |
+| `money-type` | 84 | 39 | 45 |
+| `money-checkout` | 79 | 34 | 45 |
+| `money-tax` | 69 | 24 | 45 |
+| `money-refunds-payouts` | 58 | 13 | 45 |
+| `money-analytics` | 54 | 9 | 45 |
+| `money-messaging-mobile` | 45 | 0 | 45 |
 
 The migrate waves moved callers on main only. The 45 uses in the 23 readers' own changes stay. After
-the last migrate wave every function still has callers:
+the last migrate wave no caller is left on main:
 
-| Retiring function | Callers | On main | Running features calling it |
-|---|---|---|---|
-| `line_total()` | 8 | 2 | 3 |
-| `order_total()` | 12 | 2 | 5 |
-| `display()` | 11 | 1 | 10 |
-| `price()` | 14 | 2 | 12 |
-| `total()` | 8 | 1 | 7 |
-| `percent_off()` | 6 | 6 | 0 |
+| Retiring function | Callers | On main | Running features calling it | Own uses in its scope's tests |
+|---|---|---|---|---|
+| `line_total()` | 6 | 0 | 3 | 2 |
+| `order_total()` | 10 | 0 | 5 | 2 |
+| `display()` | 10 | 0 | 10 | 1 |
+| `price()` | 12 | 0 | 12 | 2 |
+| `total()` | 7 | 0 | 7 | 1 |
+| `percent_off()` | 0 | 0 | 0 | 6 |
 
-No count reaches zero, so Penguin proposes no contract step. Each function's state is
-`callers_left`. The expand wave that declared the six functions has also landed. At zero, Penguin
-would open a feature from main for each defining scope's DRI: Ines for `shared/money` and Tomas for
-`orders/model.py`. Each DRI's steward would get the removal
+`percent_off()` reaches zero at the count after the `money-checkout` wave, whose promotions fix
+moved its one caller outside the money scope. The expand wave that declared it has landed, so
+Penguin opens `contract-ines-money-type` from main for Ines, the DRI of `shared/money`, and gives
+the removal to Ines's steward as a `contract` task naming `shared/money/tests/test_discounts.py`
+and `shared/money/tests/test_money.py`. The fixture holds no commit that removes `percent_off()`
+alone, so the task stays open. The other five functions are `callers_left` until the readers move.
+At zero, Penguin would open a feature from main for each defining scope's DRI: Ines for
+`shared/money` and Tomas for `orders/model.py`. Each DRI's steward would get the removal
 ([design.md](design.md#sorting-and-splitting-in-the-build), Contract).
 
 ### Migration plans
@@ -208,22 +215,22 @@ runs it on the fixture.
 
 | After | Callers | Plans | Parts | Written by the runner | Edit tasks |
 |---|---|---|---|---|---|
-| `money-type` | 98 | 11 | 34 | 10 | 24 |
-| `money-messaging-mobile` | 59 | 10 | 25 | 10 | 15 |
-| Noor's pagination checkpoint | 59 + 3 | 10 | 26 | 10 | 16 |
+| `money-type` | 84 | 10 | 32 | 10 | 22 |
+| `money-messaging-mobile` | 45 | 9 | 23 | 10 | 13 |
+| Noor's pagination checkpoint | 45 + 3 | 9 | 24 | 10 | 14 |
 
 | After | Approved by Penguin | Edit tasks from a failed trial | Edit tasks in all | In person |
 |---|---|---|---|---|
-| `money-messaging-mobile` | 1 | 9 | 24 | 0 |
-| Noor's pagination checkpoint | 1 | 9 | 25 | 0 |
+| `money-messaging-mobile` | 1 | 9 | 22 | 0 |
+| Noor's pagination checkpoint | 1 | 9 | 23 | 0 |
 
 The migrate waves moved the callers on main of nine scopes, so those parts are dropped and Lena's
-plan is left with none. After the last wave, the 25 live parts cover all 59 callers:
+plan is left with none. The money and orders scopes' own tests are no callers, so Ines has no plan
+and Tomas's plan has no part on main. After the last wave, the 23 live parts cover all 45 callers:
 
 | Owner | Parts |
 |---|---|
 | ade | `partial-refunds`, `store-credit` |
-| ines | scope `money` |
 | jun | `basket-size`, `cohort-ltv`, `store-league` |
 | kofi | `instant-payouts`, `weekly-statements` |
 | mei | `business-accounts`, `credit-notes`, `pdf-layout` |
@@ -231,12 +238,11 @@ plan is left with none. After the last wave, the 25 live parts cover all 59 call
 | priya | `japan-launch`, `saved-carts`, `tip-jar` |
 | rahul | `bottle-deposit`, `tax-exempt` |
 | sam | `order-shipped`, `refund-email`, `weekly-digest` |
-| tomas | `reorder`, `split-shipments`, `substitutions`, scope `orders` |
+| tomas | `reorder`, `split-shipments`, `substitutions` |
 
 - **Written by the runner.** The plan's seven rules leave no use of a retiring function in 10
-  places, all running features' own changes. The other 15 are edit tasks: 11 places where the rules
-  leave uses, 3 where they rewrite nothing and the orders scope, whose `line_total()` and
-  `order_total()` have no rule.
+  places, all running features' own changes. The other 13 are edit tasks: the places where the
+  rules leave uses or rewrite nothing.
 - **Approved.** A part the rules write in full needs no review form. Its trial runs its scope's
   tests and the scope's side-by-side run over its declared examples. Penguin approves 1 of the 10:
   Kofi's `instant-payouts` passes `test:payouts` with no protected difference. The check runner's
@@ -244,8 +250,8 @@ plan is left with none. After the last wave, the 25 live parts cover all 59 call
 - **Edit tasks from a failed trial.** The other 9 fail their scope's tests on the trial tree. In
   `store-league` the `display` rule turns `money.display(amount)` into `amount.display()`, but
   `amount` is still a float there. Each of the 9 becomes a `migration` edit task for the feature's
-  builder with the failing test attached. With the 15 parts the rules do not write in full, 24 of
-  the 25 parts are edit tasks.
+  builder with the failing test attached. With the 13 parts the rules do not write in full, 22 of
+  the 23 parts are edit tasks.
 - **People.** No part reaches a person. A part reaches one only when its edit task's run fails or a
   check no edit settles fails, such as a protected path.
 - **A later caller.** Noor's pagination checkpoint adds 3 uses. Its retiring-calls check adds the
@@ -265,7 +271,7 @@ plan is left with none. After the last wave, the 25 live parts cover all 59 call
 | Times main moved | 6, one per stored wave, each with every scope's tests passing |
 | Review exceptions | 1: Rahul's broken `tax-per-line` invariant on the whole-order step |
 | Callers of the float API left on main before the contract wave | 1 scope: orders |
-| Callers of the retiring functions after the last migrate wave | 59: 14 on main, 45 in 23 running features |
+| Callers of the retiring functions after the last migrate wave | 45, all in 23 running features; 14 more uses on main are the money and orders scopes' own tests |
 
 Penguin approves a part only when each of its checks is clean ([design.md](design.md#penguins-approval-in-the-build)).
 Both stored parts pass, and Penguin approves each. Each part's trial applies its fix commit to main

@@ -12,6 +12,11 @@
 // - **Migration groups.** The remaining callers on main and in running features' own changes, grouped
 //   by owner: a scope's owner for code on main, the feature's person for a running feature. Each
 //   group is one set of migration parts.
+// - **The defining scope's own uses.** A use in the module that defines a retiring symbol, or in a
+//   test file of the scope whose paths hold that module, is no caller (`inDefiningFiles`). The
+//   contract step removes it together with the symbol, so it is neither counted nor a migration part.
+//   This holds on main and in the originating feature's own changes, the two trees the contract task
+//   edits; in any other running feature's own changes such a use is a caller.
 //
 // The check runner finds the uses: `analysis:python-impact` searches for each retiring symbol as if it
 // had changed (`ImpactRequest.symbols`). Everything here reads that report; nothing runs code.
@@ -20,6 +25,7 @@ import type { BlockCheck, BlockCheckFinding } from "./block-check.ts";
 import type { ImpactReport, ImpactUse } from "./impact.ts";
 import type { PlanPlace } from "./plan.ts";
 import { classifyFailure, type LadderDecision, type RoutingContext } from "./resolution.ts";
+import { isTestFile } from "./review.ts";
 import type { RewriteRule } from "./rewrite-rule.ts";
 
 export const RETIRING_LIMITS = { symbols: 64, findings: 20 } as const;
@@ -179,17 +185,57 @@ export interface MigrationGroup {
 
 const placeKey = (place: PlanPlace): string => (place.kind === "scope" ? `scope:${place.scope}` : `feature:${place.feature}`);
 
+/** The scope whose paths hold a repository path, from the project's scope map; undefined for none. */
+export type ScopeOfPath = (path: string) => string | undefined;
+
+/**
+ * Whether a use of the retiring symbol `contract` sits in its defining scope's own files (PRD 0.5
+ * section 4.2 step 2): the module that defines it, or a pytest test file (`test_*.py`, `*_test.py`)
+ * in the scope whose paths hold that module. A use in any other file of that scope is a caller.
+ */
+export function inDefiningFiles(use: Pick<ImpactUse, "path">, contract: string, scopeOf: ScopeOfPath): boolean {
+  const module = contractPath(contract);
+  if (use.path === module) return true;
+  if (!isTestFile(use.path)) return false;
+  const defining = scopeOf(module);
+  return defining !== undefined && scopeOf(use.path) === defining;
+}
+
+/**
+ * Whether a use of `declaration` found on main (`fork` null) or in fork `fork`'s own changes is the
+ * defining scope's own: in its defining files, on main or in the originating feature's own changes,
+ * the trees whose copy the contract step edits. Anywhere else it is a caller.
+ */
+function isOwnUse(use: ImpactUse, declaration: RetiringDeclaration, fork: string | null, scopeOf: ScopeOfPath): boolean {
+  return (fork === null || fork === declaration.feature) && inDefiningFiles(use, declaration.contract, scopeOf);
+}
+
+/**
+ * The uses in a list found on main (`fork` null) or in fork `fork`'s own changes that are callers of
+ * a retiring symbol, each with its declaration: its uses less the defining scope's own.
+ */
+export function retiringCallerUses(
+  uses: readonly ImpactUse[],
+  declarations: readonly RetiringDeclaration[],
+  fork: string | null,
+  scopeOf: ScopeOfPath,
+): { use: ImpactUse; declaration: RetiringDeclaration }[] {
+  return retiringUses(uses, declarations).filter(({ use, declaration }) => !isOwnUse(use, declaration, fork, scopeOf));
+}
+
 /**
  * The remaining callers of retiring symbols, grouped by owner, owners in id order and places in place
  * order. A use on main (the report's head uses) is a place of its scope, owned by the scope's owner;
  * a use in a running feature's own changes is a place of that feature, owned by its person. A use on
- * main in no scope, or of a scope or feature with no known owner, is left out and counted.
+ * main in no scope, or of a scope or feature with no known owner, is left out and counted. The
+ * defining scope's own uses are no callers and are left out uncounted: the contract step removes them.
  */
 export function migrationGroups(
   impact: ImpactReport,
   declarations: readonly RetiringDeclaration[],
   ownerOfScope: (scope: string) => string | undefined,
   personOfFeature: (feature: string) => string | undefined,
+  scopeOf: ScopeOfPath,
 ): { groups: MigrationGroup[]; unowned: number } {
   const places = new Map<string, { owner: string; place: PlanPlace; uses: ImpactUse[] }>();
   let unowned = 0;
@@ -203,12 +249,12 @@ export function migrationGroups(
     entry.uses.push(use);
     places.set(key, entry);
   };
-  for (const { use } of retiringUses(impact.headUses, declarations)) {
+  for (const { use } of retiringCallerUses(impact.headUses, declarations, null, scopeOf)) {
     if (use.scope === null) unowned += 1;
     else add(ownerOfScope(use.scope), { kind: "scope", scope: use.scope }, use);
   }
   for (const fork of impact.forks) {
-    for (const { use } of retiringUses(fork.uses, declarations)) add(personOfFeature(fork.id), { kind: "feature", feature: fork.id }, use);
+    for (const { use } of retiringCallerUses(fork.uses, declarations, fork.id, scopeOf)) add(personOfFeature(fork.id), { kind: "feature", feature: fork.id }, use);
   }
   const owners = new Map<string, MigrationPlace[]>();
   for (const [, entry] of [...places.entries()].sort(([a], [b]) => (a < b ? -1 : 1))) {
@@ -229,27 +275,50 @@ export interface RetiringCallerCount {
   readonly features: readonly { readonly feature: string; readonly uses: number }[];
   /** Every use: on main plus in the running features' own changes. */
   readonly callers: number;
+  /**
+   * The defining scope's own uses (`inDefiningFiles`) on main and in the originating feature's own
+   * changes: no callers, left out of `callers`. The contract step removes them with the symbol.
+   */
+  readonly ownUses: number;
+  /** The files holding those uses, in path order. */
+  readonly ownFiles: readonly string[];
 }
 
 /**
  * The callers of each retiring symbol in an impact report that searched for them (`symbols`), in
- * contract order. A symbol nobody calls counts zero.
+ * contract order. A symbol nobody calls counts zero. The defining scope's own uses are counted apart
+ * (`ownUses`), never as callers.
  */
-export function retiringCallerCounts(impact: ImpactReport, declarations: readonly RetiringDeclaration[]): RetiringCallerCount[] {
-  const known = byDottedName(declarations);
-  const onMain = new Map<string, number>();
-  for (const use of impact.headUses) if (known.has(use.symbol)) onMain.set(use.symbol, (onMain.get(use.symbol) ?? 0) + 1);
+export function retiringCallerCounts(impact: ImpactReport, declarations: readonly RetiringDeclaration[], scopeOf: ScopeOfPath): RetiringCallerCount[] {
   const forks = [...impact.forks].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   return [...declarations]
     .sort((a, b) => (a.contract < b.contract ? -1 : 1))
     .map((declaration) => {
       const dotted = contractDottedName(declaration.contract);
+      const own: ImpactUse[] = [];
+      // The callers of the symbol in one tree; its own uses there go to `own`.
+      const callersIn = (uses: readonly ImpactUse[], fork: string | null): number => {
+        let callers = 0;
+        for (const use of uses) {
+          if (use.symbol !== dotted) continue;
+          if (isOwnUse(use, declaration, fork, scopeOf)) own.push(use);
+          else callers += 1;
+        }
+        return callers;
+      };
+      const main = callersIn(impact.headUses, null);
       const features = forks.flatMap((fork) => {
-        const uses = fork.uses.filter((use) => use.symbol === dotted).length;
+        const uses = callersIn(fork.uses, fork.id);
         return uses === 0 ? [] : [{ feature: fork.id, uses }];
       });
-      const main = onMain.get(dotted) ?? 0;
-      return { contract: declaration.contract, onMain: main, features, callers: features.reduce((sum, each) => sum + each.uses, main) };
+      return {
+        contract: declaration.contract,
+        onMain: main,
+        features,
+        callers: features.reduce((sum, each) => sum + each.uses, main),
+        ownUses: own.length,
+        ownFiles: [...new Set(own.map((use) => use.path))].sort(),
+      };
     });
 }
 
@@ -287,6 +356,9 @@ export interface ContractStepEntry extends RetiringSymbol {
   readonly callers: number | null;
   readonly onMain: number;
   readonly features: readonly { readonly feature: string; readonly uses: number }[];
+  /** The defining scope's own uses at the last count, which the contract step removes with the symbol, and their files. */
+  readonly ownUses: number;
+  readonly ownFiles: readonly string[];
   /** Main's commit after the promotion the last count followed, and that count's tool request. */
   readonly promotion: string | null;
   readonly countRun: number | null;

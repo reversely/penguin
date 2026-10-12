@@ -199,6 +199,9 @@ const SEGMENT = /^[A-Za-z0-9_.][A-Za-z0-9_.-]*$/u;
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 const TEST_FILE = /(?:^|\/)(?:test_[^/]*|[^/]*_test)\.py$/u;
 
+/** Whether `path` is a pytest test file: `test_*.py` or `*_test.py`. */
+export const isTestFile = (path: string): boolean => TEST_FILE.test(path);
+
 /** A relative path that stays inside the repository, or undefined. */
 export function parseRepoPath(path: string): string | undefined {
   if (path.length === 0 || path.length > 512) return undefined;
@@ -218,7 +221,7 @@ export function parseEvidence(value: string): Evidence | undefined {
     const names = value.slice(symbolAt + 2).split("::");
     if (path === undefined || names.length > 4 || !names.every((name) => IDENTIFIER.test(name))) return undefined;
     const last = names[names.length - 1] as string;
-    return { kind: "symbol", path, names, test: TEST_FILE.test(path) && last.startsWith("test") };
+    return { kind: "symbol", path, names, test: isTestFile(path) && last.startsWith("test") };
   }
   const line = /^(.+):([1-9][0-9]{0,6})$/u.exec(value);
   const path = line === null ? undefined : parseRepoPath(line[1] as string);

@@ -411,20 +411,32 @@ Penguin sorts each feature checkpoint's contract diff and decides between a spli
   one analysis ([bridge-and-runner.md](bridge-and-runner.md#agent-tools-on-the-runner)). When the
   runner reports, Penguin keeps each symbol's callers on main and per running feature
   (`retiringCallerCounts` in `packages/protocol/src/retiring.ts`).
+  - **The defining scope's own uses.** A use in the module that defines a retiring symbol, or in a
+    test file (`test_*.py`, `*_test.py`) of the scope whose paths hold that module, is not a caller
+    (`inDefiningFiles`). It is kept apart as the symbol's own uses and files, never counted as a
+    caller and never a migration part. The contract step edits those files when it removes the
+    symbol and its tests together. A use in any other file of that scope is a caller. The rule holds
+    on main and in the originating feature's own changes, the two trees the removal is written in.
+    In any other running feature's own changes such a use is a caller, since the removal does not
+    edit that fork. The scope map is the project's on main; the analysis is the same one, so no
+    analysis is added per count.
   - **Proposal.** A symbol with no caller in a complete report is proposed for removal on its
     originating feature while that feature is running. A complete report has no unreadable file on
     main or in a running feature and no list cut at its limit. Penguin signs a `contract_proposed`
-    record with the symbols, the count and `places: []`. The plan has no places, so no part needs a
+    record with the symbols, the count, `places: []` and `own_files`, the files of the defining
+    scope's own uses. The plan has no places, so no part needs a
     person and Penguin approves it ([Penguin's approval in the build](#penguins-approval-in-the-build)).
-    The feature's next step starts with "Contract" and names the symbols to remove. The agent removes
-    them, reports the removal as a checkpoint and calls `land_feature`. Penguin promotes the block.
+    The feature's next step starts with "Contract" and names the symbols to remove, with their own
+    uses' files. The agent removes them, reports the removal as a checkpoint and calls
+    `land_feature`. Penguin promotes the block.
   - **Withdrawal.** A later count that finds a caller of an approved symbol withdraws the approval
     with a signed `contract_withdrawn` record.
   - **The originating feature landed.** A landed fork is read-only, so it cannot carry the removal.
     For the DRI of each scope that defines the symbols, Penguin opens a short-lived feature from
     main, `contract-<owner>-<feature>`. It signs the `contract_proposed` record there with
-    `origin`, `places: []` and `approved_by: penguin`. The removal becomes a `contract` edit task for
-    that DRI's steward. The originating feature's `contractStep` shows the symbol `approved` with
+    `origin`, `places: []`, `own_files` and `approved_by: penguin`. The removal becomes a `contract`
+    edit task for that DRI's steward; its instructions and evidence name the own uses' files, which
+    the removal edits too. The originating feature's `contractStep` shows the symbol `approved` with
     the carrying feature as `carrier`. Once the steward's removal is done, Penguin lands the carrier
     itself ([Block promotion in the build](#block-promotion-in-the-build), Penguin's own features).
     When the carrier's block reaches main, its facts run closes the symbol as removed. A symbol in no scope, or in a scope with no owner, stays `no_callers`.
@@ -449,7 +461,7 @@ Penguin sorts each feature checkpoint's contract diff and decides between a spli
   | `counts`, `complete` | The number of entries of each sort; false when the impact report was incomplete |
   | `entries`, `omitted` | Each `ContractSortEntry`: `symbol`, `path`, `line`, `kind`, `change`, `sort`, `breaks`, `scope`, `contract`, `to`, `keyword`, `callers` and `reason`. Incompatible entries come first, at most 100; `omitted` counts the rest |
   | `split` | Null without a split; otherwise `state` (`expand_first` or `retiring`), the `checkpoint` that last added an entry, its `entries`, the `replacements` the agent named, the `promotion` commit, the `retiring` pairs, the `unretired` names with reasons and the `recordId` of its last signed record |
-  | `contractStep` | Each symbol the feature retires: `contract`, `replacement`, `state` (`counting`, `callers_left`, `no_callers`, `approved` or `removed`), `callers` at the last count (null before a complete count), `onMain`, the running `features` with their uses, the `promotion` and `countRun` of that count, the `recordId` of the `contract_proposed` record, the `carrier` feature Penguin opened when the originating feature no longer runs (else null) and the `removedPromotion` and `removedRecordId` once removed |
+  | `contractStep` | Each symbol the feature retires: `contract`, `replacement`, `state` (`counting`, `callers_left`, `no_callers`, `approved` or `removed`), `callers` at the last count (null before a complete count), `onMain`, the running `features` with their uses, `ownUses` and `ownFiles` (the defining scope's own uses, which leave with the removal and are no callers), the `promotion` and `countRun` of that count, the `recordId` of the `contract_proposed` record, the `carrier` feature Penguin opened when the originating feature no longer runs (else null) and the `removedPromotion` and `removedRecordId` once removed |
   | `migration` | Each migration plan of the feature's retiring symbols, a `MigrationPlanView` ([Migration plans in the build](#migration-plans-in-the-build)) |
   | `nextStep` | The agent's next step in one paragraph |
 - **On the fixtures.** Each sort comes from the fixture's checkpoint against main
@@ -468,7 +480,8 @@ Penguin proposes the migrate step's plans itself (`services/project-agent/src/mi
 `packages/protocol/src/migration.ts`).
 
 - **One plan per owner group.** Each complete count after a promotion groups the remaining callers
-  of each originating feature's own retiring symbols by owner (`migrationGroups`). Each group
+  of each originating feature's own retiring symbols by owner (`migrationGroups`). The defining
+  scope's own uses make no part (see Contract above): they leave with the contract step. Each group
   becomes one plan of that feature, `migrate:<feature>:<owner>:<n>`, with one part per place: a
   scope on main, owned by its DRI, or a running feature's own changes, owned by its person. A plan
   is a signed `migration_proposed` record on the originating feature with the owner, the plan's

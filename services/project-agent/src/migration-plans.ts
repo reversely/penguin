@@ -4,7 +4,9 @@
 // 1. **Proposing.** Each complete count of the callers of retiring symbols after a promotion
 //    (retiring-count.ts) reaches `migrationsCounted`. For each originating feature, Penguin groups the
 //    remaining callers of that feature's own retiring symbols by owner (`migrationGroups`): code on
-//    main by the scope's DRI, a running feature's own changes by its person. Each group becomes one
+//    main by the scope's DRI, a running feature's own changes by its person. The defining scope's own
+//    uses (the module that defines a symbol and that scope's test files) are no callers and make no
+//    part: the contract step removes them with the symbol. Each group becomes one
 //    plan of the originating feature, with one part per place, under a signed `migration_proposed`
 //    record. A plan carries only that feature's declarations and their rewrite rules.
 // 2. **A later caller.** A place found later, at a later count or at a checkpoint's retiring-calls
@@ -440,6 +442,7 @@ async function syncMigrations(deps: MigrationDeps, impact: ImpactReport, context
       own,
       (scope) => scopeMap.scopes.get(scope)?.driId,
       (feature) => deps.features.get(feature)?.personId,
+      (path) => scopeForPath(scopeMap, path),
     );
     const rewriting: { part: MigrationPart; target: string; paths: readonly string[] }[] = [];
     for (const group of groups) {
@@ -1051,6 +1054,8 @@ export async function carryContract(
   for (const [owner, { scopes, symbols: owned }] of [...byOwner].sort(([a], [b]) => (a < b ? -1 : 1))) {
     const carrierId = contractCarrierId(origin, owner);
     const contracts = owned.map((each) => each.contract);
+    // The defining scope's own uses leave with the symbols: the task edits those files too.
+    const own = deps.retiring.ownFiles(contracts);
     const scopeList = [...scopes].sort();
     const carrier = await openPenguinFeature(
       deps,
@@ -1069,6 +1074,7 @@ export async function carryContract(
         count_run: count.runId,
         symbols: owned.map(({ contract, replacement }) => ({ contract, replacement })),
         callers: 0,
+        own_files: own,
         places: [],
         approved_by: "penguin",
         reason:
@@ -1089,9 +1095,11 @@ export async function carryContract(
         places: scopeList.map((scope) => ({ scope })),
         instructions:
           `Remove ${listed} from feature ${carrierId}'s fork: no caller is left on main or in any running feature's own changes (counted after promotion ${short(count.promotion)}), ` +
-          `and feature ${origin}, which retired them, no longer runs. Commit the removal in one commit; Penguin approved it, and once Penguin keeps the commit it lands the block itself.`,
+          `and feature ${origin}, which retired them, no longer runs. ` +
+          (own.length === 0 ? "" : `Remove their own uses with them, in their defining module and its scope's tests: ${own.join(", ")}. `) +
+          "Commit the removal in one commit; Penguin approved it, and once Penguin keeps the commit it lands the block itself.",
         verifier: "The removal's facts run shows each symbol removed; the block checks run every scope's tests on the merged trees before main moves.",
-        evidence: owned.map(({ contract, replacement }) => `${contract}, replaced by ${replacement}`),
+        evidence: [...owned.map(({ contract, replacement }) => `${contract}, replaced by ${replacement}`), ...own.map((path) => `${path}: the defining scope's own use, removed with the symbol`)],
         ref: { origin, carrier: carrierId },
       },
       stewardsFor(deps.store),

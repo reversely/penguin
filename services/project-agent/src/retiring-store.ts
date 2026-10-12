@@ -14,7 +14,8 @@
 // `impact` tool's migration groups and `apply_fix` by a retiring symbol's rewrite rule.
 //
 // The contract step (retiring-count.ts) keeps two more tables here: each symbol's callers at the last
-// count after a promotion, and each symbol Penguin proposed removing. A symbol whose removal reached
+// count after a promotion, with the defining scope's own uses kept apart, and each symbol Penguin
+// proposed removing. A symbol whose removal reached
 // main leaves `RetiringSymbol`, so no check names it as retiring any more; its contract step stays,
 // marked removed.
 
@@ -41,6 +42,13 @@ export const RETIRING_SCHEMA: readonly string[] = [
 const CONTRACT_STEP_COLUMNS: readonly (readonly [string, string])[] = [
   // The feature Penguin opened from main to carry the removal when the originating feature no longer runs.
   ["carrier_feature", "carrier_feature TEXT"],
+];
+
+/** Columns added to RetiringCount after its first release. */
+const RETIRING_COUNT_COLUMNS: readonly (readonly [string, string])[] = [
+  // The defining scope's own uses at the count, which the contract step removes with the symbol, and their files.
+  ["own_uses", "own_uses INTEGER NOT NULL DEFAULT 0"],
+  ["own_files", "own_files TEXT NOT NULL DEFAULT '[]'"],
 ];
 
 /** A symbol Penguin proposed removing, as the ContractStep table keeps it. */
@@ -94,10 +102,15 @@ export class RetiringStore {
     this.#db = db;
     this.#now = now;
     for (const statement of RETIRING_SCHEMA) db.exec(statement);
-    // Column names and definitions come from the constant above, never from input.
-    const present = new Set(db.exec(`PRAGMA table_info(ContractStep)`).map((row) => row["name"]));
-    for (const [name, definition] of CONTRACT_STEP_COLUMNS) {
-      if (!present.has(name)) db.exec(`ALTER TABLE ContractStep ADD COLUMN ${definition}`);
+    // Table names, column names and definitions come from the constants above, never from input.
+    for (const [table, columns] of [
+      ["ContractStep", CONTRACT_STEP_COLUMNS],
+      ["RetiringCount", RETIRING_COUNT_COLUMNS],
+    ] as const) {
+      const present = new Set(db.exec(`PRAGMA table_info(${table})`).map((row) => row["name"]));
+      for (const [name, definition] of columns) {
+        if (!present.has(name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${definition}`);
+      }
     }
   }
 
@@ -176,9 +189,10 @@ export class RetiringStore {
       for (const contract of contracts) {
         const count = byContract.get(contract);
         this.#db.exec(
-          `INSERT INTO RetiringCount (contract, callers, on_main, features, promotion, run_id, counted_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+          `INSERT INTO RetiringCount (contract, callers, on_main, features, promotion, run_id, counted_at, own_uses, own_files) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT (contract) DO UPDATE SET callers = excluded.callers, on_main = excluded.on_main, features = excluded.features,
-             promotion = excluded.promotion, run_id = excluded.run_id, counted_at = excluded.counted_at`,
+             promotion = excluded.promotion, run_id = excluded.run_id, counted_at = excluded.counted_at,
+             own_uses = excluded.own_uses, own_files = excluded.own_files`,
           contract,
           count === undefined ? null : count.callers,
           count?.onMain ?? 0,
@@ -186,9 +200,22 @@ export class RetiringStore {
           promotion,
           runId,
           now,
+          count?.ownUses ?? 0,
+          JSON.stringify(count?.ownFiles ?? []),
         );
       }
     });
+  }
+
+  /** The defining scope's own files of `contracts` at their last counts, in path order: what the contract step edits besides the removal. */
+  ownFiles(contracts: readonly string[]): string[] {
+    const files = new Set<string>();
+    for (const contract of contracts) {
+      for (const row of this.#db.exec(`SELECT own_files FROM RetiringCount WHERE contract = ?`, contract)) {
+        for (const path of JSON.parse(String(row["own_files"])) as string[]) files.add(path);
+      }
+    }
+    return [...files].sort();
   }
 
   /**
@@ -271,6 +298,8 @@ export class RetiringStore {
           callers,
           onMain: count === undefined ? 0 : Number(count["on_main"]),
           features: count === undefined ? [] : (JSON.parse(String(count["features"])) as ContractStepEntry["features"]),
+          ownUses: count === undefined ? 0 : Number(count["own_uses"]),
+          ownFiles: count === undefined ? [] : (JSON.parse(String(count["own_files"])) as string[]),
           promotion: count === undefined ? null : String(count["promotion"]),
           countRun: count === undefined ? null : Number(count["run_id"]),
           recordId: step?.recordId ?? null,

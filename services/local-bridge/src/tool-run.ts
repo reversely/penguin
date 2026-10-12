@@ -53,6 +53,7 @@ import {
   type ImpactReport,
   migrationGroups,
   retiringCallDecisions,
+  retiringCallerUses,
   retiringUses,
   rewriteRuleContractPath,
   type RetiringDeclaration,
@@ -60,7 +61,7 @@ import {
   type ToolCaller,
 } from "@penguin/protocol";
 import { commitMergedTree, runGit } from "@penguin/git-analysis";
-import type { ScopeMap } from "@penguin/scope-map";
+import { scopeForPath, type ScopeMap } from "@penguin/scope-map";
 
 import type { FixApplier } from "./apply-fix.ts";
 import { loadScopeMap } from "./command-allowlist.ts";
@@ -199,7 +200,7 @@ async function runImpact(options: ToolPassOptions, claim: ClaimedToolRun): Promi
   const retiring = retiringOf(claim);
   if (retiring.length > 0 && claim.input["search"] === "own") return runRetiringCheck(options, claim, scopeMap, retiring);
   if (retiring.length > 0 && claim.input["search"] === "callers") return runCallerCount(options, claim, scopeMap, retiring);
-  if (retiring.length > 0 && claim.input["search"] === "rewrite") return runMigrationRewrite(options, claim, retiring);
+  if (retiring.length > 0 && claim.input["search"] === "rewrite") return runMigrationRewrite(options, claim, scopeMap, retiring);
   const forks = claim.forks.map((other) => ({ id: other.feature, sha: other.checkpoint, scopes: ownedScopes(scopeMap, other.person) }));
   const impact: ImpactReport = await options.impact({ base: claim.base, head: claim.checkpoint, forks });
   const using = selectAffectedForks(impact);
@@ -216,7 +217,7 @@ async function runImpact(options: ToolPassOptions, claim: ClaimedToolRun): Promi
     symbols: retiring.map((each) => each.contract),
   });
   const person = new Map(claim.forks.map((other) => [other.feature, other.person]));
-  const migration = migrationGroups(callers, retiring, (scope) => scopeMap.scopes.get(scope)?.driId, (feature) => person.get(feature));
+  const migration = migrationGroups(callers, retiring, (scope) => scopeMap.scopes.get(scope)?.driId, (feature) => person.get(feature), (path) => scopeForPath(scopeMap, path));
   const places = migration.groups.reduce((sum, group) => sum + group.places.length, 0);
   const listed = `; retiring symbols: ${plural(places, "place")} left in ${plural(migration.groups.length, "owner group")}`;
   return { ...emptyResult(claim), impact, migration, summary: bounded(`${summary}${listed}`) };
@@ -236,8 +237,11 @@ async function runCallerCount(options: ToolPassOptions, claim: ClaimedToolRun, s
     symbols: retiring.map((each) => each.contract),
   });
   const person = new Map(claim.forks.map((other) => [other.feature, other.person]));
-  const migration = migrationGroups(impact, retiring, (scope) => scopeMap.scopes.get(scope)?.driId, (feature) => person.get(feature));
-  const uses = retiringUses(impact.headUses, retiring).length + impact.forks.reduce((sum, fork) => sum + retiringUses(fork.uses, retiring).length, 0);
+  const scopeOf = (path: string) => scopeForPath(scopeMap, path);
+  const migration = migrationGroups(impact, retiring, (scope) => scopeMap.scopes.get(scope)?.driId, (feature) => person.get(feature), scopeOf);
+  const uses =
+    retiringCallerUses(impact.headUses, retiring, null, scopeOf).length +
+    impact.forks.reduce((sum, fork) => sum + retiringCallerUses(fork.uses, retiring, fork.id, scopeOf).length, 0);
   const summary =
     `${plural(uses, "caller")} of ${plural(retiring.length, "retiring symbol")} on main and in the own changes of ${plural(claim.forks.length, "running feature")}` +
     (impact.complete ? "" : "; the report is incomplete");
@@ -273,7 +277,7 @@ const clipError = (text: string): string => text.slice(0, MIGRATION_LIMITS.error
  * checkout, to commits kept only in the runner's repository, and one analysis of those commits counts
  * the uses of a retiring symbol each place still holds. Nothing is pushed.
  */
-async function runMigrationRewrite(options: ToolPassOptions, claim: ClaimedToolRun, retiring: readonly RetiringDeclaration[]): Promise<AgentToolResult> {
+async function runMigrationRewrite(options: ToolPassOptions, claim: ClaimedToolRun, scopeMap: ScopeMap, retiring: readonly RetiringDeclaration[]): Promise<AgentToolResult> {
   const places = (Array.isArray(claim.input["places"]) ? (claim.input["places"] as RewritePlaceInput[]) : []).slice(0, MIGRATION_LIMITS.places);
   const rules = retiring.flatMap((each) => each.rules);
   const contracts: Record<string, string> = {};
@@ -341,8 +345,10 @@ async function runMigrationRewrite(options: ToolPassOptions, claim: ClaimedToolR
   const left = (input: RewritePlaceInput): number => {
     if (residual === null) return 0;
     const place = input.place;
-    if (place.kind === "scope") return retiringUses(residual.headUses, retiring).filter(({ use }) => use.scope === place.scope).length;
-    return retiringUses(residual.forks.find((fork) => fork.id === place.feature)?.uses ?? [], retiring).length;
+    // The defining scope's own uses are no part's: the contract step removes them.
+    const scopeOf = (path: string) => scopeForPath(scopeMap, path);
+    if (place.kind === "scope") return retiringCallerUses(residual.headUses, retiring, null, scopeOf).filter(({ use }) => use.scope === place.scope).length;
+    return retiringCallerUses(residual.forks.find((fork) => fork.id === place.feature)?.uses ?? [], retiring, place.feature, scopeOf).length;
   };
   const rewrites: MigrationRewritePlace[] = rewritten.map((entry) => ({
     place: entry.input.place,

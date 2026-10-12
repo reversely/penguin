@@ -8,7 +8,10 @@
 //    commit, for every retiring symbol in one analysis (`search: "callers"`, tool-run.ts on the
 //    bridge). The request is the promoted feature's, whose fork holds main's new head.
 // 2. **Propose.** When the runner reports (`countReported`), each symbol keeps its callers
-//    (retiring-store.ts). A symbol with no caller in a complete report is proposed for removal on its
+//    (retiring-store.ts). The defining scope's own uses, in the module that defines the symbol and in
+//    that scope's test files (protocol `inDefiningFiles`), are no callers: they are kept apart as the
+//    symbol's own files, which the contract step edits when it removes the symbol and its tests
+//    together. A use in any other file of that scope is a caller. A symbol with no caller in a complete report is proposed for removal on its
 //    originating feature while that feature is running. The proposal is a signed `contract_proposed`
 //    record: the plan has no places, so no part needs a person (section 4.3) and Penguin approves it.
 //    The feature's next step names the symbols to remove (contract-split.ts). When the originating
@@ -33,6 +36,8 @@ import {
   type RetiringSymbol,
 } from "@penguin/protocol";
 
+import { scopeForPath, type ScopeMap } from "@penguin/scope-map";
+
 import { retiringInput, type AgentToolRun, type AgentToolStore } from "./agent-tools.ts";
 import type { FeatureRecord, FeatureStore, UnsignedFeatureRecord } from "./feature-store.ts";
 import { RUNNING_STATES } from "./overlap-lock.ts";
@@ -52,6 +57,11 @@ export interface RetiringCountDeps {
   readonly retiring: RetiringStore;
   /** The facts runs whose contract diff shows what a landed checkpoint removed. */
   readonly facts: PlanFactsStore;
+  /**
+   * The project's scope map on main, which says which test files are a retiring symbol's defining
+   * scope's own. Absent, only a use in the defining module itself is left out of the callers.
+   */
+  readonly scopeMap?: () => Promise<ScopeMap>;
   readonly sign: (record: UnsignedFeatureRecord) => Promise<FeatureRecord>;
   readonly notify?: (personId: string) => void;
   /**
@@ -122,7 +132,9 @@ export async function countReported(deps: RetiringCountDeps, run: AgentToolRun):
   // Only symbols still retiring and searched for by this request are counted.
   const declared = deps.retiring.list().filter((each) => asked.has(each.contract));
   const impact = run.outcome.result === "found" ? run.outcome.impact : null;
-  const counts = impact !== null && countIsComplete(impact) ? retiringCallerCounts(impact, declared) : null;
+  const scopeMap = impact !== null && deps.scopeMap !== undefined ? await deps.scopeMap() : undefined;
+  const scopeOf = (path: string) => (scopeMap === undefined ? undefined : scopeForPath(scopeMap, path));
+  const counts = impact !== null && countIsComplete(impact) ? retiringCallerCounts(impact, declared, scopeOf) : null;
   deps.retiring.counted(
     declared.map((each) => each.contract),
     counts,
@@ -153,6 +165,7 @@ export async function countReported(deps: RetiringCountDeps, run: AgentToolRun):
 
   const proposed: { feature: string; contracts: string[]; recordId: string }[] = [];
   const free = declared.filter((each) => callers.get(each.contract) === 0 && !held.has(each.contract));
+  const own = new Map(counts.map((each) => [each.contract, each.ownFiles]));
   for (const [featureId, symbols] of byFeature(free)) {
     const feature = deps.features.get(featureId);
     if (feature === undefined) continue;
@@ -168,6 +181,8 @@ export async function countReported(deps: RetiringCountDeps, run: AgentToolRun):
         count_run: run.id,
         symbols: symbolsOf(symbols),
         callers: 0,
+        // The defining scope's own uses: no callers, removed by the contract step with the symbols.
+        own_files: [...new Set(symbols.flatMap((each) => own.get(each.contract) ?? []))].sort(),
         places: [],
         approved_by: "penguin",
         reason: "no caller is left on main or in any running feature's own changes, so the plan has no places and no part needs a person",

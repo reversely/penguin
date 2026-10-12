@@ -183,6 +183,7 @@ describe("migration plans of a split, one per owner group", () => {
       runs,
       retiring: project.retiring,
       facts: project.facts,
+      scopeMap: async () => scopeMapNow,
       sign: (draft) => project.sign(draft),
       carry: (featureId, symbols, at) => carryContract(deps, featureId, symbols, at),
     };
@@ -241,6 +242,7 @@ describe("migration plans of a split, one per owner group", () => {
 
   test("a count becomes one plan per owner group, each carrying only its originating feature's declarations", async () => {
     const changed = await counted(sha(1), {
+      // The orders scope defines line_total, so its own test is no caller (#144): only orders/report.py is a part.
       headUses: [lineUse("orders/report.py"), lineUse("orders/tests/test_model.py")],
       forks: [fork("fees", [priceUse("billing/fees.py", "billing"), feeUse("billing/fees.py")], sha(1))],
     });
@@ -250,7 +252,7 @@ describe("migration plans of a split, one per owner group", () => {
       plans.map((plan) => [plan.owner, plan.block, plan.parts.map((part) => [part.place, part.uses, part.contracts, part.rules, part.state])]),
       [
         ["bea", "migrate-bea-money-minor", [[{ kind: "feature", feature: "fees" }, 1, [PRICE.contract], ["price-times"], "rewriting"]]],
-        ["tomas", "migrate-tomas-money-minor", [[{ kind: "scope", scope: "orders" }, 2, [LINE.contract], [], "task"]]],
+        ["tomas", "migrate-tomas-money-minor", [[{ kind: "scope", scope: "orders" }, 1, [LINE.contract], [], "task"]]],
       ],
     );
     // Bea's fee split has its own plan; its rule never reaches Ines's plans.
@@ -269,7 +271,7 @@ describe("migration plans of a split, one per owner group", () => {
     assert.deepEqual((rewrite?.input["retiring"] as { contract: string }[]).map((each) => each.contract), [LINE.contract, PRICE.contract]);
     // Code on main with no rule goes to the steward of the scope's DRI, in the plan's block, which Penguin opened from main.
     const [task] = tasks.forFeature("migrate-tomas-money-minor");
-    assert.deepEqual([task?.kind, task?.handle, task?.via, task?.files], ["migration", "@tomas/steward", "steward", ["orders/report.py", "orders/tests/test_model.py"]]);
+    assert.deepEqual([task?.kind, task?.handle, task?.via, task?.files], ["migration", "@tomas/steward", "steward", ["orders/report.py"]]);
     assert.deepEqual(forked, ["migrate-tomas-money-minor"]);
     assert.deepEqual([project.features.get("migrate-tomas-money-minor")?.personId, project.features.get("migrate-tomas-money-minor")?.repo], ["tomas", "feature-migrate-tomas-money-minor"]);
     assert.deepEqual(records("migrate-tomas-money-minor", "open_feature").map((each) => each.author), [{ penguin: true }]);
@@ -622,7 +624,9 @@ describe("migration plans of a split, one per owner group", () => {
     const outcome = await (async () => {
       const runId = requestRetiringCount(count, "money-minor", sha(4));
       assert.ok(runId !== undefined);
-      const recorded = recordToolResult(runs, RUNNER, runId, result(sha(4), { impact: impact(sha(4), { headUses: [feeUse("billing/fees.py")] }) }));
+      // line_total's own test on main is no caller (#144): the carrier's removal takes it along.
+      const headUses = [feeUse("billing/fees.py"), lineUse("orders/tests/test_model.py")];
+      const recorded = recordToolResult(runs, RUNNER, runId, result(sha(4), { impact: impact(sha(4), { headUses }) }));
       assert.equal(recorded.status, "recorded");
       return recorded.status === "recorded" ? countReported(count, recorded.run) : undefined;
     })();
@@ -638,6 +642,11 @@ describe("migration plans of a split, one per owner group", () => {
     // The removal is an edit task for the steward of the defining scope's DRI, never the carrier's builder.
     const [task] = tasks.forFeature("contract-ines-money-minor");
     assert.deepEqual([task?.kind, task?.handle, task?.via, task?.scopes], ["contract", "@ines/steward", "steward", ["money"]]);
+    // Tomas's removal of line_total names the orders scope's own test of it, which leaves with it.
+    const [orders] = tasks.forFeature("contract-tomas-money-minor");
+    assert.match(orders?.instructions ?? "", /Remove their own uses with them, in their defining module and its scope's tests: orders\/tests\/test_model\.py\./u);
+    assert.ok(orders?.evidence.includes("orders/tests/test_model.py: the defining scope's own use, removed with the symbol"));
+    assert.deepEqual(records("contract-tomas-money-minor", "contract_proposed")[0]?.payload["own_files"], ["orders/tests/test_model.py"]);
     // The originating feature's contract step shows it approved and carried.
     const step = project.retiring.contractSteps("money-minor").find((each) => each.contract === PRICE.contract);
     assert.deepEqual([step?.state, step?.carrier], ["approved", "contract-ines-money-minor"]);

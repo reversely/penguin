@@ -2,7 +2,8 @@
 // through the ProjectAgent's modules and the check runner's programs as the preview seed wires them
 // (scripts/preview/seed.ts). The expand wave's plan marks the float API retiring; main then moves
 // past the migrate waves, and after each promotion Penguin counts the callers left (#117), too many
-// for the contract step; Noor's pagination reports its second checkpoint, which calls two retiring
+// for the contract step of every symbol but one: the money and orders scopes' own tests of the float
+// API are no callers (#144); Noor's pagination reports its second checkpoint, which calls two retiring
 // functions, and gets one next step per call; the plan's display rule rewrites one of them; and the
 // remaining callers on main and in the running features' own changes come back grouped by owner.
 // Expected features and owners are read from larder.json; the counts are the runs' own.
@@ -14,8 +15,8 @@ import { join } from "node:path";
 import { before, test, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import type { AgentToolResult, RetiringSymbol, RewriteRule } from "@penguin/protocol";
-import { parseScopeMap } from "@penguin/scope-map";
+import { contractPath, isTestFile, type AgentToolResult, type RetiringSymbol, type RewriteRule } from "@penguin/protocol";
+import { parseScopeMap, scopeForPath } from "@penguin/scope-map";
 
 import { buildFixture, PreviewProject } from "../../../scripts/preview/seed.ts";
 
@@ -175,13 +176,14 @@ test("the remaining callers on main and in the running features' own changes com
   for (const owner of owners) {
     assert.deepEqual(featuresOf(owner), CALLERS.filter((each) => each.owner === owner).map((each) => each.id).sort(), owner);
   }
-  // On main the migrate waves left the money scope's own tests and the orders tests calling the float API.
+  // On main the migrate waves left only the money and orders scopes' own tests calling the float API.
+  // Those are no callers (#144): the contract step removes them with the symbols, so no group holds code on main.
   const onMain = migration.groups.flatMap((group) => group.places.flatMap((each) => (each.place.kind === "scope" ? [`${group.owner}:${each.place.scope}`] : [])));
-  assert.deepEqual(onMain, ["ines:money", "tomas:orders"]);
+  assert.deepEqual(onMain, []);
   assert.equal(migration.unowned, 0);
 });
 
-test("after the migrate waves callers of the float API are left, so Penguin proposes no contract step", (t: TestContext) => {
+test("after the migrate waves callers of the float API are left in running features; only a symbol its own scope's tests alone use gets its contract step", (t: TestContext) => {
   assert.deepEqual(
     promotions.map((each) => each.feature),
     [feature("money-type").id, ...MIGRATE_WAVES.map((wave) => wave.id)],
@@ -190,17 +192,25 @@ test("after the migrate waves callers of the float API are left, so Penguin prop
   assert.ok(last?.counts, "the count after the last migrate wave is complete");
   for (const each of last.counts) {
     const features = each.features.map((use) => `${use.feature} (${use.uses})`).join(", ");
-    t.diagnostic(`${each.contract}: ${each.callers} callers, ${each.onMain} on main; in features: ${features || "none"}`);
+    t.diagnostic(
+      `${each.contract}: ${each.callers} callers, ${each.onMain} on main; in features: ${features || "none"}; ` +
+        `own uses ${each.ownUses} in ${each.ownFiles.join(", ") || "none"}`,
+    );
+    // Each own use sits in a test file of the scope that defines the symbol.
+    const defining = preview.scopeMap.scopes.get(scopeForPath(preview.scopeMap, contractPath(each.contract)) as string)?.paths ?? [];
+    for (const path of each.ownFiles) assert.ok(isTestFile(path) && defining.some((prefix) => path.startsWith(prefix)), `${each.contract}: ${path}`);
   }
-  // No count proposed or withdrew a contract step.
-  for (const { runId } of promotions) {
-    const outcome = preview.counts.find((each) => each.runId === runId)?.outcome;
-    assert.deepEqual([outcome?.proposed, outcome?.withdrawn], [[], []], `count ${runId}`);
-  }
+  // The counts proposed only the symbols with no caller left, each once, and withdrew nothing.
+  const proposed = promotions.flatMap(({ feature: promoted, runId }) => (preview.counts.find((each) => each.runId === runId)?.outcome.proposed ?? []).map((each) => ({ ...each, promoted })));
+  const withdrawn = promotions.flatMap(({ runId }) => preview.counts.find((each) => each.runId === runId)?.outcome.withdrawn ?? []);
+  const free = last.counts.filter((each) => each.callers === 0).map((each) => each.contract);
+  assert.deepEqual(proposed.flatMap((each) => each.contracts).sort(), free);
+  assert.deepEqual(withdrawn, []);
+  for (const each of proposed) t.diagnostic(`contract step proposed after the ${each.promoted} promotion, carried by ${each.feature}: ${each.contracts.join(", ")}`);
   const steps = preview.retiring.contractSteps(feature("money-type").id);
   assert.deepEqual(
     steps.map((each) => [each.contract, each.state]),
-    last.counts.map((each) => [each.contract, each.callers === 0 ? "no_callers" : "callers_left"]),
+    last.counts.map((each) => [each.contract, each.callers === 0 ? "approved" : "callers_left"]),
   );
   // At that promotion the running features whose own changes call the float API are the readers.
   // Noor's pagination calls it only from its second checkpoint, reported after the last wave.

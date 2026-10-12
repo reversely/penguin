@@ -6,7 +6,8 @@
 // counts the uses left; each part the rules write whole is tried on its trial tree with no form, its
 // scopes' tests and side-by-side runs deciding it (#139): Penguin approves it, or it becomes an edit task
 // with the failing check, or a check no edit settles sends it to a person; every other part is an edit
-// task. Noor's pagination then adds a caller midway and joins Noor's open plan. Expected features and
+// task. A use in a retiring symbol's defining module or its scope's tests is no caller and makes no
+// part (#144). Noor's pagination then adds a caller midway and joins Noor's open plan. Expected features and
 // owners are read from larder.json; every number the diagnostics print is the runs' own.
 
 import assert from "node:assert/strict";
@@ -318,7 +319,16 @@ function commitFix(block: string, fix: { commit: string; files: string[] }): str
 
 test("each plan's block feature lands once its parts on main are written, from the fixture's own fix commits", async (t: TestContext) => {
   const plans = preview.migrations.plans(EXPAND.id).filter((plan) => live(plan).some((part) => part.place.kind === "scope"));
-  assert.ok(plans.length > 0, "a plan has code on main");
+  // The waves left only the money and orders scopes' own tests of the float API on main. Those are no
+  // callers (#144): the contract step removes them with the symbols, so no plan holds code on main.
+  assert.deepEqual(plans.map((plan) => plan.block), []);
+  for (const step of preview.retiring.contractSteps(EXPAND.id)) {
+    const [task] = step.carrier === null ? [] : preview.editTasks.forFeature(step.carrier).filter((each) => each.kind === "contract");
+    t.diagnostic(
+      `${step.contract}: ${step.state}, ${step.callers ?? "unknown"} callers; ${step.ownUses} own uses in ${step.ownFiles.join(", ") || "none"}` +
+        (step.carrier === null ? "" : `; carried by ${step.carrier}, contract task ${task?.state ?? "none"} for ${task?.handle ?? "nobody"}`),
+    );
+  }
   // Each part on main is the steward's edit task in the plan's block; the fixture's fix, where it holds one, is its commit.
   for (const plan of plans) {
     for (const part of live(plan).filter((each) => each.place.kind === "scope")) {

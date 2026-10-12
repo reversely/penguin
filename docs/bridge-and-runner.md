@@ -952,7 +952,11 @@ and every other running feature's fork with read tokens into the runner's reposi
   promoted feature's fork. The claim carries no agent's charter (`penguin`) and lists every running
   feature with a checkpoint, the promoted one included. The runner runs one analysis of main with
   each fork's own changes since that commit, searched for the retiring symbols. It reports that
-  analysis as `impact` with the migration groups under `migration`.
+  analysis as `impact` with the migration groups under `migration`. The groups leave out the
+  defining scope's own uses: a use in the module that defines a retiring symbol, or in a test file
+  of the scope whose paths hold it, on main or in the originating feature's own changes, read with
+  the scope map at the checkpoint. The contract step removes those with the symbol
+  ([design.md](design.md#sorting-and-splitting-in-the-build)).
 - A request Penguin records after a promotion with `search: "edges"` reads main's scope
   dependencies ([design.md](design.md#scope-dependencies-from-the-code)). It is claimed like a
   count, with no other fork. The runner runs one analysis of main at the promotion with
@@ -966,7 +970,7 @@ and every other running feature's fork with read tokens into the runner's reposi
   a unified diff. It applies each target's patches to a commit kept only in the runner's
   repository, with no checkout. One analysis of those commits then searches for the retiring
   symbols. It reports, per place under `rewrites`, the files and rules, the patch, the uses left
-  (`residual`) and any error. Nothing is pushed.
+  (`residual`, less the defining scope's own uses) and any error. Nothing is pushed.
 - `check` runs the [block checks](#block-checks) on the checkpoint merged onto its baseline and onto
   each other running feature's fork at its head, with every fix written into it, as a land merges
   onto it. Each merged tree is named by its feature id, so a person with

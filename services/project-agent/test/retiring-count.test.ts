@@ -77,7 +77,15 @@ describe("counting the callers of retiring symbols after each promotion and the 
     project = new PlanProject(scopeMap, new GitRepo().dir);
     runs = new AgentToolStore(project.sql);
     notified = [];
-    deps = { features: project.features, runs, retiring: project.retiring, facts: project.facts, sign: (draft) => project.sign(draft), notify: (person) => notified.push(person) };
+    deps = {
+      features: project.features,
+      runs,
+      retiring: project.retiring,
+      facts: project.facts,
+      scopeMap: async () => scopeMap,
+      sign: (draft) => project.sign(draft),
+      notify: (person) => notified.push(person),
+    };
     split = {
       features: project.features,
       facts: project.facts,
@@ -147,7 +155,7 @@ describe("counting the callers of retiring symbols after each promotion and the 
 
   test("while one caller remains in a running feature's own changes, nothing is proposed", async () => {
     const counted = await promote(sha(1), [use("billing/fees.py", "billing")]);
-    assert.deepEqual(counted?.counts, [{ contract: PRICE.contract, onMain: 0, features: [{ feature: "fees", uses: 1 }], callers: 1 }]);
+    assert.deepEqual(counted?.counts, [{ contract: PRICE.contract, onMain: 0, features: [{ feature: "fees", uses: 1 }], callers: 1, ownUses: 0, ownFiles: [] }]);
     assert.deepEqual([counted?.proposed, counted?.withdrawn], [[], []]);
     assert.deepEqual(steps(), [[PRICE.contract, "callers_left", 1]]);
     assert.deepEqual(project.records("money-minor", "contract_proposed"), []);
@@ -187,8 +195,27 @@ describe("counting the callers of retiring symbols after each promotion and the 
 
   test("a caller on main counts like one in a running feature", async () => {
     const counted = await promote(sha(1), [], { headUses: [use("billing/invoice.py", "billing")] });
-    assert.deepEqual(counted?.counts, [{ contract: PRICE.contract, onMain: 1, features: [], callers: 1 }]);
+    assert.deepEqual(counted?.counts, [{ contract: PRICE.contract, onMain: 1, features: [], callers: 1, ownUses: 0, ownFiles: [] }]);
     assert.deepEqual(counted?.proposed, []);
+  });
+
+  test("the defining scope's own tests are no callers: the count reaches zero and the contract step removes them with the symbol (#144)", async () => {
+    const own = [use("shared/money/tests/test_api.py", "money"), use("shared/money/tests/test_api.py", "money")];
+    // A use in another file of the defining scope is a caller.
+    const kept = await promote(sha(1), [], { headUses: [...own, use("shared/money/report.py", "money")] });
+    assert.deepEqual(kept?.counts, [{ contract: PRICE.contract, onMain: 1, features: [], callers: 1, ownUses: 2, ownFiles: ["shared/money/tests/test_api.py"] }]);
+    assert.deepEqual(kept?.proposed, []);
+    // Once it moved, only the scope's own tests use price: the count is zero and Penguin proposes the removal.
+    const counted = await promote(sha(2), [], { headUses: own });
+    assert.deepEqual(counted?.counts?.map((each) => [each.callers, each.ownUses]), [[0, 2]]);
+    assert.deepEqual(counted?.proposed.map((each) => [each.feature, each.contracts]), [["money-minor", [PRICE.contract]]]);
+    const [record] = project.records("money-minor", "contract_proposed");
+    assert.deepEqual(record?.payload["own_files"], ["shared/money/tests/test_api.py"]);
+    // The contract step shows the own uses under the contract, and its next step names their files.
+    const [entry] = project.retiring.contractSteps("money-minor");
+    assert.deepEqual([entry?.state, entry?.callers, entry?.ownUses, entry?.ownFiles], ["approved", 0, 2, ["shared/money/tests/test_api.py"]]);
+    const work = contractWork(split, project.features.get("money-minor") as NonNullable<ReturnType<typeof project.features.get>>, scopeMap);
+    assert.match(work.nextStep, /Remove it from your fork with its own uses in the defining module and its scope's tests \(shared\/money\/tests\/test_api\.py\)/u);
   });
 
   test("an incomplete count proves nothing: no caller is known and nothing is proposed", async () => {

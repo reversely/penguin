@@ -2364,6 +2364,7 @@ export class ProjectAgent extends Agent {
       facts: this.#planFactsStore(),
       sign: async (record) => signFeatureRecord(record, (await this.#loadServiceKey()).privateKey),
       notify: (personId) => sendToOwner(this.getConnections<{ owner?: string }>(), personId, inboxChangedMessage()),
+      ...(repos === undefined ? {} : { scopeMap: () => this.#scopeMap(repos) }),
       ...(repos === undefined ? {} : { carry: (featureId: string, symbols: readonly RetiringSymbol[], count: { readonly promotion: string; readonly runId: number }) => carryContract(this.#migrationDeps(repos), featureId, symbols, count) }),
     };
   }
