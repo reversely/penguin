@@ -33,7 +33,7 @@ import { promisify } from "node:util";
 
 import { runGit } from "@penguin/git-analysis";
 import {
-  ARTIFACTS_GIT_OPTIONS,
+  ARTIFACTS_PUSH_OPTIONS,
   bridgeRemotes,
   MemoryKeyStore,
   penguinRemote,
@@ -177,7 +177,7 @@ class Person {
   /** Pushes `sha` to the feature fork's main with the feature's write token, as the agent does. */
   async pushToFork(sha: string): Promise<void> {
     const token = this.forkToken as { token: string; remote: string };
-    await runGit(this.work, [...ARTIFACTS_GIT_OPTIONS, "push", "--quiet", "--end-of-options", token.remote, `${sha}:refs/heads/main`], { env: tokenEnvironment(token.token) });
+    await runGit(this.work, [...ARTIFACTS_PUSH_OPTIONS, "push", "--quiet", "--end-of-options", token.remote, `${sha}:refs/heads/main`], { env: tokenEnvironment(token.token) });
   }
 
   async commit(files: Record<string, string | null>, message: string): Promise<string> {

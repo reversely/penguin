@@ -28,7 +28,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { runGit } from "@penguin/git-analysis";
-import { ARTIFACTS_GIT_OPTIONS, bridgeRemotes, MemoryKeyStore, penguinRemote, runCli, tokenEnvironment, type CliIo } from "@penguin/local-bridge";
+import { ARTIFACTS_PUSH_OPTIONS, bridgeRemotes, MemoryKeyStore, penguinRemote, runCli, tokenEnvironment, type CliIo } from "@penguin/local-bridge";
 
 import { LocalStack, reposWithPrefix } from "../walkthrough/support/stack.ts";
 import { signInThroughDouble, SESSION_COOKIE } from "./support/dashboard-client.ts";
@@ -168,7 +168,7 @@ class Person {
   async publish(sha: string): Promise<string> {
     if (this.forkToken === null) this.forkToken = (await this.call("feature_token", { feature: this.feature })).token;
     const push = (token: { token: string; remote: string }) =>
-      runGit(this.work, [...ARTIFACTS_GIT_OPTIONS, "push", "--quiet", "--end-of-options", token.remote, `${sha}:refs/heads/main`], { env: tokenEnvironment(token.token) });
+      runGit(this.work, [...ARTIFACTS_PUSH_OPTIONS, "push", "--quiet", "--end-of-options", token.remote, `${sha}:refs/heads/main`], { env: tokenEnvironment(token.token) });
     try {
       await push(this.forkToken as { token: string; remote: string });
     } catch {

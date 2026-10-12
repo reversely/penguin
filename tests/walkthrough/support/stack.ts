@@ -18,13 +18,13 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 
 import { runGit } from "@penguin/git-analysis";
-import { ARTIFACTS_GIT_OPTIONS, tokenEnvironment } from "@penguin/local-bridge";
+import { ARTIFACTS_PUSH_OPTIONS, tokenEnvironment } from "@penguin/local-bridge";
 
 import { startGitHubDouble, DOUBLE_CLIENT, type GitHubDouble } from "../../../apps/worker/test/github-double.ts";
 import { Deployer } from "../../e2e/support/deployer.ts";
 
 const run = promisify(execFile);
-const NAMESPACE = "penguin";
+export const NAMESPACE = "penguin";
 
 /** A free loopback port. */
 async function freePort(): Promise<number> {
@@ -36,7 +36,7 @@ async function freePort(): Promise<number> {
 }
 
 /** Runs wrangler with JSON output and parses the one JSON value it prints after its banner. */
-async function wranglerJson(repoRoot: string, args: readonly string[]): Promise<any> {
+export async function wranglerJson(repoRoot: string, args: readonly string[]): Promise<any> {
   const { stdout } = await run("npx", ["wrangler", ...args, "--json"], { cwd: repoRoot, maxBuffer: 16 * 1024 * 1024 });
   const start = stdout.search(/[[{]/u);
   if (start < 0) throw new Error(`wrangler ${args[0]} ${args[1]} ${args[2]} printed no JSON`);
@@ -55,7 +55,7 @@ export async function deleteRepo(repoRoot: string, name: string): Promise<void> 
 }
 
 /** Runs `step`, retrying up to four more times after a failure such as a dropped connection. */
-async function retried<T>(step: () => Promise<T>): Promise<T> {
+export async function retried<T>(step: () => Promise<T>): Promise<T> {
   for (let attempt = 1; ; attempt++) {
     try {
       return await step();
@@ -224,7 +224,7 @@ export class LocalStack {
     ]);
     const token: string | undefined = issued.plaintext ?? issued.token ?? issued.result?.plaintext;
     if (typeof token !== "string") throw new Error(`issue-token answered without a token (fields: ${Object.keys(issued).join(", ")})`);
-    await runGit(source, [...ARTIFACTS_GIT_OPTIONS, "push", "--quiet", repo.remote, `${sha}:refs/heads/${branch}`], {
+    await runGit(source, [...ARTIFACTS_PUSH_OPTIONS, "push", "--quiet", repo.remote, `${sha}:refs/heads/${branch}`], {
       env: tokenEnvironment(token),
     });
   }

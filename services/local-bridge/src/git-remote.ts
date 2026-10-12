@@ -75,19 +75,37 @@ export interface TokenSource {
   token(repo: string, options?: { refresh?: boolean; scope?: "read" | "write" }): Promise<RepoToken>;
 }
 
+// Clearing `credential.helper` and `core.askPass` keeps an owner's stored credentials out of a request
+// that already carries the token, and stops a refused request from asking a helper, an editor's askpass
+// program or a terminal for a password.
+const NO_PROMPTS = ["-c", "credential.helper=", "-c", "core.askPass="] as const;
+
 /**
- * Artifacts accepts pushes over protocol v1 only. Clearing `credential.helper` and `core.askPass`
- * keeps an owner's stored credentials out of a request that already carries the token, and stops
- * a refused request from asking a helper, an editor's askpass program or a terminal for a password.
+ * Options for every Artifacts command but a push: fetch, clone and ls-remote speak protocol v2. Over
+ * v1, a fetch into a repository that already holds 14 or more forks fails with `fetch-pack: protocol
+ * error: bad band #78` (issue #119).
  */
-export const ARTIFACTS_GIT_OPTIONS: readonly string[] = [
-  "-c",
-  "protocol.version=1",
-  "-c",
-  "credential.helper=",
-  "-c",
-  "core.askPass=",
-];
+export const ARTIFACTS_FETCH_OPTIONS: readonly string[] = ["-c", "protocol.version=2", ...NO_PROMPTS];
+
+/** Options for an Artifacts push. Artifacts takes pushes over protocol v1 only, never v2 receive-pack. */
+export const ARTIFACTS_PUSH_OPTIONS: readonly string[] = ["-c", "protocol.version=1", ...NO_PROMPTS];
+
+/** The Git subcommand of `args`, past any leading `-c <name>=<value>` pairs. */
+function subcommandOf(args: readonly string[]): string | undefined {
+  let index = 0;
+  while (args[index] === "-c") index += 2;
+  return args[index];
+}
+
+/** The options an Artifacts command runs with: the push options for a push, the fetch options otherwise. */
+export function artifactsGitOptions(args: readonly string[]): readonly string[] {
+  return subcommandOf(args) === "push" ? ARTIFACTS_PUSH_OPTIONS : ARTIFACTS_FETCH_OPTIONS;
+}
+
+/** Runs one Git command against Artifacts with `token` in its environment only. */
+function runArtifactsGit(cwd: string, args: readonly string[], token: string): Promise<string> {
+  return runGit(cwd, [...artifactsGitOptions(args), ...args], { env: tokenEnvironment(token) });
+}
 
 /**
  * The environment that hands Git the token as `http.extraHeader` for one command. Git reads
@@ -125,7 +143,7 @@ export function tokenRemote(name: string, token: { readonly token: string; reado
   return {
     name,
     artifacts: true,
-    git: (cwd, args) => runGit(cwd, [...ARTIFACTS_GIT_OPTIONS, ...args(token.remote)], { env: tokenEnvironment(token.token) }),
+    git: (cwd, args) => runArtifactsGit(cwd, args(token.remote), token.token),
   };
 }
 
@@ -142,7 +160,7 @@ export function artifactsRemote(
 ): GitRemote {
   const attempt = async (cwd: string, args: (url: string) => readonly string[], refresh: boolean) => {
     const token = await (await tokens()).token(repo, { refresh, scope });
-    return runGit(cwd, [...ARTIFACTS_GIT_OPTIONS, ...args(token.remote)], { env: tokenEnvironment(token.token) });
+    return runArtifactsGit(cwd, args(token.remote), token.token);
   };
   return {
     name,

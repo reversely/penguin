@@ -7,10 +7,15 @@ import { afterEach, beforeEach, describe, test } from "node:test";
 import { runGit } from "@penguin/git-analysis";
 import { bridgeWriterTag } from "@penguin/protocol";
 import {
+  ARTIFACTS_FETCH_OPTIONS,
+  ARTIFACTS_PUSH_OPTIONS,
+  artifactsGitOptions,
   bridgeRemotes,
   bridgeSpool,
   bridgeTokenAccount,
   CHECKPOINT_ROUTE,
+  fetchedBranch,
+  fetchRepoBranches,
   IssueWriter,
   isAuthFailure,
   loadSigningKey,
@@ -95,14 +100,18 @@ async function assertNoSecretLeaked(): Promise<void> {
   for (const secret of secrets) assert.ok(!printed.includes(secret), "a token was printed");
 }
 
-/** Every Git request reached the server with a Bearer token and protocol v1 negotiated. */
-function assertProtocolV1(service?: string): void {
+/**
+ * Every Git request reached the server with a Bearer token, pushes over protocol v1 and fetches over
+ * protocol v2.
+ */
+function assertProtocols(service?: string): void {
   const requests = penguin.gitRequests.filter((request) => request.accepted);
   assert.ok(requests.length > 0, "no Git request was accepted");
   if (service !== undefined) assert.ok(requests.some((request) => request.service === service), `no ${service} request`);
   for (const request of penguin.gitRequests) {
     assert.equal(request.scheme, "Bearer");
-    assert.equal(request.protocol, "version=1", `${request.service} on ${request.repo}`);
+    const expected = request.service === "git-receive-pack" ? "version=1" : "version=2";
+    assert.equal(request.protocol, expected, `${request.service} on ${request.repo}`);
   }
 }
 
@@ -144,7 +153,7 @@ describe("bridge registration", () => {
 });
 
 describe("pushing to Artifacts", () => {
-  test("an issue command pushes its operation file to the issues repo over protocol v1", async () => {
+  test("an issue command pushes its operation file to the issues repo over protocol v1 after a fetch over v2", async () => {
     await register();
     const started = performance.now();
     assert.equal(await cli(["issue", "create", "--owner", OWNER, "--title", "Retention drops on merge"]), 0);
@@ -154,7 +163,7 @@ describe("pushing to Artifacts", () => {
     assert.equal(JSON.parse(text).payload.title, "Retention drops on merge");
     // A registered bridge numbers under the tag derived from its bridge ID.
     assert.equal(JSON.parse(text).op_id, `${OWNER}-${await bridgeWriterTag("bridge-1")}-0001`);
-    assertProtocolV1("git-receive-pack");
+    assertProtocols("git-receive-pack");
     // One token for the issues repo, reused for the fetch and the push.
     assert.deepEqual(
       penguin.minted.map(({ repo }) => repo),
@@ -193,7 +202,7 @@ describe("pushing to Artifacts", () => {
       // Penguin records the pushed checkpoint as the fork's latest, with no agent session.
       const tip = (await runGit(fork, ["rev-parse", "refs/heads/feature-a"])).trim();
       assert.deepEqual(penguin.checkpoints, [{ fork: `owner-${OWNER}`, sha: tip }]);
-      assertProtocolV1("git-receive-pack");
+      assertProtocols("git-receive-pack");
       assert.deepEqual(new Set(penguin.minted.map(({ repo: name }) => name)), new Set([`owner-${OWNER}`]));
       await assertNoSecretLeaked();
       // The worktree's own Git config gained no remote and no header.
@@ -343,6 +352,47 @@ describe("the token client", () => {
     assert.equal(env.GIT_ASKPASS, "");
     assert.ok(isAuthFailure(new Error("fatal: could not read Username for 'https://x': terminal prompts disabled")));
     assert.ok(!isAuthFailure(new Error("fatal: unable to access 'https://x/': Could not resolve host: x")));
+  });
+});
+
+describe("Git protocol versions", () => {
+  test("a push runs over protocol v1 and every other command over v2, with no credential prompts", () => {
+    const quiet = ["-c", "credential.helper=", "-c", "core.askPass="];
+    assert.deepEqual(ARTIFACTS_PUSH_OPTIONS, ["-c", "protocol.version=1", ...quiet]);
+    assert.deepEqual(ARTIFACTS_FETCH_OPTIONS, ["-c", "protocol.version=2", ...quiet]);
+    assert.equal(artifactsGitOptions(["push", "--porcelain", "--end-of-options", "https://x", "a:b"]), ARTIFACTS_PUSH_OPTIONS);
+    // Configuration ahead of the subcommand, as the issues clone passes it.
+    assert.equal(artifactsGitOptions(["-c", "core.hooksPath=/dev/null", "push", "--quiet", "https://x"]), ARTIFACTS_PUSH_OPTIONS);
+    for (const command of ["fetch", "ls-remote", "clone"]) {
+      assert.equal(artifactsGitOptions([command, "--end-of-options", "https://x"]), ARTIFACTS_FETCH_OPTIONS);
+    }
+    // A refspec or URL named "push" is not the subcommand.
+    assert.equal(artifactsGitOptions(["fetch", "--end-of-options", "push", "push"]), ARTIFACTS_FETCH_OPTIONS);
+  });
+
+  test("the runner fetches several forks into one repository over protocol v2 with read tokens", async () => {
+    await register();
+    const forks = ["owner-a", "owner-b", "owner-c"];
+    for (const fork of forks) await runGit(root, ["init", "--quiet", "--bare", "-b", "main", penguin.repoPath(fork)]);
+    const source = join(root, "source");
+    await runGit(root, ["init", "--quiet", "-b", "main", source]);
+    const commit = ["-c", "user.name=Penguin Fixture", "-c", "user.email=fixture@penguin.invalid", "-c", "commit.gpgsign=false", "commit", "--quiet", "--allow-empty"];
+    await runGit(source, [...commit, "-m", "base"]);
+    const tips = new Map<string, string>();
+    for (const fork of forks) {
+      await runGit(source, ["checkout", "--quiet", "-B", fork, "main"]);
+      await runGit(source, [...commit, "-m", fork]);
+      tips.set(fork, (await runGit(source, ["rev-parse", "HEAD"])).trim());
+      await runGit(source, ["push", "--quiet", penguin.repoPath(fork), `${fork}:refs/heads/feature`]);
+    }
+    const runnerRepo = join(root, "runner");
+    await runGit(root, ["init", "--quiet", runnerRepo]);
+    const remotes = bridgeRemotes(stateDir, store, bridgeFetch, "read");
+    for (const fork of forks) await fetchRepoBranches(runnerRepo, remotes, fork);
+    for (const fork of forks) assert.equal(await fetchedBranch(runnerRepo, fork, "feature"), tips.get(fork));
+    assertProtocols("git-upload-pack");
+    assert.ok(penguin.gitRequests.every((request) => request.service === "git-upload-pack"), "the runner pushed");
+    await assertNoSecretLeaked();
   });
 });
 

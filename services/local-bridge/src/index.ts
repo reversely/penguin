@@ -60,7 +60,9 @@ export {
 } from "./checkpoint-report.ts";
 export type { CheckpointReporter, CheckpointReportResult } from "./checkpoint-report.ts";
 export {
-  ARTIFACTS_GIT_OPTIONS,
+  ARTIFACTS_FETCH_OPTIONS,
+  ARTIFACTS_PUSH_OPTIONS,
+  artifactsGitOptions,
   artifactsRemote,
   isAuthFailure,
   isPenguinRemote,

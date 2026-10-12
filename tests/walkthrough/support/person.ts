@@ -15,7 +15,7 @@ import { promisify } from "node:util";
 
 import { runGit } from "@penguin/git-analysis";
 import {
-  ARTIFACTS_GIT_OPTIONS,
+  ARTIFACTS_PUSH_OPTIONS,
   bridgeRemotes,
   MemoryKeyStore,
   penguinRemote,
@@ -124,7 +124,7 @@ export class AgentSession {
 
   async #push(sha: string): Promise<void> {
     const token = this.#forkToken as ForkToken;
-    await runGit(this.#person.work, [...ARTIFACTS_GIT_OPTIONS, "push", "--quiet", "--end-of-options", token.remote, `${sha}:refs/heads/main`], {
+    await runGit(this.#person.work, [...ARTIFACTS_PUSH_OPTIONS, "push", "--quiet", "--end-of-options", token.remote, `${sha}:refs/heads/main`], {
       env: tokenEnvironment(token.token),
     });
   }
@@ -174,7 +174,7 @@ export class AgentSession {
     const token = this.#forkToken ?? (await this.call("feature_token", { feature: this.feature.id }))["token"];
     const remote = (token as ForkToken).remote.replace(this.fork, repo);
     if (remote === (token as ForkToken).remote) throw new Error(`the fork remote does not name ${this.fork}`);
-    return runGit(this.#person.work, [...ARTIFACTS_GIT_OPTIONS, "push", "--quiet", "--end-of-options", remote, `${sha}:refs/heads/main`], {
+    return runGit(this.#person.work, [...ARTIFACTS_PUSH_OPTIONS, "push", "--quiet", "--end-of-options", remote, `${sha}:refs/heads/main`], {
       env: tokenEnvironment((token as ForkToken).token),
     }).then(
       () => "pushed",

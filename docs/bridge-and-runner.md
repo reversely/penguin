@@ -238,6 +238,16 @@ tokens. The Worker grants a runner bridge `write` on `huddle-<id>` repos and an 
 `read`. The runner gets `write` on a `feature-<id>` repo only with a claimed fix write, for that one
 part, so it pushes no `apply_fix` commit. It reads the `base` repo and never holds `write` on it.
 
+Every Git command against Artifacts, on a runner or an owner's bridge, picks its protocol version
+from its subcommand (`artifactsGitOptions` in `git-remote.ts`). Fetch, clone and `ls-remote` run
+with `-c protocol.version=2`. A push runs with `-c protocol.version=1`, because Artifacts does not
+support protocol v2 for pushes
+([Git protocol](https://developers.cloudflare.com/artifacts/api/git-protocol/)). Facts runs and block
+runs fetch every running fork into one runner repository. Over protocol v1, Artifacts answers some of
+those fetches with `fetch-pack: protocol error: bad band #78`. Over v2 every fetch succeeds (see
+[Runner fetch check](#runner-fetch-check)). Each command also clears `credential.helper` and
+`core.askPass`. The token reaches Git through the command's environment only.
+
 ### Block runs
 
 A feature reaches main as a block ([design.md](design.md#block-promotion-in-the-build)). Each pass
@@ -302,6 +312,25 @@ It writes `worker.log`, `runner.log` and `evidence.json` with each step's wall t
 runs while Priya's feature promotes `start_of_local_day` alone and keeps pushing to its fork. A changed
 signature of `start_of_day` is refused. An addition to Jun's analytics scope waits for Jun's approval
 on the dashboard, then reaches main. Every scope's tests run on main after each promotion.
+
+### Runner fetch check
+
+`tests/e2e/runner-fetch.test.ts` fetches many forks from real Artifacts into one runner repository.
+It runs the Worker under local `wrangler dev` with every repo under a prefix unique to the run.
+Project setup forks `PENGUIN_FETCH_E2E_FORKS` owner repos, default 20, from a base repo that holds
+the money-minor-units fixture's main. The test pushes one of the fixture's feature branches to each
+fork. The runner then fetches the base repo and every fork with read tokens through
+`fetchRepoBranches`. It fetches them all a second time, as its next pass does. The test prints the
+time of each fetch and deletes every repo it made. It needs a Wrangler login and this repository's
+`.venv`:
+
+```sh
+PENGUIN_FETCH_E2E=1 node --test tests/e2e/runner-fetch.test.ts
+```
+
+In two runs on 20 forks over protocol v2, every fetch succeeded. The first pass over the base repo and
+20 forks took 17.6 s and 19.2 s. The second pass took 7.9 s and 11.7 s. The same fetches over protocol
+v1 failed for 7 of the 20 forks with `bad band #78`, on both passes.
 
 ### Fix writes
 
