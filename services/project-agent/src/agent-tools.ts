@@ -14,16 +14,23 @@
 // step per file and retiring symbol they use. A step 3 names the declaring plan's rewrite rule, which
 // `apply_fix` applies as a codemod by `rules`.
 //
+// The expand step of a split (contract-split.ts) reaches the runner through `apply_fix` too: with
+// `kind: codemod` and `expand: true`, Penguin derives the codemod's edits and files from the feature's
+// split itself, so the agent names neither, and the files must lie inside the caller's charter.
+//
 // Every call is recorded with its tool, caller, input and answer, so a feature page or a demo shows
 // each tool's use and how many calls an agent made per resolution (PRD section 11).
 
 import { withinCharter, type CharterIdentity } from "@penguin/policies";
 import {
   codemodEditProblem,
+  expandPlan,
   FIX_COMMAND_IDS,
   FIX_KINDS,
   type AgentToolName,
   type AgentToolResult,
+  type CodemodEdit,
+  type ContractSplitView,
   type FixKind,
   type RetiringDeclaration,
   type RewriteRule,
@@ -281,6 +288,8 @@ export interface AgentToolDeps {
   readonly baseline: (repo: string, sha: string) => Promise<string>;
   /** The project's retiring symbols (retiring-store.ts); absent is none. */
   readonly retiring?: () => readonly RetiringDeclaration[];
+  /** A feature's split (contract-split.ts); absent, no feature has one. */
+  readonly split?: (featureId: string) => ContractSplitView | undefined;
 }
 
 /** A running feature near the asked paths or scopes, with its person and agents. */
@@ -393,7 +402,7 @@ export async function requestTool(
   caller: string,
   sessionId: string,
   tool: Exclude<AgentToolName, "whats_near">,
-  input: { readonly feature?: unknown; readonly kind?: unknown; readonly paths?: unknown; readonly edits?: unknown; readonly rules?: unknown },
+  input: { readonly feature?: unknown; readonly kind?: unknown; readonly paths?: unknown; readonly edits?: unknown; readonly rules?: unknown; readonly expand?: unknown },
 ): Promise<ToolRequestOutcome> {
   const started = performance.now();
   const live = deps.heartbeat(caller, sessionId);
@@ -412,7 +421,7 @@ export async function requestTool(
   let recorded: Record<string, unknown> = { feature: featureId };
   let commandId: string | null = null;
   if (tool === "apply_fix") {
-    const fix = await checkFix(deps, live.session, input);
+    const fix = await checkFix(deps, live.session, input, featureId);
     if (fix.status === "rejected") return fix;
     recorded = { feature: featureId, ...fix.input };
     commandId = FIX_COMMAND_IDS[fix.input.kind];
@@ -489,15 +498,45 @@ function retiringRules(deps: AgentToolDeps, ids: unknown): RewriteRule[] | strin
   return rules;
 }
 
+type CheckedFix = { readonly status: "ok"; readonly input: { kind: FixKind; paths: string[]; edits?: unknown[]; rules?: RewriteRule[]; expand?: CodemodEdit[] } };
+
+/**
+ * The expand codemod of feature `featureId`'s split: the edits and files Penguin derives from the
+ * split's incompatible entries, inside the caller's charter. Refused without a split waiting on its
+ * expand, or when no entry is one the codemod expands.
+ */
+async function checkExpand(deps: AgentToolDeps, session: Session, input: { readonly paths?: unknown; readonly edits?: unknown; readonly rules?: unknown; readonly expand?: unknown }, featureId: string): Promise<CheckedFix | FeatureRejection> {
+  if (input.expand !== true) return rejected("invalid", "expand is true or absent");
+  if (input.paths !== undefined || input.edits !== undefined || input.rules !== undefined) {
+    return rejected("invalid", "an expand codemod names no paths, edits or rules; Penguin derives them from the feature's split");
+  }
+  const split = deps.split?.(featureId);
+  if (split === undefined || split.state !== "expand_first") return rejected("not_found", `feature ${featureId} has no split waiting on its expand`);
+  const plan = expandPlan(split.entries);
+  if (plan.edits.length === 0) {
+    return rejected("invalid", `no incompatible entry of feature ${featureId} is a rename, move or keyword rename; write the parallel function for ${plan.manual.map((each) => each.symbol).join(", ")}`);
+  }
+  const identity = deps.identity(session.identityId);
+  if (identity === undefined) return rejected("not_found", `no identity ${session.handle}`);
+  const verdict = withinCharter(identity, undefined, [], [...plan.paths], await deps.scopeMap());
+  if (!verdict.allowed) return rejected("forbidden", verdict.message);
+  return { status: "ok", input: { kind: "codemod", paths: [...plan.paths], expand: [...plan.edits] } };
+}
+
 async function checkFix(
   deps: AgentToolDeps,
   session: Session,
-  input: { readonly kind?: unknown; readonly paths?: unknown; readonly edits?: unknown; readonly rules?: unknown },
-): Promise<{ readonly status: "ok"; readonly input: { kind: FixKind; paths: string[]; edits?: unknown[]; rules?: RewriteRule[] } } | FeatureRejection> {
+  input: { readonly kind?: unknown; readonly paths?: unknown; readonly edits?: unknown; readonly rules?: unknown; readonly expand?: unknown },
+  featureId: string,
+): Promise<CheckedFix | FeatureRejection> {
   if (typeof input.kind !== "string" || !(FIX_KINDS as readonly string[]).includes(input.kind)) {
     return rejected("invalid", `kind must be one of ${FIX_KINDS.join(", ")}`);
   }
   const kind = input.kind as FixKind;
+  if (input.expand !== undefined) {
+    if (kind !== "codemod") return rejected("invalid", "only a codemod takes expand");
+    return checkExpand(deps, session, input, featureId);
+  }
   const paths = listOf(input.paths ?? [], AGENT_TOOL_LIMITS.fixPaths);
   if (paths === undefined) return rejected("invalid", `paths must list at most ${AGENT_TOOL_LIMITS.fixPaths} files`);
   if (kind === "lockfile" ? paths.length > 0 : paths.length === 0) {

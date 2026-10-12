@@ -1,5 +1,6 @@
 """Checks on Penguin's codemod for mechanical interface changes (services/local-bridge/analysis/python_codemod.py)."""
 
+import importlib.util
 import json
 import subprocess
 import sys
@@ -356,3 +357,101 @@ def test_a_malformed_rules_request_exits_2(
     result = run(tmp_path, request_body)
     assert result.returncode == 2
     assert result.stdout == ""
+
+
+# The expand step of a split contract change (#116): the alias or forwarding function beside the new name.
+
+DATES = (
+    '"""Date helpers."""\n\nimport os\n\n\ndef start_of_local_day(x):\n    return x + 1\n\n\n'
+    "class Store:\n    def fetch(self, k):\n        return k\n"
+)
+NOTE = "# Penguin's expand step keeps the old name while callers move.\n"
+
+
+def expand(tree: Path, edits: list[dict], paths: list[str]) -> dict:
+    result = run(tree, {"expand": edits, "paths": paths})
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def test_a_rename_gets_an_alias_beside_the_new_definition_once(tmp_path: Path) -> None:
+    write(tmp_path, {"shared/dates.py": DATES})
+    method = {
+        "kind": "rename",
+        "from": "shared.dates.Store.get",
+        "to": "shared.dates.Store.fetch",
+    }
+    report = expand(tmp_path, [RENAME, method], ["shared/dates.py"])
+    assert report["changed"] == [{"path": "shared/dates.py", "edits": [0, 1]}]
+    text = (tmp_path / "shared/dates.py").read_text()
+    assert f"    return x + 1\n\n\n{NOTE}start_of_day = start_of_local_day\n" in text
+    assert f"        return k\n\n    {NOTE}    get = fetch\n" in text
+    # Written once: a second run finds the alias in place.
+    again = expand(tmp_path, [RENAME, method], ["shared/dates.py"])
+    assert again["unchanged"] == ["shared/dates.py"]
+
+
+def test_a_move_imports_the_new_definition_under_the_old_name(tmp_path: Path) -> None:
+    write(tmp_path, {"core/a.py": '"""Old home."""\n\nimport os\n\nLIMIT = 1\n'})
+    move = {"kind": "move", "from": "core.a.helper", "to": "core.b.helper"}
+    report = expand(tmp_path, [move], ["core/a.py"])
+    assert report["changed"] == [{"path": "core/a.py", "edits": [0]}]
+    assert (tmp_path / "core/a.py").read_text() == (
+        '"""Old home."""\n\nimport os\nfrom core.b import helper as helper\n\nLIMIT = 1\n'
+    )
+
+
+def test_a_keyword_rename_forwards_the_old_keyword_and_every_old_call_still_works(
+    tmp_path: Path,
+) -> None:
+    source = "def percent_off(amount, rate, cap=None):\n    return amount * (100 - rate) / 100\n"
+    write(tmp_path, {"shared/discounts.py": source})
+    edit = {
+        "kind": "rename-parameter",
+        "function": "shared.discounts.percent_off",
+        "from": "percent",
+        "to": "rate",
+    }
+    report = expand(tmp_path, [edit], ["shared/discounts.py"])
+    assert report["changed"] == [{"path": "shared/discounts.py", "edits": [0]}]
+    text = (tmp_path / "shared/discounts.py").read_text()
+    assert (
+        "def percent_off(amount, percent=_PENGUIN_UNSET, cap=None, *, rate=_PENGUIN_UNSET):"
+        in text
+    )
+    # The test loads the module the codemod wrote, to call the forwarding signature.
+    spec = importlib.util.spec_from_file_location(
+        "discounts", tmp_path / "shared/discounts.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    percent_off = module.percent_off
+    assert percent_off(200, 10) == 180  # positional, as before
+    assert percent_off(200, percent=10) == 180  # the old keyword
+    assert percent_off(200, rate=10) == 180  # the new keyword
+    with pytest.raises(TypeError, match="missing required argument 'rate'"):
+        percent_off(200)
+    with pytest.raises(TypeError, match="got both"):
+        percent_off(200, percent=10, rate=10)
+
+
+def test_an_expand_edit_the_codemod_cannot_write_is_refused_with_the_reason(
+    tmp_path: Path,
+) -> None:
+    source = "def f(a, rate, b):\n    return a * rate + b\n"
+    write(tmp_path, {"core/f.py": source})
+    edit = {
+        "kind": "rename-parameter",
+        "function": "core.f.f",
+        "from": "percent",
+        "to": "rate",
+    }
+    report = expand(tmp_path, [edit], ["core/f.py"])
+    assert report["refused"] == [
+        {
+            "edit": 0,
+            "path": "core/f.py",
+            "message": "a positional parameter after rate has no default, so percent cannot take its place",
+        }
+    ]
+    assert (tmp_path / "core/f.py").read_text() == source

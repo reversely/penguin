@@ -20,7 +20,7 @@
 
 import { McpServer, type CallToolResult } from "@modelcontextprotocol/server";
 import type { IssueRecord, Thread } from "@penguin/issues";
-import { FIX_KINDS, IDENTITY_HANDLE_MAX_LENGTH, OP_ID_PATTERN, SEGMENT_PATTERN } from "@penguin/protocol";
+import { FIX_KINDS, IDENTITY_HANDLE_MAX_LENGTH, OP_ID_PATTERN, SEGMENT_PATTERN, type ContractWorkView } from "@penguin/protocol";
 import * as z from "zod";
 
 type MaybePromise<T> = T | Promise<T>;
@@ -120,6 +120,8 @@ export interface McpProject {
   planWork?(caller: string, sessionId: string): MaybePromise<PlanWorkView | undefined>;
   /** Where the caller's session's feature stands in landing; absent without features, undefined without a feature. */
   landWork?(caller: string, sessionId: string): MaybePromise<LandingWorkView | undefined>;
+  /** How Penguin sorted the latest checkpoint of the caller's session's feature, with its split and next step; absent without features. */
+  contractWork?(caller: string, sessionId: string, repos: { readonly issues: string; readonly base: string }): MaybePromise<ContractWorkView | undefined>;
   readIssue(
     id: string,
   ): MaybePromise<{ readonly issue: IssueRecord | undefined; readonly timeline: readonly OperationView[] }>;
@@ -305,7 +307,15 @@ export interface McpFeatures {
   /** Reports the commit the originating agent pushed for a granted write. */
   reportFixWrite(sessionId: string, input: FixPart & { readonly commit: string }): Promise<FeatureCallResult>;
   /** Asks to land the feature the session works on (PRD 0.4 section 4.5). */
-  land(sessionId: string, input: { readonly feature: string; readonly checkpoint?: string | undefined; readonly expand?: boolean | undefined }): Promise<FeatureCallResult>;
+  land(
+    sessionId: string,
+    input: {
+      readonly feature: string;
+      readonly checkpoint?: string | undefined;
+      readonly expand?: boolean | undefined;
+      readonly retiring?: readonly { readonly contract: string; readonly replacement: string }[] | undefined;
+    },
+  ): Promise<FeatureCallResult>;
 }
 
 /** One revision of a part of the session's feature's plan, as the fix-writing tools name it. */
@@ -725,6 +735,19 @@ const landFeatureInput = z.strictObject({
     .boolean()
     .optional()
     .describe("True to promote only your latest checkpoint, the expand step of a split, while the feature keeps building: it must only add."),
+  retiring: z
+    .array(
+      z.strictObject({
+        contract: z.string().min(1).max(640).describe("An old name of your feature's split, path::symbol, such as shared/money/__init__.py::price."),
+        replacement: z.string().min(1).max(768).describe("The parallel function you wrote beside it, path::name, such as shared/money/__init__.py::price_minor."),
+      }),
+    )
+    .max(64)
+    .optional()
+    .describe(
+      "With expand: the replacement of each changed type, breaking signature or removed symbol of your split, which retires when the " +
+        "expand reaches main. A rename or move names its own replacement.",
+    ),
 });
 
 // The agent tools (PRD 0.4 section 5.2). These caps match AGENT_TOOL_LIMITS in the ProjectAgent, which
@@ -766,6 +789,13 @@ const applyFixInput = z.strictObject({
     .max(50)
     .optional()
     .describe("For a codemod instead of edits: the ids of rewrite rules of retiring symbols, as a retiring-calls step names them."),
+  expand: z
+    .literal(true)
+    .optional()
+    .describe(
+      "For a codemod instead of edits, rules and paths: the expand step of your feature's split. Penguin's codemod writes the alias or " +
+        "forwarding function that keeps each renamed, moved or keyword-renamed name working, in the files get_work's contract names.",
+    ),
 });
 
 const INSTRUCTIONS =
@@ -848,7 +878,10 @@ export function createPenguinMcpServer(
         "with where each part stands: answer each `change_requested` part with revise_plan_part. `reviewResults` " +
         "gives the check runner's verdict on each review you submitted. `landing` says where your feature's " +
         "landing stands: each block run with its state, the failing checks and one next step per failure, and " +
-        "the promotion once main moved to your checkpoint; `expansions` lists each expand checkpoint promoted on its own.",
+        "the promotion once main moved to your checkpoint; `expansions` lists each expand checkpoint promoted on its own. " +
+        "`contract` is how Penguin sorted your latest checkpoint's contract diff: each entry additive, compatible, incompatible " +
+        "(callers outside your scopes) or a behaviour change, your feature's split, and `nextStep`. An incompatible entry makes " +
+        "the next step \"Expand first\" with the entries listed; a behaviour change keeps the merge plan.",
       inputSchema: workInput,
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -869,6 +902,7 @@ export function createPenguinMcpServer(
       const toolResults = (await project.agentToolResults?.(owner, id)) ?? [];
       const plan = await project.planWork?.(owner, id);
       const landing = await project.landWork?.(owner, id);
+      const contract = await project.contractWork?.(owner, id, { issues: repos.issues, base: repos.base });
       return result({
         sessionId: id,
         identity: live.session.handle,
@@ -884,6 +918,7 @@ export function createPenguinMcpServer(
         toolResults: toolResults.map(toolResultFields),
         ...(plan === undefined ? {} : planWorkFields(plan)),
         ...(project.landWork === undefined ? {} : { landing: landing === undefined ? null : landingFields(landing) }),
+        ...(project.contractWork === undefined ? {} : { contract: contract ?? null }),
       });
     },
   );
@@ -1156,7 +1191,9 @@ function registerFeatureTools(server: McpServer, features: McpFeatures): void {
       description:
         "Applies one deterministic fix to your feature's fork at its latest checkpoint: format (ruff format), " +
         "lint (ruff check --fix), lockfile (uv lock) or codemod (a rename, move or keyword rename generated " +
-        "from the contract diff, or the rewrite rules of retiring symbols a retiring-calls step names). Only these kinds exist, and only Python files inside your identity's charter " +
+        "from the contract diff, or the rewrite rules of retiring symbols a retiring-calls step names). With `expand: true` the codemod " +
+        "writes your split's expand step instead: an alias for each rename, an import for each move and a forwarding signature for each " +
+        "keyword rename, beside the new name. Only these kinds exist, and only Python files inside your identity's charter " +
         "can be named. The result goes back through the checks before Penguin accepts it. The check runner " +
         "applies it; the answer says it is waiting. Until a merge plan grants a write token on the fork, the fix " +
         "commit stays on the check runner and is not pushed to your fork. The result reaches this session at its " +
@@ -1164,14 +1201,15 @@ function registerFeatureTools(server: McpServer, features: McpFeatures): void {
       inputSchema: applyFixInput,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async ({ sessionId: id, feature, kind, paths, edits, rules }) =>
+    async ({ sessionId: id, feature, kind, paths, edits, rules, expand }) =>
       answer(
         await features.tool(id, "apply_fix", {
           feature,
           kind,
-          paths: paths ?? [],
+          ...(expand === true && paths === undefined ? {} : { paths: paths ?? [] }),
           ...(edits === undefined ? {} : { edits }),
           ...(rules === undefined ? {} : { rules }),
+          ...(expand === undefined ? {} : { expand }),
         }),
       ),
   );
@@ -1262,7 +1300,9 @@ function registerFeatureTools(server: McpServer, features: McpFeatures): void {
         "in its contract diff is new, no existing signature changes and nothing on main or in a running " +
         "feature calls what it changes. A refusal lists each entry that fails. The first call schedules the " +
         "impact run (`waiting_for_runner`); call again once the runner reported it. A checkpoint that adds to " +
-        "a scope another person owns waits until that person approves on the dashboard (`waiting_on_owner`).",
+        "a scope another person owns waits until that person approves on the dashboard (`waiting_on_owner`). An old name " +
+        "your expand codemod keeps as an alias counts as an addition. For a split, `retiring` names the replacement of each " +
+        "old name the codemod does not expand; once the expand reaches main, Penguin marks the split's old names retiring.",
       inputSchema: landFeatureInput,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },

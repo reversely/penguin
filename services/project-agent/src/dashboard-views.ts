@@ -15,6 +15,7 @@
 
 import {
   PLAN_ROUND_LIMIT_DEFAULT,
+  type ContractWorkView,
   type DashboardAgent,
   type DashboardScope,
   type FeatureException,
@@ -58,6 +59,8 @@ export interface DashboardViewDeps {
   readonly roundLimit: number | undefined;
   /** The write of one revision of a part into another fork (FixGrantStore.get), or undefined. */
   readonly fixWrite: (partId: string, revision: number) => Pick<FixGrant, "state" | "writer" | "commitSha" | "rebased"> | undefined;
+  /** How Penguin sorted the feature's latest checkpoint (contract-split.ts contractWork); absent, the page shows none. */
+  readonly contract?: (feature: Feature) => ContractWorkView;
 }
 
 /** What a feature's state is read from. */
@@ -369,6 +372,7 @@ export async function buildFeaturePage(deps: DashboardViewDeps, featureId: strin
     }),
     checks: checkRun === undefined ? null : toolRunView(checkRun),
     tools: runs.map(toolRunView),
+    contract: deps.contract?.(feature) ?? null,
     records: deps.features.records(featureId).map((stored, index) => ({
       recordId: stored.recordId,
       type: records[index]?.type ?? "",

@@ -290,6 +290,8 @@ export type FeatureCheckpointOutcome =
       readonly plansJoined: readonly JoinedPlan[];
       /** The retiring-calls check this checkpoint asked the check runner for, or null (agent-tools.ts). */
       readonly retiringCheck: number | null;
+      /** The facts run whose contract diff Penguin sorts for this checkpoint, or null (contract-split.ts). */
+      readonly contractSort: string | null;
       readonly durationMs: number;
     })
   | FeatureRejection;
@@ -317,6 +319,11 @@ export interface FeatureCheckpointDeps extends FeatureDeps {
    * checkpoint (agent-tools.ts requestRetiringCheck); its run id, or undefined when none was asked.
    */
   readonly checkRetiring?: (feature: Feature, sessionId: string, sha: string) => Promise<number | undefined>;
+  /**
+   * Sorts the checkpoint's contract diff (contract-split.ts): reuses or schedules its facts run and,
+   * once that run is reported, records the split. The run's id, or undefined. Absent, nothing is sorted.
+   */
+  readonly sortContract?: (feature: Feature) => Promise<string | undefined>;
   readonly now?: () => number;
 }
 
@@ -358,6 +365,7 @@ export async function reportFeatureCheckpoint(
   // Joining plans runs before the delivery, so the originating sessions' notices already name the new part.
   const plansJoined = (await deps.joinPlans?.(outcome.feature)) ?? [];
   const retiringCheck = sessionId === null ? undefined : await deps.checkRetiring?.(outcome.feature, sessionId, sha);
+  const contractSort = await deps.sortContract?.(outcome.feature);
   const delivery = sessionId === null ? undefined : deps.deliver(caller, sessionId);
   return {
     ...outcome,
@@ -369,6 +377,7 @@ export async function reportFeatureCheckpoint(
     planNotices: delivery?.planNotices ?? NO_PLAN_NOTICES,
     plansJoined,
     retiringCheck: retiringCheck ?? null,
+    contractSort: contractSort ?? null,
     durationMs: now() - started,
   };
 }

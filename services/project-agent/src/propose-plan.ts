@@ -293,7 +293,7 @@ function parsePlace(value: unknown): PlanPlace | undefined {
 const placeKey = (place: PlanPlace): string => (place.kind === "scope" ? `scope:${place.scope}` : `feature:${place.feature}`);
 
 /** The checkpoint's baseline on main and who reported it, from its signed `checkpoint_area` record. */
-function checkpointRecord(features: FeatureStore, feature: Feature): { baseline: string; madeBy: string } | undefined {
+export function checkpointRecord(features: FeatureStore, feature: Feature): { baseline: string; madeBy: string } | undefined {
   const records = features.records(feature.id).map((stored) => JSON.parse(stored.file) as FeatureRecord);
   const found = records.reverse().find((record) => record.type === "checkpoint_area" && record.payload["checkpoint"] === feature.latestCheckpointSha);
   const baseline = found?.payload["baseline"];

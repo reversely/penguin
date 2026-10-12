@@ -288,6 +288,72 @@ The procedure moves conflict handling to the start of the work. Each step below 
   line at 300. A note may hold 2,000 characters and a plan 128 parts. Penguin keeps every such string
   as data. The MCP answer puts each one inside `personWritten`.
 
+#### Sorting and splitting in the build
+
+Penguin sorts each feature checkpoint's contract diff and decides between a split and a merge plan
+(`sortContractDiff` in `packages/protocol/src/contract-sort.ts`,
+`services/project-agent/src/contract-split.ts`).
+
+- **One contract diff per checkpoint.** Each reported checkpoint asks for its facts run: Penguin
+  reuses the checkpoint's run when one exists and schedules one otherwise. `propose_plan` and the
+  expand's Only adds check read the same run. A feature before its first checkpoint has a fork equal
+  to main, so the sort waits for that checkpoint.
+- **The sort.** The author's scopes are the scopes the feature's person owns in
+  `penguin/scopes.json`. A caller is a use on main or in a running feature's own changes in any other
+  scope, or in no scope. Each entry gets one sort:
+
+  | Entry | Sort |
+  |---|---|
+  | An added symbol | Additive |
+  | A new parameter with a default; a rename or move whose old name still reaches the new definition (`kept`); a breaking change with no caller outside the author's scopes; a body change to an undeclared symbol nobody outside calls | Compatible |
+  | A rename, move, keyword rename, removed symbol or export, breaking signature or changed type, with callers outside the author's scopes | Incompatible |
+  | A body change or a stored data shape change, with the same signature, to a declared contract or a symbol with callers outside the author's scopes | Behaviour change |
+
+  An incompatible entry decides a split. Otherwise a behaviour change decides the merge plan.
+- **The split.** When the check runner reports a sort with incompatible entries the feature's split
+  does not hold, Penguin records them with a signed `contract_split` record and tells the person.
+  The agent's next step in `get_work` is "Expand first" with the entries listed. `apply_fix` with
+  `expand: true` has Penguin's codemod write `old = new` for a rename, an import of the new
+  definition into the old module for a move and a signature that takes both keywords for a keyword
+  rename. Penguin derives the codemod's edits and files from the split. For a changed type, a
+  breaking signature or a removed symbol the agent writes the parallel function. The analysis then
+  reports each aliased rename or move as `kept`. The expand's Only adds check counts it as an
+  addition ([Expand in the build](#expand-in-the-build)).
+- **Retiring.** `land_feature` with `expand: true` may name in `retiring` the parallel function of
+  each old name the codemod does not expand. Once the expand checkpoint reaches main, Penguin marks
+  each old name of the split retiring with its replacement. One signed `retire_symbols` record holds
+  them under the plan id `split:<feature>`. A rename or move names its own replacement. A method has
+  no module-level contract to retire. An old name with no replacement stays unretired. The record
+  lists each unretired name with the reason. The next step then lists the retiring names and asks
+  for the migration plan ([Steps 1 to 5 in the build](#steps-1-to-5-in-the-build), Retiring
+  symbols). A later plan of the feature keeps the split's declarations, except each contract it
+  declares itself.
+- **Behaviour change.** A sort with behaviour changes and no incompatible entry keeps the merge plan.
+  The next step asks for `propose_plan`.
+- **The view.** `get_work` reports the sort of the session's feature under `contract`
+  ([mcp-setup.md](mcp-setup.md#contract-sort-and-split)). `GET /api/features/<id>/page` carries the
+  same object as `contract`, for the feature page to show the split's stage. It is a
+  `ContractWorkView` (`packages/protocol/src/contract-sort.ts`):
+
+  | Field | Content |
+  |---|---|
+  | `checkpoint`, `factsRun` | The latest checkpoint and the facts run that holds its contract diff; null before the first checkpoint |
+  | `state` | `no_checkpoint`, `waiting`, `failed` or `sorted` |
+  | `decision` | `split`, `plan` or `none`; null until sorted |
+  | `counts`, `complete` | The number of entries of each sort; false when the impact report was incomplete |
+  | `entries`, `omitted` | Each `ContractSortEntry`: `symbol`, `path`, `line`, `kind`, `change`, `sort`, `breaks`, `scope`, `contract`, `to`, `keyword`, `callers` and `reason`. Incompatible entries come first, at most 100; `omitted` counts the rest |
+  | `split` | Null without a split; otherwise `state` (`expand_first` or `retiring`), the `checkpoint` that last added an entry, its `entries`, the `replacements` the agent named, the `promotion` commit, the `retiring` pairs, the `unretired` names with reasons and the `recordId` of its last signed record |
+  | `nextStep` | The agent's next step in one paragraph |
+- **On the fixtures.** Each sort comes from the fixture's checkpoint against main
+  (`apps/worker/test/contract-sort-fixtures.test.ts`). On identity unification, Priya's checkpoint
+  adds `IdentityMap.person_id`, which sorts additive. The same checkpoint edits `resolve()` and
+  `profile()` in place with the same signatures. Both sort as behaviour changes to the declared
+  `IdentityMap` contract, so the feature keeps its merge plan and no old lookup retires from this
+  checkpoint. On the helpful fix, `start_of_day()` keeps its signature and sorts as a behaviour
+  change. On money in minor units, Ines's checkpoint removes `display()`, changes the parameters of
+  `price()` and changes the types of `total()`. All three have callers in other scopes and sort
+  incompatible, so Penguin splits the feature.
+
 ### Advance notice
 
 1. The plan goes to each affected author and their running agents before any of it reaches main.
@@ -568,8 +634,10 @@ main on its own, from the feature's fork, while the feature keeps building on to
   `added`. A changed signature, a removed export, a changed stored data shape or a modified, removed,
   renamed or moved symbol fails it. So does every place the facts show: a scope with a caller or a
   break on main, or a running feature whose own changes use a changed symbol or break. Adding a method
-  to an existing class changes that class, so the class counts as modified. Penguin refuses a failing
-  checkpoint with `not_only_adds` and lists each entry that fails.
+  to an existing class changes that class, so the class counts as modified. A rename or move whose old
+  name the expand codemod kept as an alias counts as an addition: the old name still reaches the same
+  definition, so its callers are no place. Penguin refuses a failing checkpoint with `not_only_adds`
+  and lists each entry that fails.
 - **Another owner's scope.** A checkpoint whose added symbols fall in a scope another person owns waits
   on that person through the overlap lock. Penguin opens one lock per person and feature, keyed
   `owner:<person>` in place of a covering feature, with a signed `overlap_check` record. The person
@@ -635,7 +703,7 @@ with its commit and scopes, then what the analysis found.
 
 | Finding | Contents |
 |---|---|
-| Changes | Each function, method, class and module-level value the change modifies, adds, removes, renames or moves, with its file, line, scope and the declared contract that covers it. A docstring edit is no change |
+| Changes | Each function, method, class and module-level value the change modifies, adds, removes, renames or moves, with its file, line, scope and the declared contract that covers it. A docstring edit is no change. A rename or move is `kept` when the old name still reaches the new definition through `old = new` or an import |
 | Signatures | Before and after of each changed signature with the parameters added or removed. It says whether a call that worked before can now fail, with the reason |
 | Removed exports | Each name a module exported at base that an import of the module at head can no longer reach |
 | Stored data shapes | Field lists before and after for each dataclass, `NamedTuple`, `TypedDict` and `Enum` whose fields change |

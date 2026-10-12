@@ -159,8 +159,11 @@ export interface BridgeDirectory {
   planFactsRuns(
     caller: BridgeCaller,
   ): MaybePromise<{ readonly status: "ok"; readonly runs: readonly PlanFactsRequest[] } | { readonly status: "forbidden"; readonly message: string }>;
-  /** Records the runner's report of facts run `runId`; refused unless `caller` holds the runner role. */
-  reportPlanFacts(caller: BridgeCaller, runId: string, report: unknown): MaybePromise<PlanFactsReportOutcome>;
+  /**
+   * Records the runner's report of facts run `runId`; refused unless `caller` holds the runner role.
+   * With `repos`, the feature's latest checkpoint is sorted and a split recorded.
+   */
+  reportPlanFacts(caller: BridgeCaller, runId: string, report: unknown, repos?: ProjectRepos): MaybePromise<PlanFactsReportOutcome>;
   /** Claims the waiting agent tool requests; refused unless `caller` holds the runner role. */
   claimToolRuns(caller: BridgeCaller): Promise<ToolRunClaim> | ToolRunClaim;
   /** Attaches the runner's result to tool request `runId`; refused unless `caller` holds the runner role. */
@@ -682,7 +685,7 @@ async function reportPlanFacts(request: Request, runId: string, handlers: Bridge
   if (request.method !== "POST") return methodNotAllowed("POST");
   const body = await readObject(request);
   if (body === undefined) return invalid("", "must be a JSON object");
-  const outcome = await (await handlers.bridges()).reportPlanFacts({ bridgeId: bridge.bridgeId, role: bridge.role }, runId, body);
+  const outcome = await (await handlers.bridges()).reportPlanFacts({ bridgeId: bridge.bridgeId, role: bridge.role }, runId, body, handlers.projectRepos);
   if (outcome.status === "recorded") return json({ status: outcome.status, runId: outcome.runId }, 200);
   const status = { invalid: 400, not_found: 404, forbidden: 403, superseded: 409 }[outcome.reason];
   return json({ error: outcome.reason, message: outcome.message }, status);

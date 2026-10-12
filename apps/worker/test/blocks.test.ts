@@ -157,12 +157,33 @@ describe("land_feature and get_work's landing over MCP", () => {
     readIdentity: async () => undefined,
     threadsNeeding: async () => [],
     landWork: async () => landing,
+    contractWork: async (_caller: string, _session: string, repos: unknown) => {
+      contractRepos.push(repos);
+      return contract;
+    },
   } as unknown as McpProject;
+  const contractRepos: unknown[] = [];
+  const contract = {
+    checkpoint: RUN.checkpoint,
+    factsRun: "7",
+    state: "sorted",
+    decision: "split",
+    counts: { additive: 1, compatible: 0, incompatible: 1, behaviour: 0 },
+    complete: true,
+    entries: [],
+    omitted: 0,
+    split: null,
+    nextStep: "Expand first: 1 incompatible contract change with callers outside your scopes: shared.money.price (removed, 3 callers).",
+  };
   const calls: unknown[] = [];
   const features = {
     land: async (sessionId: string, input: unknown) => {
       calls.push({ sessionId, input });
       return { status: "ok", value: { status: "checking", runId: RUN.runId } };
+    },
+    tool: async (sessionId: string, tool: string, input: unknown) => {
+      calls.push({ sessionId, tool, input });
+      return { status: "ok", value: { state: "waiting" } };
     },
   } as unknown as McpFeatures;
 
@@ -189,6 +210,27 @@ describe("land_feature and get_work's landing over MCP", () => {
     assert.equal((await rpc("land_feature", { sessionId: "s-ines", feature: "money-minor", expand: true })).isError, undefined);
     assert.equal((await rpc("land_feature", { sessionId: "s-ines", feature: "money-minor", expand: "yes" })).isError, true);
     assert.deepEqual(calls, [{ sessionId: "s-ines", input: { feature: "money-minor", expand: true } }]);
+  });
+
+  test("land_feature with expand takes retiring replacements as path::symbol pairs", async () => {
+    calls.length = 0;
+    const retiring = [{ contract: "shared/money/__init__.py::total", replacement: "shared/money/__init__.py::Money.sum" }];
+    assert.equal((await rpc("land_feature", { sessionId: "s-ines", feature: "money-minor", expand: true, retiring })).isError, undefined);
+    assert.equal((await rpc("land_feature", { sessionId: "s-ines", feature: "money-minor", expand: true, retiring: [{ contract: "x" }] })).isError, true);
+    assert.deepEqual(calls, [{ sessionId: "s-ines", input: { feature: "money-minor", expand: true, retiring } }]);
+  });
+
+  test("apply_fix with expand: true sends no paths, and expand takes only true", async () => {
+    calls.length = 0;
+    assert.equal((await rpc("apply_fix", { sessionId: "s-ines", feature: "money-minor", kind: "codemod", expand: true })).isError, undefined);
+    assert.equal((await rpc("apply_fix", { sessionId: "s-ines", feature: "money-minor", kind: "codemod", expand: false })).isError, true);
+    assert.deepEqual(calls, [{ sessionId: "s-ines", tool: "apply_fix", input: { feature: "money-minor", kind: "codemod", expand: true } }]);
+  });
+
+  test("get_work reports how Penguin sorted the latest checkpoint, read with the project's repos", async () => {
+    const { structuredContent } = await rpc("get_work", { sessionId: "s-ines" });
+    assert.deepEqual(structuredContent["contract"], contract);
+    assert.deepEqual(contractRepos.at(-1), { issues: "t-issues", base: "t-base" });
   });
 
   test("get_work names each block run's state and next steps, with check text only inside personWritten", async () => {

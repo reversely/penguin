@@ -389,4 +389,22 @@ describe("promoting an expand checkpoint on its own", () => {
     ]);
     assert.deepEqual(onlyAddsFailures(impact("a".repeat(40), "b".repeat(40), "c".repeat(40)), []), []);
   });
+
+  test("a rename the expand codemod keeps as an alias counts as an addition; one it does not keep fails", () => {
+    const renamed = (kept: boolean): ImpactChange => ({
+      symbol: "shared.money.api.price",
+      path: API,
+      line: 1,
+      kind: "function",
+      change: "renamed",
+      scope: "money",
+      contract: null,
+      to: { symbol: "shared.money.api.price_minor", path: API, line: 4 },
+      ...(kept ? { kept: true } : {}),
+    });
+    assert.deepEqual(onlyAddsFailures(impact("a".repeat(40), "b".repeat(40), "c".repeat(40), { changes: [renamed(true)] }), []), []);
+    assert.deepEqual(onlyAddsFailures(impact("a".repeat(40), "b".repeat(40), "c".repeat(40), { changes: [renamed(false)] }), []), [
+      "renamed shared.money.api.price (shared/money/api.py:1)",
+    ]);
+  });
 });

@@ -113,6 +113,29 @@ describe("Penguin's deterministic fixes", () => {
     assert.match(text, /return start_local\(1,offset=2\)/);
   });
 
+  test("an expand codemod writes the old name beside the new one in one commit, and takes no second form", async () => {
+    const renamed = await repo.commit(commits.base as string, { "core/dates.py": "def start_local(moment, zone=None):\n    return moment\n" });
+    const run = await fixes.apply({
+      kind: "codemod",
+      commit: renamed,
+      paths: ["core/dates.py"],
+      allowed: ["core"],
+      expand: [{ kind: "rename", from: "core.dates.start", to: "core.dates.start_local" }],
+    });
+    assert.equal(run.record.result, "changed", run.record.summary);
+    assert.deepEqual(run.record.input["expand"], [{ kind: "rename", from: "core.dates.start", to: "core.dates.start_local" }]);
+    assert.match(await show(repo.path, run.commit as string, "core/dates.py"), /\n\n\n# Penguin's expand step keeps the old name while callers move\.\nstart = start_local\n$/u);
+    const both = await fixes.apply({
+      kind: "codemod",
+      commit: renamed,
+      paths: ["core/dates.py"],
+      allowed: ["core"],
+      edits: [{ kind: "rename", from: "core.dates.start", to: "core.dates.start_local" }],
+      expand: [{ kind: "rename", from: "core.dates.start", to: "core.dates.start_local" }],
+    });
+    assert.match(both.record.summary, /one of edits, expand or rules/u);
+  });
+
   test("a fix refuses a path outside the allowed paths, a symlink and an unknown kind, and commits nothing", async () => {
     const outside = await fixes.apply({ kind: "format", commit: commits.base as string, paths: ["other/keep.py"], allowed: ["app"] });
     assert.equal(outside.record.result, "refused");

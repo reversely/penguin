@@ -37,6 +37,11 @@ export interface ImpactChange extends ImpactLocation {
   readonly contract: string | null;
   /** For a rename or a move: the new name and place. */
   readonly to?: ImpactLocation;
+  /**
+   * For a rename or a move: true when the old name still reaches the definition it moved to, through
+   * an alias (`old = new`) or an import from the new module, so existing callers keep working.
+   */
+  readonly kept?: boolean;
   /** For a re-export that now points at another definition: where it pointed before and after. */
   readonly origin?: { readonly before: string; readonly after: string };
 }
@@ -172,9 +177,10 @@ export const IMPACT_REPORT_SCHEMA: JsonSchema = {
           scope: nullable(NAME),
           contract: nullable(NAME),
           to: record(location),
+          kept: { type: "boolean" },
           origin: record({ before: NAME, after: NAME }),
         },
-        ["to", "origin"],
+        ["to", "kept", "origin"],
       ),
     ),
     signatures: list(

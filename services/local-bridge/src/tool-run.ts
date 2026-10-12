@@ -285,6 +285,8 @@ async function runFix(options: ToolPassOptions, claim: ClaimedToolRun): Promise<
     readonly kind: FixKind;
     readonly paths?: readonly string[];
     readonly edits?: readonly CodemodEdit[];
+    /** The expand step's edits, as the ProjectAgent derived them from the feature's sorted contract diff. */
+    readonly expand?: readonly CodemodEdit[];
     /** A codemod by the rewrite rules of retiring symbols, as the ProjectAgent resolved them. */
     readonly rules?: readonly RewriteRule[];
   };
@@ -295,6 +297,7 @@ async function runFix(options: ToolPassOptions, claim: ClaimedToolRun): Promise<
       paths: [...(input.paths ?? [])],
       allowed: charterPaths(scopeMap, charter),
       ...(input.edits === undefined ? {} : { edits: input.edits }),
+      ...(input.expand === undefined ? {} : { expand: input.expand }),
       ...(input.rules === undefined ? {} : { rules: input.rules }),
       caller: handle as ToolCaller,
     },

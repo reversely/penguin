@@ -32,7 +32,7 @@ import {
   TestRunner,
   toolPass,
 } from "@penguin/local-bridge";
-import { boundReviewRecord, type Plan, type RetiringSymbol, type ReviewForm, type RewriteRule } from "@penguin/protocol";
+import { boundReviewRecord, type ContractWorkView, type Plan, type RetiringSymbol, type ReviewForm, type RewriteRule } from "@penguin/protocol";
 import { parseScopeMap, type ScopeMap } from "@penguin/scope-map";
 
 import type { DashboardBackend } from "../../apps/worker/src/dashboard.ts";
@@ -41,6 +41,7 @@ import { claimToolRuns, recordToolResult } from "../../services/project-agent/sr
 import { AgentToolStore, requestRetiringCheck, requestTool, whatsNear, type AgentToolDeps } from "../../services/project-agent/src/agent-tools.ts";
 import { buildBoard } from "../../services/project-agent/src/board.ts";
 import { checkpointBaseline, checkpointChange, type RepoHistoryReader } from "../../services/project-agent/src/combined-run-schedule.ts";
+import { contractWork, ContractSplitStore, recordSplit, scheduleSort, type ContractSplitDeps } from "../../services/project-agent/src/contract-split.ts";
 import { buildFeaturePage, buildFeaturePlan, buildTeamView, type DashboardViewDeps } from "../../services/project-agent/src/dashboard-views.ts";
 import { openFeature, recordFeatureRepo, reportFeatureCheckpoint, type FeatureDeps } from "../../services/project-agent/src/feature-open.ts";
 import { FeatureStore, signFeatureRecord } from "../../services/project-agent/src/feature-store.ts";
@@ -64,7 +65,7 @@ import {
 } from "../../services/project-agent/src/plan-approval.ts";
 import { PlanFactsStore } from "../../services/project-agent/src/plan-facts.ts";
 import { PlanStore } from "../../services/project-agent/src/plan-store.ts";
-import { proposePlan, type ProposePlanOutcome } from "../../services/project-agent/src/propose-plan.ts";
+import { checkpointRecord, proposePlan, type ProposePlanOutcome } from "../../services/project-agent/src/propose-plan.ts";
 import {
   checkProtectedChanges,
   confirmProtectedChange,
@@ -90,6 +91,8 @@ const RUNNER: BridgeCaller = { bridgeId: "preview-runner", role: "runner" };
 
 export const FIXTURES = ["identity-unification", "helpful-fix", "money-minor-units"] as const;
 export type FixtureName = (typeof FIXTURES)[number];
+/** Every fixture under `examples/` a test may build; the preview seeds only FIXTURES. */
+export type ExampleName = FixtureName | "helpful-fix" | "dependency-bump";
 
 /** One identity as the fixture's `penguin/identities.json` seeds it. */
 interface SeedIdentity {
@@ -126,6 +129,9 @@ export class PreviewProject {
   readonly index: IssueIndex;
   readonly forks: OwnerForkStore;
   readonly retiring: RetiringStore;
+  readonly splits: ContractSplitStore;
+  /** True to sort each checkpoint's contract diff, as the ProjectAgent does; each sort is a facts run. */
+  sortContracts = false;
   readonly steps: SeedStep[] = [];
   /** Each person whose inbox changed, in order, as the live feed would tell them. */
   readonly notified: string[] = [];
@@ -136,7 +142,7 @@ export class PreviewProject {
 
   readonly scopeMap: ScopeMap;
   readonly repo: string;
-  readonly fixture: FixtureName;
+  readonly fixture: ExampleName;
   readonly roundLimit = 3;
   /** Whether the originating agent calls impact and check, which the check runner runs: off for a quick seed. */
   runnerTools = true;
@@ -151,7 +157,7 @@ export class PreviewProject {
   /** Use case 4: Penguin's last answer to each wave's plan, in wave order. */
   readonly waveOutcomes: WaveOutcome[] = [];
 
-  constructor(fixture: FixtureName, repo: string, scopeMap: ScopeMap) {
+  constructor(fixture: ExampleName, repo: string, scopeMap: ScopeMap) {
     this.fixture = fixture;
     this.repo = repo;
     this.scopeMap = scopeMap;
@@ -169,6 +175,7 @@ export class PreviewProject {
     this.tools = new AgentToolStore(this.sql);
     this.forks = new OwnerForkStore(this.sql, now);
     this.retiring = new RetiringStore(this.sql, now);
+    this.splits = new ContractSplitStore(this.sql, now);
     let sessions: SessionStore | undefined;
     this.index = new IssueIndex(this.sql, { assignmentsChanged: (issueId, added, removed) => sessions?.assignmentsChanged(issueId, added, removed) });
     sessions = new SessionStore(this.sql, this.identities, {
@@ -276,7 +283,47 @@ export class PreviewProject {
       identity: (identityId) => this.identities.get(identityId),
       baseline: (_repo, sha) => checkpointBaseline(history, history, sha),
       retiring: () => this.retiring.list(),
+      split: (featureId) => this.splits.get(featureId),
     };
+  }
+
+  /** What sorting a contract diff and splitting a feature read and write, as the ProjectAgent wires it. */
+  splitDeps(): ContractSplitDeps {
+    return {
+      features: this.features,
+      facts: this.facts,
+      splits: this.splits,
+      sign: (record) => this.#sign(record),
+      dependents: (id) => this.overlaps.dependents(id),
+      retiring: this.retiring,
+      notify: this.#notify,
+    };
+  }
+
+  /** The check runner makes every pending facts run; each report of a latest checkpoint is sorted, as the ProjectAgent does. */
+  async factsPass(): Promise<void> {
+    const scratch = await mkdtemp(join(tmpdir(), "penguin-preview-facts-"));
+    const runner = new PlanFactsRunner({
+      repoPath: this.repo,
+      runner: new TestRunner({ repoPath: this.repo, env: ENV, scratchDir: scratch, consent: () => true }),
+      impact: pythonImpactAnalyzer({ repoPath: this.repo, python: PYTHON, env: ENV }),
+      fixes: new FixApplier({ repoPath: this.repo, ruff: RUFF, python: PYTHON, env: ENV, scratchDir: scratch }),
+    });
+    for (const request of this.facts.pending()) {
+      const report = JSON.parse(JSON.stringify(await runner.run(request)));
+      const recorded = this.facts.record(request.runId, RUNNER.bridgeId, report);
+      if (recorded.status !== "recorded") throw new Error(`facts ${request.runId}: ${JSON.stringify(recorded)}`);
+      const feature = this.features.get(request.feature);
+      if (feature !== undefined) await recordSplit(this.splitDeps(), feature, this.scopeMap);
+    }
+  }
+
+  /** `get_work`'s contract for a feature: the sort of its latest checkpoint, its split and its next step. */
+  async contract(featureId: string): Promise<ContractWorkView> {
+    const feature = this.features.get(featureId);
+    if (feature === undefined) throw new Error(`no feature ${featureId}`);
+    await recordSplit(this.splitDeps(), feature, this.scopeMap);
+    return contractWork(this.splitDeps(), feature, this.scopeMap);
   }
 
   /** Creates each identity of `penguin/identities.json` and registers one session of it, in its vendor. */
@@ -343,6 +390,16 @@ export class PreviewProject {
             this.scopeMap,
           ),
         checkRetiring: (checked, session, commit) => requestRetiringCheck(this.toolDeps(), checked, session, commit),
+        ...(this.sortContracts
+          ? {
+              sortContract: async (sorted: Parameters<typeof recordSplit>[1]) => {
+                const baseline = checkpointRecord(this.features, sorted)?.baseline;
+                const run = baseline === undefined ? undefined : scheduleSort(this.splitDeps(), sorted, baseline, this.scopeMap);
+                if (run?.state === "reported") await recordSplit(this.splitDeps(), sorted, this.scopeMap);
+                return run?.runId;
+              },
+            }
+          : {}),
         now: () => Date.now(),
       },
       feature.personId,
@@ -496,18 +553,7 @@ export class PreviewProject {
     };
     const first = await call();
     if (first.status !== "missing" || !first.missing.some((item) => item.code === "waiting_for_runner")) return settled(first);
-    const scratch = await mkdtemp(join(tmpdir(), "penguin-preview-facts-"));
-    const runner = new PlanFactsRunner({
-      repoPath: this.repo,
-      runner: new TestRunner({ repoPath: this.repo, env: ENV, scratchDir: scratch, consent: () => true }),
-      impact: pythonImpactAnalyzer({ repoPath: this.repo, python: PYTHON, env: ENV }),
-      fixes: new FixApplier({ repoPath: this.repo, ruff: RUFF, python: PYTHON, env: ENV, scratchDir: scratch }),
-    });
-    for (const request of this.facts.pending()) {
-      const report = JSON.parse(JSON.stringify(await runner.run(request)));
-      const recorded = this.facts.record(request.runId, RUNNER.bridgeId, report);
-      if (recorded.status !== "recorded") throw new Error(`facts ${request.runId}: ${JSON.stringify(recorded)}`);
-    }
+    await this.factsPass();
     return settled(await call());
   }
 
@@ -599,6 +645,7 @@ export class PreviewProject {
       roundLimit: this.roundLimit,
       // The preview's runner writes no fix into a fork, so no part has a write.
       fixWrite: () => undefined,
+      contract: (feature) => contractWork(this.splitDeps(), feature, this.scopeMap),
     };
   }
 
@@ -746,7 +793,7 @@ function gitHistory(dir: string): RepoHistoryReader & { has(sha: string): boolea
 }
 
 /** Builds the fixture's repository with its own build.py into a new directory. */
-export async function buildFixture(fixture: FixtureName): Promise<string> {
+export async function buildFixture(fixture: ExampleName): Promise<string> {
   const dir = join(await realpath(await mkdtemp(join(tmpdir(), `penguin-preview-${fixture}-`))), "repo");
   await promisify(execFile)(PYTHON, [join(ROOT, "examples", fixture, "build.py"), dir], { env: ENV });
   return dir;

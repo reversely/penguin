@@ -125,6 +125,7 @@ const RECORD_LABEL: Readonly<Record<string, string>> = {
   propose_plan: "Plan proposed",
   plan_returned: "Plan returned",
   retire_symbols: "Symbols retiring",
+  contract_split: "Contract split",
   approve_plan_part: "Part approved",
   reverse_penguin_approval: "Penguin's approval reversed",
   request_plan_change: "Change requested",

@@ -129,6 +129,7 @@ import {
 } from "./fix-write.ts";
 import { coverMidway, handOver, meeting, PlanCoverageStore } from "./plan-coverage.ts";
 import { RetiringStore } from "./retiring-store.ts";
+import { contractWork, ContractSplitStore, recordSplit, retireSplit, scheduleSort, type ContractSplitDeps } from "./contract-split.ts";
 import type { BlockRun } from "./block-store.ts";
 import {
   BlockQueueStore,
@@ -145,7 +146,7 @@ import {
   type LandOutcome,
 } from "./block-land.ts";
 import { requestExpand, retryExpand, type ExpandDeps } from "./expand-promotion.ts";
-import { parseBreakLimit, proposePlan, type ProposePlanInput, type ProposePlanOutcome } from "./propose-plan.ts";
+import { checkpointRecord, parseBreakLimit, proposePlan, type ProposePlanInput, type ProposePlanOutcome } from "./propose-plan.ts";
 import { claimToolRuns, recordToolResult, type ToolReportOutcome, type ToolRunClaim } from "./agent-tool-runner.ts";
 import { reviewResult } from "./part-checks.ts";
 import {
@@ -211,6 +212,7 @@ import {
   type BlockRunRequest,
   type Board,
   type CharterView,
+  type ContractWorkView,
   type IdentitiesPage,
   type IdentityWriteOutcome,
   type Inbox,
@@ -392,6 +394,19 @@ export {
   type LandRejection,
 } from "./block-land.ts";
 export { onlyAddsFailures, requestExpand, retryExpand, type ExpandDeps, type ExpandInput } from "./expand-promotion.ts";
+export {
+  contractNextStep,
+  contractWork,
+  ContractSplitStore,
+  CONTRACT_SPLIT_SCHEMA,
+  moduleContract,
+  ownScopes,
+  recordSplit,
+  retireSplit,
+  scheduleSort,
+  splitReplacements,
+  type ContractSplitDeps,
+} from "./contract-split.ts";
 export { fastForwardMain, packEnd, parseAdvertisement, pktLine, readPktStream, type FastForward, type FastForwardOutcome, type GitEndpoint } from "./main-push.ts";
 export {
   agentFixGrant,
@@ -805,6 +820,7 @@ export class ProjectAgent extends Agent {
   #fixGrants: FixGrantStore | undefined;
   #planCoverage: PlanCoverageStore | undefined;
   #retiring: RetiringStore | undefined;
+  #splits: ContractSplitStore | undefined;
   #blockQueue: BlockQueueStore | undefined;
   /** Plan proposals run one at a time, so no two take the same plan version or record sequence number. */
   #planSteps: Promise<unknown> = Promise.resolve();
@@ -1694,6 +1710,22 @@ export class ProjectAgent extends Agent {
             await this.#scopeMap(repos),
           );
         }),
+      // PRD 0.5 section 4.2 step 1: one contract diff per checkpoint, from its facts run, sorted.
+      // A failure here is logged and never fails the checkpoint.
+      sortContract: async (feature: Feature) => {
+        try {
+          const scopeMap = await this.#scopeMap(repos);
+          const baseline = checkpointRecord(this.#featureStore(), feature)?.baseline;
+          if (baseline === undefined) return undefined;
+          const deps = this.#splitDeps();
+          const run = scheduleSort(deps, feature, baseline, scopeMap);
+          if (run?.state === "reported") await recordSplit(deps, feature, scopeMap);
+          return run?.runId;
+        } catch (error) {
+          console.error(JSON.stringify({ event: "contract_sort_failed", feature: feature.id, error: String(error).slice(0, 200) }));
+          return undefined;
+        }
+      },
       // PRD 0.5 section 5.1: one retiring-calls check per checkpoint, when the project retires symbols.
       // A failure here is logged and never fails the checkpoint.
       checkRetiring: async (feature: Feature, session: string, commit: string) => {
@@ -1964,6 +1996,7 @@ export class ProjectAgent extends Agent {
       baseline: (repo, sha) =>
         withRepo(this.env.ARTIFACTS, repo, (fork) => withRepo(this.env.ARTIFACTS, repos.base, (base) => checkpointBaseline(fork, base, sha))),
       retiring: () => this.#retiringStore().list(),
+      split: (featureId) => this.#splitStore().get(featureId),
     };
   }
 
@@ -2065,6 +2098,7 @@ export class ProjectAgent extends Agent {
       plan: async (featureId) => this.#planKeeper(featureId).latestPlan(featureId),
       roundLimit: this.#roundLimit(),
       fixWrite: (partId, revision) => this.#fixGrantStore().get(partId, revision),
+      contract: (feature) => contractWork(this.#splitDeps(), feature, rules.scopeMap),
     };
   }
 
@@ -2212,6 +2246,39 @@ export class ProjectAgent extends Agent {
     return this.#retiring;
   }
 
+  #splitStore(): ContractSplitStore {
+    this.#splits ??= new ContractSplitStore(this.#database());
+    return this.#splits;
+  }
+
+  /** What sorting a contract diff and splitting a feature read and write (contract-split.ts). */
+  #splitDeps(): ContractSplitDeps {
+    return {
+      features: this.#featureStore(),
+      facts: this.#planFactsStore(),
+      splits: this.#splitStore(),
+      sign: async (record) => signFeatureRecord(record, (await this.#loadServiceKey()).privateKey),
+      dependents: (featureId) => this.#overlapStore().dependents(featureId),
+      retiring: this.#retiringStore(),
+      notify: (personId) => sendToOwner(this.getConnections<{ owner?: string }>(), personId, inboxChangedMessage()),
+    };
+  }
+
+  /**
+   * For `get_work`: how Penguin sorted the latest checkpoint of the feature `caller`'s session works
+   * on, its split and its next step (contract-split.ts). A sort that splits is recorded first.
+   * Undefined when the session works on no feature or is not the caller's.
+   */
+  async contractWork(caller: string, sessionId: string, repos: ProjectRepos): Promise<ContractWorkView | undefined> {
+    if (this.sessionHeartbeat(caller, sessionId).status !== "ok") return undefined;
+    const featureId = this.#featureStore().featureOfSession(sessionId);
+    const feature = featureId === undefined ? undefined : this.#featureStore().get(featureId);
+    if (feature === undefined) return undefined;
+    const scopeMap = await this.#scopeMap(repos);
+    await this.#planStep(() => recordSplit(this.#splitDeps(), feature, scopeMap));
+    return contractWork(this.#splitDeps(), feature, scopeMap);
+  }
+
   #roundLimit(): number | undefined {
     return parseRoundLimit((this.env as unknown as ProjectAgentEnv).PENGUIN_PLAN_ROUND_LIMIT);
   }
@@ -2262,13 +2329,27 @@ export class ProjectAgent extends Agent {
     return { status: "ok", runs: this.#planFactsStore().pending() };
   }
 
-  /** Records the runner's report of facts run `runId`; refused unless `caller` holds the runner role. */
-  reportPlanFacts(caller: BridgeCaller, runId: string, report: unknown): PlanFactsReportOutcome {
+  /**
+   * Records the runner's report of facts run `runId`; refused unless `caller` holds the runner role.
+   * With `repos`, a report of a feature's latest checkpoint is sorted, and a split recorded
+   * (contract-split.ts); a failure there is logged and never refuses the report.
+   */
+  async reportPlanFacts(caller: BridgeCaller, runId: string, report: unknown, repos?: ProjectRepos): Promise<PlanFactsReportOutcome> {
     if (caller.role !== "runner") {
       return { status: "rejected", reason: "forbidden", message: `bridge ${caller.bridgeId} does not hold the runner role` };
     }
     this.#liveFeed().featuresChanged();
-    return this.#planFactsStore().record(runId, caller.bridgeId, report);
+    const outcome = this.#planFactsStore().record(runId, caller.bridgeId, report);
+    const feature = outcome.status === "recorded" ? this.#featureStore().get(this.#planFactsStore().get(runId)?.featureId ?? "") : undefined;
+    if (repos !== undefined && feature !== undefined) {
+      try {
+        const scopeMap = await this.#scopeMap(repos);
+        await this.#planStep(() => recordSplit(this.#splitDeps(), feature, scopeMap));
+      } catch (error) {
+        console.error(JSON.stringify({ event: "contract_sort_failed", feature: feature.id, error: String(error).slice(0, 200) }));
+      }
+    }
+    return outcome;
   }
 
   /**
@@ -2347,6 +2428,7 @@ export class ProjectAgent extends Agent {
       dependents: (featureId) => this.#overlapStore().dependents(featureId),
       overlaps: this.#overlapStore(),
       ...(overlaps.listener === undefined ? {} : { listener: overlaps.listener }),
+      splits: this.#splitStore(),
     };
   }
 
@@ -2356,9 +2438,10 @@ export class ProjectAgent extends Agent {
    * waits for the check runner; anything else is refused with what is missing. Runs after the plan
    * steps before it.
    */
-  landFeature(owner: string, sessionId: string, input: LandInput & { readonly expand?: unknown }, repos: ProjectRepos): Promise<LandAnswer> {
+  landFeature(owner: string, sessionId: string, input: LandInput & { readonly expand?: unknown; readonly retiring?: unknown }, repos: ProjectRepos): Promise<LandAnswer> {
     const { expand, ...rest } = input;
     if (expand !== undefined && typeof expand !== "boolean") return Promise.resolve({ status: "rejected", reason: "invalid", message: "expand must be true or false" });
+    if (rest.retiring !== undefined && expand !== true) return Promise.resolve({ status: "rejected", reason: "invalid", message: "only an expand names retiring replacements" });
     return this.#featuresChanging(
       this.#planStep(async () =>
         landAnswer(expand === true ? await requestExpand(this.#expandDeps(repos), owner, sessionId, rest) : await requestLand(this.#landDeps(repos), owner, sessionId, rest)),
@@ -2422,9 +2505,14 @@ export class ProjectAgent extends Agent {
     return this.#planStep(async () => landAnswer(await retryLand(this.#landDeps(repos), featureId, { runId, charter })));
   }
 
-  /** Main moved to the feature's expand checkpoint: the feature keeps building, and its person hears. */
-  expandPromoted(featureId: string, _promotion: Promotion): void {
+  /**
+   * Main moved to the feature's expand checkpoint: the feature keeps building, and its person hears.
+   * A split's old names become retiring (contract-split.ts) and migration begins.
+   */
+  async expandPromoted(featureId: string, promotion: Promotion): Promise<void> {
     const feature = this.#featureStore().get(featureId);
+    // Not a plan step: a block run reports from the feature's own Durable Object, which a plan step may be waiting on.
+    await retireSplit(this.#splitDeps(), featureId, promotion.mainAfter);
     this.#liveFeed().featuresChanged();
     if (feature !== undefined) sendToOwner(this.getConnections<{ owner?: string }>(), feature.personId, inboxChangedMessage());
   }

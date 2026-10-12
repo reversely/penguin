@@ -6,6 +6,10 @@
 // A newer plan of the same feature replaces that feature's declarations. A contract another feature
 // already retires keeps its first declaration.
 //
+// A split feature's expand promotion declares its old names too (contract-split.ts), under the plan id
+// `split:<feature>` and with no rules. A later plan of the feature keeps them, except each contract
+// it declares itself, which then carries the plan's rules.
+//
 // Readers: the retiring-calls check at each checkpoint (agent-tools.ts `requestRetiringCheck`), the
 // `impact` tool's migration groups and `apply_fix` by a retiring symbol's rewrite rule.
 
@@ -62,8 +66,9 @@ export class RetiringStore {
   declare(plan: Plan, symbols: readonly RetiringSymbol[], recordId: string): RetiringDeclaration[] {
     const now = this.#now();
     this.#db.transaction(() => {
-      this.#db.exec(`DELETE FROM RetiringSymbol WHERE feature_id = ?`, plan.featureId);
+      this.#db.exec(`DELETE FROM RetiringSymbol WHERE feature_id = ? AND plan_id != ?`, plan.featureId, splitPlanId(plan.featureId));
       for (const symbol of symbols) {
+        this.#db.exec(`DELETE FROM RetiringSymbol WHERE feature_id = ? AND contract = ?`, plan.featureId, symbol.contract);
         const rules = (plan.rules ?? []).filter((rule) => rule.contract === symbol.contract);
         this.#db.exec(
           `INSERT OR IGNORE INTO RetiringSymbol (contract, replacement, feature_id, plan_id, person_id, rules, record_id, declared_at)
@@ -81,4 +86,32 @@ export class RetiringStore {
     });
     return this.list().filter((each) => each.feature === plan.featureId);
   }
+
+  /**
+   * Keeps the old names a split feature's expand promotion retires (contract-split.ts), with no rules,
+   * under the signed record `recordId`. A contract another feature already retires keeps its first
+   * declaration.
+   */
+  declareSplit(featureId: string, person: string, symbols: readonly RetiringSymbol[], recordId: string): RetiringDeclaration[] {
+    const now = this.#now();
+    this.#db.transaction(() => {
+      for (const symbol of symbols) {
+        this.#db.exec(
+          `INSERT OR IGNORE INTO RetiringSymbol (contract, replacement, feature_id, plan_id, person_id, rules, record_id, declared_at)
+           VALUES (?, ?, ?, ?, ?, '[]', ?, ?)`,
+          symbol.contract,
+          symbol.replacement,
+          featureId,
+          splitPlanId(featureId),
+          person,
+          recordId,
+          now,
+        );
+      }
+    });
+    return this.list().filter((each) => each.feature === featureId);
+  }
 }
+
+/** The plan id a split's own retiring declarations carry. */
+export const splitPlanId = (featureId: string): string => `split:${featureId}`;

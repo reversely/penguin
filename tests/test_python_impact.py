@@ -174,6 +174,73 @@ def test_a_move_names_the_new_module_and_a_kept_re_export_is_not_a_removed_expor
     assert report["removedExports"] == []
 
 
+def test_a_move_whose_old_module_imports_the_symbol_back_is_kept(repo: Repo):
+    body = "def helper(x):\n    return x * 2\n"
+    base = repo.commit(base_files(**{"core/a.py": body, "core/b.py": ""}))
+    head = repo.commit(
+        {"core/a.py": "from core.b import helper as helper\n", "core/b.py": body}
+    )
+    [change] = run(repo, base, head)["changes"]
+    assert (change["change"], change["kept"]) == ("moved", True)
+
+
+def test_a_rename_with_an_alias_to_the_new_name_is_kept_and_keeps_its_callers(
+    repo: Repo,
+):
+    base = repo.commit(
+        base_files(
+            **{
+                "core/util.py": "def old(x):\n    return x + 1\n",
+                "app/use.py": "from core.util import old\n\nold(1)\n",
+            }
+        )
+    )
+    head = repo.commit(
+        {"core/util.py": "def new(x):\n    return x + 1\n\n\nold = new\n"}
+    )
+    report = run(repo, base, head)
+    [change] = report["changes"]
+    assert (change["symbol"], change["change"], change["kept"]) == (
+        "core.util.old",
+        "renamed",
+        True,
+    )
+    assert change["to"]["symbol"] == "core.util.new"
+    assert report["removedExports"] == []
+    # The callers still use the old name: they are the migration's places.
+    assert [(use["path"], use["symbol"]) for use in report["headUses"]] == [
+        ("app/use.py", "core.util.old"),
+        ("app/use.py", "core.util.old"),
+    ]
+
+
+def test_a_method_renamed_with_a_class_level_alias_is_kept(repo: Repo):
+    old = "class Store:\n    def get(self, k):\n        return k\n"
+    base = repo.commit(base_files(**{"core/store.py": old}))
+    head = repo.commit(
+        {
+            "core/store.py": "class Store:\n    def fetch(self, k):\n        return k\n\n    get = fetch\n"
+        }
+    )
+    changed = {c["symbol"]: c for c in run(repo, base, head)["changes"]}
+    assert changed["core.store.Store.get"]["change"] == "renamed"
+    assert changed["core.store.Store.get"]["kept"] is True
+
+
+def test_an_alias_to_another_body_is_a_modified_name_and_no_rename(repo: Repo):
+    base = repo.commit(
+        base_files(
+            **{
+                "core/util.py": "def old(x):\n    return x + 1\n\n\ndef other(x):\n    return x\n"
+            }
+        )
+    )
+    head = repo.commit(
+        {"core/util.py": "def other(x):\n    return x\n\n\nold = other\n"}
+    )
+    assert changes(run(repo, base, head)) == {"core.util.old": "modified"}
+
+
 def test_an_added_parameter_with_a_default_is_not_breaking_and_one_without_is(
     repo: Repo,
 ):

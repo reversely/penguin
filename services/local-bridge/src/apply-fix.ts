@@ -11,6 +11,10 @@
 // | lockfile | fix:uv-lock          | `uv lock`, after merging the other side when given  |
 // | codemod  | fix:python-codemod   | the bridge's libcst script on the named files       |
 //
+// The expand step of a split contract change runs the same codemod with `expand` edits: for a rename,
+// a move or a keyword rename it writes the alias or forwarding function beside the new name, in the
+// files that hold the old names (PRD 0.5 section 4.2 step 2).
+//
 // A merge plan's rewrite rules run through the same codemod script (`rewrite`), followed by the lint
 // autofix and the formatter on the files the rules changed. That run reports blobs and commits nothing.
 //
@@ -60,6 +64,11 @@ export interface FixRequest {
   readonly allowed: readonly string[];
   /** The codemod's edits, from the contract diff. */
   readonly edits?: readonly CodemodEdit[];
+  /**
+   * Instead of edits: the expand step's edits from the sorted contract diff (contract-sort.ts). The
+   * codemod writes the alias or forwarding function that keeps each old name working.
+   */
+  readonly expand?: readonly CodemodEdit[];
   /**
    * Instead of edits: rewrite rules a plan declared for retiring symbols (retiring.ts), applied as the
    * ladder's step 3 to a new call of a retiring symbol. Each rule's contract module is read at `commit`.
@@ -163,8 +172,15 @@ export function checkFixRequest(request: FixRequest): void {
       }
     }
   }
-  if (request.kind === "codemod" && request.rules !== undefined) {
-    if (request.edits !== undefined) throw new FixRefusedError("a codemod takes edits or rules, not both");
+  const forms = [request.edits, request.expand, request.rules].filter((form) => form !== undefined).length;
+  if (request.kind === "codemod" && forms > 1) throw new FixRefusedError("a codemod takes one of edits, expand or rules");
+  if (request.kind === "codemod" && request.expand !== undefined) {
+    if (request.expand.length === 0) throw new FixRefusedError("an expand codemod needs edits from the sorted contract diff");
+    for (const edit of request.expand) {
+      const problem = codemodEditProblem(edit);
+      if (problem !== null) throw new FixRefusedError(`an expand edit is malformed: ${problem}`);
+    }
+  } else if (request.kind === "codemod" && request.rules !== undefined) {
     if (request.rules.length === 0) throw new FixRefusedError("a codemod by rules needs at least one rule");
     for (const rule of request.rules) {
       const problem = rewriteRuleProblem(rule);
@@ -176,8 +192,8 @@ export function checkFixRequest(request: FixRequest): void {
       const problem = codemodEditProblem(edit);
       if (problem !== null) throw new FixRefusedError(`a codemod edit is malformed: ${problem}`);
     }
-  } else if (request.edits !== undefined || request.rules !== undefined) {
-    throw new FixRefusedError("only a codemod takes edits or rules");
+  } else if (forms > 0) {
+    throw new FixRefusedError("only a codemod takes edits, expand or rules");
   }
 }
 
@@ -231,6 +247,7 @@ export class FixApplier {
       paths: [...request.paths],
       allowed: [...request.allowed],
       ...(request.edits === undefined ? {} : { edits: request.edits.map((edit) => ({ ...edit })) }),
+      ...(request.expand === undefined ? {} : { expand: request.expand.map((edit) => ({ ...edit })) }),
       ...(request.rules === undefined ? {} : { rules: request.rules.map((rule) => rule.id) }),
       ...(request.merge === undefined ? {} : { merge: request.merge }),
     };
@@ -385,7 +402,13 @@ export class FixApplier {
       case "codemod": {
         const { script } = resolveAnalysisCommand(FIX_COMMAND_IDS.codemod);
         const python = this.#options.python ?? defaultCodemodPython(this.#options.env);
-        const input = JSON.stringify(request.rules === undefined ? { edits: request.edits, paths } : { rules: request.rules, contracts: await ruleContracts(worktree, request.rules), paths });
+        const input = JSON.stringify(
+          request.rules !== undefined
+            ? { rules: request.rules, contracts: await ruleContracts(worktree, request.rules), paths }
+            : request.expand !== undefined
+              ? { expand: request.expand, paths }
+              : { edits: request.edits, paths },
+        );
         const outcome = await runProgram(python, ["-I", script, "--tree", worktree], worktree, { ...options, input });
         return done(failedExit(outcome, [0], "the codemod"), codemodFindings(outcome.stdout));
       }

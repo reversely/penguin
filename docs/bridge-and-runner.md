@@ -332,7 +332,10 @@ took about 2 seconds each, most of it Artifacts reads.
 ### Plan facts runs
 
 A merge plan needs facts that only running the code can give ([design.md](design.md#steps-1-to-5-in-the-build)).
-`propose_plan` schedules one facts run per feature checkpoint. `GET /plan-facts` lists each pending
+Penguin schedules one facts run per feature checkpoint when the checkpoint is reported: its impact
+report holds the contract diff Penguin sorts ([design.md](design.md#sorting-and-splitting-in-the-build)).
+`propose_plan` reuses that run, or schedules one of its own when it declares rewrite rules. Penguin
+sorts the run's report as the runner reports it. `GET /plan-facts` lists each pending
 run. The listing names the originating fork, the checkpoint, its baseline on main and the targets.
 `main` is one target, at the baseline. Each running feature that may read the change is another, at
 its latest checkpoint, keyed by its feature id and naming its person. Every target lists `test:<scope>` command IDs only. For each run the runner:
@@ -404,7 +407,10 @@ The fork's entry in the report repeats `since` and adds `mergeBase` and `carried
 left out. When the two histories never meet, `mergeBase` is null and every file counts as the fork's
 own. A request may also list `symbols`, up to 64 contracts as `path::name`. The script searches for
 each one as if it had changed, so a request whose base equals its head reports only their uses.
-Penguin uses it for retiring symbols ([design.md](design.md#steps-1-to-5-in-the-build)). The report comes back on standard output and is checked against `IMPACT_REPORT_SCHEMA` in
+Penguin uses it for retiring symbols ([design.md](design.md#steps-1-to-5-in-the-build)). A rename or
+move whose old name still reaches the very definition it moved to, through `old = new` in the module
+or class or through an import of the new definition into the old module, is reported with `kept:
+true`. The old name's callers are still listed. The report comes back on standard output and is checked against `IMPACT_REPORT_SCHEMA` in
 `packages/protocol` before anything reads it. [design.md](design.md#impact-graph-and-contract-diff-for-python)
 lists what the report holds.
 
@@ -701,7 +707,13 @@ and every other running feature's fork with read tokens into the runner's reposi
   one decision from the [resolution ladder](#resolution-ladder). No fix runs.
 - `apply_fix` runs the [fix](#resolution-ladder) the agent asked for on the checkpoint. The fix may
   change only the named files inside the caller identity's charter. A codemod by `rules` runs the
-  rewrite rules of retiring symbols, each contract module read at the checkpoint.
+  rewrite rules of retiring symbols, each contract module read at the checkpoint. A codemod by
+  `expand` writes a split's expand step with the same script and allowlisted command ID
+  (`fix:python-codemod`): `old = new` after the new definition for a rename, `from <new module>
+  import <name> as <old name>` after the old module's imports for a move. For a keyword rename it writes a
+  signature that takes both keywords and forwards the old one. The edits come from the ProjectAgent's
+  split, never from the agent. An edit the script cannot write comes back under `refused` with the
+  reason.
 
 The runner reports each result to `POST /tool-runs/<id>`. Penguin hands it to the requesting session
 at its next safe checkpoint. A request whose forks cannot be fetched stays claimed and runs again

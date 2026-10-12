@@ -9,6 +9,7 @@
 // text.
 
 import type { BlockCheck } from "./block-check.ts";
+import type { ContractWorkView } from "./contract-sort.ts";
 import type { ImpactUse } from "./impact.ts";
 import type { Plan, PlanFactSource, PlanFileDiff, PlanInvariantFact, PlanPart, PlanPartKind, PlanPartState, PlanPlace } from "./plan.ts";
 import type { PlanPartFile } from "./plan-approval.ts";
@@ -355,6 +356,8 @@ export interface FeaturePage {
   readonly checks: ToolRunView | null;
   readonly tools: readonly ToolRunView[];
   readonly records: readonly FeatureRecordView[];
+  /** How Penguin sorted the latest checkpoint's contract diff, the split and the next step (contract-sort.ts); absent from an older Worker. */
+  readonly contract?: ContractWorkView | null;
 }
 
 const text = (maxLength: number): JsonSchema => ({ type: "string", maxLength });

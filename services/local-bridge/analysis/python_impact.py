@@ -31,7 +31,8 @@ import re
 import subprocess
 import sys
 from collections import defaultdict
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace
 
 TOOL = "python-impact"
 COMMAND_ID = "analysis:python-impact"
@@ -49,6 +50,7 @@ CONTRACT = re.compile(
 
 # Kinds of change that leave existing callers pointing at different behaviour or at nothing.
 CALLER_CHANGES = frozenset({"modified", "removed", "renamed", "moved"})
+DEFINITION_KINDS = frozenset({"function", "method", "class"})
 POSITIONAL = frozenset({"positional-only", "positional"})
 VARIADIC = frozenset({"var-positional", "var-keyword"})
 
@@ -318,6 +320,9 @@ class Definition:
     signature: Signature | None = None
     shape: Shape | None = None
     returns: ast.expr | None = None
+    # For ``old = new`` binding another definition of the same module or class: the target's local
+    # name until the tree resolves it, then its dotted name. Penguin's expand step writes such aliases.
+    alias_of: str | None = None
 
 
 @dataclass
@@ -350,9 +355,15 @@ def file_facts(tree: ast.Module) -> FileFacts:
             fingerprint = (
                 ast.dump(node.value) if node.value is not None else ast.dump(node)
             )
+            alias = _name_alias(node)
             for name in names:
                 definitions[name] = Definition(
-                    name, "variable", node.lineno, fingerprint, fingerprint
+                    name,
+                    "variable",
+                    node.lineno,
+                    fingerprint,
+                    fingerprint,
+                    alias_of=alias,
                 )
         elif isinstance(node, ast.Import):
             for alias in node.names:
@@ -371,6 +382,18 @@ def file_facts(tree: ast.Module) -> FileFacts:
                         node.lineno,
                     )
     return FileFacts(tree, definitions, imports, exports_all)
+
+
+def _name_alias(node: ast.stmt) -> str | None:
+    """The name ``old = new`` binds, for an assignment of one bare name to another; else None."""
+    if (
+        isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+        and isinstance(node.value, ast.Name)
+    ):
+        return node.value.id
+    return None
 
 
 def _string_list(node: ast.expr | None) -> tuple[str, ...] | None:
@@ -406,6 +429,18 @@ def _collect_definition(
                 member, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
             ):
                 _collect_definition(member, f"{local}.", out)
+            elif (alias := _name_alias(member)) is not None:
+                # A class-level ``old = new``; the tree keeps it only when ``new`` is a member definition.
+                name = member.targets[0].id
+                fingerprint = ast.dump(member.value)
+                out[f"{local}.{name}"] = Definition(
+                    f"{local}.{name}",
+                    "variable",
+                    member.lineno,
+                    fingerprint,
+                    fingerprint,
+                    alias_of=f"{local}.{alias}",
+                )
         return
     kind = "method" if prefix else "function"
     signature = _signature(node)
@@ -591,6 +626,26 @@ class Tree:
                 resolved = self.import_target(source, target)
                 if resolved is not None:
                     self.aliases[f"{source.module}.{local}"] = resolved
+        self._resolve_name_aliases()
+
+    def _resolve_name_aliases(self) -> None:
+        """Point each ``old = new`` at the definition it binds, or drop the mark when it binds none.
+
+        A module-level ``old = new`` stays a variable either way; the mark only tells the contract
+        diff that ``old`` still stands for a definition. A class-level one is kept only when ``new`` is
+        a member definition of the same class.
+        """
+        for full, (definition, source) in list(self.definitions.items()):
+            if definition.alias_of is None:
+                continue
+            target = f"{source.module}.{definition.alias_of}"
+            found = self.definitions.get(target)
+            if found is not None and found[0].kind in DEFINITION_KINDS:
+                self.definitions[full] = (replace(definition, alias_of=target), source)
+            elif "." in definition.local:
+                del self.definitions[full]
+            else:
+                self.definitions[full] = (replace(definition, alias_of=None), source)
 
     def import_target(
         self, source: SourceFile, target: tuple[str, str | None, int, int]
@@ -757,9 +812,25 @@ def _local(entry: ViewEntry) -> str:
     return entry.symbol[len(entry.module) + 1 :]
 
 
-def diff_views(base: dict[str, ViewEntry], head: dict[str, ViewEntry]) -> list[dict]:
-    """Classify each symbol as modified, added, removed, renamed or moved."""
-    removed = sorted(base.keys() - head.keys())
+def diff_views(
+    base: dict[str, ViewEntry],
+    head: dict[str, ViewEntry],
+    follow: Callable[[str], str] = lambda name: name,
+) -> list[dict]:
+    """Classify each symbol as modified, added, removed, renamed or moved.
+
+    A definition the head turns into an alias (``old = new``, or an import of it from its new
+    module) counts as removed, so it pairs with its new name as a rename or a move. Such a rename or
+    move is ``kept`` when the old name still reaches the very definition it was renamed or moved
+    to: existing callers keep working. ``follow`` follows the head tree's import aliases.
+    """
+    aliased = {
+        symbol
+        for symbol in base.keys() & head.keys()
+        if head[symbol].definition.alias_of is not None
+        and base[symbol].definition.kind in DEFINITION_KINDS
+    }
+    removed = sorted((base.keys() - head.keys()) | aliased)
     added = sorted(head.keys() - base.keys())
     # A removed and an added definition with the same body under another name or module are one
     # rename or move. Matching is by exact fingerprint through a dict, so it stays linear.
@@ -783,7 +854,11 @@ def diff_views(base: dict[str, ViewEntry], head: dict[str, ViewEntry]) -> list[d
     )
 
     changes = []
+    # An alias to another body is an edit of the name, not a rename.
+    edited = sorted(aliased - pairs.keys())
     for symbol in sorted(base.keys() & head.keys()):
+        if symbol in aliased and symbol not in edited:
+            continue
         before, after = base[symbol], head[symbol]
         if before.definition.fingerprint != after.definition.fingerprint:
             change = _change(after, "modified")
@@ -791,7 +866,7 @@ def diff_views(base: dict[str, ViewEntry], head: dict[str, ViewEntry]) -> list[d
                 change["origin"] = {"before": before.origin, "after": after.origin}
             changes.append(change)
     for symbol in removed:
-        if symbol.startswith(carried_base):
+        if symbol.startswith(carried_base) or symbol in edited:
             continue
         entry = base[symbol]
         if symbol in pairs:
@@ -805,6 +880,11 @@ def diff_views(base: dict[str, ViewEntry], head: dict[str, ViewEntry]) -> list[d
                 "path": target.path,
                 "line": target.line,
             }
+            kept = (
+                head[symbol].definition.alias_of if symbol in head else follow(symbol)
+            )
+            if kept == target.symbol:
+                change["kept"] = True
             changes.append(change)
         else:
             changes.append(_change(entry, "removed"))
@@ -930,7 +1010,7 @@ class ContractDiff:
 
 def contract_diff(base: Tree, head: Tree) -> ContractDiff:
     base_view, head_view = public_view(base), public_view(head)
-    changes = diff_views(base_view, head_view)
+    changes = diff_views(base_view, head_view, head.canonical)
     signatures, shapes, contracts = [], [], set()
     for change in changes:
         entry = head_view.get(change["symbol"]) or base_view[change["symbol"]]

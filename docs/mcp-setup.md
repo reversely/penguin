@@ -242,7 +242,7 @@ identity, its input, its answer and its duration, so the feature page and a demo
 | `whats_near` | `paths`, `scopes` or both | Each running feature, other than the session's own, whose area touches them or that works in a scope depending on one of them, with its person, state and agent sessions |
 | `impact` | `feature` | The request, recorded at the feature's latest checkpoint for the check runner |
 | `check` | `feature` | The request, recorded the same way |
-| `apply_fix` | `feature`, `kind`, `paths`, `edits` or `rules` | The request with its fix's command ID, recorded the same way |
+| `apply_fix` | `feature`, `kind`, `paths`, `edits` or `rules`; or `kind: "codemod"` with `expand: true` | The request with its fix's command ID, recorded the same way |
 
 `impact`, `check` and `apply_fix` act only on the feature the session works on, once its fork has a
 checkpoint. Their answer has `state: "waiting"` and `message: "waiting for the check runner"`, with
@@ -270,9 +270,36 @@ files inside the session identity's charter. A lockfile fix names no files. A co
 `edits`, each `{"kind": "rename" | "move", "from": "<dotted name>", "to": "<dotted name>"}` or
 `{"kind": "rename-parameter", "function": "<dotted name>", "from": "<name>", "to": "<name>"}`.
 A codemod may carry `rules` instead: the ids of rewrite rules declared for retiring symbols, as a
-step 3 of the retiring-calls check names them.
+step 3 of the retiring-calls check names them. A codemod with `expand: true` names no `paths`,
+`edits` or `rules`: Penguin derives them from the feature's split ([Contract sort and split](#contract-sort-and-split)).
+Penguin refuses it when the feature has no split waiting on its expand, when no entry of the split is a
+rename, move or keyword rename, or when a file the codemod writes lies outside the charter.
 Penguin refuses a call with an unknown kind, a file outside the charter, a path that leaves the
 repository or an edit whose names are not Python names. A refused call records nothing.
+
+## Contract sort and split
+
+Penguin sorts the contract diff of each checkpoint a feature reports
+([design.md](design.md#sorting-and-splitting-in-the-build)). `get_work` reports the sort of the
+feature's latest checkpoint under `contract`:
+
+| Field | Content |
+|---|---|
+| `state` | `no_checkpoint` before the first checkpoint, `waiting` until the check runner reports the checkpoint's facts run, `failed` when its impact analysis failed, `sorted` once sorted |
+| `decision` | `split` when an entry is incompatible, `plan` when an entry is a behaviour change and none is incompatible, `none` otherwise |
+| `counts`, `entries` | Each entry's `sort` (`additive`, `compatible`, `incompatible` or `behaviour`), its `breaks` (`rename`, `move`, `keyword-rename`, `removed`, `signature` or `type`), its `callers` outside your developer's scopes and a one-sentence `reason`. At most 100 entries, incompatible first; `omitted` counts the rest |
+| `split` | The feature's split: `expand_first`, then `retiring` once the expand reached main, with each retiring name and its replacement |
+| `nextStep` | What to do next, in one paragraph |
+
+An incompatible entry makes the next step start with "Expand first" and list the entries. For a
+rename, a move or a keyword rename, call `apply_fix` with `kind: "codemod"` and `expand: true`:
+Penguin's codemod writes the alias or forwarding function that keeps the old name working. For a
+changed type, a breaking signature or a removed symbol, write the parallel function beside the old
+one under a new name. Report that expand as a checkpoint and call `land_feature` with `expand: true`.
+Name the parallel functions in its `retiring`. Once the expand reaches main, the next step lists the
+names now retiring and asks for the migration plan. A behaviour change keeps the merge plan:
+the next step asks for `propose_plan`. `report_checkpoint` on a feature fork answers the facts run it
+sorts under `contractSort`.
 
 ## Merge plans
 
@@ -323,7 +350,7 @@ A session of a feature asks Penguin to move main to the feature's latest checkpo
 
 | Tool | Input | Answer |
 |---|---|---|
-| `land_feature` | `feature`; optionally `checkpoint`, which must be the feature's latest; optionally `expand: true` to promote only that checkpoint | `checking` with the run's id, the checkpoint, main's head it is checked against, the branch, the plan and every target fork with its head; or the reason the feature is not ready |
+| `land_feature` | `feature`; optionally `checkpoint`, which must be the feature's latest; optionally `expand: true` to promote only that checkpoint, with an optional `retiring` | `checking` with the run's id, the checkpoint, main's head it is checked against, the branch, the plan and every target fork with its head; or the reason the feature is not ready |
 
 The answer carries no token: Penguin moves main itself. A refusal names what is missing:
 `behind_main` (merge main into your fork, report the merge with `report_checkpoint` and land again),
@@ -339,7 +366,11 @@ hold main's head and only add. A change to a path another person protects waits 
 `protected_path_unconfirmed` as a land does. The expand's own refusals are `waiting_for_runner`
 (Penguin scheduled the impact run; call again once the check runner reported it), `impact_failed`,
 `not_only_adds` (the message lists each entry that fails) and `waiting_on_owner` (the checkpoint adds
-to a scope another person owns; that person approves once on the dashboard).
+to a scope another person owns; that person approves once on the dashboard). A rename or move whose
+old name the expand codemod kept as an alias counts as an addition. For a split feature, `retiring`
+lists up to 64 `{ "contract": "<path::symbol>", "replacement": "<path::name>" }` pairs: the parallel
+function for each old name the codemod does not expand. Each contract must be an old name of the
+split. Once the expand reaches main, Penguin marks each old name retiring with its replacement.
 
 `get_work` reports `landing`: the feature's state (`building`, `landing` or `landed`), its newest block
 runs, its promotion and under `expansions` each expand checkpoint promoted on its own. Each run names

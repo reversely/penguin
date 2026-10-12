@@ -8,9 +8,14 @@
 // 2. The Only adds check (section 5.1) reads the facts run of the checkpoint against main's head
 //    (plan-facts.ts), the same impact run a merge plan reads, scheduling it when there is none. The
 //    checkpoint passes when the impact report is complete, every entry of its contract diff is an
-//    added symbol, no signature, export or stored data shape changes, and the facts show no place:
-//    no caller on main or in a running feature's own changes, and no break. A refusal lists every
-//    entry that fails.
+//    added symbol or a kept rename or move (the old name is an alias of the very same definition,
+//    as Penguin's expand codemod writes it), no signature, export or stored data shape changes, and
+//    the facts show no place: no caller on main or in a running feature's own changes, and no break.
+//    A caller of a kept name still reaches the same definition, so it is no place. A refusal lists
+//    every entry that fails.
+//
+//    A split feature (contract-split.ts) may name, in `retiring`, the replacement of each old name
+//    the codemod does not expand; Penguin keeps them for the promotion, when the old names retire.
 // 3. A checkpoint that adds to a scope another person owns waits on that person through the overlap
 //    lock (overlap-lock.ts, an owner's-scope lock): the person is asked once per feature, on the
 //    dashboard, and the agent lands again once they approve.
@@ -28,6 +33,7 @@ import type { SqlDatabase } from "./issue-index.ts";
 import { OVERLAP_LIMITS, type FeatureDependent, type OverlapListener, type OverlapStore } from "./overlap-lock.ts";
 import { factsRequest, type PlanFactsStore } from "./plan-facts.ts";
 import { affectedPlaces, breakFacts, type AffectedPlace } from "./propose-plan.ts";
+import { splitReplacements, type ContractSplitStore } from "./contract-split.ts";
 
 export interface ExpandDeps extends LandDeps {
   readonly db: SqlDatabase;
@@ -38,12 +44,16 @@ export interface ExpandDeps extends LandDeps {
   readonly dependents: (featureId: string) => readonly FeatureDependent[];
   readonly overlaps: OverlapStore;
   readonly listener?: OverlapListener;
+  /** The project's splits (contract-split.ts); absent, `retiring` is refused. */
+  readonly splits?: ContractSplitStore;
 }
 
 export interface ExpandInput {
   readonly feature: unknown;
   /** The checkpoint the agent means to promote; when given, it must be the feature's latest. */
   readonly checkpoint?: unknown;
+  /** For a split feature: the replacement of each old name the codemod does not expand. */
+  readonly retiring?: unknown;
 }
 
 const SHA = /^[0-9a-f]{40}$/u;
@@ -64,7 +74,7 @@ export function onlyAddsFailures(impact: ImpactReport, places: readonly Affected
     failures.push(`the impact report is incomplete${impact.truncated ? " (a list was cut at its limit)" : ""}${unseen}`);
   }
   for (const change of impact.changes) {
-    if (change.change !== "added") failures.push(`${change.change} ${change.symbol} (${change.path}:${change.line})`);
+    if (change.change !== "added" && change.kept !== true) failures.push(`${change.change} ${change.symbol} (${change.path}:${change.line})`);
   }
   for (const signature of impact.signatures) failures.push(`signature of ${signature.symbol} changed from ${signature.before} to ${signature.after}`);
   for (const removed of impact.removedExports) failures.push(`removed export ${removed.module}.${removed.name}`);
@@ -73,6 +83,14 @@ export function onlyAddsFailures(impact: ImpactReport, places: readonly Affected
     failures.push(`${placeLabel(place.place)} is a place: ${place.callers.length} caller${place.callers.length === 1 ? "" : "s"}, ${place.breaks.length} break${place.breaks.length === 1 ? "" : "s"}`);
   }
   return failures;
+}
+
+/** The report without the uses of a kept rename or move: such a caller still reaches the same definition. */
+function withoutKeptCallers(impact: ImpactReport): ImpactReport {
+  const kept = new Set(impact.changes.filter((change) => change.kept === true).map((change) => change.symbol));
+  if (kept.size === 0) return impact;
+  const live = (use: { readonly symbol: string }) => !kept.has(use.symbol);
+  return { ...impact, headUses: impact.headUses.filter(live), forks: impact.forks.map((fork) => ({ ...fork, uses: fork.uses.filter(live) })) };
 }
 
 interface PreparedExpand {
@@ -168,7 +186,7 @@ async function prepareExpand(deps: ExpandDeps, feature: Feature, checkpoint: unk
   const impact = run.report.impact;
   if (impact === null) return rejected("impact_failed", `the impact analysis of facts run ${run.runId} failed on the check runner, so the Only adds check cannot run`);
   const heads = new Map(run.request.targets.filter((target) => target.id !== PLAN_MAIN_TARGET).map((target) => [target.id, target.sha]));
-  const places = affectedPlaces(impact, breakFacts(run.report), scopeMap, deps.features, heads);
+  const places = affectedPlaces(withoutKeptCallers(impact), breakFacts(run.report), scopeMap, deps.features, heads);
   const failures = onlyAddsFailures(impact, places);
   if (failures.length > 0) {
     return rejected("not_only_adds", `checkpoint ${short(latest)} does not only add, so it cannot reach main on its own: ${failures.join("; ")}`);
@@ -237,8 +255,11 @@ export async function requestExpand(deps: ExpandDeps, caller: string, sessionId:
   }
   const charter = deps.charter(live.session.handle, feature.personId);
   if (charter === undefined) return rejected("not_found", `identity ${live.session.handle} has no charter`);
+  const replacements = input.retiring === undefined ? [] : splitReplacements(deps.splits?.get(id), input.retiring);
+  if (typeof replacements === "string") return rejected("invalid", replacements);
   const prepared = await prepareExpand(deps, feature, input.checkpoint);
   if (isRejection(prepared)) return prepared;
+  if (replacements.length > 0) deps.splits?.name(id, replacements);
   return openExpand(deps, prepared, charter, { identity: live.session.handle }, live.session.handle);
 }
 

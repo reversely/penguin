@@ -15,6 +15,25 @@ Each edit comes from the contract diff of `analysis:python-impact`:
 - ``rename-parameter`` rewrites the keyword ``from`` to ``to`` in each call that resolves to the
   dotted ``function``.
 
+The expand step of a split contract change comes in a request of its own (PRD 0.5 section 4.2 step
+2), with the same edits read the other way round: the feature's code already uses the new name, and
+the codemod keeps the old one working beside it.
+
+    {"expand": [{"kind": "rename", "from": "core.util.old", "to": "core.util.new"}, ...],
+     "paths": ["core/util.py", ...]}
+
+- ``rename`` writes ``old = new`` right after the definition of ``new``, at module level or inside
+  its class.
+- ``move`` writes ``from <new module> import <name> as <old name>`` into the old module, after its
+  imports.
+- ``rename-parameter`` turns the function into one that takes both keywords: the old keyword takes
+  the new one's place with a sentinel default, the new keyword becomes keyword-only with the same
+  default, and the body starts by forwarding the old keyword to the new one. Every existing call,
+  positional or by keyword, keeps working.
+
+Each edit writes only into the listed file whose module holds the old name. An edit that is already
+in place changes nothing. An edit the codemod cannot write is listed under ``refused`` with the reason.
+
 A merge plan's rewrite rules come in a request of their own (PRD 4.2 step 4):
 
     {"rules": [{"id": "display", "contract": "shared/money/__init__.py::display",
@@ -163,10 +182,11 @@ def read_request(text: str) -> dict:
         raise RequestError(f"the request is not JSON: {error}") from None
     if not isinstance(request, dict) or set(request) not in (
         {"edits", "paths"},
+        {"expand", "paths"},
         {"rules", "contracts", "paths"},
     ):
         raise RequestError(
-            "the request is an object with edits and paths, or rules, contracts and paths"
+            "the request is an object with edits and paths, expand and paths, or rules, contracts and paths"
         )
     paths = request["paths"]
     if (
@@ -176,11 +196,12 @@ def read_request(text: str) -> dict:
     ):
         raise RequestError(f"paths must list at most {MAX_PATHS} strings")
     paths = list(dict.fromkeys(paths))
-    if "edits" in request:
-        edits = request["edits"]
-        if not isinstance(edits, list) or not 0 < len(edits) <= MAX_EDITS:
-            raise RequestError(f"edits must list 1 to {MAX_EDITS} edits")
-        return {"edits": [check_edit(edit) for edit in edits], "paths": paths}
+    for key in ("edits", "expand"):
+        if key in request:
+            edits = request[key]
+            if not isinstance(edits, list) or not 0 < len(edits) <= MAX_EDITS:
+                raise RequestError(f"{key} must list 1 to {MAX_EDITS} edits")
+            return {key: [check_edit(edit) for edit in edits], "paths": paths}
     rules, contracts = request["rules"], request["contracts"]
     if not isinstance(rules, list) or not 0 < len(rules) <= MAX_RULES:
         raise RequestError(f"rules must list 1 to {MAX_RULES} rules")
@@ -286,6 +307,274 @@ def apply_edits(source: str, path: str, edits: list[dict]) -> tuple[str, list[in
             module = RenameCommand(context, edit["from"], edit["to"]).transform_module(
                 module
             )
+        if module.code != before:
+            applied.append(index)
+    return module.code, applied
+
+
+# The expand step: aliases and forwarding functions beside the new names.
+
+UNSET = "_PENGUIN_UNSET"
+EXPAND_NOTE = "# Penguin's expand step keeps the old name while callers move."
+
+
+class ExpandRefused(Exception):
+    """An expand edit the codemod cannot write, with the reason."""
+
+
+def _bound_names(statement: cst.CSTNode) -> list[str]:
+    """The names one statement of a block defines, assigns or imports."""
+    if isinstance(statement, (cst.FunctionDef, cst.ClassDef)):
+        return [statement.name.value]
+    names = []
+    if isinstance(statement, cst.SimpleStatementLine):
+        for item in statement.body:
+            if isinstance(item, cst.Assign):
+                names += [
+                    t.target.value
+                    for t in item.targets
+                    if isinstance(t.target, cst.Name)
+                ]
+            elif isinstance(item, cst.AnnAssign) and isinstance(item.target, cst.Name):
+                names.append(item.target.value)
+            elif isinstance(item, (cst.Import, cst.ImportFrom)) and not isinstance(
+                item.names, cst.ImportStar
+            ):
+                names += [
+                    (alias.evaluated_alias or alias.evaluated_name).split(".")[0]
+                    for alias in item.names
+                ]
+    return names
+
+
+def _binds(statements: list, name: str) -> bool:
+    return any(name in _bound_names(statement) for statement in statements)
+
+
+def _in_block(
+    module: cst.Module, parents: list[str], edit: Callable[[list], list]
+) -> cst.Module:
+    """Applies ``edit`` to the statements of the module, or of the class ``parents`` names in it."""
+
+    def descend(statements: list, path: list[str]) -> list:
+        if not path:
+            return edit(list(statements))
+        for index, statement in enumerate(statements):
+            if isinstance(statement, cst.ClassDef) and statement.name.value == path[0]:
+                body = statement.body
+                if not isinstance(body, cst.IndentedBlock):
+                    raise ExpandRefused(f"class {path[0]} has no indented body")
+                updated = statement.with_changes(
+                    body=body.with_changes(body=descend(list(body.body), path[1:]))
+                )
+                return [*statements[:index], updated, *statements[index + 1 :]]
+        raise ExpandRefused(f"no class {path[0]} in the file")
+
+    return module.with_changes(body=descend(list(module.body), parents))
+
+
+def _is_docstring(statement: cst.CSTNode) -> bool:
+    return (
+        isinstance(statement, cst.SimpleStatementLine)
+        and isinstance(statement.body[0], cst.Expr)
+        and isinstance(
+            statement.body[0].value, (cst.SimpleString, cst.ConcatenatedString)
+        )
+    )
+
+
+def _after_imports(statements: list) -> int:
+    """The index just past the module's docstring and its leading imports."""
+    index = 0
+    for statement in statements:
+        imports = isinstance(statement, cst.SimpleStatementLine) and all(
+            isinstance(item, (cst.Import, cst.ImportFrom)) for item in statement.body
+        )
+        if not imports and not (index == 0 and _is_docstring(statement)):
+            break
+        index += 1
+    return index
+
+
+def _noted(line: cst.SimpleStatementLine, blank_lines: int) -> cst.SimpleStatementLine:
+    return line.with_changes(
+        leading_lines=[cst.EmptyLine(indent=False)] * blank_lines
+        + [cst.EmptyLine(comment=cst.Comment(EXPAND_NOTE))]
+    )
+
+
+def expand_rename(module: cst.Module, local_from: str, local_to: str) -> cst.Module:
+    """``old = new`` right after the definition of ``new``, in the same block."""
+    *parents, old = local_from.split(".")
+    *to_parents, new = local_to.split(".")
+    if parents != to_parents:
+        raise ExpandRefused("a rename keeps its module and class")
+
+    def edit(statements: list) -> list:
+        if _binds(statements, old):
+            return statements
+        for index, statement in enumerate(statements):
+            if (
+                isinstance(statement, (cst.FunctionDef, cst.ClassDef))
+                and statement.name.value == new
+            ):
+                line = _noted(
+                    cst.parse_statement(f"{old} = {new}\n"), 1 if parents else 2
+                )
+                return [*statements[: index + 1], line, *statements[index + 1 :]]
+        raise ExpandRefused(f"no definition of {new} in the file")
+
+    return _in_block(module, parents, edit)
+
+
+def expand_move(module: cst.Module, old: str, to: str) -> cst.Module:
+    """``from <new module> import <name> as <old>`` after the old module's imports."""
+    if "." in old:
+        raise ExpandRefused("only a module-level name moves by import")
+    new_module, _, name = to.rpartition(".")
+    statements = list(module.body)
+    if _binds(statements, old):
+        return module
+    line = cst.parse_statement(f"from {new_module} import {name} as {old}\n")
+    index = _after_imports(statements)
+    return module.with_changes(body=[*statements[:index], line, *statements[index:]])
+
+
+def _with_unset(module: cst.Module) -> cst.Module:
+    """Adds ``import typing`` and the module's sentinel after its imports, unless present."""
+    statements = list(module.body)
+    if _binds(statements, UNSET):
+        return module
+    index = _after_imports(statements)
+    added = (
+        [] if _binds(statements, "typing") else [cst.parse_statement("import typing\n")]
+    )
+    added.append(_noted(cst.parse_statement(f"{UNSET}: typing.Any = object()\n"), 1))
+    return module.with_changes(body=[*statements[:index], *added, *statements[index:]])
+
+
+def _forwarding(
+    module: cst.Module, function: cst.FunctionDef, old: str, new: str
+) -> cst.FunctionDef:
+    """``function`` taking keyword ``old`` in ``new``'s place, forwarding it to ``new``."""
+    params = function.params
+    if old in [param.name.value for param in (*params.params, *params.kwonly_params)]:
+        return function
+    unset = cst.Name(UNSET)
+    positional = [param.name.value for param in params.params]
+    keyword_only = [param.name.value for param in params.kwonly_params]
+    tight = cst.AssignEqual(
+        whitespace_before=cst.SimpleWhitespace(""),
+        whitespace_after=cst.SimpleWhitespace(""),
+    )
+
+    def unset_default(param: cst.Param, name: str) -> cst.Param:
+        # PEP 8 spacing: `x=default`, but `x: int = default` with an annotation.
+        equal = cst.MaybeSentinel.DEFAULT if param.annotation is not None else tight
+        return param.with_changes(
+            name=cst.Name(name),
+            default=unset,
+            equal=equal,
+            comma=cst.MaybeSentinel.DEFAULT,
+        )
+
+    if new in positional:
+        index = positional.index(new)
+        original = params.params[index]
+        if any(param.default is None for param in params.params[index + 1 :]):
+            raise ExpandRefused(
+                f"a positional parameter after {new} has no default, so {old} cannot take its place"
+            )
+        star = params.star_arg
+        updated = params.with_changes(
+            params=[
+                *params.params[:index],
+                unset_default(original, old),
+                *params.params[index + 1 :],
+            ],
+            kwonly_params=[*params.kwonly_params, unset_default(original, new)],
+            star_arg=cst.ParamStar() if isinstance(star, cst.MaybeSentinel) else star,
+        )
+    elif new in keyword_only:
+        index = keyword_only.index(new)
+        original = params.kwonly_params[index]
+        updated = params.with_changes(
+            kwonly_params=[
+                *params.kwonly_params[:index],
+                unset_default(original, old),
+                *params.kwonly_params[index + 1 :],
+                unset_default(original, new),
+            ]
+        )
+    else:
+        raise ExpandRefused(f"{new} is not a parameter a caller can pass by keyword")
+    name = function.name.value
+    missing = (
+        f"    raise TypeError({f'{name}() missing required argument {new!r}'!r})\n"
+        if original.default is None
+        else f"    {new} = {module.code_for_node(original.default)}\n"
+    )
+    prologue = cst.parse_statement(
+        f"if {old} is not {UNSET}:\n"
+        f"    if {new} is not {UNSET}:\n"
+        f"        raise TypeError({f'{name}() got both {old!r} and {new!r}'!r})\n"
+        f"    {new} = {old}\n"
+        f"elif {new} is {UNSET}:\n{missing}"
+    )
+    body = function.body
+    if not isinstance(body, cst.IndentedBlock):
+        raise ExpandRefused(f"{name} has no indented body")
+    statements = list(body.body)
+    at = 1 if statements and _is_docstring(statements[0]) else 0
+    return function.with_changes(
+        params=updated,
+        body=body.with_changes(body=[*statements[:at], prologue, *statements[at:]]),
+    )
+
+
+def expand_keyword(module: cst.Module, local: str, old: str, new: str) -> cst.Module:
+    """The function ``local`` names taking keyword ``old`` beside ``new``, with the module's sentinel."""
+    *parents, name = local.split(".")
+
+    def edit(statements: list) -> list:
+        for index, statement in enumerate(statements):
+            if isinstance(statement, cst.FunctionDef) and statement.name.value == name:
+                updated = _forwarding(module, statement, old, new)
+                return [*statements[:index], updated, *statements[index + 1 :]]
+        raise ExpandRefused(f"no function {name} in the file")
+
+    before = module.code
+    module = _in_block(module, parents, edit)
+    return module if module.code == before else _with_unset(module)
+
+
+def apply_expand(
+    source: str, path: str, edits: list[dict], refused: list[dict]
+) -> tuple[str, list[int]]:
+    """The source with each expand edit whose old name lives in this file written, and their indexes."""
+    module = cst.parse_module(source)
+    own = module_name(path)
+    applied = []
+    for index, edit in enumerate(edits):
+        dotted = (
+            edit["function"] if edit["kind"] == "rename-parameter" else edit["from"]
+        )
+        if not dotted.startswith(f"{own}."):
+            continue
+        local = dotted[len(own) + 1 :]
+        before = module.code
+        try:
+            if edit["kind"] == "rename":
+                if not edit["to"].startswith(f"{own}."):
+                    raise ExpandRefused("a rename keeps its module")
+                module = expand_rename(module, local, edit["to"][len(own) + 1 :])
+            elif edit["kind"] == "move":
+                module = expand_move(module, local, edit["to"])
+            else:
+                module = expand_keyword(module, local, edit["from"], edit["to"])
+        except ExpandRefused as error:
+            refused.append({"edit": index, "path": path, "message": str(error)})
+            continue
         if module.code != before:
             applied.append(index)
     return module.code, applied
@@ -1016,6 +1305,16 @@ def report(request: dict, tree: str) -> dict:
         for entry in result["changed"]:
             entry["edits"] = entry.pop("applied")
         return {**head, "edits": edits, **result}
+    if "expand" in request:
+        edits, refused = request["expand"], []
+        result = run(
+            tree,
+            lambda source, path: apply_expand(source, path, edits, refused),
+            request["paths"],
+        )
+        for entry in result["changed"]:
+            entry["edits"] = entry.pop("applied")
+        return {**head, "expand": edits, "refused": refused, **result}
     rules, refused = compile_rules(request["rules"], request["contracts"])
     if rules:
         result = run(

@@ -85,6 +85,7 @@ export type FeatureRecordType =
   | "approve_overlap"
   | "propose_plan"
   | "retire_symbols"
+  | "contract_split"
   | "plan_returned"
   | "approve_plan_part"
   | "reverse_penguin_approval"
