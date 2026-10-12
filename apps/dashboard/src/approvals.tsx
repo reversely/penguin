@@ -362,6 +362,7 @@ function PlanCard({ group, busy, navigate, onDecide, onReverse }: PlanProps) {
 /** The tag beside a part: its state with who approved it, or why it reaches the person when they only confirm it. */
 function partTag(part: PlanPartRequest): { readonly text: string; readonly attention: boolean } {
   if (part.ask === "protected_path") return { text: "Protected path", attention: false };
+  if (part.ask === "stored_data") return { text: "Stored data needs a migration or backfill", attention: true };
   return { text: partStateText(part.state, part.approvedBy), attention: part.ask === "approve" && part.state === "pending" };
 }
 
@@ -398,7 +399,8 @@ function PartRow({ part, sending, navigate, onDecide, onReverse }: PartProps) {
       event.currentTarget.form?.requestSubmit();
     }
   };
-  const decides = part.ask === "approve";
+  // A part of the person's own plan that waits on them for their change's stored data takes their approval too.
+  const decides = part.ask === "approve" || part.ask === "stored_data";
   const reverses = part.ask === "penguin_approved";
   return (
     <li className="plan-part" data-unread={part.read ? undefined : true}>
@@ -428,7 +430,7 @@ function PartRow({ part, sending, navigate, onDecide, onReverse }: PartProps) {
             <button type="button" className="button primary progressive" aria-disabled={sending} aria-describedby={titleId} onClick={() => sending || onDecide(part)}>
               {sending ? "Approving" : `Approve revision ${part.revision}`}
             </button>
-            {part.state !== "pending" ? null : (
+            {part.state !== "pending" || part.ask !== "approve" ? null : (
               <button ref={requestRef} type="button" className="button" aria-disabled={sending} aria-describedby={titleId} onClick={() => sending || setAsking(true)}>
                 Request change
               </button>

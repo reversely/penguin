@@ -93,7 +93,7 @@ export class PlanProject {
     return { status: "ok", session: view };
   }
 
-  propose(caller: string, sessionId: string, feature: string, parts: unknown, rules?: unknown, retiring?: unknown): Promise<ProposePlanOutcome> {
+  propose(caller: string, sessionId: string, feature: string, parts: unknown, rules?: unknown, retiring?: unknown, storeMarker?: unknown): Promise<ProposePlanOutcome> {
     return proposePlan(
       {
         features: this.features,
@@ -120,7 +120,7 @@ export class PlanProject {
       },
       caller,
       sessionId,
-      { feature, parts, ...(rules === undefined ? {} : { rules }), ...(retiring === undefined ? {} : { retiring }) },
+      { feature, parts, ...(rules === undefined ? {} : { rules }), ...(retiring === undefined ? {} : { retiring }), ...(storeMarker === undefined ? {} : { storeMarker }) },
     );
   }
 

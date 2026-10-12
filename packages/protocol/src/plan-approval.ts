@@ -15,6 +15,13 @@
 // 5. Place. Every file the diff changes lies in the part's scopes, and a fix commit changes no file
 //    outside them.
 //
+// The stored data rule (PRD 0.5 section 6 item 5, #132) adds one more. A review whose scope only reads
+// a stored shape the change reshapes, one another scope owns, is covered by the migration or backfill
+// the plan declares in the originating change (`Plan.storeMarker`). Without one the part needs a
+// person, and that person is the originating feature's, not the reader: the missing work is in the
+// originator's change (`routesToOriginator`). A scope that persists data derived from the store owns
+// that shape itself, and its own form names its cutover marker (review.ts storedDataProblem).
+//
 // Admin mode, a project setting, makes every part need a person, and an author's reversal of
 // Penguin's approval makes that revision need them. The break limit (PRD 4.2 step 4) counts the parts
 // needing a person (`needsPerson`): a review not yet submitted, pending or of an older checkpoint is
@@ -39,7 +46,7 @@ import {
   type PlanPlace,
   type PlanResultStatus,
 } from "./plan.ts";
-import type { ReviewException } from "./review.ts";
+import type { ReviewException, StoredShapeChange } from "./review.ts";
 import { checkSchema, type JsonSchema, type SchemaError } from "./schema-check.ts";
 
 /** One review of a scope as the routing reads it: the runner's verdict and the exceptions it raised. */
@@ -53,6 +60,11 @@ export interface PartReviewResult {
   readonly exceptions: readonly ReviewException[];
   /** The invariants whose row in the form says `breaks` or `unknown`. */
   readonly notHolding: readonly string[];
+  /**
+   * The changed stored shapes the scope only reads, each owned by another scope (review.ts
+   * readOnlyShapes); absent is none.
+   */
+  readonly readShapes?: readonly StoredShapeChange[];
 }
 
 /** A protected path that covers a file, with the scope that protects it and that scope's owner. */
@@ -92,7 +104,19 @@ export type PartRoutingReason =
     }
   | { readonly kind: "protected_path"; readonly scope: string; readonly owner: string; readonly path: string; readonly file: string }
   /** `file` is null when the part's files outside its scopes were never recorded. */
-  | { readonly kind: "outside_place"; readonly file: string | null };
+  | { readonly kind: "outside_place"; readonly file: string | null }
+  /**
+   * The review's scope only reads `symbol`, a stored shape `store` owns that the change reshapes, and
+   * the plan declares no migration or backfill for it. Goes to the originating feature's person.
+   */
+  | {
+      readonly kind: "stored_data_unmarked";
+      readonly scope: string;
+      readonly symbol: string;
+      readonly path: string;
+      readonly store: string | null;
+      readonly reviewId: number;
+    };
 
 export interface PartRouting {
   /** True when any reason holds: a person decides the part, and Penguin does not approve it. */
@@ -108,6 +132,8 @@ export interface PartEvidence {
   readonly checkpoint: string;
   /** The project requires a person for every part. */
   readonly adminMode: boolean;
+  /** The plan declares a migration or backfill in the originating change (`Plan.storeMarker`). */
+  readonly storeMarked?: boolean;
 }
 
 function testReasons(part: Pick<PlanPart, "scopes" | "tests" | "breaks">): PartRoutingReason[] {
@@ -157,6 +183,11 @@ function reviewReasons(scopes: readonly string[], evidence: PartEvidence): PartR
     }
     if (newest.forkSha !== evidence.checkpoint) reasons.push({ kind: "review", scope, state: "stale", reviewId: newest.reviewId, invariant: null });
     else if (newest.state === "refused") reasons.push({ kind: "review", scope, state: "refused", reviewId: newest.reviewId, invariant: null });
+    if (newest.forkSha === evidence.checkpoint && evidence.storeMarked !== true) {
+      for (const shape of newest.readShapes ?? []) {
+        reasons.push({ kind: "stored_data_unmarked", scope, symbol: shape.symbol, path: shape.path, store: shape.scope ?? null, reviewId: newest.reviewId });
+      }
+    }
     for (const invariant of newest.notHolding) {
       if (!broken.has(invariant)) reasons.push({ kind: "review", scope, state: "not_holding", reviewId: newest.reviewId, invariant });
     }
@@ -216,13 +247,25 @@ export function needsPerson(routing: PartRouting): boolean {
 }
 
 /**
+ * Whether the part waits on the originating feature's person rather than its author: its one failing
+ * condition is stored data it only reads, which the originating change reshapes with no migration or
+ * backfill (#132). The author is not asked; the originating person adds one, or approves without it.
+ */
+export function routesToOriginator(routing: PartRouting): boolean {
+  const failing = routing.reasons.filter((reason) => !isWaitingReason(reason));
+  return failing.length > 0 && failing.every((reason) => reason.kind === "stored_data_unmarked");
+}
+
+/**
  * Why a part is in a person's list. `approve`: the person approves it, as its owner or the owner's
  * delegate. `penguin_approved`: Penguin approved the person's part, which they may reverse until the
  * block lands. `protected_path`: it touches a path the person protects in a scope another person's
  * part covers, so they confirm the lines with that person. `round_limit`: it is a part of the person's
- * own plan that went past the round limit.
+ * own plan that went past the round limit. `stored_data`: it is a part of the person's own plan that
+ * waits on them, because their change reshapes stored data the part's scope only reads and the plan
+ * declares no migration or backfill (`routesToOriginator`); they approve it, or add one and propose again.
  */
-export const PLAN_PART_ASKS = ["approve", "penguin_approved", "protected_path", "round_limit"] as const;
+export const PLAN_PART_ASKS = ["approve", "penguin_approved", "protected_path", "round_limit", "stored_data"] as const;
 export type PlanPartAsk = (typeof PLAN_PART_ASKS)[number];
 
 /** One file of a part's proposed fix, with its diff lines, each prefixed with " ", "-" or "+". */
@@ -356,6 +399,7 @@ const REASON: JsonSchema = {
     record({ kind: { const: "protected_difference" }, scope: TEXT, invariant: TEXT, contract: TEXT, differing: COUNT, reviewId: COUNT }),
     record({ kind: { const: "protected_path" }, scope: TEXT, owner: PERSON, path: TEXT, file: TEXT }),
     record({ kind: { const: "outside_place" }, file: NULLABLE(TEXT) }),
+    record({ kind: { const: "stored_data_unmarked" }, scope: TEXT, symbol: TEXT, path: TEXT, store: NULLABLE(TEXT), reviewId: COUNT }),
   ],
 };
 

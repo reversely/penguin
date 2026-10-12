@@ -12,6 +12,7 @@ import {
   needsPerson,
   partRouting,
   reviewExceptions,
+  routesToOriginator,
   SIDE_BY_SIDE_COMMAND_ID,
   SIDE_BY_SIDE_TOOL,
   REVIEW_SCHEMA_VERSION,
@@ -215,6 +216,23 @@ test("admin mode and a reversal of the current revision send a clean part to a p
   assert.deepEqual(partRouting(part(["tax/invoice.py"], ["tax"], { reversal, revision: 2 }), evidence([HOLDS]), protectedFor).reasons, []);
 });
 
+test("stored data a scope only reads routes its part to the originating person unless the plan declares a migration or backfill", () => {
+  // #132: the store's owner covers every reader that only reads it, in the originating change.
+  const shape = { symbol: "orders.store.Order", path: "orders/store.py", scope: "orders" };
+  const reads = { ...HOLDS, readShapes: [shape] };
+  const unmarked = partRouting(part(["tax/invoice.py"]), evidence([reads]), protectedFor);
+  assert.deepEqual(unmarked.reasons, [{ kind: "stored_data_unmarked", scope: "tax", symbol: shape.symbol, path: shape.path, store: "orders", reviewId: 1 }]);
+  assert.equal(needsPerson(unmarked), true);
+  assert.equal(routesToOriginator(unmarked), true);
+  assert.deepEqual(partRouting(part(["tax/invoice.py"]), { ...evidence([reads]), storeMarked: true }, protectedFor).reasons, []);
+  // With another failing check the author decides, and the stored data reason stays listed.
+  const broken = partRouting(part(["tax/invoice.py"]), evidence([{ ...recorded(1, "tax", form("breaks"), 0), readShapes: [shape] }]), protectedFor);
+  assert.equal(routesToOriginator(broken), false);
+  assert.ok(broken.reasons.some((reason) => reason.kind === "stored_data_unmarked"));
+  // A review of an older checkpoint is waited for; its shapes do not count yet.
+  assert.equal(routesToOriginator(partRouting(part(["tax/invoice.py"]), evidence([{ ...reads, forkSha: FORK }]), protectedFor)), false);
+});
+
 test("the dashboard answer schema takes a part with its routing and refuses markup in a person id", () => {
   const routing = partRouting(part(["analytics/revenue_report.py"], ["analytics"]), evidence([], true), protectedFor);
   const item = {
@@ -246,6 +264,9 @@ test("the dashboard answer schema takes a part with its routing and refuses mark
   // A part Penguin approved names it as its approver; a routing reason outside the list is refused.
   assert.deepEqual(checkPlanInbox({ ...empty, parts: [{ ...item, ask: "penguin_approved", state: "approved", approvedBy: "penguin", routing: { inPerson: false, reasons: [] } }] }), []);
   assert.notDeepEqual(checkPlanInbox({ ...empty, parts: [{ ...item, routing: { inPerson: true, reasons: [{ kind: "trust_me" }] } }] }), []);
+  // A part of the person's own plan waiting on them for their change's stored data (#132).
+  const unmarked = { kind: "stored_data_unmarked", scope: "analytics", symbol: "orders.store.Order", path: "orders/store.py", store: "orders", reviewId: 4 };
+  assert.deepEqual(checkPlanInbox({ ...empty, parts: [{ ...item, ask: "stored_data", routing: { inPerson: true, reasons: [unmarked] } }] }), []);
   assert.notDeepEqual(checkPlanInbox({ ...empty, parts: [{ ...item, approvedBy: "<i>penguin</i>" }] }), []);
   // A review must carry its form's verdicts as one of the three and its run's commits as SHAs.
   assert.notDeepEqual(checkPlanInbox({ ...empty, parts: [{ ...item, reviews: [{ ...REVIEW, rows: [{ ...REVIEW.rows[0], verdict: "fine" }] }] }] }), []);

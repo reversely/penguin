@@ -8,7 +8,7 @@
 // trial still running holds each form it carries as pending, so Penguin waits for it instead of
 // approving on a review of the originating checkpoint.
 
-import type { PartReviewResult, PartTrialEvidence, PlanPart, ProtectedPathHit } from "@penguin/protocol";
+import { readOnlyShapes, type PartReviewResult, type PartTrialEvidence, type PlanPart, type ProtectedPathHit } from "@penguin/protocol";
 import { protectedPathFor, type ScopeMap } from "@penguin/scope-map";
 
 import type { StoredReview } from "./review-submit.ts";
@@ -48,7 +48,10 @@ export function trialReviews(results: readonly PartReviewResult[], trial: PartTr
   return results.map((result) => ran.get(result.reviewId) ?? result);
 }
 
-/** A stored review as the routing reads it: its checkpoint, verdict, exceptions and the rows that do not hold. */
+/**
+ * A stored review as the routing reads it: its checkpoint, verdict, exceptions, the rows that do not
+ * hold and the changed stored shapes its scope only reads.
+ */
 export function reviewResult(review: StoredReview): PartReviewResult {
   return {
     reviewId: review.id,
@@ -57,5 +60,6 @@ export function reviewResult(review: StoredReview): PartReviewResult {
     state: review.state,
     exceptions: review.exceptions,
     notHolding: review.form.rows.filter((row) => row.verdict !== "holds").map((row) => row.invariant),
+    readShapes: review.record === null ? [] : readOnlyShapes(review.record),
   };
 }

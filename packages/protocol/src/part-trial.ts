@@ -18,11 +18,13 @@ import { PLAN_LIMITS, PLAN_RESULT_STATUSES, type PlanResultStatus } from "./plan
 import {
   boundReviewRecord,
   parseReviewRecord,
+  readOnlyShapes,
   reviewExceptions,
   type InvariantView,
   type ReviewException,
   type ReviewForm,
   type ReviewRecord,
+  type StoredShapeChange,
 } from "./review.ts";
 import { checkSchema, type JsonSchema } from "./schema-check.ts";
 
@@ -210,6 +212,8 @@ export interface PartTrialReviewResult {
   readonly exceptions: readonly ReviewException[];
   /** The invariants whose row in the form says `breaks` or `unknown`. */
   readonly notHolding: readonly string[];
+  /** The changed stored shapes the scope only reads on the trial tree (review.ts readOnlyShapes). */
+  readonly readShapes: readonly StoredShapeChange[];
 }
 
 /** A recorded trial of one part revision: what the approval checks read in place of the plan's facts run. */
@@ -250,6 +254,7 @@ export function partTrialEvidence(targetId: string, report: PartTrialReport, sou
       state: review.record.state,
       exceptions: reviewExceptions(accepted ? source.form : null, source.invariants, review.record.sideBySide),
       notHolding: source.form.rows.filter((row) => row.verdict !== "holds").map((row) => row.invariant),
+      readShapes: readOnlyShapes({ scope: source.scopeId, storedShapes: review.record.storedShapes }),
     });
   }
   return {

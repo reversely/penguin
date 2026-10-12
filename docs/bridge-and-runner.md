@@ -652,8 +652,9 @@ standard error, so only the report reaches standard output.
 | A contract no scope declares | `invalid`; nothing is imported for it |
 
 A review on the runner runs the whole harness (`review-harness.ts`): it checks the form, makes the
-contract diff for the stored data rule, keeping the changed stored shapes the reviewing scope reads,
-and runs both sides.
+contract diff for the stored data rule, keeping the changed stored shapes the reviewing scope reads
+with the scope that owns each one. It then runs both sides. The form needs a marker only for a shape
+its own scope owns ([design.md](design.md#review-harness)).
 
 ```sh
 penguin-bridge review --repo <path> --base main --fork <commit> --scope analytics \

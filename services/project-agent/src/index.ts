@@ -2307,6 +2307,7 @@ export class ProjectAgent extends Agent {
         landed: (featureId) => this.#featureStore().get(featureId)?.state === "landed",
         trial: (featureId, part) => trialStanding(this.#partTrialStore(), this.#reviewStore(), featureId, part),
         records: (featureId) => this.#featureStore().records(featureId),
+        ownFeatures: (person) => this.#featureStore().list().filter((feature) => feature.personId === person && feature.state !== "landed").map((feature) => feature.id),
         protectedChanges: (owners, items, delegates) =>
           protectedChangeRequests(this.#protectedChangeStore(), this.#featureStore(), items, owners, caller, delegates),
       },

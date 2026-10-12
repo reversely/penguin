@@ -20,7 +20,7 @@ import {
 } from "@penguin/protocol";
 import { parseScopeMap } from "@penguin/scope-map";
 
-import { parseBreakLimit, parseParts, type ProposePlanOutcome } from "../src/propose-plan.ts";
+import { parseBreakLimit, parseParts, parseStoreMarker, type ProposePlanOutcome } from "../src/propose-plan.ts";
 import { lineHunks, splitLines } from "../src/repo-diff.ts";
 import { GitRepo } from "./issues-repo.ts";
 import { PlanProject } from "./plan-project.ts";
@@ -598,6 +598,17 @@ describe("propose_plan", () => {
     const refused = project.facts.record(runId, "r", long);
     assert.equal(refused.status === "rejected" && refused.reason, "invalid");
     assert.equal(project.facts.pending().length, 1);
+  });
+
+  test("a store marker is a migration or backfill at a definition or a line, checked before anything is read", () => {
+    assert.equal(parseStoreMarker(undefined), null);
+    assert.equal(parseStoreMarker(null), null);
+    assert.deepEqual(parseStoreMarker({ kind: "backfill", evidence: "ingestion/backfill.py::run" }), { kind: "backfill", evidence: "ingestion/backfill.py::run" });
+    assert.deepEqual(parseStoreMarker({ kind: "migration", evidence: "db/0007.py:3" }), { kind: "migration", evidence: "db/0007.py:3" });
+    // A cutover belongs in a reader's own form, not on the store's change.
+    assert.equal(typeof parseStoreMarker({ kind: "cutover", evidence: "a.py:1" }), "string");
+    assert.equal(typeof parseStoreMarker({ kind: "backfill", evidence: "../etc/passwd:1" }), "string");
+    assert.equal(typeof parseStoreMarker({ kind: "backfill", evidence: "a.py:1", run: "x" }), "string");
   });
 
   test("parts are checked for shape, size and SHAs before anything is read", () => {

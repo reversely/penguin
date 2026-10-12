@@ -132,8 +132,11 @@ without a conflict.
 submit on Priya's feature. Jun's form reports `tablet-patrons-separate` as broken. Sam's form reports
 `unsubscribe-holds` as holding. Each row's evidence is the contract the invariant's recorded examples
 run. Jun's form also names the cutover marker `analytics/retention.py::person_id_cutover`, which only
-Jun's fork holds: Jun's fix adds a `cutover` field to the stored `RetentionDashboard`. Sam's form
-names no marker, since Sam's fork holds none. The builder does not commit the forms.
+Jun's fork holds: Jun's fix adds a `cutover` field to the stored `RetentionDashboard`, which
+analytics owns. Sam's form names no marker, since Sam's fork holds none and messaging only reads
+the `Profile` store that identity-map owns. Priya's commits hold no migration or backfill for
+`Profile`, so the plan the preview proposes from this fixture declares no `storeMarker`. The
+builder does not commit the forms.
 
 ## Impact and review on this fixture
 

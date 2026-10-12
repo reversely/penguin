@@ -43,7 +43,12 @@
 import {
   applyPatchFile,
   codemodPlan,
+  evidenceProblem,
   needsPerson,
+  parseEvidence,
+  PLAN_STORE_MARKERS,
+  REVIEW_LIMITS,
+  type PlanStoreMarker,
   partRouting,
   type PartReviewResult,
   type PartTestEvidence,
@@ -84,6 +89,7 @@ import type { FeatureRejection, FeatureRejectReason } from "./feature-open.ts";
 import { parseFeatureId, type Feature, type FeatureRecord, type FeatureStore, type UnsignedFeatureRecord } from "./feature-store.ts";
 import type { FeatureDependent } from "./overlap-lock.ts";
 import { protectedLookup } from "./part-checks.ts";
+import { addedLines, importedNames, missingSymbols } from "./patch-symbols.ts";
 import { factsRequest, type PlanFactsRun, type PlanFactsStore } from "./plan-facts.ts";
 import type { PlanKeeper } from "./plan-store.ts";
 import { changedFiles, commitSubject, fileDiffs, splitLines, type ChangedFile, type GitObjectReader } from "./repo-diff.ts";
@@ -134,6 +140,11 @@ export interface ProposePlanInput {
   readonly rules?: unknown;
   /** Contracts the plan marks as retiring, each `{ contract, replacement }` (retiring.ts); absent is none. */
   readonly retiring?: unknown;
+  /**
+   * The migration or backfill the checkpoint carries for the stored data the change owns,
+   * `{ kind, evidence }` (`PlanStoreMarker`); absent or null is none.
+   */
+  readonly storeMarker?: unknown;
 }
 
 /** Something the plan lacks, with the place or part it concerns. */
@@ -151,6 +162,8 @@ export interface MissingItem {
     | "patch_base_moved"
     | "patch_outside_scopes"
     | "patch_does_not_apply"
+    | "patch_missing_symbol"
+    | "store_marker_not_found"
     | "rule_refused"
     | "rules_not_run";
   readonly message: string;
@@ -278,6 +291,33 @@ function parsePatchFix(fields: Record<string, unknown>, at: string): SubmittedFi
     return `${at}.patch.diff must be a unified diff of at most ${PATCH_LIMITS.bytes} bytes`;
   }
   return { kind: "patch", base, text: diff };
+}
+
+/**
+ * The plan's store marker as submitted: null when absent, the marker, or a message naming what breaks
+ * the form. Its evidence is looked up in the checkpoint later (`storeMarkerProblem`).
+ */
+export function parseStoreMarker(value: unknown): PlanStoreMarker | null | string {
+  if (value === undefined || value === null) return null;
+  const form = "storeMarker must be { kind: migration or backfill, evidence: a definition (path::name) or a line (path:line) in the checkpoint }";
+  if (!isRecord(value)) return form;
+  const { kind, evidence, ...rest } = value;
+  if (Object.keys(rest).length > 0 || !PLAN_STORE_MARKERS.includes(kind as PlanStoreMarker["kind"])) return form;
+  if (typeof evidence !== "string" || evidence.length > REVIEW_LIMITS.evidenceLength || parseEvidence(evidence) === undefined) return form;
+  return { kind: kind as PlanStoreMarker["kind"], evidence };
+}
+
+/** Why the store marker's evidence is not in the checkpoint, or null when it is. */
+async function storeMarkerProblem(deps: Pick<ProposePlanDeps, "readRepo">, repo: string, checkpoint: string, marker: PlanStoreMarker, calls: Record<string, number>): Promise<string | null> {
+  const evidence = parseEvidence(marker.evidence);
+  if (evidence === undefined) return `${marker.evidence} is not a definition or a line`;
+  const text = await deps.readRepo(repo, async (reader) => {
+    const counting = counted(reader, calls);
+    const tree = (await counting.readCommit(checkpoint))?.treeHash;
+    return tree === undefined ? null : ((await fileEntry(counting, tree, evidence.path))?.text ?? null);
+  });
+  const problem = evidenceProblem(evidence, text);
+  return problem === null ? null : `the ${marker.kind} ${marker.evidence} is not in the checkpoint: ${problem.replace("the fork", "the checkpoint")}`;
 }
 
 function parsePlace(value: unknown): PlanPlace | undefined {
@@ -630,6 +670,8 @@ export async function proposePlan(deps: ProposePlanDeps, caller: string, session
   const retiring = parseRetiring(input.retiring);
   if (typeof retiring === "string") return rejected("invalid", retiring);
   if (retiring.length > 0 && deps.retiring === undefined) return rejected("misconfigured", "this project keeps no retiring symbols");
+  const storeMarker = parseStoreMarker(input.storeMarker);
+  if (typeof storeMarker === "string") return rejected("invalid", storeMarker);
   if (feature.repo === null || feature.latestCheckpointSha === null) {
     return rejected("not_found", `feature ${featureId} has no checkpoint on its fork; report one before its plan`);
   }
@@ -689,6 +731,8 @@ export async function proposePlan(deps: ProposePlanDeps, caller: string, session
   const impact = report.impact;
 
   const missing: MissingItem[] = ruleProblems(rules, impact, report, new Set(retiring.map((each) => each.contract)));
+  const markerProblem = storeMarker === null ? null : await storeMarkerProblem(deps, repo, checkpoint, storeMarker, calls);
+  if (markerProblem !== null) missing.push({ code: "store_marker_not_found", message: markerProblem });
   const byPlace = new Map(places.map((place) => [placeKey(place.place), place]));
   const claimed = new Map<string, number>();
   for (const [index, part] of parts.entries()) {
@@ -745,7 +789,9 @@ export async function proposePlan(deps: ProposePlanDeps, caller: string, session
   const evidence = deps.evidence?.(featureId) ?? { reviews: [], adminMode: false };
   const lookup = protectedLookup(scopeMap);
   const inPerson = built
-    .filter((part) => needsPerson(partRouting(part, { reviews: evidence.reviews, checkpoint, adminMode: evidence.adminMode }, lookup)))
+    .filter((part) =>
+      needsPerson(partRouting(part, { reviews: evidence.reviews, checkpoint, adminMode: evidence.adminMode, storeMarked: storeMarker !== null }, lookup)),
+    )
     .map((part) => part.place);
   if (inPerson.length > deps.breakLimit) {
     const record = await deps.sign(
@@ -772,6 +818,7 @@ export async function proposePlan(deps: ProposePlanDeps, caller: string, session
     break_limit: deps.breakLimit,
     rules: rules.map((rule) => rule.id),
     ...(retiring.length === 0 ? {} : { retiring: retiring.map((each) => ({ ...each })) }),
+    ...(storeMarker === null ? {} : { store_marker: { ...storeMarker } }),
     parts: built.map((part) => ({ part_id: part.partId, place: part.place, kind: part.kind, diff: part.diff.ref })),
   });
   const plan: Plan = {
@@ -788,6 +835,7 @@ export async function proposePlan(deps: ProposePlanDeps, caller: string, session
     facts,
     rules,
     ...(retiring.length === 0 ? {} : { retiring }),
+    storeMarker,
     parts: built,
     assembledMs,
   };
@@ -916,26 +964,71 @@ export async function readFix(
   const target = deps.features.get(place.place.feature);
   if (target?.repo == null) return { code: "patch_does_not_apply", message: `${place.place.feature} has no fork` };
   const image = new Map<string, { before: string | null; after: string | null }>();
+  const patched = new Map<string, string | null>();
+  const headAt: { tree?: string } = {};
   const mismatch = await deps.readRepo(target.repo, async (reader) => {
     const counting = counted(reader, calls);
     const head = await counting.readCommit(fix.base);
     if (head === null) return `${fix.base} is not in ${place.place.kind === "feature" ? place.place.feature : ""}'s fork`;
+    headAt.tree = head.treeHash;
     for (const file of parsed.files) {
       const before = await fileEntry(counting, head.treeHash, file.path);
       const problem = patchMismatch(file, before === null ? null : splitLines(before.text));
       if (problem !== null) return problem;
       const applied = applyPatchFile(file, before?.text ?? null);
       if (!applied.ok) return applied.message;
+      patched.set(file.path, applied.text);
       const width = before?.hash.length ?? head.hash.length;
       image.set(file.path, { before: before?.hash ?? null, after: applied.text === null ? null : await blobHash(applied.text, width) });
     }
     return null;
   });
   if (mismatch !== null) return { code: "patch_does_not_apply", message: mismatch };
+  if (checkpoint !== undefined && headAt.tree !== undefined) {
+    const trees = { originRepo, checkpoint, targetRepo: target.repo, headTree: headAt.tree };
+    const missing = await patchSymbolsMissing(deps, parsed.files, patched, trees, calls);
+    if (missing !== null) return missing;
+  }
   const files = parsed.files.map((file) => ({ ...file, scopeId: scopeForPath(scopeMap, file.path) ?? null }));
   const repo = `feature-${place.place.feature}`;
   // Every file of a patch lies inside the place's scopes, or it was refused above.
   return { diff: { source: "patch", repo, ref: await fixRef(repo, fix), commit: null, base: fix.base, patch: fix.text, files, truncated: false, outside: [] }, image, fixInTree: false };
+}
+
+/**
+ * The first symbol a patch imports that its trial tree would not have (patch-symbols.ts), as a missing
+ * item naming the symbol and the next step, or null when every one exists. Modules are read at the
+ * plan's checkpoint in the originating fork and at the fork head the patch applies to.
+ */
+async function patchSymbolsMissing(
+  deps: Pick<ProposePlanDeps, "readRepo">,
+  files: readonly PlanFileDiff[],
+  patched: ReadonlyMap<string, string | null>,
+  trees: { readonly originRepo: string; readonly checkpoint: string; readonly targetRepo: string; readonly headTree: string },
+  calls: Record<string, number>,
+): Promise<{ code: "patch_missing_symbol"; message: string } | null> {
+  const imports = files.flatMap((file) => {
+    const text = patched.get(file.path);
+    return text == null ? [] : importedNames(file.path, text, addedLines(file));
+  });
+  if (imports.length === 0) return null;
+  const checkpointTree = await deps.readRepo(trees.originRepo, async (reader) => (await counted(reader, calls).readCommit(trees.checkpoint))?.treeHash ?? null);
+  const readAt = async (repo: string, tree: string | null, path: string): Promise<string | null> =>
+    tree === null ? null : deps.readRepo(repo, async (reader) => (await fileEntry(counted(reader, calls), tree, path))?.text ?? null);
+  const missing = await missingSymbols(imports, async (path) => ({
+    patched: patched.has(path) ? (patched.get(path) ?? null) : undefined,
+    checkpoint: await readAt(trees.originRepo, checkpointTree, path),
+    head: await readAt(trees.targetRepo, trees.headTree, path),
+  }));
+  const first = missing[0];
+  if (first === undefined) return null;
+  const others = missing.length > 1 ? ` (and ${missing.length - 1} more: ${missing.slice(1, 4).map((each) => each.name).join(", ")})` : "";
+  return {
+    code: "patch_missing_symbol",
+    message:
+      `${first.file}:${first.line} imports ${first.name} from ${first.module}, which neither the plan's checkpoint ${trees.checkpoint.slice(0, 12)} ` +
+      `nor the patch defines in ${first.modulePath}${others}; check in ${first.name} first, report that checkpoint, then propose the plan again`,
+  };
 }
 
 /**

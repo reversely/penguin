@@ -316,7 +316,7 @@ export interface McpFeatures {
    * Takes a merge plan for feature `feature`, which the session works on, with its rewrite rules;
    * Penguin fills in the facts.
    */
-  plan(sessionId: string, feature: string, parts: unknown, rules?: unknown, retiring?: unknown): Promise<FeatureCallResult>;
+  plan(sessionId: string, feature: string, parts: unknown, rules?: unknown, retiring?: unknown, storeMarker?: unknown): Promise<FeatureCallResult>;
   /** Revises a part of the session's feature's plan whose author asked for a change. */
   revise(sessionId: string, input: PartRevision): Promise<FeatureCallResult>;
   /** A write token on the affected fork of an approved part, for the originating agent named in the plan. */
@@ -706,6 +706,18 @@ const proposePlanInput = z.strictObject({
       "Contracts your change makes old, once the replacement sits beside them. A stored plan marks them retiring for the whole project: " +
         "a checkpoint whose own changes call one gets a next step naming the replacement, and a rewrite rule you declare for the contract " +
         "is how Penguin's codemod migrates the call.",
+    ),
+  storeMarker: z
+    .strictObject({
+      kind: z.enum(["migration", "backfill"]),
+      evidence: z.string().min(1).max(600).describe("Where it is in your checkpoint: path::name or path:line, such as ingestion/backfill.py::backfill_person_ids."),
+    })
+    .nullable()
+    .optional()
+    .describe(
+      "The migration or backfill your checkpoint carries for the stored data your change reshapes. It covers every scope that only " +
+        "reads that data, so their parts need no marker of their own. Without one, a part whose scope reads the reshaped data waits on " +
+        "your developer instead of its author.",
     ),
 });
 const revisePlanPartInput = z
@@ -1255,15 +1267,16 @@ function registerFeatureTools(server: McpServer, features: McpFeatures): void {
         "refused when it would rewrite code outside its contract. The first call for a " +
         "checkpoint asks the check runner for the impact graph and test runs and answers `missing` until it " +
         "reports; call again later. `missing` lists every place without a part and every part Penguin cannot " +
-        "read or apply. A part needs a person when a check fails: its tests on the merged tree with the fix, its review form, " +
+        "read or apply, and every name a patch imports that neither your checkpoint nor the patch defines: check that name in " +
+        "first, then propose. A part needs a person when a check fails: its tests on the merged tree with the fix, its review form, " +
         "the side-by-side run, a protected path, or a change outside its place. A plan with more such parts than the project's " +
         "break limit is `returned` with them under `inPerson`: split it. A complete plan is `stored` as a signed record, and " +
         "Penguin approves each part whose checks are all clean; its `approvedBy` is then `penguin`.",
       inputSchema: proposePlanInput,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
-    async ({ sessionId: id, feature, parts, rules, retiring }) => {
-      const outcome = await features.plan(id, feature, parts, rules, retiring);
+    async ({ sessionId: id, feature, parts, rules, retiring, storeMarker }) => {
+      const outcome = await features.plan(id, feature, parts, rules, retiring, storeMarker);
       // A plan with gaps or over the limit is an answer with the reasons, marked as an error so the agent acts on it.
       if (outcome.status === "ok" && outcome.value.status !== "stored") return { ...result({ ...outcome.value }), isError: true };
       return answer(outcome);

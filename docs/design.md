@@ -181,6 +181,20 @@ The procedure moves conflict handling to the start of the work. Each step below 
   run tested. The plan keeps the patch whole, so the fix can be written into the affected fork once
   its person approves. Penguin refuses a session of another person and a session that works on
   another feature (`services/project-agent/src/propose-plan.ts`).
+- **Symbols a patch imports.** A patch's trial tree is the fork head with the patch applied and the
+  plan's checkpoint merged. Each `from <module> import <name>` on a patch's added lines must find the
+  name in that tree: bound at module level in the patched module, or, for a module the patch leaves
+  alone, in the module at the checkpoint or at the fork head. A module in neither tree is a library's
+  and is skipped. A missing name answers `missing` with `patch_missing_symbol`, naming the file, the
+  line, the name and the next step: check the name in, report that checkpoint, then propose again
+  (`patch-symbols.ts`). The check reads each imported module once from each tree through the
+  Artifacts binding. It runs again on each revision.
+- **Store marker.** `propose_plan` takes `storeMarker`: `{ kind, evidence }`, where `kind` is
+  `migration` or `backfill` and `evidence` is a definition or a line in the checkpoint. It is the
+  migration or backfill the change carries for the stored data it owns
+  ([stored data rule](#review-harness)). Penguin looks the evidence up in the checkpoint; when it is
+  absent the answer is `missing` with `store_marker_not_found`. A stored plan keeps it as
+  `Plan.storeMarker` and its `propose_plan` record as `store_marker`.
 - **The facts and their tools.** Each plan records which tool or read produced each fact:
 
   | Fact | Source |
@@ -401,7 +415,7 @@ Penguin sorts each feature checkpoint's contract diff and decides between a spli
 
 #### Penguin's approval in the build
 
-`partRouting` (`packages/protocol/src/plan-approval.ts`) checks a part against the five conditions
+`partRouting` (`packages/protocol/src/plan-approval.ts`) checks a part against six conditions
 from facts Penguin already holds. Each condition that is not clean is a reason. The dashboard
 shows each reason as one line. Penguin approves the part only with no reason. An absent result is a
 reason too:
@@ -413,6 +427,14 @@ reason too:
 | Side by side | That review's run shows no difference on a protected invariant | The review's exceptions |
 | Protected paths | No file of the diff lies under a path a scope's owner protects in `penguin/scopes.json` | The scope map |
 | Place | Every changed file lies in the part's scopes, and a fix commit changes no file outside them. For code on main the place is the scope's paths, tests included: a fix that moves the scope's own tests onto the new API stays inside the scope. For a running feature it is the scopes its own changes reach, where its patch must lie. The place never widens beyond the part's scopes | `PlanPart.diff.files`, `diff.outside` and `scopes` |
+| Stored data | The newest review on the plan's checkpoint records no changed stored shape that its scope only reads, or the plan declares a `storeMarker` | The review record's `storedShapes` with their owning scopes |
+
+A part whose one failing check is stored data (`stored_data_unmarked`) routes to the originating
+feature's person (`routesToOriginator`). Its author gets no `approve` ask for it. The originating
+person sees it in the plan inbox as a `stored_data` ask and may approve it as it stands; the
+`approve_plan_part` record then carries `routed_to: "originating_person"`. Otherwise the person
+adds a migration or backfill to the change and proposes the plan again with `storeMarker`. A part
+that also fails another check stays with its author. Its stored data reason is listed with the others.
 
 - **Which fixes a run has tested.** Each part revision's trial builds the tree with the fix in place
   and runs the part's scopes' tests and reviews on it ([Part trials](#part-trials)). Once the trial
@@ -1027,9 +1049,14 @@ differently.
    more lines".
 4. **Named risky inputs.** The form lists inputs the reviewer expects to behave differently. Penguin
    runs them against the old code and the new code. It attaches the results.
-5. **Stored data rule.** If the contract diff shows that stored data changes meaning or shape, each
-   part whose scope reads that data needs a migration, a backfill or a cutover marker before anyone
-   can approve it. A part whose scope reads none of it reviews normally (#132).
+5. **Stored data rule.** If the contract diff shows that stored data changes meaning or shape, the
+   change that owns the store carries a migration or a backfill. The originating feature owns its own
+   stored data, so the plan declares that marker once, as `storeMarker`. It covers every scope that
+   only reads the store. A scope that persists data derived from the store owns that stored shape
+   itself, so its own form names a cutover marker for it. When a scope only reads the store and the
+   plan declares no migration or backfill, the part goes to the originating feature's person. Its
+   author is not asked, because the missing work is in the originator's change. A part whose scope
+   reads none of the changed data reviews normally.
 
 #### Invariants and examples
 
@@ -1080,7 +1107,7 @@ runs evidence. `validateReviewForm` (`packages/protocol`) refuses a form with ea
 | `no_evidence` | A row has no evidence, whatever its verdict |
 | `invalid_evidence`, `evidence_not_found` | Evidence is malformed, or the fork lacks it |
 | `unknown_without_test` | An `unknown` row cites no test |
-| `stored_data_without_marker` | The contract diff shows a stored data shape changed that the reviewing scope reads, and the form names no marker |
+| `stored_data_without_marker` | The contract diff shows a changed stored data shape the reviewing scope owns. The form names no marker. A changed shape another scope owns is the owning change's to cover |
 | `invalid_form` | A field is missing, unknown or over its limit, such as 600 characters of evidence or 64 KiB of one input's arguments |
 
 #### Submitting a review
@@ -1130,10 +1157,13 @@ The runner's review (`penguin-bridge review`, [bridge-and-runner.md](bridge-and-
 checks the form again against the fork's Git objects. It makes the contract diff with
 `analysis:python-impact` and applies the stored data rule to the changed stored data shapes the
 reviewing scope reads: the same analysis searches every file of the scope in the fork, changed or
-not, for a use of each shape or one of its members (`shapesRead`), and the record's `storedShapes`
-lists only those. On identity unification, Priya's change reshapes `Profile`. Messaging reads
-`Profile` and `Profile.get`, so Sam's form needs a marker; analytics reads only `IdentityMap` and
-`resolve()`, so Jun's does not. It then runs
+not, for a use of each shape or one of its members (`shapesRead`). The record's `storedShapes`
+lists only those, each with `scope`: the scope whose files define the shape, which owns the store.
+The form needs a marker only for a shape the reviewing scope owns. A shape another scope owns goes
+to the routing (`readOnlyShapes`), which looks for the plan's `storeMarker`. On identity
+unification, Priya's change reshapes `Profile`, which identity-map owns. Messaging reads `Profile`
+and `Profile.get`, so Sam's review records it as read from identity-map and Sam's form needs no
+marker. Analytics reads only `IdentityMap` and `resolve()`, so no shape counts for it. It then runs
 the scope's examples files and the form's risky inputs on main and on the fork through
 `analysis:side-by-side`. Inputs reach the scope's code as JSON data built into the parameter types.
 Each input is checked against the function's signature before any input runs.
@@ -1204,17 +1234,21 @@ The trial uses the plan's checkpoint. A later checkpoint of the originating feat
 trial until a new plan is proposed on it. On the helpful-fix fixture Jun's and Sam's fixes import
 `start_of_local_day`, so Priya's agent proposes the plan at the checkpoint that adds it, as PRD case 2
 orders it. Both trials then pass and Penguin approves both parts. Proposed one checkpoint earlier,
-both trials failed on the missing import.
+the plan is answered `missing` with `patch_missing_symbol` for each patch, naming
+`start_of_local_day` (`tests/integration/plan-from-fixture.test.ts`).
 
 On the identity-unification fixture Jun's form can cite
 `analytics/tests/test_identity.py::test_shared_device_split` and name the cutover marker
 `analytics/retention.py::person_id_cutover`. Both exist only in Jun's fork with the fix of Jun's
 part. The review of Priya's checkpoint refuses the form with `evidence_not_found`. The review on the
-trial of Jun's part accepts it: Jun's patch adds a `cutover` field to the stored `RetentionDashboard`,
-which analytics reads, and the marker answers it (`tests/integration/part-trial.test.ts`). The
+trial of Jun's part accepts it. Jun's patch adds a `cutover` field to the stored `RetentionDashboard`,
+which analytics owns, so the marker is required; without it the form is refused with
+`stored_data_without_marker` (`tests/integration/part-trial.test.ts`). The
 fixture's own form names that marker, so on the trial of the analytics part on main, whose tree
-lacks Jun's file, it is refused with `evidence_not_found`. Sam's form names no marker and messaging
-reads the reshaped `Profile`, so both of Sam's trials refuse it with `stored_data_without_marker`.
+lacks Jun's file, it is refused with `evidence_not_found`. Sam's form names no marker and is
+accepted on both of Sam's trials: messaging only reads the reshaped `Profile`. Priya's checkpoint
+holds no migration or backfill. The fixture's plan declares no `storeMarker`. Both of Sam's
+parts therefore route to Priya with `stored_data_unmarked` (`apps/worker/test/preview-approvals.test.ts`).
 
 ## Exceptions
 
@@ -1230,6 +1264,7 @@ People see only the exceptions in this table. Everything else proceeds without t
 | Agents pass a fix back and forth past the project's round limit (default 3) | The originating feature's person |
 | A plan has more parts needing a person than the break limit | The originating feature's person, to split it |
 | The check runner fails one run past the project's failure limit (default 3) | The feature's person, with the last reason |
+| A part's scope only reads stored data the change reshapes. The plan declares no migration or backfill | The originating feature's person, not the part's author |
 
 The check runner reports each run it claimed and could not finish, with the reason
 (`POST /runs/failures`, [bridge-and-runner.md](bridge-and-runner.md#failed-runs)). Penguin frees the

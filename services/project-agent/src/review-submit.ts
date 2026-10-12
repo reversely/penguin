@@ -389,7 +389,7 @@ export async function submitReview(deps: ReviewDeps, caller: string, sessionId: 
   for (const path of evidencePaths(parsed.form)) {
     files.set(path, await trialText(deps, feature.repo, feature.latestCheckpointSha, part, path));
   }
-  const validation = validateReviewForm({ form: parsed.form, invariants, files, storedShapes: null });
+  const validation = validateReviewForm({ form: parsed.form, scope: scope.id, invariants, files, storedShapes: null });
   // Only a form that passed waits for the runner, which compares the checkpoint with its baseline.
   const baseSha = validation.accepted ? await deps.baseline(feature.repo, feature.latestCheckpointSha) : null;
   const stored = deps.reviews.insert({

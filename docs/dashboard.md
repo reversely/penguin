@@ -215,7 +215,9 @@ A plan card shows each review and each reason once, however many of its parts ca
 kind, the revision and the rounds, then the part's state. A part the person approves carries its
 decision at the end of that row. A part that writes a path the person protects reads Protected path.
 A part of the person's own plan past the round limit reads Past the round limit. Neither carries
-controls. A part Penguin approved reads Approved by Penguin in the verified colour, with Reverse
+controls. A part of the person's own plan can wait on them because their change reshapes stored
+data the part's scope only reads. Its tag says Stored data needs a migration or backfill. It
+carries Approve revision and no Request change, since the fix belongs in the person's own change. A part Penguin approved reads Approved by Penguin in the verified colour, with Reverse
 approval at the end of its row and the line "You may reverse it until the block reaches main". A
 reversal sends the part back to the person, who then approves it or asks for a change. The reasons
 a plan needs the person list every check Penguin found not clean, one line each, such as "No run has
@@ -389,8 +391,9 @@ On identity unification the plan is stored with four parts: Priya's fix commits 
 messaging's code on main, and the patches for Jun's and Sam's forks. Jun's and Sam's agents submit
 the fixture's review forms from `examples/identity-unification/reviews/`. Each part's trial runs the
 forms on its trial tree ([design.md](design.md#part-trials)). Penguin approves none of the four.
-Sam's review is refused on both of Sam's trial trees with `stored_data_without_marker`: messaging
-reads the reshaped `Profile` and Sam's form names no marker. Sam approves both of Sam's parts. Jun's
+Sam's review is accepted on both of Sam's trial trees: messaging only reads the reshaped `Profile`,
+which identity-map owns. Priya's change carries no migration or backfill for it, so both of Sam's
+parts wait on Priya as `stored_data` asks in Priya's inbox. Sam is not asked. Jun's
 form names the cutover marker of Jun's fork; it is accepted on the trial of Jun's own part and
 refused with `evidence_not_found` on the analytics part on main. The tablet invariant reaches Jun, so
 Jun's two parts wait on Jun. On the helpful fix Priya's agent proposes the plan at the checkpoint

@@ -33,7 +33,7 @@ import {
   TestRunner,
   toolPass,
 } from "@penguin/local-bridge";
-import { boundReviewRecord, type ContractWorkView, type Plan, type RetiringSymbol, type ReviewForm, type RewriteRule } from "@penguin/protocol";
+import { boundReviewRecord, routesToOriginator, type ContractWorkView, type Plan, type RetiringSymbol, type ReviewForm, type RewriteRule } from "@penguin/protocol";
 import { parseScopeMap, type ScopeMap } from "@penguin/scope-map";
 
 import type { DashboardBackend } from "../../apps/worker/src/dashboard.ts";
@@ -63,6 +63,7 @@ import {
   PlanRouteStore,
   requestPlanChange,
   reversePenguinApproval,
+  routePart,
   type PlanApprovalDeps,
 } from "../../services/project-agent/src/plan-approval.ts";
 import { PlanFactsStore } from "../../services/project-agent/src/plan-facts.ts";
@@ -809,6 +810,7 @@ export class PreviewProject {
             landed: (featureId) => this.features.get(featureId)?.state === "landed",
             trial: (featureId, part) => trialStanding(this.trials, this.reviews, featureId, part),
             records: (featureId) => this.features.records(featureId),
+            ownFeatures: (person) => this.features.list().filter((feature) => feature.personId === person && feature.state !== "landed").map((feature) => feature.id),
             protectedChanges: (owners, items, delegates) => protectedChangeRequests(this.protectedChanges, this.features, items, owners, owner, delegates),
           },
           owner,
@@ -977,9 +979,13 @@ async function featuresFixture(preview: PreviewProject): Promise<void> {
     await preview.step(`submit_review ${scope}`, () => preview.review(feature.id, origin.id, scope, form));
   }
   // Penguin approved each part whose checks are clean. An author whose review raised no exception
-  // approves a part still waiting on them; one with an exception decides in person.
-  for (const part of (await preview.plan(origin.id))?.parts ?? []) {
-    if (part.approvalState !== "pending") continue;
+  // approves a part still waiting on them; one with an exception decides in person. A part that waits
+  // on the originating person for their change's stored data is not its author's to approve (#132).
+  const plan = await preview.plan(origin.id);
+  for (const part of plan?.parts ?? []) {
+    if (plan === undefined || part.approvalState !== "pending") continue;
+    const routing = routePart(plan, part, preview.reviews.list(origin.id), preview.scopeMap, preview.adminMode, trialStanding(preview.trials, preview.reviews, origin.id, part));
+    if (routesToOriginator(routing)) continue;
     const exceptions = preview.reviews.list(origin.id).filter((review) => part.scopes.includes(review.scopeId)).flatMap((review) => review.exceptions);
     if (exceptions.length === 0) await preview.step(`approve ${part.partId}`, () => preview.decide(part.owner, origin.id, part.partId));
   }

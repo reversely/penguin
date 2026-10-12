@@ -11,6 +11,7 @@ import {
   reviewExceptions,
   validateReviewForm,
   formatSideBySide,
+  ownsShape,
   REVIEW_SCHEMA_VERSION,
   type ImpactReport,
   type InvariantView,
@@ -19,6 +20,7 @@ import {
   type ReviewRefusal,
   type StoredShapeChange,
 } from "@penguin/protocol";
+import { scopeForPath } from "@penguin/scope-map";
 
 import type { ImpactAnalyzer } from "./impact-analysis.ts";
 import { loadReviewConfig, readCommittedFile, runSideBySide, type SideBySideOptions } from "./side-by-side.ts";
@@ -46,15 +48,20 @@ export type ReviewResult = ReviewRecord;
 const READER = "reviewing-scope";
 
 /**
- * The changed stored shapes the reviewing scope reads in the fork: a shape counts when a file of the
- * scope uses it or one of its members, such as `Profile` through `Profile.get`. A scope that reads
- * none needs no marker, whatever another scope's stored data does.
+ * The changed stored shapes the reviewing scope reads in the fork, each with the scope that owns it
+ * (`scopeOf` its path): a shape counts when a file of the scope uses it or one of its members, such as
+ * `Profile` through `Profile.get`. A scope that reads none needs no marker, whatever another scope's
+ * stored data does. Of those it reads, only the ones it owns need its form's marker (#132).
  */
-export function shapesRead(report: Pick<ImpactReport, "dataShapes" | "forks">, scope: string): StoredShapeChange[] {
+export function shapesRead(
+  report: Pick<ImpactReport, "dataShapes" | "forks">,
+  scope: string,
+  scopeOf: (path: string) => string | undefined = () => undefined,
+): StoredShapeChange[] {
   const used = (report.forks.find((fork) => fork.id === READER)?.uses ?? []).filter((use) => use.scope === scope).map((use) => use.symbol);
   return report.dataShapes
     .filter((shape) => used.some((symbol) => symbol === shape.symbol || symbol.startsWith(`${shape.symbol}.`)))
-    .map((shape) => ({ symbol: shape.symbol, path: shape.path }));
+    .map((shape) => ({ symbol: shape.symbol, path: shape.path, scope: scopeOf(shape.path) ?? null }));
 }
 
 /** Reads each evidence file from the fork; a missing, unreadable or oversized file counts as missing. */
@@ -80,7 +87,7 @@ export async function runReview(options: ReviewOptions, request: ReviewRequest):
     // of the changed symbols: the stored data rule asks for a marker only when the scope reads a
     // stored shape that changed (#132).
     const report = await options.analyzer({ base: request.base, head: request.fork, forks: [{ id: READER, sha: request.fork, scopes: [request.scope] }] });
-    storedShapes = shapesRead(report, request.scope);
+    storedShapes = shapesRead(report, request.scope, (path) => scopeForPath(config.scopeMap, path));
   }
   const impactMs = performance.now() - impactStarted;
 
@@ -88,7 +95,7 @@ export async function runReview(options: ReviewOptions, request: ReviewRequest):
   let form: ReviewForm | null = null;
   if (parsed.ok) {
     const files = await forkFiles(options.repoPath, request.fork, parsed.form);
-    const validation = validateReviewForm({ form: parsed.form, invariants, files, storedShapes });
+    const validation = validateReviewForm({ form: parsed.form, scope: request.scope, invariants, files, storedShapes });
     refusals = validation.refusals;
     if (validation.accepted) form = parsed.form;
   } else {
@@ -128,7 +135,12 @@ export function formatReviewResult(result: ReviewResult): string {
     lines.push(`  refused (${refusal.code})${about === "" ? "" : ` ${about}`}: ${refusal.message}`);
   }
   if (result.storedShapes === null) lines.push("  stored data rule: not checked, no contract diff");
-  else for (const shape of result.storedShapes) lines.push(`  stored shape changed: ${shape.symbol} (${shape.path})`);
+  else {
+    for (const shape of result.storedShapes) {
+      const owner = ownsShape(shape, result.scope) ? "this scope's own, needs the form's marker" : `read from ${shape.scope ?? "no scope"}, the owning change's to cover`;
+      lines.push(`  stored shape changed: ${shape.symbol} (${shape.path}), ${owner}`);
+    }
+  }
   for (const exception of result.exceptions) {
     lines.push(
       exception.kind === "broken_invariant"

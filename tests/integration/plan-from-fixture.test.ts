@@ -89,6 +89,14 @@ const handle = (feature: FixtureFeature) => `@${feature.owner}/${feature.id}`;
  * run answers the first proposal; the second is the outcome.
  */
 async function proposeFromFixture(fixture: Fixture, originCheckpoint: string) {
+  const { outcome, report, origin, running } = await proposeOutcome(fixture, originCheckpoint);
+  assert.equal(outcome.status, "stored", JSON.stringify(outcome).slice(0, 3_000));
+  if (outcome.status !== "stored") throw new Error("the plan was not stored");
+  return { plan: outcome.plan, report, origin, running };
+}
+
+/** `proposeFromFixture`'s second proposal as Penguin answers it, stored or not. */
+async function proposeOutcome(fixture: Fixture, originCheckpoint: string, storeMarker?: unknown) {
   const { features, pins, repo, scopeMap } = fixture;
   const main = pins.branches.main as string;
   const origin = features.find((feature) => feature.role === "originating") as FixtureFeature;
@@ -114,7 +122,7 @@ async function proposeFromFixture(fixture: Fixture, originCheckpoint: string) {
     featureParts.push({ place: { feature: feature.id }, patch: { base: head, diff } });
   }
   const parts = [...scopeParts, ...featureParts];
-  const first = await project.propose(origin.owner, "s-origin", origin.id, parts);
+  const first = await project.propose(origin.owner, "s-origin", origin.id, parts, undefined, undefined, storeMarker);
   assert.equal(first.status, "missing");
 
   // The check runner's facts run.
@@ -130,10 +138,8 @@ async function proposeFromFixture(fixture: Fixture, originCheckpoint: string) {
   assert.equal(JSON.stringify(report).includes("short test summary"), false);
   assert.equal(project.facts.record(request.runId, "runner-1", report).status, "recorded");
 
-  const outcome = await project.propose(origin.owner, "s-origin", origin.id, parts);
-  assert.equal(outcome.status, "stored", JSON.stringify(outcome).slice(0, 3_000));
-  if (outcome.status !== "stored") throw new Error("the plan was not stored");
-  return { plan: outcome.plan, report, origin, running };
+  const outcome = await project.propose(origin.owner, "s-origin", origin.id, parts, undefined, undefined, storeMarker);
+  return { outcome, report, origin, running };
 }
 
 /** Each part states its invariants, its breaks in their words and its changed lines inside its scopes. */
@@ -193,6 +199,39 @@ test("the helpful fix's plan states the change, each break and each part's chang
     }
   }
   diagnose(t, plan, report);
+});
+
+test("a helpful-fix plan proposed before start_of_local_day is checked in names the missing symbol in each patch", async () => {
+  // PRD case 2 (#132): the running features' fixes import start_of_local_day, which only the later
+  // checkpoint adds. At the first checkpoint Penguin answers with the symbol and the next step.
+  const fixture = await helpfulFix;
+  const originFeature = fixture.features.find((feature) => feature.role === "originating") as FixtureFeature;
+  const { outcome } = await proposeOutcome(fixture, fixture.pins.tags[originFeature.commits[0]?.tag as string] as string);
+  assert.equal(outcome.status, "missing", JSON.stringify(outcome).slice(0, 2_000));
+  if (outcome.status !== "missing") return;
+  const symbols = outcome.missing.filter((item) => item.code === "patch_missing_symbol");
+  assert.equal(symbols.length, 2, JSON.stringify(outcome.missing));
+  for (const item of symbols) {
+    assert.match(item.message, /imports start_of_local_day from shared\.dates, which neither the plan's checkpoint [0-9a-f]{12} nor the patch defines in shared\/dates\.py/u);
+    assert.match(item.message, /check in start_of_local_day first, report that checkpoint, then propose the plan again$/u);
+  }
+});
+
+test("a plan's store marker must exist in its checkpoint, and a stored plan keeps it", async () => {
+  // #132: the migration or backfill for the store the change owns is declared once, on the plan. The
+  // evidence below is test input for the check, not a claim about the fixture: Priya's fixture plan
+  // declares none.
+  const fixture = await identityUnification;
+  const originFeature = fixture.features.find((feature) => feature.role === "originating") as FixtureFeature;
+  const checkpoint = fixture.pins.tags[originFeature.commits[0]?.tag as string] as string;
+  const absent = await proposeOutcome(fixture, checkpoint, { kind: "backfill", evidence: "ingestion/backfill.py::backfill_person_ids" });
+  assert.equal(absent.outcome.status, "missing");
+  const items = absent.outcome.status === "missing" ? absent.outcome.missing : [];
+  assert.deepEqual(items.map((item) => item.code), ["store_marker_not_found"]);
+  assert.match(items[0]?.message ?? "", /the backfill ingestion\/backfill\.py::backfill_person_ids is not in the checkpoint: ingestion\/backfill\.py does not exist in the checkpoint/u);
+  const present = await proposeOutcome(fixture, checkpoint, { kind: "backfill", evidence: "ingestion/identity_map.py::IdentityMap::from_events" });
+  assert.equal(present.outcome.status, "stored", JSON.stringify(present.outcome).slice(0, 2_000));
+  assert.deepEqual(present.outcome.status === "stored" ? present.outcome.plan.storeMarker : null, { kind: "backfill", evidence: "ingestion/identity_map.py::IdentityMap::from_events" });
 });
 
 test("identity unification's plan has a part for each scope's code on main and for each running feature, from the fixture", async (t) => {

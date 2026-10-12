@@ -14,7 +14,7 @@ not work yet), **rule needed** (the procedure does not yet say what should happe
 | Open: Priya's feature starts; Jun's and Sam's features listed as readers | works | Walkthrough case 1 (`docs/progress/100/identity-unification/`) |
 | Sort: `person_id` additive; `resolve()`, `profile()` behaviour changes; merge plan kept | works | #116 fixture test |
 | Plan: four parts stored from the fixture | works | #106 |
-| Sam's parts approved by Penguin | rule needed | The stored-data rule now asks only a scope that reads a changed stored shape (#126). Messaging reads the reshaped `Profile` and Sam's form names no marker, and no marker exists in Sam's trees, so both of Sam's trials refuse the form with `stored_data_without_marker` and Sam approves in person. Whether a marker in another part (Jun's cutover) answers it is open (`apps/worker/test/preview-approvals.test.ts`, `tests/integration/part-trial.test.ts`) |
+| Sam's parts approved by Penguin | partial | The stored-data rule is decided (#132). Messaging only reads `Profile`, which identity-map owns, so Sam's form needs no marker and is accepted on both of Sam's trials. Priya's change reshapes `Profile` (`attributes` becomes `by_identity`) and the fixture's commits hold no migration or backfill, so the plan declares no `storeMarker`. Both of Sam's parts therefore route to Priya as `stored_data` asks; Sam is not asked. Penguin approves them once Priya's change carries a backfill and the plan names it, or Priya approves them as they stand (`apps/worker/test/preview-approvals.test.ts`, `tests/integration/part-trial.test.ts`). PRD case 1 step 3 says "Penguin approves both of Sam's parts", which the fixture's data does not support |
 | Jun's tablet invariant routes to Jun; two revisions | works | Walkthrough case 1, frames 05 to 07. In the preview, Jun's form is accepted on the trial of Jun's own part with the cutover marker it names, and the broken invariant routes both of Jun's parts to Jun (#126) |
 | Fixes written into Jun's and Sam's forks | works | #91, walkthrough frame 08 |
 | Land as one block | works | Walkthrough case 1 promoted, main green |
@@ -59,8 +59,9 @@ not work yet), **rule needed** (the procedure does not yet say what should happe
 | Question | State | Ticket |
 |---|---|---|
 | Who makes an edit when no session is open | gap | #128, #129 |
-| Does the stored-data rule apply to every reviewing scope or only those that read the changed data | works | Only those that read it, per the impact graph of the reviewing scope (#126, #132's first rule) |
-| May a plan's patch use a symbol its checkpoint does not have | rule needed | #132 |
+| Does the stored-data rule apply to every reviewing scope or only those that read the changed data | works | Only those that read it, per the impact graph of the reviewing scope (#126) |
+| Who carries the marker for stored data | works | The change that owns the store declares a migration or backfill once (`storeMarker`), covering every scope that only reads it. A scope that persists derived data names its own cutover marker. Without the owner's marker, a reader's part goes to the originating person (#132) |
+| May a plan's patch use a symbol its checkpoint does not have | works | No: `propose_plan` answers `patch_missing_symbol` naming the symbol and the next step. On the helpful fix, a plan at Priya's first checkpoint names `start_of_local_day` for both patches (#132, `tests/integration/plan-from-fixture.test.ts`) |
 | Two plans writing into the same fork at once | rule needed | #133 |
 | A failed runner pass holds its run 30 minutes | works | The pass reports the failure and Penguin frees the run at once for any runner; the third failure goes to the feature's person (`services/project-agent/test/run-failures.test.ts`, `services/local-bridge/test/run-failure.test.ts`). Not yet run in the walkthrough |
 | Signed records in a record repo | gap | #123 |

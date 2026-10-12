@@ -281,10 +281,33 @@ export function evidencePaths(form: ReviewForm): string[] {
 export interface StoredShapeChange {
   readonly symbol: string;
   readonly path: string;
+  /**
+   * The scope whose files define the shape, which owns the store; null when no scope holds the path.
+   * Absent on a record from before #132, which the rule reads as the reviewing scope's own shape.
+   */
+  readonly scope?: string | null;
+}
+
+/**
+ * Whether the reviewing scope `scope` owns `shape`: its own files define it, so the scope persists
+ * that data itself, such as a dashboard's stored metrics. A shape of another scope it only reads.
+ */
+export function ownsShape(shape: StoredShapeChange, scope: string): boolean {
+  return shape.scope === undefined || shape.scope === scope;
+}
+
+/**
+ * The changed stored shapes a review's scope only reads: another scope owns each one. The migration or
+ * backfill for them belongs in the change that owns the store, not in the reader's part (#132).
+ */
+export function readOnlyShapes(record: Pick<ReviewRecord, "scope" | "storedShapes">): StoredShapeChange[] {
+  return (record.storedShapes ?? []).filter((shape) => !ownsShape(shape, record.scope));
 }
 
 export interface ReviewValidationInput {
   readonly form: ReviewForm;
+  /** The reviewing scope, whose own changed stored shapes need the form's marker. */
+  readonly scope: string;
   /** The reviewing scope's invariants from `penguin/invariants.json` on main. */
   readonly invariants: readonly InvariantView[];
   /** Each path from `evidencePaths(form)` with its text in the fork, or null when it is missing. */
@@ -371,21 +394,24 @@ export function validateReviewForm(input: ReviewValidationInput): ReviewValidati
     if (refusal !== null) refusals.push(refusal);
   }
   const storedDataChecked = input.storedShapes !== null;
-  const rule = storedDataProblem(input.storedShapes ?? [], form.storedDataMarker);
+  const rule = storedDataProblem(input.storedShapes ?? [], form.storedDataMarker, input.scope);
   if (rule !== null) refusals.push(rule);
   return { accepted: refusals.length === 0, refusals, storedDataChecked };
 }
 
 /**
- * The stored data rule: when the contract diff shows a stored data shape changed, the plan part
- * cannot be approved without a migration, a backfill or a cutover marker. Null when it holds.
+ * The stored data rule for the reviewing scope's own stores (#132): when the contract diff shows a
+ * stored data shape of `scope` changed, the scope persists data the change affects, so its part cannot
+ * be approved without a migration, a backfill or a cutover marker in the form. A shape the scope only
+ * reads is the owning change's to cover, and the routing reads it (`readOnlyShapes`). Null when it holds.
  */
-export function storedDataProblem(shapes: readonly StoredShapeChange[], marker: StoredDataMarker | null): ReviewRefusal | null {
-  if (shapes.length === 0 || marker !== null) return null;
-  const named = shapes.slice(0, 5).map((shape) => `${shape.symbol} (${shape.path})`).join(", ");
+export function storedDataProblem(shapes: readonly StoredShapeChange[], marker: StoredDataMarker | null, scope: string): ReviewRefusal | null {
+  const own = shapes.filter((shape) => ownsShape(shape, scope));
+  if (own.length === 0 || marker !== null) return null;
+  const named = own.slice(0, 5).map((shape) => `${shape.symbol} (${shape.path})`).join(", ");
   return {
     code: "stored_data_without_marker",
-    message: `stored data changes shape (${named}${shapes.length > 5 ? ", ..." : ""}); name a migration, backfill or cutover marker`,
+    message: `the scope's own stored data changes shape (${named}${own.length > 5 ? ", ..." : ""}); name a migration, backfill or cutover marker`,
   };
 }
 
@@ -548,7 +574,10 @@ export interface ReviewRecord {
   readonly refusals: readonly ReviewRefusal[];
   /** The scope's invariants the form was checked against. */
   readonly invariants: readonly InvariantView[];
-  /** The stored data shapes the contract diff shows changed; null when no diff was made. */
+  /**
+   * The changed stored data shapes the reviewing scope reads or owns, each with the scope that owns
+   * it; null when no diff was made.
+   */
   readonly storedShapes: readonly StoredShapeChange[] | null;
   readonly sideBySide: SideBySideRecord;
   /** What goes to the scope's owner in person; empty when the agent's review stands. */
@@ -592,7 +621,7 @@ export const REVIEW_RECORD_SCHEMA: JsonSchema = {
       REVIEW_LIMITS.rows * (REVIEW_LIMITS.evidencePerRow + 1) + 20,
     ),
     invariants: array(object({ id: ID, scopeId: ID, statement: text(500), protected: { type: "boolean" } }), 1_000),
-    storedShapes: { anyOf: [{ type: "null" }, array(object({ symbol: LINE, path: LINE }), 2_000)] },
+    storedShapes: { anyOf: [{ type: "null" }, array(object({ symbol: LINE, path: LINE, scope: { anyOf: [{ type: "null" }, ID] } }, ["scope"]), 2_000)] },
     sideBySide: object({
       schemaVersion: { const: REVIEW_SCHEMA_VERSION },
       tool: { const: SIDE_BY_SIDE_TOOL },

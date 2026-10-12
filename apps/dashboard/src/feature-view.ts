@@ -119,6 +119,8 @@ export function reasonText(reason: PartRoutingReason): string {
       return `${reason.differing} inputs of ${reason.contract} differ on protected ${reason.invariant}`;
     case "protected_path":
       return `Writes ${reason.file} under ${reason.path} of ${reason.owner}`;
+    case "stored_data_unmarked":
+      return `${reason.scope} reads ${reason.symbol} reshaped with no backfill`;
   }
 }
 

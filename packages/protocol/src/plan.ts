@@ -501,6 +501,21 @@ export interface PlanFacts {
 
 export type PlanState = "proposed";
 
+/** The kinds of marker the change that owns a store carries for every reader that only reads it. */
+export const PLAN_STORE_MARKERS = ["migration", "backfill"] as const;
+export type PlanStoreMarkerKind = (typeof PLAN_STORE_MARKERS)[number];
+
+/**
+ * The migration or backfill in the originating change for the stored data it owns (#132), as the plan
+ * declares it: where it is in the plan's checkpoint, a definition (`path::name`) or a line (`path:line`).
+ * It covers every scope that only reads that data; a reader that persists data derived from it names
+ * its own cutover marker in its review form.
+ */
+export interface PlanStoreMarker {
+  readonly kind: PlanStoreMarkerKind;
+  readonly evidence: string;
+}
+
 export interface Plan {
   readonly schemaVersion: typeof PLAN_SCHEMA_VERSION;
   readonly planId: string;
@@ -519,6 +534,8 @@ export interface Plan {
   readonly rules?: readonly RewriteRule[];
   /** The contracts the plan marks as retiring, each with its replacement (retiring.ts); absent is none. */
   readonly retiring?: readonly RetiringSymbol[];
+  /** The originating change's migration or backfill for the stored data it owns; absent or null is none. */
+  readonly storeMarker?: PlanStoreMarker | null;
   readonly parts: readonly PlanPart[];
   /** How long Penguin took to assemble the facts and parts, in milliseconds. */
   readonly assembledMs: number;

@@ -22,7 +22,10 @@
 //   approve. A decision names the part and the revision it saw. A decision by anyone else, on a part
 //   outside the feature's newest plan, on another revision, or on a part already decided is refused.
 //   Each approval, reversal and request is a signed record on the originating feature, and the
-//   request's text is kept as data of at most PLAN_LIMITS.changeRequestLength characters.
+//   request's text is kept as data of at most PLAN_LIMITS.changeRequestLength characters. A part whose
+//   one failing check is stored data its scope only reads, which the originating change reshapes with
+//   no migration or backfill, waits on the originating person instead (#132): they see it as a
+//   `stored_data` ask and may approve it, and its author is not asked.
 // - Rounds. Each requested change is one round. The originating agent answers it with
 //   `revise_plan_part`, which makes the part's next revision and asks its author again. The request
 //   that would start round `roundLimit + 1` instead moves the part to `round_limit`: the agent may not
@@ -36,6 +39,7 @@
 
 import {
   partRouting,
+  routesToOriginator,
   PENGUIN_APPROVER,
   PLAN_LIMITS,
   PLAN_ROUND_LIMIT_DEFAULT,
@@ -305,7 +309,12 @@ export function routePart(
 ): PartRouting {
   return partRouting(
     trialPart(part, trial),
-    { reviews: trialReviews(reviews.map(reviewResult), trial), checkpoint: plan.facts.change.checkpoint, adminMode },
+    {
+      reviews: trialReviews(reviews.map(reviewResult), trial),
+      checkpoint: plan.facts.change.checkpoint,
+      adminMode,
+      storeMarked: plan.storeMarker != null,
+    },
     protectedLookup(scopeMap),
   );
 }
@@ -370,6 +379,18 @@ async function decider(deps: Pick<PlanApprovalDeps, "delegates">, caller: string
   return rejected("forbidden", `only ${part.owner}, who owns part ${part.partId}, or their delegate decides it`);
 }
 
+/**
+ * Whether `caller` decides the part as the originating feature's person: the part routes to them,
+ * because its one failing check is stored data their change reshapes with no migration or backfill
+ * (#132). Without the checks Penguin cannot tell, so only the owner decides.
+ */
+async function originatorDecides(deps: Pick<PlanApprovalDeps, "checks">, caller: string, featureId: string, plan: Plan, part: PlanPart): Promise<boolean> {
+  const checks = deps.checks;
+  if (checks === undefined || caller !== plan.person || caller === part.owner) return false;
+  const routing = routePart(plan, part, checks.reviews(featureId), await checks.scopeMap(), checks.adminMode, checks.trial?.(featureId, part));
+  return routesToOriginator(routing);
+}
+
 /** Why a part in `state` takes no decision, or undefined when it waits on its author. */
 function undecidable(part: PlanPart, approving: boolean): PartRejection | undefined {
   switch (part.approvalState) {
@@ -393,7 +414,8 @@ export async function approvePlanPart(deps: PlanApprovalDeps, caller: string, in
   const loaded = await loadPart(deps, input);
   if ("status" in loaded) return loaded;
   const { featureId, plan, part } = loaded;
-  const refusal = (await decider(deps, caller, part)) ?? undecidable(part, true);
+  const byOriginator = await originatorDecides(deps, caller, featureId, plan, part);
+  const refusal = (byOriginator ? undefined : await decider(deps, caller, part)) ?? undecidable(part, true);
   if (refusal !== undefined) return refusal;
   const record = await deps.sign(
     deps.features.draftRecord(featureId, "approve_plan_part", { person: caller }, {
@@ -404,6 +426,8 @@ export async function approvePlanPart(deps: PlanApprovalDeps, caller: string, in
       diff: part.diff.ref,
       owner: part.owner,
       approved_by: caller,
+      // The originating person approved a part whose one failing check is their own change's stored data.
+      ...(byOriginator ? { routed_to: "originating_person" } : {}),
     }),
   );
   const next: PlanPart = { ...part, approvalState: "approved", approvedBy: caller };
@@ -773,6 +797,11 @@ export interface PlanInboxDeps {
   /** The feature's signed records, which hold each returned plan (FeatureStore.records). */
   readonly records: (featureId: string) => readonly StoredFeatureRecord[];
   /**
+   * The ids of the features `person` runs, whose plans' parts may route to them (#132). Absent, no
+   * part of their own plan is listed for its stored data.
+   */
+  readonly ownFeatures?: (person: string) => readonly string[];
+  /**
    * The features' own changes to paths one of `owners` protects (protected-change.ts
    * protectedChangeRequests), with `items` the viewer's inbox. Absent, none are listed.
    */
@@ -787,6 +816,8 @@ const ASK_REASON: Readonly<Record<PlanPartAsk, InboxItem["reason"]>> = {
   penguin_approved: "penguin_approved",
   protected_path: "protected_path",
   round_limit: "round_limit",
+  // Listed from the caller's own plans, not from an inbox item.
+  stored_data: "plan_part",
 };
 
 /**
@@ -818,6 +849,17 @@ export async function buildPlanInbox(deps: PlanInboxDeps, caller: string): Promi
     if (!plans.has(featureId)) plans.set(featureId, await deps.keeper(featureId).latestPlan(featureId));
     return plans.get(featureId);
   };
+  const routingOf = (plan: Plan, part: PlanPart): PartRouting =>
+    routePart(plan, part, deps.reviews.list(plan.featureId), scopeMap, deps.adminMode ?? false, deps.trial?.(plan.featureId, part));
+  // A pending part of the caller's own plan that routes to them for their change's stored data (#132).
+  for (const featureId of deps.ownFeatures?.(caller) ?? []) {
+    const plan = await planOf(featureId);
+    for (const part of plan?.parts ?? []) {
+      if (plan === undefined || asks.has(part.partId) || part.approvalState !== "pending") continue;
+      if (routesToOriginator(routingOf(plan, part))) asks.set(part.partId, "stored_data");
+    }
+  }
+
   const parts: PlanPartRequest[] = [];
   for (const [partId, ask] of asks) {
     const routed = deps.routes.get(partId);
@@ -826,6 +868,9 @@ export async function buildPlanInbox(deps: PlanInboxDeps, caller: string): Promi
     if (routed === undefined || plan === undefined || part === undefined) continue;
     // A part a person approved has left the list; only Penguin's approval stays, for its reversal.
     if (ask === "penguin_approved" && part.approvedBy !== PENGUIN_APPROVER) continue;
+    const routing = routingOf(plan, part);
+    // A part waiting on the originating person is not its author's to decide.
+    if (ask === "approve" && part.approvalState === "pending" && plan.person !== part.owner && routesToOriginator(routing)) continue;
     const stored = deps.reviews.list(plan.featureId);
     const item = items.find((each) => each.issueId === `part:${partId}` && each.reason === ASK_REASON[ask]);
     parts.push({
@@ -845,7 +890,7 @@ export async function buildPlanInbox(deps: PlanInboxDeps, caller: string): Promi
       files: partFiles(part),
       breaks: part.breaks.map(breakView),
       reviews: newestReviews(stored, part.scopes).map(reviewView),
-      routing: routePart(plan, part, stored, scopeMap, deps.adminMode ?? false, deps.trial?.(plan.featureId, part)),
+      routing,
       changeRequest:
         part.changeRequest === null ? null : { by: part.changeRequest.by, revision: part.changeRequest.revision, text: part.changeRequest.text },
       read: item?.read ?? false,

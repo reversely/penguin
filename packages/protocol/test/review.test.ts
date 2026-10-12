@@ -14,11 +14,13 @@ import {
   reviewExceptions,
   SIDE_BY_SIDE_COMMAND_ID,
   SIDE_BY_SIDE_TOOL,
+  readOnlyShapes,
   validateReviewForm,
   type InvariantView,
   type ReviewForm,
   type ReviewRecord,
   type SideBySideRecord,
+  type StoredShapeChange,
 } from "@penguin/protocol";
 
 // The rounding exit check of PRD 0.4 Phase D, as the tax scope of docs/case-study-money.md.
@@ -58,8 +60,8 @@ const row = (invariant: string, verdict: "holds" | "breaks" | "unknown", evidenc
   evidence,
   storedData: "Invoices issued before the change keep their tax",
 });
-const codes = (value: ReviewForm, storedShapes: { symbol: string; path: string }[] | null = null) =>
-  validateReviewForm({ form: value, invariants: INVARIANTS, files: FILES, storedShapes }).refusals.map((refusal) => [
+const codes = (value: ReviewForm, storedShapes: StoredShapeChange[] | null = null) =>
+  validateReviewForm({ form: value, scope: "tax", invariants: INVARIANTS, files: FILES, storedShapes }).refusals.map((refusal) => [
     refusal.code,
     refusal.invariant ?? refusal.evidence ?? null,
   ]);
@@ -137,9 +139,21 @@ test("a stored shape change without a migration, backfill or cutover marker is r
   assert.deepEqual(codes(form(rows, { storedDataMarker: { kind: "migration", evidence: "tax/missing.py:1" } }), shapes), [
     ["evidence_not_found", "tax/missing.py:1"],
   ]);
-  const unknownDiff = validateReviewForm({ form: form(rows), invariants: INVARIANTS, files: FILES, storedShapes: null });
+  const unknownDiff = validateReviewForm({ form: form(rows), scope: "tax", invariants: INVARIANTS, files: FILES, storedShapes: null });
   assert.equal(unknownDiff.accepted, true);
   assert.equal(unknownDiff.storedDataChecked, false);
+});
+
+test("a shape the scope only reads needs no marker in its form; the owning change covers it", () => {
+  const rows = [row("tax-per-line", "holds", ["tax/invoice.py:1"]), row("tax-non-negative", "holds", ["tax/invoice.py:1"])];
+  const own = { symbol: "tax.invoice.Line", path: "tax/invoice.py", scope: "tax" };
+  const read = { symbol: "orders.store.Order", path: "orders/store.py", scope: "orders" };
+  assert.deepEqual(codes(form(rows), [read]), []);
+  assert.deepEqual(codes(form(rows), [read, own]), [["stored_data_without_marker", null]]);
+  // A shape no scope holds is still not the reviewing scope's own.
+  assert.deepEqual(codes(form(rows), [{ ...read, scope: null }]), []);
+  assert.deepEqual(readOnlyShapes({ scope: "tax", storedShapes: [read, own, { symbol: "old.Shape", path: "old.py" }] }), [read]);
+  assert.deepEqual(readOnlyShapes({ scope: "tax", storedShapes: null }), []);
 });
 
 test("the form's shape and limits are checked before its content", () => {
