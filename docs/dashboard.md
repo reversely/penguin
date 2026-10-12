@@ -152,7 +152,7 @@ their own places' lines only.
 
 The top of every page shows one line per colleague's feature that reaches the signed-in person
 (`banner.tsx`): the colleague, the feature, linking to its change page, and the feature's current
-stage. A banner that needs the person reads Needs you and links to the first part they decide. A
+stage. A banner that needs the person reads Your decision and links to the first part they decide. A
 feature has a banner while the person's inbox holds an item of it: a part to decide or one Penguin
 approved for them, a protected-path confirmation or an overlapping start. The banner clears once the
 inbox holds nothing of the feature or its block reaches main. The banners come from the answers the
@@ -265,8 +265,8 @@ open issue to the next. The rows fall in five groups (`inbox-page.tsx`, `inbox-v
 | Threads | Issues with a thread that needs the person |
 | Closed issues | Issues that closed while the person had an item for them; the newest 10, or all with `?closed=all` on the issue's path |
 
-A row shows what the item waits on the person for: "Waiting for your review", "Waiting for your
-reply", "Waiting for you to start a session" or "Waiting for your acceptance". A dot marks an unread
+A row shows what the item waits on the person for as a bare label: Review, Reply, Session to start
+or Acceptance. A dot marks an unread
 item; pressing the dot marks it read, in every browser the person has open. The person who did
 something gets no item for it. An item is keyed by person, issue and reason, so a later event of the
 same reason marks it unread again (`services/project-agent/src/inbox-store.ts`).
@@ -284,7 +284,7 @@ full handle, the vendor and the branch appear only on the agent card.
 
 The centre holds the issue's activity in apply order (`issue-thread.tsx`):
 
-- Needs you, at the top, linking to each open thread that needs the viewer and each fix waiting for
+- Your decisions, at the top, linking to each open thread that needs the viewer and each fix waiting for
   the viewer's review;
 - the description;
 - comments with their author's byline, the viewer's own in ink;
@@ -351,6 +351,16 @@ People and agents look different at a glance (`character.ts`, `avatar.tsx`):
   FNV-1a hash of the handle picks one of eight body shapes, one of eight hues and one of three eye
   poses. Nothing is stored, so a new or duplicated identity gets its own character on every device.
   The session's vendor never changes it.
+
+## Copy
+
+Every string the dashboard shows is a bare label, a count or one clause with no comma. Headings are
+standard nouns such as Changes, Plans or Reviews. A field's hint names its field, such as "A handle
+takes lowercase letters and digits joined by hyphens". An empty state names the next step, such as
+the empty inbox's "Please open the team view to follow running features". A tag that asks the
+person to act reads Your decision. `apps/dashboard/test/copy-style.test.ts` fails the build on any
+banned word or pattern of the house style in a string literal, a template literal or JSX text under
+`apps/dashboard/src`.
 
 ## Security
 

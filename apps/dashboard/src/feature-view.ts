@@ -65,7 +65,7 @@ export function exceptionText(exception: FeatureException): string {
     case "round_limit":
       return `Part ${partNumber(exception.partId)} past the round limit`;
     case "plan_returned":
-      return `Plan returned: ${counted(exception.inPerson, "part")} needing a person over the limit of ${exception.breakLimit}`;
+      return `Plan returned with ${counted(exception.inPerson, "part")} needing a person over the limit of ${exception.breakLimit}`;
     case "broken_invariant":
       return `${exception.invariant} reported broken in ${exception.scope}`;
     case "protected_difference":
@@ -118,7 +118,7 @@ export function reasonText(reason: PartRoutingReason): string {
     case "protected_difference":
       return `${reason.differing} inputs of ${reason.contract} differ on protected ${reason.invariant}`;
     case "protected_path":
-      return `Writes ${reason.file} under ${reason.path}, which ${reason.owner} protects`;
+      return `Writes ${reason.file} under ${reason.path} of ${reason.owner}`;
   }
 }
 

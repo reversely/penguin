@@ -56,7 +56,7 @@ export function waitsOn(issue: BoardIssue, assignee: IssuePageAssignee | null): 
   if (assignee?.waitingFor === "acceptance") return "Owner acceptance";
   if (assignee?.kind === "identity" && assignee.session?.status !== "running") return "A running session";
   const people = [...new Set(threadNeedsPerson(issue))];
-  if (people.length > 0) return `Reply from ${people.join(", ")}`;
+  if (people.length > 0) return `Reply from ${people.join(" and ")}`;
   switch (state) {
     case "open":
       return assignees.length === 0 ? "An assignee" : "A fix";

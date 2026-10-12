@@ -20,7 +20,7 @@ test("a feature's state takes a neutral tag and only the attention edge marks an
   assert.equal(partNumber("money-minor-units/v1#9"), "#9");
   assert.equal(placeText({ kind: "scope", scope: "tax" }), "scope tax");
   assert.equal(placeText({ kind: "feature", feature: "tax-exempt" }), "feature tax-exempt");
-  assert.equal(exceptionText({ kind: "plan_returned", inPerson: 31, breakLimit: 10 }), "Plan returned: 31 parts needing a person over the limit of 10");
+  assert.equal(exceptionText({ kind: "plan_returned", inPerson: 31, breakLimit: 10 }), "Plan returned with 31 parts needing a person over the limit of 10");
   assert.equal(exceptionText({ kind: "protected_difference", scope: "analytics", invariant: "tablet", differing: 2 }), "2 inputs differ on protected tablet");
   assert.equal(
     exceptionText({ kind: "run_failed", run: "block", runId: "money/4", failures: 3, reason: "commit 0e252bbf is not in the fetched repos" }),
@@ -260,7 +260,7 @@ test("markup in a feature page's declaration, plan, review, checks, tools and re
     assert.ok(html.includes(text), text);
   }
   // Rahul's change page: what Rahul must do, the main change opened first, then Rahul's own places by scope.
-  assert.match(html, /Needs you<\/span><a href="#part-1">Decide #1 &lt;b&gt;tax&lt;\/b&gt;<\/a>/);
+  assert.match(html, /Your decision<\/span><a href="#part-1">Decide #1 &lt;b&gt;tax&lt;\/b&gt;<\/a>/);
   assert.ok(html.indexOf("Main change") < html.indexOf("Your changes"), "the main change comes first");
   assert.match(html, /<h3 class="tree-scope-name">tax<\/h3>/);
   assert.doesNotMatch(html, /Other places/);
@@ -365,7 +365,7 @@ test("markup in an approval's overlap, part, breaks, review, changed lines and r
   for (const heading of ["Overlapping starts", "Plans", "Protected paths", "Review exceptions", "Returned plans"]) assert.ok(html.includes(heading), heading);
   // A feature's own change to a protected path: Confirm lines while it waits, its lines as text, and a confirmed one marked.
   assert.equal(html.match(/Confirm lines/g)?.length, 1);
-  assert.match(html, /It lands once jun confirms the lines/);
+  assert.match(html, /\d+ files? under protected paths at checkpoint [0-9a-f]{12}/);
   assert.match(html, /jun confirmed the lines at checkpoint cccccccccccc/);
   assert.match(html, /\+report = &lt;img/);
   // Only the part waiting on the person and the overlapping start carry controls; the round-limit part shows none.
@@ -384,7 +384,7 @@ test("markup in an approval's overlap, part, breaks, review, changed lines and r
   // The review exception names the same review, so it links to the card above instead of repeating it.
   assert.match(html, /<a class="review-link" href="#review-4">Review of tax<\/a>/);
   // A part's breaks and lines stay closed behind a line counting them.
-  assert.match(html, /1 break, 1 changed file<\/summary>/);
+  assert.match(html, /1 break 1 changed file<\/summary>/);
   assert.doesNotMatch(html, LEAKS);
 });
 
@@ -400,7 +400,7 @@ test("a long side-by-side set shows its count, its breakdown and three examples,
   const set = { ...REVIEW.sideBySide.sets[0], file: "tax/examples/invoice_tax.json", inputs: 5000, differing, omitted: 1628, breakdown: { list: "lines", counts: [{ length: 3, inputs: 600 }, { length: 4, inputs: 1033 }] } };
   const html = render({ ...REVIEW, sideBySide: { ...REVIEW.sideBySide, totals: { inputs: 5000, differing: 1633, invalid: 0 }, sets: [set] } });
   assert.match(html, /1,633 of 5,000 inputs differ between main/);
-  assert.match(html, /on tax\/examples\/invoice_tax\.json: 1,633 of 5,000 differ/);
+  assert.match(html, /on tax\/examples\/invoice_tax\.json<\/span><span class="muted">1,633 of 5,000 differ/);
   assert.match(html, /<th scope="row">lines<\/th><td>3<\/td><td>4<\/td><\/tr><tr><th scope="row">differ<\/th><td>600<\/td><td>1,033<\/td>/);
   assert.equal(html.match(/class="sbs-difference"/g)?.length, 3);
   assert.match(html, /aria-expanded="false"[^>]*>.*All 1,633 differing inputs<\/button>/);

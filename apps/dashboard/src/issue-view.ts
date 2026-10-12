@@ -58,8 +58,8 @@ export const APPROVAL_LABEL: Readonly<Record<IssuePageOwnerApproval["state"], st
 
 /** How a closed issue ended, as one sentence. */
 export const RESOLUTION_LABEL: Readonly<Record<NonNullable<IssuePageCloseOut["resolution"]>, string>> = {
-  approved: "Closed as approved. Merging the approved branch is a separate step.",
-  cancelled: "Cancelled by the owner who started the work.",
+  approved: "Closed as approved with the branch left to merge",
+  cancelled: "Cancelled by its owner",
 };
 
 /** True when the close-out has something to show: a resolution, the approved branch or what it waits on. */
@@ -386,7 +386,7 @@ export function threadEntries(timeline: readonly IssuePageTimelineEntry[]): Read
 export type ApprovalStatus = "waiting-for-you" | "approved" | "changes-requested" | "waiting";
 
 export const APPROVAL_STATUS_LABEL: Readonly<Record<ApprovalStatus, string>> = {
-  "waiting-for-you": "Waiting for your review",
+  "waiting-for-you": "Your review",
   approved: "Approved",
   "changes-requested": "Changes requested",
   waiting: "Waiting for review",

@@ -103,7 +103,7 @@ function NeedsYou({ items }: { items: readonly NeedsYouItem[] }) {
   return (
     <section className="card-raised needs-you" aria-labelledby="issue-needs-you">
       <h2 id="issue-needs-you" className="needs-you-heading">
-        Needs you
+        Your decisions
       </h2>
       <ul className="needs-you-list">
         {items.map((item) =>

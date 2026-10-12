@@ -211,7 +211,7 @@ export function ReviewStanding({ review, superseded }: { review: IssuePageReview
     );
   }
   return superseded ? (
-    <span className="tag tag-data" title={`Reviewed ${review.repo}@${shortSha(review.sha)}, an older commit than the fix's head`}>
+    <span className="tag tag-data" title={`Reviewed ${review.repo}@${shortSha(review.sha)} before the fix's head`}>
       Older commit
     </span>
   ) : null;

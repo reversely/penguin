@@ -763,7 +763,7 @@ export function IdentityFormView({ initialForm, page, viewer, onDraft, onCancel,
       <form className="identity-form" onSubmit={submit} noValidate>
         <div className="identity-card settings">
           {kind === "edit" ? null : (
-            <SettingRow id="identity-handle" label="Handle" hint="Lowercase letters and digits joined by hyphens" problem={handleProblem}>
+            <SettingRow id="identity-handle" label="Handle" hint="A handle takes lowercase letters and digits joined by hyphens" problem={handleProblem}>
               <span className="handle-input">
                 <span className="handle-prefix" aria-hidden="true">{`@${viewer}/`}</span>
                 <input
@@ -789,7 +789,7 @@ export function IdentityFormView({ initialForm, page, viewer, onDraft, onCancel,
               </span>
             </SettingRow>
           )}
-          <SettingRow id="identity-name" label="Name" hint="Shown under the handle" problem={problemOf("name")}>
+          <SettingRow id="identity-name" label="Name" hint="The name shows under the handle" problem={problemOf("name")}>
             <input
               id="identity-name"
               name="name"
@@ -810,7 +810,7 @@ export function IdentityFormView({ initialForm, page, viewer, onDraft, onCancel,
                     Avatar
                   </span>
                   <p className="setting-hint" id="identity-avatar-hint">
-                    {`Image up to ${Math.floor(limits.avatarBytes / 1024)} KB`}
+                    {`An avatar takes an image up to ${Math.floor(limits.avatarBytes / 1024)} KB`}
                   </p>
                 </div>
                 <div className="setting-control avatar-field">
@@ -830,7 +830,7 @@ export function IdentityFormView({ initialForm, page, viewer, onDraft, onCancel,
                 <CheckRow
                   id="identity-team"
                   label="Team identity"
-                  hint="Shared with other owners who may each edit it"
+                  hint="Each owner of a team identity may edit it"
                   checked={form.team}
                   onChange={(team) => setForm((previous) => ({ ...withOwners(previous, [viewer], page.scopes), team }))}
                 />
@@ -841,7 +841,7 @@ export function IdentityFormView({ initialForm, page, viewer, onDraft, onCancel,
                     <span className="setting-label" id="identity-owners-label">
                       Owners
                     </span>
-                    <p className="setting-hint" id="identity-owners-hint">{`Up to ${limits.teamOwners} owners with you`}</p>
+                    <p className="setting-hint" id="identity-owners-hint">{`A team identity takes up to ${limits.teamOwners} other owners`}</p>
                   </div>
                   <div className="setting-control checks">
                     {otherOwners.length === 0 ? <span className="muted">No other owners</span> : null}
@@ -867,11 +867,11 @@ export function IdentityFormView({ initialForm, page, viewer, onDraft, onCancel,
               <CheckRow
                 id="identity-auto-accept"
                 label="Auto-accept assignments"
-                hint="Takes each assignment without an owner accepting it"
+                hint="The identity takes each assignment with no owner's acceptance"
                 checked={form.autoAccept}
                 onChange={(autoAccept) => update({ autoAccept })}
               />
-              <SettingRow id="identity-job" label="Job" hint="What this identity works on" problem={problemOf("job")} stacked>
+              <SettingRow id="identity-job" label="Job" hint="The job names what this identity works on" problem={problemOf("job")} stacked>
                 <textarea
                   id="identity-job"
                   name="job"
@@ -940,7 +940,7 @@ export function IdentityFormView({ initialForm, page, viewer, onDraft, onCancel,
                 onChange={(event) => update({ paths: event.currentTarget.value })}
               />
               <p className="setting-hint" id="identity-paths-hint">
-                One path per line
+                Each line holds one path
               </p>
             </div>
             <div className="charter-field">
@@ -957,7 +957,7 @@ export function IdentityFormView({ initialForm, page, viewer, onDraft, onCancel,
                 onChange={(event) => update({ rules: event.currentTarget.value })}
               />
               <p className="setting-hint" id="identity-rules-hint">
-                One rule per line
+                Each line holds one rule
               </p>
             </div>
             <p className="identity-card-note">Only scopes of this identity's owners</p>

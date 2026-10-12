@@ -43,7 +43,7 @@ test("markup in an issue title and an assignee's or identity's handle renders as
   assert.match(html, /&lt;img src=x onerror=&quot;globalThis\.pwned = 1&quot;&gt; @jun\/&lt;b&gt;reports&lt;\/b&gt;/);
   assert.match(html, /&lt;script&gt;globalThis\.pwned = 2&lt;\/script&gt;/);
   assert.match(html, />@jun\/&lt;img src=x onerror=&quot;globalThis\.pwned = 1&quot;&gt; online</, "the row names its online assignee");
-  assert.match(html, /Waiting for you to start a session/);
+  assert.match(html, /Session to start/);
   assert.doesNotMatch(html, /<img|<script|<b>|onerror="/);
 });
 

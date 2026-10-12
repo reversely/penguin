@@ -209,7 +209,7 @@ function ToDos({ todos, reveal, navigate }: { readonly todos: readonly ToDo[]; r
     <ul className="todos" aria-label="For you">
       {todos.map((todo) => (
         <li key={todo.text}>
-          <span className="tag tag-attention">Needs you</span>
+          <span className="tag tag-attention">Your decision</span>
           {todo.anchor === null ? (
             <span>{todo.text}</span>
           ) : (

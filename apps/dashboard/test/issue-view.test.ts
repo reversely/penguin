@@ -198,7 +198,7 @@ test("a close names how the issue ended, and the close-out shows only when it ho
   assert.equal(showsCloseOut({ waitingOn: [], approvedCommit: null, resolution: null }), false);
   assert.equal(showsCloseOut({ waitingOn: ["Thread jun-web-0003 on #33 is open."], approvedCommit: null, resolution: null }), true);
   assert.equal(showsCloseOut({ waitingOn: [], approvedCommit: "huddle-031@c3", resolution: "approved" }), true);
-  assert.match(RESOLUTION_LABEL.cancelled, /owner who started the work/u);
+  assert.equal(RESOLUTION_LABEL.cancelled, "Cancelled by its owner");
 });
 
 test("a failing check is fixed in the sub-issue whose latest check of the same test passes", () => {
@@ -334,7 +334,7 @@ test("an approval card waits for the viewer only while a head is linked and the 
   assert.equal(approvalStatus(approval({ head: null, owners: owners("pending", "pending") }), "jun"), "waiting");
   assert.equal(approvalStatus(approval({ owners: owners("changes_requested", "pending") }), "sam"), "changes-requested");
   assert.equal(approvalStatus(approval({ owners: owners("approved", "approved"), approved: true }), "jun"), "approved");
-  assert.equal(APPROVAL_STATUS_LABEL["waiting-for-you"], "Waiting for your review");
+  assert.equal(APPROVAL_STATUS_LABEL["waiting-for-you"], "Your review");
   const fixes = approvalFixes([sub("32"), sub("33", { approval: approval({}) })]);
   assert.deepEqual(
     fixes.map((fix) => fix.id),

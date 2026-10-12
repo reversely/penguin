@@ -130,7 +130,7 @@ test("Needs you lists the viewer's open thread and fix review above the activity
   assert.deepEqual(links, ["thread-t1", "fix-17"], "only the thread that needs the viewer and the fix waiting for them");
   for (const target of links) assert.match(html, new RegExp(`id="${target}"`), target);
   assert.match(needs, /Thread from priya/);
-  assert.match(needs, /Waiting for your reply/);
+  assert.match(needs, />Reply<\/span>/);
   assert.match(needs, /#17<\/span> Keep daily actives stable across merges/);
-  assert.match(needs, /Waiting for your review/);
+  assert.match(needs, />Review<\/span>/);
 });

@@ -80,7 +80,7 @@ export function NewIssuePage({ live, navigate, onSignedOut }: Props) {
             ) : identities.kind === "failed" ? (
               <span className="muted">Please reload the page to assign</span>
             ) : identities.handles.length === 0 ? (
-              <span className="muted">No identities yet</span>
+              <span className="muted">Please create an identity first</span>
             ) : (
               <div className="checks">
                 {identities.handles.map((handle) => (

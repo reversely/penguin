@@ -37,7 +37,7 @@ export function Banners({ approvals, team, viewer, current, navigate }: Props) {
               {banner.feature}
             </a>
             {strip === undefined ? null : <span className="muted">{currentStageText(strip)}</span>}
-            {banner.needsYou ? <span className="tag tag-attention">Needs you</span> : null}
+            {banner.needsYou ? <span className="tag tag-attention">Your decision</span> : null}
           </li>
         );
       })}

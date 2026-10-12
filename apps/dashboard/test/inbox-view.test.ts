@@ -90,10 +90,10 @@ function boardIssue(
 
 test("the four waiting previews read as the identity plan words them", () => {
   assert.deepEqual(WAITING_PREVIEW, {
-    review: "Waiting for your review",
-    reply: "Waiting for your reply",
-    start_session: "Waiting for you to start a session",
-    acceptance: "Waiting for your acceptance",
+    review: "Review",
+    reply: "Reply",
+    start_session: "Session to start",
+    acceptance: "Acceptance",
   });
 });
 

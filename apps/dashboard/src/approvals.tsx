@@ -230,10 +230,10 @@ export function ApprovalsView({ approvals, busy, failed, unread = false, navigat
                   <FeatureLink feature={item.feature} navigate={navigate} />
                 </h3>
                 <span className="tag tag-attention">
-                  {item.inPerson.length} needing a person over the limit of {item.breakLimit}
+                  {item.inPerson.length} of {item.breakLimit} needing a person
                 </span>
               </header>
-              <p className="muted">Please split the plan or restructure it</p>
+              <p className="muted">Please split the plan into smaller plans</p>
               <ul className="chip-list" aria-label="Places needing a person">
                 {item.inPerson.map((place) => (
                   <li key={place} className="chip">
@@ -286,10 +286,10 @@ function OverlapCard({ request, sending, navigate, onApprove }: OverlapProps) {
       </header>
       <p className="approval-line">
         {expand ? (
-          "Adds to your scopes and waits to reach main ahead of the rest of its feature"
+          "Expand into your scopes"
         ) : (
           <>
-            Waits to start beside your <FeatureLink feature={request.feature} navigate={navigate} />
+            Start beside <FeatureLink feature={request.feature} navigate={navigate} />
           </>
         )}
       </p>
@@ -339,7 +339,7 @@ function PlanCard({ group, busy, navigate, onDecide, onReverse }: PlanProps) {
         </span>
       </header>
       {group.reasons.length === 0 ? null : (
-        <ul className="approval-reasons" aria-label="Needs you because">
+        <ul className="approval-reasons" aria-label="Reasons">
           {group.reasons.map((reason) => (
             <li key={reason}>{reason}</li>
           ))}
@@ -470,7 +470,7 @@ function PartRow({ part, sending, navigate, onDecide, onReverse }: PartProps) {
         </blockquote>
       )}
       {/* A plan holds a part per affected place, so each part's facts open on request. */}
-      <Disclosure className="part-details" summary={`${counted(part.breaks.length, "break")}, ${counted(part.files.length, "changed file")}`}>
+      <Disclosure className="part-details" summary={`${counted(part.breaks.length, "break")} ${counted(part.files.length, "changed file")}`}>
         <p className="muted approval-kind">{part.kindReason}</p>
         <BreakList breaks={part.breaks} />
         {part.files.length === 0 ? null : <DiffFiles files={part.files} />}
@@ -508,7 +508,7 @@ function ProtectedChangeCard({ change, sending, navigate, onConfirm }: Protected
       </header>
       <p className="approval-line">
         {waiting
-          ? `Its own change at checkpoint ${shortSha(change.checkpoint)} writes ${counted(change.files.length, "file")} under paths ${change.owner} protects. It lands once ${change.owner} confirms the lines`
+          ? `${counted(change.files.length, "file")} under protected paths at checkpoint ${shortSha(change.checkpoint)}`
           : `${change.confirmedBy ?? change.owner} confirmed the lines at checkpoint ${shortSha(change.checkpoint)}`}
       </p>
       <ul className="chip-list" aria-label="Protected paths">

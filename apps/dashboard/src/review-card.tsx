@@ -134,8 +134,12 @@ function SideBySideSet({ set, reviewId, index }: SetProps) {
       <p className="sbs-set-head">
         <code>{set.contract}</code>
         <span className="muted">
-          on {set.file ?? "the form's risky inputs"}: {formatCount(total)} of {formatCount(set.inputs)} differ
-          {set.invalid > 0 ? `, ${formatCount(set.invalid)} not run` : ""}
+          on {set.file ?? "the form's risky inputs"}
+        </span>
+        <span className="muted">
+          {formatCount(total)} of {formatCount(set.inputs)} differ
+        </span>
+        <span className="muted">{set.invalid > 0 ? `${formatCount(set.invalid)} not run` : null}
         </span>
       </p>
       {set.breakdown === null || !long ? null : <Breakdown breakdown={set.breakdown} />}

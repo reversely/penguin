@@ -35,10 +35,10 @@ export type Waiting = "review" | "reply" | "start_session" | "acceptance";
 
 /** The preview a waiting item shows in place of its issue's state. */
 export const WAITING_PREVIEW: Readonly<Record<Waiting, string>> = {
-  review: "Waiting for your review",
-  reply: "Waiting for your reply",
-  start_session: "Waiting for you to start a session",
-  acceptance: "Waiting for your acceptance",
+  review: "Review",
+  reply: "Reply",
+  start_session: "Session to start",
+  acceptance: "Acceptance",
 };
 
 /**
