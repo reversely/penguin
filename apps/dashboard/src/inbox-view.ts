@@ -1,6 +1,6 @@
-// What the inbox page derives from GET /api/inbox: the person's items sorted into the five lists of
-// PRD section 8 (needs your review, assigned to your identities, mentions, threads that need you,
-// recently closed) and the unread count. With GET /api/board it also derives what an item waits on
+// What the issue pages' sidebar list derives from GET /api/inbox: the person's items sorted into the
+// five lists of PRD section 8 (needs your review, assigned to your identities, mentions, threads that
+// need you, recently closed). With GET /api/board it also derives what an item waits on
 // the person for and whether its assignee runs a session (identity plan section 5, "Sidebar row").
 // Pure, so the rules are tested without a browser (test/inbox-view.test.ts).
 //
@@ -108,10 +108,6 @@ export const CLOSED_WINDOW = 10;
 /** The first `size` items of a newest-first list, or all of them. */
 export function newest<T>(items: readonly T[], size: number, showAll: boolean): readonly T[] {
   return showAll ? items : items.slice(0, size);
-}
-
-export function unreadCount(items: readonly InboxEntry[]): number {
-  return items.filter((item) => !item.read).length;
 }
 
 /** An item is one issue and one reason. */

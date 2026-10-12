@@ -16,7 +16,7 @@ import type { Socket } from "node:net";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 
-import { inboxChangedMessage } from "@penguin/protocol";
+import { featuresChangedMessage, inboxChangedMessage } from "@penguin/protocol";
 
 import { handleDashboardRoute } from "../../apps/worker/src/dashboard.ts";
 import { parseOwnerMap } from "../../apps/worker/src/github-oauth.ts";
@@ -104,8 +104,11 @@ const server = createServer(async (req, res) => {
     }
     const request = await toRequest(req);
     const response = (await handleDashboardRoute(request, new URL(request.url), options, handlers as never)) ?? new Response("not found", { status: 404 });
-    // A decision or an approval changes someone's inbox: every open dashboard reads its inbox again.
-    if (request.method === "POST" && response.ok) for (const socket of sockets) socket.write(frame(inboxChangedMessage()));
+    // A decision or an approval changes someone's inbox and a feature's state: every open dashboard
+    // reads its inbox and its team view again, as the ProjectAgent's two messages ask.
+    if (request.method === "POST" && response.ok) {
+      for (const socket of sockets) socket.write(Buffer.concat([frame(inboxChangedMessage()), frame(featuresChangedMessage())]));
+    }
     const headers: Record<string, string> = {};
     response.headers.forEach((value, name) => {
       if (name !== "set-cookie") headers[name] = value;

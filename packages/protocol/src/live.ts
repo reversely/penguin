@@ -65,6 +65,22 @@ export function isIdentitiesChanged(data: unknown): boolean {
   return messageType(data) === IDENTITIES_CHANGED;
 }
 
+/**
+ * The message the ProjectAgent sends to every connected dashboard when a feature, its merge plan, a
+ * part's approval or a review changes. It names nothing: the team view, the feature page and the
+ * approvals read their answers again, so another person's open team view shows a new state at once.
+ */
+export const FEATURES_CHANGED = "penguin.features-changed";
+
+export function featuresChangedMessage(): string {
+  return JSON.stringify({ type: FEATURES_CHANGED });
+}
+
+/** Whether a WebSocket text frame is a features-changed message. */
+export function isFeaturesChanged(data: unknown): boolean {
+  return messageType(data) === FEATURES_CHANGED;
+}
+
 /** The `type` of a JSON object in a text frame, or undefined. */
 function messageType(data: unknown): unknown {
   if (typeof data !== "string") return undefined;

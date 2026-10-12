@@ -34,9 +34,13 @@ export interface Team {
   readonly identities: Read<IdentitiesPage>;
 }
 
-/** Reads the team for the shell, again on every live message and after a reconnect. */
+/**
+ * Reads the team for the shell, again on every live message and after a reconnect. The
+ * features-changed message reaches every person, so a feature, plan or approval that changes shows on
+ * each open team view, not only on the views of the people its inbox items reach.
+ */
 export function useTeam(live: Live, onSignedOut: () => void): Team {
-  const revision = `${live.revision}:${live.inboxRevision}:${live.identitiesRevision}:${live.status === "live"}`;
+  const revision = `${live.revision}:${live.inboxRevision}:${live.identitiesRevision}:${live.featuresRevision}:${live.status === "live"}`;
   const view = useRead(fetchTeam, revision, onSignedOut);
   const board = useRead(fetchBoard, revision, onSignedOut);
   const identities = useRead(fetchIdentities, revision, onSignedOut);

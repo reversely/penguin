@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  featuresChangedMessage,
   identitiesChangedMessage,
   inboxChangedMessage,
   INDEX_CHANGED,
   indexChangedMessage,
+  isFeaturesChanged,
   isIdentitiesChanged,
   isInboxChanged,
   parseIndexChanged,
@@ -58,4 +60,14 @@ test("an identities-changed message is told apart from the other messages and fr
   for (const frame of [indexChangedMessage(["40"]), inboxChangedMessage(), "null", "not json", new ArrayBuffer(4)]) {
     assert.equal(isIdentitiesChanged(frame), false, String(frame));
   }
+});
+
+test("a features-changed message is told apart from the other messages and frames", () => {
+  assert.equal(isFeaturesChanged(featuresChangedMessage()), true);
+  for (const frame of [indexChangedMessage(["40"]), inboxChangedMessage(), identitiesChangedMessage(), "null", "not json", new ArrayBuffer(4)]) {
+    assert.equal(isFeaturesChanged(frame), false, String(frame));
+  }
+  assert.equal(isInboxChanged(featuresChangedMessage()), false);
+  assert.equal(isIdentitiesChanged(featuresChangedMessage()), false);
+  assert.equal(parseIndexChanged(featuresChangedMessage()), undefined);
 });

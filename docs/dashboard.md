@@ -17,16 +17,18 @@ routes for it are in `apps/worker/src/dashboard.ts`.
 | `/` | The team view |
 | `/?person=<id>` | One person's view |
 | `/features/<id>` | One feature's page |
-| `/inbox`, `/inbox?closed=all` | The signed-in person's approvals and issue inbox |
+| `/inbox` | The signed-in person's approvals |
 | `/identities`, `/identities?identity=<id>` | Every identity, with the chosen one's agent card |
-| `/issues/<number or temporary ID>` | One issue |
+| `/issues/<number or temporary ID>`, `?closed=all` | One issue, beside the person's issue items |
 | `/issues/new` | The New issue form |
 | `/board` | Redirects to `/` |
 
-The shell has three panes: a sidebar with the navigation (Team, Inbox with its unread count,
-Identities), the page's list and the signed-in person's account menu; the centre; and a details panel
-for the issue page. From 1100px the panel docks beside the centre; below that it opens as a drawer.
-Below 760px the sidebar becomes a phone header.
+The shell has three panes: a sidebar with the navigation (Team, Inbox with the count of approvals
+waiting, Identities), the page's list and the signed-in person's account menu; the centre; and a
+details panel for the issue page. From 1100px the panel docks beside the centre; below that it opens
+as a drawer. Below 760px the sidebar becomes a phone header. No page in the navigation links to the
+New issue form or lists issue items: those belong to the issue pages, which stay until a ticket
+replaces them.
 
 ## Sign-in
 
@@ -149,23 +151,46 @@ The inbox page holds the approvals that wait on the signed-in person (`approvals
 | Group | Holds | Controls |
 |---|---|---|
 | Overlapping starts | Each feature whose start waits beside one of the person's running features, its person and the scopes, contracts and paths where the two areas meet | Approve start, `POST /api/overlaps/approve` |
-| Plan parts | Each part that touches the person's code: the originating feature and person, the place, the kind and why, the revision and rounds, why it needs the person in person, the latest requested change, the tests that break in the place, the newest review of each scope it touches and the fix's changed lines | Approve revision, `POST /api/plan-parts/approve`; Request change, which opens a field whose text posts `POST /api/plan-parts/request-change` |
-| Protected paths | Parts that write a path the person protects, with the same facts | None |
-| Round limits | Parts of the person's own plans past the round limit | None |
+| Plans | One card per merge plan with parts for the person: the originating feature and person, why the plan needs the person in person, each review the parts carry and then each of the person's parts | Per part: Approve revision, `POST /api/plan-parts/approve`; Request change, which opens a field whose text posts `POST /api/plan-parts/request-change` |
 | Review exceptions | Each review of the person's scopes whose record raised an exception | None |
 | Returned plans | Each plan of the person's returned over the break limit, with its behavioural places | None |
 
-A review shows the form row by row: each invariant's statement, the verdict and the evidence, the
-stored data marker, Penguin's refusals and the exceptions it raised. Under it the side-by-side run
-names its tool and command ID. It counts the inputs that differ between main and the fork. It lists
-up to five differing inputs per set with their outcome on each side. Request change puts its field
-in focus; Escape or Cancel closes it and returns focus to Request change. While a decision sends,
-its button keeps focus and reads Approving or Sending. The server names the approver and the
-decider from the session ([design.md](design.md#advance-notice-in-the-build)).
+A plan card shows each review and each reason once, however many of its parts carry them
+(`planGroups` in `feature-view.ts`). The parts follow one per row: the part number and place, the
+kind, the revision and the rounds, then the part's state. A part the person approves carries its
+decision at the end of that row. A part that writes a path the person protects reads Protected path.
+A part of the person's own plan past the round limit reads Past the round limit. Neither carries
+controls. The latest requested change follows as a quote. The tests that break in the place and the
+fix's changed lines open from a line that counts them, such as "4 breaks, 3 changed files". A review
+exception whose review a plan card already shows lists its exceptions with a link to that review.
 
-Below the approvals, from 760px, the issue inbox's rows sit in the sidebar and stay there while an
-issue is open beside them. On a phone they follow the approvals under a strip of the person's own
-identities. The rows fall in five groups (`inbox-page.tsx`, `inbox-view.ts`):
+A review shows the form row by row: each invariant's statement, the verdict and the evidence, the
+stored data marker, Penguin's refusals and the exceptions it raised. Beside the form, in a centre
+900px wide or more, the side-by-side run names its tool and command ID. It counts the inputs that
+differ between main and the fork. A set with more than three differing inputs summarises them:
+
+- the count, such as "1,633 of 5,000 differ";
+- when every differing input holds a list at the same place in its arguments, how many differ at
+  each length of that list, named by the list's key (`lines` for the money fixture's orders);
+- three examples with their outcome on each side;
+- a button, "All 1,633 differing inputs", that opens the full table from
+  `GET /api/reviews/<id>/differences`, 100 rows a page with Previous and Next.
+
+A set of three or fewer differing inputs lists them all. The full table gives each input's name, its
+list's length and its outcome on each side, with no arguments. Any signed-in person may read it, as
+the feature page shows every review. The ProjectAgent counts the breakdown over every differing input
+(`sideBySideBreakdown` in `services/project-agent/src/review-view.ts`), while the plan parts answer
+carries five examples per set.
+
+Request change puts its field in focus; Escape or Cancel closes it and returns focus to Request
+change. While a decision sends, its button keeps focus and reads Approving or Sending. The server
+names the approver and the decider from the session
+([design.md](design.md#advance-notice-in-the-build)).
+
+### Issue items
+
+From 760px an issue page shows the person's issue items in the sidebar. They stay there from one
+open issue to the next. The rows fall in five groups (`inbox-page.tsx`, `inbox-view.ts`):
 
 | Group | Holds |
 |---|---|
@@ -173,7 +198,7 @@ identities. The rows fall in five groups (`inbox-page.tsx`, `inbox-view.ts`):
 | Assignments | Issues assigned to the person or an identity they answer for; requests to start a session of one |
 | Mentions | Mentions of the person or an identity they own |
 | Threads | Issues with a thread that needs the person |
-| Closed issues | Issues that closed while the person had an item for them; the newest 10, or all with `/inbox?closed=all` |
+| Closed issues | Issues that closed while the person had an item for them; the newest 10, or all with `?closed=all` on the issue's path |
 
 A row shows what the item waits on the person for: "Waiting for your review", "Waiting for your
 reply", "Waiting for you to start a session" or "Waiting for your acceptance". A dot marks an unread
@@ -227,13 +252,20 @@ then one `assign` per identity, then opens the new issue.
 
 The team view, a feature page and the approvals read their answers again on every live message the
 person's connection receives and after a reconnect. The ProjectAgent sends an inbox-changed message
-to the people a decision, an overlap or a review exception concerns, so another person's open team
-view shows a feature's new state at their next live message.
+to the people a decision, an overlap or a review exception concerns. It also sends a features-changed
+message to every connection after a write that may change a feature, its merge plan, a part's
+decision, a fix write or a review. Those writes are a feature's opening, area and checkpoints; an
+overlap approval; a plan proposal and its facts run; a part's approval, change request and revision;
+a fix write; a review's submission and the runner's record of it; a land request, a landing and a
+failed land run. Every open team view then shows the new state, including the views of people the
+change does not concern. The ProjectAgent's live feed sends one
+such message per task, however many writes the task made (`services/project-agent/src/live-feed.ts`).
 
 The dashboard opens a WebSocket at `/api/live` (`use-live.ts`). The Worker accepts it only with a
 valid session cookie and forwards it to the ProjectAgent with the person's owner id. The agent sends a
 message naming changed issues and identities whose sessions went online or offline, an inbox-changed
-message to one person's own connections, or an identities-changed message. The message carries no
+message to one person's own connections, an identities-changed message or a features-changed
+message. The message carries no
 issue data: each page reads what it shows again through the API, which checks the session. The
 account menu shows whether the connection is live.
 

@@ -1,17 +1,31 @@
 // The approvals inbox (PRD section 10): what waits on the signed-in person, each item with the facts
-// behind it. Overlapping starts show where the two areas meet. Plan parts show why the part needs the
-// person, the tests that break in their scope, their agent's review form with the side-by-side run and
-// the fix's changed lines, with Approve and Request change. Protected-path confirmations, parts past
-// the round limit, review exceptions and plans returned over the break limit follow without controls.
-// The server names the approver and the decider from the session; an agent never approves. The lists
-// are read again on each inbox-changed message and after a reconnect. Every value renders as text.
+// behind it. Overlapping starts show where the two areas meet. Each merge plan is one card: why it
+// needs the person, each review its parts carry (once, however many parts share it) and then the
+// person's parts, each with its rounds, its breaks and changed lines behind a line counting them, and
+// Approve and Request change on a part that waits on them. Protected-path confirmations and parts past
+// the round limit sit in their plan's card without controls. Review exceptions and plans returned
+// over the break limit follow; an exception whose review a plan card already shows links to it. The
+// server names the approver and the decider from the session; an agent never approves. The lists are
+// read again on each inbox-changed or features-changed message and after a reconnect. Every value
+// renders as text.
 
-import type { OverlapRequest, PlanInbox, PlanPartRequest } from "@penguin/protocol";
+import type { OverlapRequest, PlanInbox, PlanPartRequest, ReviewExceptionRequest } from "@penguin/protocol";
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 
 import { approveOverlap, decidePlanPart, fetchOverlapRequests, fetchPlanInbox, SignedOut } from "./api.ts";
-import { counted, PART_STATE_LABEL, partNumber, placeText, reasonText, roundText } from "./feature-view.ts";
+import {
+  counted,
+  PART_STATE_LABEL,
+  partNumber,
+  placeText,
+  planGroups,
+  reviewAnchor,
+  reviewExceptionText,
+  roundText,
+  type PlanGroup,
+} from "./feature-view.ts";
 import { PersonAvatar } from "./avatar.tsx";
+import { Disclosure } from "./disclosure.tsx";
 import { linkHandler } from "./links.ts";
 import { BreakList, DiffFiles, ReviewCard } from "./review-card.tsx";
 import { featurePath } from "./routes.ts";
@@ -67,7 +81,7 @@ export function useApprovals(live: Live, onSignedOut: () => void): ApprovalsStat
   }, [onSignedOut]);
   useEffect(() => {
     void reload();
-  }, [live.inboxRevision, live.revision, connected, reload]);
+  }, [live.inboxRevision, live.revision, live.featuresRevision, connected, reload]);
   return { approvals, loaded, failed, reload };
 }
 
@@ -129,12 +143,8 @@ interface ViewProps {
 /** The approvals as read, without the fetch, so they render on the server in a test. */
 export function ApprovalsView({ approvals, busy, failed, unread = false, navigate, onApproveStart, onDecide }: ViewProps) {
   const { overlaps, plan } = approvals;
-  const asks = (ask: PlanPartRequest["ask"]) => plan.parts.filter((part) => part.ask === ask);
-  const sections = [
-    { id: "parts", label: "Plan parts", parts: asks("approve") },
-    { id: "protected", label: "Protected paths", parts: asks("protected_path") },
-    { id: "round-limits", label: "Round limits", parts: asks("round_limit") },
-  ];
+  const plans = planGroups(plan.parts);
+  const shownReviews = new Set(plans.flatMap((group) => group.reviews.map((review) => review.reviewId)));
   return (
     <div className="approvals" id="approvals" tabIndex={-1}>
       {failed ? (
@@ -163,17 +173,15 @@ export function ApprovalsView({ approvals, busy, failed, unread = false, navigat
           ))}
         </section>
       )}
-      {sections.map((section) =>
-        section.parts.length === 0 ? null : (
-          <section key={section.id} className="approval-group" aria-labelledby={`approvals-${section.id}`}>
-            <h2 id={`approvals-${section.id}`} className="approval-group-heading">
-              {section.label} <span className="tab-count">{section.parts.length}</span>
-            </h2>
-            {section.parts.map((part) => (
-              <PartCard key={`${part.ask}/${part.partId}`} part={part} sending={busy === part.partId} navigate={navigate} onDecide={onDecide} />
-            ))}
-          </section>
-        ),
+      {plans.length === 0 ? null : (
+        <section className="approval-group" aria-labelledby="approvals-plans">
+          <h2 id="approvals-plans" className="approval-group-heading">
+            Plans <span className="tab-count">{plans.length}</span>
+          </h2>
+          {plans.map((group) => (
+            <PlanCard key={group.planId} group={group} busy={busy} navigate={navigate} onDecide={onDecide} />
+          ))}
+        </section>
       )}
       {plan.reviewExceptions.length === 0 ? null : (
         <section className="approval-group" aria-labelledby="approvals-exceptions">
@@ -181,14 +189,7 @@ export function ApprovalsView({ approvals, busy, failed, unread = false, navigat
             Review exceptions <span className="tab-count">{plan.reviewExceptions.length}</span>
           </h2>
           {plan.reviewExceptions.map((item) => (
-            <article key={item.reviewId} className="approval-card card-raised" data-unread={item.read ? undefined : true}>
-              <header className="approval-card-head">
-                <h3 className="approval-card-title">
-                  <FeatureLink feature={item.feature} navigate={navigate} />
-                </h3>
-              </header>
-              <ReviewCard review={item.review} />
-            </article>
+            <ExceptionCard key={item.reviewId} item={item} shownAbove={shownReviews.has(item.reviewId)} navigate={navigate} />
           ))}
         </section>
       )}
@@ -274,20 +275,73 @@ function OverlapCard({ request, sending, navigate, onApprove }: OverlapProps) {
   );
 }
 
-interface PartProps {
-  readonly part: PlanPartRequest;
-  readonly sending: boolean;
+interface PlanProps {
+  readonly group: PlanGroup;
+  /** The item whose write is sending. */
+  readonly busy: string | undefined;
   readonly navigate: (path: string) => void;
   readonly onDecide: (part: PlanPartRequest, text?: string) => void;
 }
 
-/** One plan part: what it changes, why it needs the person, its review and its lines, and the decision. */
-function PartCard({ part, sending, navigate, onDecide }: PartProps) {
+/**
+ * One merge plan: the feature and its person, why the plan needs the person, each review its parts
+ * carry, then the person's parts with their decisions. A part is listed once per reason it reaches the
+ * person, so a part they approve and also confirm a protected path for shows twice.
+ */
+function PlanCard({ group, busy, navigate, onDecide }: PlanProps) {
+  const inPerson = group.parts.some((part) => part.routing.inPerson);
+  return (
+    <article className="approval-card card-raised plan-card" data-unread={group.unread ? true : undefined} data-in-person={inPerson ? true : undefined}>
+      <header className="approval-card-head">
+        <h3 className="approval-card-title">
+          <FeatureLink feature={group.feature} navigate={navigate} />
+        </h3>
+        <span className="approval-person">
+          <PersonAvatar id={group.person} size="card" />
+          {group.person}
+        </span>
+      </header>
+      {group.reasons.length === 0 ? null : (
+        <ul className="approval-reasons" aria-label="Needs you because">
+          {group.reasons.map((reason) => (
+            <li key={reason}>{reason}</li>
+          ))}
+        </ul>
+      )}
+      {group.reviews.length === 0 ? (
+        <p className="muted">No review form yet</p>
+      ) : (
+        group.reviews.map((review) => <ReviewCard key={review.reviewId} review={review} />)
+      )}
+      <ol className="plan-parts" aria-label="Your parts">
+        {group.parts.map((part) => (
+          <PartRow key={`${part.ask}/${part.partId}`} part={part} sending={busy === part.partId} onDecide={onDecide} />
+        ))}
+      </ol>
+    </article>
+  );
+}
+
+/** The tag beside a part: its state, or why it reaches the person when they only confirm it. */
+function partTag(part: PlanPartRequest): { readonly text: string; readonly attention: boolean } {
+  if (part.ask === "protected_path") return { text: "Protected path", attention: false };
+  return { text: PART_STATE_LABEL[part.state], attention: part.ask === "approve" && part.state === "pending" };
+}
+
+interface PartProps {
+  readonly part: PlanPartRequest;
+  readonly sending: boolean;
+  readonly onDecide: (part: PlanPartRequest, text?: string) => void;
+}
+
+/** One part in its plan's card: its place and rounds, its facts behind a counting line, and the decision. */
+function PartRow({ part, sending, onDecide }: PartProps) {
   const [asking, setAsking] = useState(false);
   const [text, setText] = useState("");
   const fieldId = useId();
   const titleId = useId();
   const requestRef = useRef<HTMLButtonElement | null>(null);
+  const tag = partTag(part);
   const send = (event: FormEvent) => {
     event.preventDefault();
     if (!sending && text.trim() !== "") onDecide(part, text);
@@ -304,49 +358,35 @@ function PartCard({ part, sending, navigate, onDecide }: PartProps) {
       event.currentTarget.form?.requestSubmit();
     }
   };
+  const decides = part.ask === "approve";
   return (
-    <article className="approval-card card-raised" data-unread={part.read ? undefined : true} data-in-person={part.routing.inPerson ? true : undefined}>
-      <header className="approval-card-head">
-        <h3 className="approval-card-title" id={titleId} tabIndex={-1}>
-          <FeatureLink feature={part.feature} navigate={navigate} /> part {partNumber(part.partId)}
-        </h3>
-        <span className={part.state === "pending" ? "tag tag-attention" : "tag"}>{PART_STATE_LABEL[part.state]}</span>
-      </header>
-      <p className="approval-line">
-        <span className="approval-person">
-          <PersonAvatar id={part.person} size="card" />
-          {part.person}
-        </span>
-        <span>changes {placeText(part.place)}</span>
-      </p>
-      <ul className="approval-facts" aria-label="Part">
-        <li className="tag tag-data">{part.kind}</li>
-        <li className="tag tag-data">revision {part.revision}</li>
-        <li className="tag tag-data">{roundText(part.changeRequests, part.roundLimit)}</li>
-      </ul>
-      <p className="muted approval-kind">{part.kindReason}</p>
-      {part.routing.reasons.length === 0 ? null : (
-        <ul className="approval-reasons" aria-label="Needs you because">
-          {part.routing.reasons.map((reason, index) => (
-            <li key={index}>{reasonText(reason)}</li>
-          ))}
+    <li className="plan-part" data-unread={part.read ? undefined : true}>
+      <div className="plan-part-head">
+        <h4 className="part-title" id={titleId} tabIndex={-1}>
+          Part {partNumber(part.partId)} <span className="plan-part-place">{placeText(part.place)}</span>
+        </h4>
+        <ul className="approval-facts" aria-label="Part">
+          <li className="tag tag-data">{part.kind}</li>
+          <li className="tag tag-data">revision {part.revision}</li>
+          <li className="tag tag-data">{roundText(part.changeRequests, part.roundLimit)}</li>
         </ul>
-      )}
-      {part.changeRequest === null ? null : (
-        <blockquote className="approval-quote">
-          <p>{part.changeRequest.text}</p>
-          <footer className="muted">
-            {part.changeRequest.by} on revision {part.changeRequest.revision}
-          </footer>
-        </blockquote>
-      )}
-      <BreakList breaks={part.breaks} />
-      {part.reviews.map((review) => (
-        <ReviewCard key={review.reviewId} review={review} />
-      ))}
-      {part.files.length === 0 ? null : <DiffFiles files={part.files} />}
-      {part.ask !== "approve" ? null : asking ? (
-        // Asking for a change replaces the decision row: the request is then the one primary action.
+        <span className={tag.attention ? "tag tag-attention plan-part-state" : "tag plan-part-state"}>{tag.text}</span>
+        {!decides || asking ? null : (
+          // While a decision sends the buttons keep focus and refuse presses through aria-disabled.
+          <div className="approval-actions">
+            <button type="button" className="button primary progressive" aria-disabled={sending} aria-describedby={titleId} onClick={() => sending || onDecide(part)}>
+              {sending ? "Approving" : `Approve revision ${part.revision}`}
+            </button>
+            {part.state !== "pending" ? null : (
+              <button ref={requestRef} type="button" className="button" aria-disabled={sending} aria-describedby={titleId} onClick={() => sending || setAsking(true)}>
+                Request change
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+      {decides && asking ? (
+        // Asking for a change replaces the decision buttons: the request is then the one primary action.
         <form className="approval-reason" onSubmit={send} aria-labelledby={titleId}>
           <label htmlFor={fieldId}>Change to ask for</label>
           <textarea
@@ -368,26 +408,55 @@ function PartCard({ part, sending, navigate, onDecide }: PartProps) {
             </button>
           </div>
         </form>
-      ) : (
-        // While a decision sends the buttons keep focus and refuse presses through aria-disabled.
-        <div className="approval-actions">
-          <button type="button" className="button primary progressive" aria-disabled={sending} aria-describedby={titleId} onClick={() => sending || onDecide(part)}>
-            {sending ? "Approving" : `Approve revision ${part.revision}`}
-          </button>
-          {part.state !== "pending" ? null : (
-            <button ref={requestRef} type="button" className="button" aria-disabled={sending} aria-describedby={titleId} onClick={() => sending || setAsking(true)}>
-              Request change
-            </button>
-          )}
-        </div>
+      ) : null}
+      {part.changeRequest === null ? null : (
+        <blockquote className="approval-quote">
+          <p>{part.changeRequest.text}</p>
+          <footer className="muted">
+            {part.changeRequest.by} on revision {part.changeRequest.revision}
+          </footer>
+        </blockquote>
       )}
-      <AgentNote part={part} />
-    </article>
+      {/* A plan holds a part per affected place, so each part's facts open on request. */}
+      <Disclosure className="part-details" summary={`${counted(part.breaks.length, "break")}, ${counted(part.files.length, "changed file")}`}>
+        <p className="muted approval-kind">{part.kindReason}</p>
+        <BreakList breaks={part.breaks} />
+        {part.files.length === 0 ? null : <DiffFiles files={part.files} />}
+      </Disclosure>
+    </li>
   );
 }
 
-/** Nothing for a part without a reviewing agent; the reviews above name each one. */
-function AgentNote({ part }: { readonly part: PlanPartRequest }) {
-  if (part.reviews.length > 0) return null;
-  return <p className="muted">No review form yet</p>;
+interface ExceptionProps {
+  readonly item: ReviewExceptionRequest;
+  /** Whether a plan card above already shows the review, which the card then links to. */
+  readonly shownAbove: boolean;
+  readonly navigate: (path: string) => void;
+}
+
+/** A review of the person's scope that raised an exception; its review shows once on the page. */
+function ExceptionCard({ item, shownAbove, navigate }: ExceptionProps) {
+  return (
+    <article className="approval-card card-raised" data-unread={item.read ? undefined : true}>
+      <header className="approval-card-head">
+        <h3 className="approval-card-title">
+          <FeatureLink feature={item.feature} navigate={navigate} />
+        </h3>
+      </header>
+      {shownAbove ? (
+        <>
+          <ul className="review-exceptions" aria-label="Exceptions">
+            {item.exceptions.map((exception, index) => (
+              <li key={index}>{reviewExceptionText(exception)}</li>
+            ))}
+          </ul>
+          <a className="review-link" href={`#${reviewAnchor(item.reviewId)}`}>
+            Review of {item.scope}
+          </a>
+        </>
+      ) : (
+        <ReviewCard review={item.review} />
+      )}
+    </article>
+  );
 }

@@ -106,6 +106,7 @@ export default {
             featurePlan: async (owner, featureId) => agent.featurePlan(owner, featureId, repos),
             team: async (owner) => agent.teamView(owner, repos),
             featurePage: async (owner, featureId) => agent.featurePage(owner, featureId, repos),
+            reviewDifferences: async (reviewId) => agent.reviewDifferences(reviewId),
             overlapRequests: async (owner) => agent.overlapRequests(owner),
             // The approver is the session's person, named by the dashboard route, never by the body.
             approveOverlap: async (owner, featureId, blockedFeatureId) => {

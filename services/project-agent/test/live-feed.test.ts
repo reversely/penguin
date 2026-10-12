@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { before, test } from "node:test";
 
 import { generateSigningKeyPair } from "@penguin/issues";
-import { parseIndexChanged } from "@penguin/protocol";
+import { isFeaturesChanged, parseIndexChanged } from "@penguin/protocol";
 import { parseScopeMap } from "@penguin/scope-map";
 
 import { IssueIndex, type OperationKeys } from "../src/issue-index.ts";
@@ -66,6 +66,25 @@ test("a submitted operation reaches connected dashboards after its transaction",
   assert.equal(outcome.status, "applied");
   await Promise.resolve();
   assert.deepEqual(sent.map((message) => parseIndexChanged(message)?.issues), [["40"]]);
+});
+
+test("feature changes within one task go out as one features-changed message beside the index message", () => {
+  const { feed, sent, flush } = manualFeed();
+  feed.featuresChanged();
+  feed.featuresChanged();
+  feed.issueChanged("40");
+  assert.deepEqual(sent, []);
+  flush();
+  assert.deepEqual(sent.map((message) => [parseIndexChanged(message)?.issues, isFeaturesChanged(message)]), [
+    [["40"], false],
+    [undefined, true],
+  ]);
+  // A task with only a feature change sends no index message.
+  feed.featuresChanged();
+  flush();
+  assert.deepEqual(sent.slice(2).map((message) => isFeaturesChanged(message)), [true]);
+  flush();
+  assert.equal(sent.length, 3);
 });
 
 test("a dashboard connection names its person only through the Worker's header", () => {

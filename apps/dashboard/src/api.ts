@@ -11,6 +11,7 @@ import type {
   OverlapRequest,
   OverlapRequests,
   PlanInbox,
+  ReviewDifferences,
   TeamView,
 } from "@penguin/protocol";
 
@@ -161,6 +162,11 @@ export async function fetchFeaturePage(featureId: string): Promise<FeaturePage |
     if (error instanceof NotFound) return undefined;
     throw error;
   }
+}
+
+/** Every differing input of a review's side-by-side run, read when a person opens a set's full table. */
+export async function fetchReviewDifferences(reviewId: number): Promise<ReviewDifferences> {
+  return getJson<ReviewDifferences>(`/api/reviews/${reviewId}/differences`);
 }
 
 export async function fetchBoard(): Promise<Board> {

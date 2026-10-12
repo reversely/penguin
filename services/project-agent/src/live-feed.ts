@@ -14,8 +14,12 @@
 //
 // Marking an inbox item read changes no issue, so the agent tells that person's own connections only,
 // with an inbox-changed message (sendToOwner).
+//
+// A feature opening or changing, a merge plan, a part's decision, a fix write or a review changes no
+// issue either, but every person's team view shows it, so the feed sends one features-changed message
+// to every dashboard after the current task, however many such writes the task made.
 
-import { indexChangedMessage } from "@penguin/protocol";
+import { featuresChangedMessage, indexChangedMessage } from "@penguin/protocol";
 
 export const LIVE_OWNER_HEADER = "X-Penguin-Owner";
 
@@ -51,6 +55,7 @@ export class LiveFeed {
   readonly #defer: (task: () => void) => void;
   #pending = new Set<string>();
   #sessions = new Set<string>();
+  #features = false;
 
   // The default wraps queueMicrotask: workerd throws "Illegal invocation" when it is called unbound.
   constructor(send: (message: string) => void, defer: (task: () => void) => void = (task) => queueMicrotask(task)) {
@@ -69,15 +74,24 @@ export class LiveFeed {
     this.#sessions.add(handle);
   }
 
+  /** A feature, its merge plan, a part's approval or a review changed: every dashboard hears of it once. */
+  featuresChanged(): void {
+    this.#schedule();
+    this.#features = true;
+  }
+
   #schedule(): void {
-    if (this.#pending.size === 0 && this.#sessions.size === 0) this.#defer(() => this.#flush());
+    if (this.#pending.size === 0 && this.#sessions.size === 0 && !this.#features) this.#defer(() => this.#flush());
   }
 
   #flush(): void {
     const issues = this.#pending;
     const sessions = this.#sessions;
+    const features = this.#features;
     this.#pending = new Set();
     this.#sessions = new Set();
+    this.#features = false;
     if (issues.size > 0 || sessions.size > 0) this.#send(indexChangedMessage(issues, sessions));
+    if (features) this.#send(featuresChangedMessage());
   }
 }

@@ -3,7 +3,7 @@
 // client names no instance.
 
 import { useAgent } from "agents/react";
-import { isIdentitiesChanged, isInboxChanged, parseIndexChanged } from "@penguin/protocol";
+import { isFeaturesChanged, isIdentitiesChanged, isInboxChanged, parseIndexChanged } from "@penguin/protocol";
 import { useState } from "react";
 
 import { recordChange, type LiveChanges, type LiveStatus } from "./live-changes.ts";
@@ -16,6 +16,8 @@ export interface Live extends LiveChanges {
   readonly inboxRevision: number;
   /** Counts identities created, edited or duplicated since the page loaded. */
   readonly identitiesRevision: number;
+  /** Counts changes to any feature, merge plan, part decision or review since the page loaded. */
+  readonly featuresRevision: number;
 }
 
 export function useLive(): Live {
@@ -23,6 +25,7 @@ export function useLive(): Live {
   const [changes, setChanges] = useState<LiveChanges>({ revision: 0, changed: new Map() });
   const [inboxRevision, setInboxRevision] = useState(0);
   const [identitiesRevision, setIdentitiesRevision] = useState(0);
+  const [featuresRevision, setFeaturesRevision] = useState(0);
   useAgent({
     agent: "project-agent",
     basePath: "api/live",
@@ -37,10 +40,14 @@ export function useLive(): Live {
         setIdentitiesRevision((previous: number) => previous + 1);
         return;
       }
+      if (isFeaturesChanged(event.data)) {
+        setFeaturesRevision((previous: number) => previous + 1);
+        return;
+      }
       const message = parseIndexChanged(event.data);
       // An updater per message, so two messages within one render both keep their issue ids.
       if (message !== undefined) setChanges((previous: LiveChanges) => recordChange(previous, message.issues));
     },
   });
-  return { status, inboxRevision, identitiesRevision, ...changes };
+  return { status, inboxRevision, identitiesRevision, featuresRevision, ...changes };
 }

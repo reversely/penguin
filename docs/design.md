@@ -783,8 +783,9 @@ People see only the exceptions in this table. Everything else proceeds without t
 A plan part goes to its owner as a `plan_part` item, a protected path to that path's scope owner
 as a `protected_path` item and a part past the round limit to the originating person as a
 `round_limit` item ([Advance notice in the build](#advance-notice-in-the-build)). A review exception
-goes to the scope's owner as a `review_exception` item. The dashboard inbox lists all four under
-Merge plan parts and Review exceptions.
+goes to the scope's owner as a `review_exception` item. The dashboard inbox shows the first three
+in one card per merge plan with each shared review once. It lists review exceptions under their own
+heading ([dashboard.md](dashboard.md#inbox)).
 
 The overlapping start is built for features of two different people. The ProjectAgent puts it in
 the covering person's inbox and tells that person's running sessions at their next safe checkpoint

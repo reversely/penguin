@@ -40,7 +40,7 @@ interface Props {
 
 export function FeaturePageView({ featureId, live, navigate, onSignedOut }: Props) {
   const read = useCallback(() => fetchFeaturePage(featureId), [featureId]);
-  const page = useRead(read, `${live.revision}:${live.inboxRevision}:${live.status === "live"}`, onSignedOut);
+  const page = useRead(read, `${live.revision}:${live.inboxRevision}:${live.featuresRevision}:${live.status === "live"}`, onSignedOut);
   const back = (
     <a className="back-link" href="/" onClick={linkHandler(navigate, "/")}>
       <Icon name="back" />

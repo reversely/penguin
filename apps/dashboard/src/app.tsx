@@ -5,8 +5,8 @@ import { fetchSession, type Session } from "./api.ts";
 import { DetailsPane, DetailsProvider, useDetails } from "./details-pane.tsx";
 import { FeaturePageView } from "./feature-page.tsx";
 import { IdentitiesPageView } from "./identities-page.tsx";
-import { InboxPage, InboxSidebar, useInbox, type InboxState } from "./inbox-page.tsx";
-import { unreadCount } from "./inbox-view.ts";
+import { approvalCount, useApprovals, type ApprovalsState } from "./approvals.tsx";
+import { InboxPage, InboxSidebar, useInbox } from "./inbox-page.tsx";
 import { IssuePageView } from "./issue-page.tsx";
 import { linkHandler } from "./links.ts";
 import { NewIssuePage } from "./new-issue-page.tsx";
@@ -83,11 +83,13 @@ function useRoute(): [Route | undefined, (path: string) => void] {
 function Shell({ session, onSignedOut }: { session: Session; onSignedOut: () => void }) {
   const [route, navigate] = useRoute();
   const live = useLive();
-  // The shell holds the inbox, so the navigation's unread count and the inbox page read it once.
+  // The shell holds the approvals, so the navigation's count and the inbox page read them once. The
+  // issue items stay for the issue pages' sidebar list.
+  const approvals = useApprovals(live, onSignedOut);
   const inbox = useInbox(live, onSignedOut);
   // The shell holds the team too, so the team map and every person's hue on any page come from one read.
   const team = useTeam(live, onSignedOut);
-  const unread = inbox.load.kind === "ready" ? unreadCount(inbox.load.items) : 0;
+  const waiting = approvals.loaded ? approvalCount(approvals.approvals) : 0;
   const details = useDetails(route?.page === "issue" ? `issue:${route.issueId}` : (route?.page ?? ""));
   const covered = details.shown && !details.docked;
   // The sidebar's list slot, which a page fills through <SidebarList>.
@@ -112,24 +114,24 @@ function Shell({ session, onSignedOut }: { session: Session; onSignedOut: () => 
                     onClick={linkHandler(navigate, entry.path)}
                   >
                     {entry.label}
-                    {entry.page === "inbox" && unread > 0 ? (
-                      <span className="count" aria-label={`${unread} unread`}>
-                        {unread}
+                    {entry.page === "inbox" && waiting > 0 ? (
+                      <span className="count" aria-label={`${waiting} waiting`}>
+                        {waiting}
                       </span>
                     ) : null}
                   </a>
                 ))}
               </nav>
               {/* The route's list; on a route without one the space keeps the owner at the foot of the
-                  sidebar. The inbox's rows belong to the shell, so they stay mounted, with their scroll,
-                  between the inbox and an open issue. */}
+                  sidebar. The issue rows belong to the shell, so they stay mounted, with their scroll,
+                  from one open issue to the next. */}
               <div className="sidebar-list" ref={setSlot} />
               <InboxSidebar route={route} inbox={inbox} viewer={session.owner} live={live} navigate={navigate} onSignedOut={onSignedOut} />
               <AccountMenu session={session} status={live.status} />
             </header>
             <main className="centre" inert={covered}>
               <div className={route?.page === "team" && route.person === null ? "page page-wide" : "page"} data-audit-center>
-                <Page route={route} session={session} live={live} inbox={inbox} team={team} navigate={navigate} onSignedOut={onSignedOut} />
+                <Page route={route} session={session} live={live} approvals={approvals} team={team} navigate={navigate} onSignedOut={onSignedOut} />
               </div>
             </main>
             <DetailsPane details={details} />
@@ -144,13 +146,13 @@ interface PageProps {
   readonly route: Route | undefined;
   readonly session: Session;
   readonly live: Live;
-  readonly inbox: InboxState;
+  readonly approvals: ApprovalsState;
   readonly team: Team;
   readonly navigate: (path: string) => void;
   readonly onSignedOut: () => void;
 }
 
-function Page({ route, session, live, inbox, team, navigate, onSignedOut }: PageProps) {
+function Page({ route, session, live, approvals, team, navigate, onSignedOut }: PageProps) {
   if (route?.page === "issue") {
     return <IssuePageView key={route.issueId} issueId={route.issueId} viewer={session.owner} live={live} navigate={navigate} onSignedOut={onSignedOut} />;
   }
@@ -161,7 +163,7 @@ function Page({ route, session, live, inbox, team, navigate, onSignedOut }: Page
     return <FeaturePageView key={route.featureId} featureId={route.featureId} live={live} navigate={navigate} onSignedOut={onSignedOut} />;
   }
   if (route?.page === "inbox") {
-    return <InboxPage inbox={inbox} viewer={session.owner} live={live} showAll={route.showAll} navigate={navigate} onSignedOut={onSignedOut} />;
+    return <InboxPage approvals={approvals} navigate={navigate} onSignedOut={onSignedOut} />;
   }
   if (route?.page === "new-issue") return <NewIssuePage live={live} navigate={navigate} onSignedOut={onSignedOut} />;
   if (route?.page === "identities") {

@@ -5,9 +5,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import type { BlockCheck } from "@penguin/protocol";
+import type { BlockCheck, PlanPartRequest } from "@penguin/protocol";
 
-import { checksByTool, exceptionText, partNumber, placeText, recordLabel, stateClass } from "../src/feature-view.ts";
+import { checksByTool, exceptionText, partNumber, placeText, planGroups, recordLabel, stateClass } from "../src/feature-view.ts";
 import { load } from "./render.ts";
 
 const MARKUP = '<img src=x onerror="globalThis.pwned = 1">';
@@ -74,7 +74,7 @@ const REVIEW = {
     base: "b".repeat(40),
     fork: "a".repeat(40),
     totals: { inputs: 3, differing: 1, invalid: 0 },
-    sets: [{ source: "examples", file: MARKUP, contract: SCRIPT, invariants: [], inputs: 3, differing: [{ name: MARKUP, args: SCRIPT, main: UNBROKEN, fork: MARKUP }], omitted: 0, invalid: 0 }],
+    sets: [{ source: "examples", file: MARKUP, contract: SCRIPT, invariants: [], inputs: 3, differing: [{ name: MARKUP, args: SCRIPT, main: UNBROKEN, fork: MARKUP }], omitted: 0, invalid: 0, breakdown: { list: MARKUP, counts: [{ length: 3, inputs: 1 }] } }],
   },
   exceptions: [{ kind: "broken_invariant", invariant: MARKUP, scope: "tax" }],
 };
@@ -212,10 +212,12 @@ test("markup in a feature page's declaration, plan, review, checks, tools and re
 });
 
 test("markup in an approval's overlap, part, breaks, review, changed lines and returned plan renders as text", async () => {
-  const { render } = await load<{ render: (approvals: unknown) => string }>(`
+  const { render, renderDiff } = await load<{ render: (approvals: unknown) => string; renderDiff: (files: unknown) => string }>(`
     import { renderToStaticMarkup } from "react-dom/server";
     import { createElement } from "react";
     import { ApprovalsView } from "./src/approvals.tsx";
+    import { DiffFiles } from "./src/review-card.tsx";
+    export const renderDiff = (files) => renderToStaticMarkup(createElement(DiffFiles, { files }));
     export function render(approvals) {
       const noop = () => {};
       return renderToStaticMarkup(createElement(ApprovalsView, { approvals, busy: undefined, failed: false, navigate: noop, onApproveStart: noop, onDecide: noop }));
@@ -250,12 +252,66 @@ test("markup in an approval's overlap, part, breaks, review, changed lines and r
     },
   };
   const html = render(approvals);
-  assert.match(html, /\+total = &lt;img src=x onerror=&quot;globalThis\.pwned = 1&quot;&gt;/);
   assert.match(html, /The review reports &lt;img/);
+  // A part's changed lines open from its counting line; they render as text there too.
+  assert.match(renderDiff(part.files), /\+total = &lt;img src=x onerror=&quot;globalThis\.pwned = 1&quot;&gt;/);
   assert.ok(html.includes(UNBROKEN));
-  for (const heading of ["Overlapping starts", "Plan parts", "Round limits", "Review exceptions", "Returned plans"]) assert.ok(html.includes(heading), heading);
+  for (const heading of ["Overlapping starts", "Plans", "Review exceptions", "Returned plans"]) assert.ok(html.includes(heading), heading);
   // Only the part waiting on the person and the overlapping start carry controls; the round-limit part shows none.
   assert.equal(html.match(/Approve revision 2/g)?.length, 1);
   assert.equal(html.match(/Approve start/g)?.length, 1);
+  // Both parts belong to one plan: one card, the shared review and its reason once, both parts listed.
+  assert.equal(html.match(/class="approval-card card-raised plan-card"/g)?.length, 1);
+  assert.equal(html.match(/<h4 class="review-title">/g)?.length, 1);
+  assert.equal(html.match(/The review reports/g)?.length, 1);
+  assert.equal(html.match(/class="plan-part"/g)?.length, 2);
+  assert.match(html, /Past the round limit/);
+  // The review exception names the same review, so it links to the card above instead of repeating it.
+  assert.match(html, /<a class="review-link" href="#review-4">Review of tax<\/a>/);
+  // A part's breaks and lines stay closed behind a line counting them.
+  assert.match(html, /1 break, 1 changed file<\/summary>/);
   assert.doesNotMatch(html, LEAKS);
+});
+
+test("a long side-by-side set shows its count, its breakdown and three examples, with the full table one press away", async () => {
+  const { render } = await load<{ render: (review: unknown) => string }>(`
+    import { renderToStaticMarkup } from "react-dom/server";
+    import { createElement } from "react";
+    import { ReviewCard } from "./src/review-card.tsx";
+    export function render(review) {
+      return renderToStaticMarkup(createElement(ReviewCard, { review }));
+    }`);
+  const differing = Array.from({ length: 5 }, (_, index) => ({ name: `order-000${index}`, args: "{}", main: "36", fork: "35" }));
+  const set = { ...REVIEW.sideBySide.sets[0], file: "tax/examples/invoice_tax.json", inputs: 5000, differing, omitted: 1628, breakdown: { list: "lines", counts: [{ length: 3, inputs: 600 }, { length: 4, inputs: 1033 }] } };
+  const html = render({ ...REVIEW, sideBySide: { ...REVIEW.sideBySide, totals: { inputs: 5000, differing: 1633, invalid: 0 }, sets: [set] } });
+  assert.match(html, /1,633 of 5,000 inputs differ between main/);
+  assert.match(html, /on tax\/examples\/invoice_tax\.json: 1,633 of 5,000 differ/);
+  assert.match(html, /<th scope="row">lines<\/th><td>3<\/td><td>4<\/td><\/tr><tr><th scope="row">differ<\/th><td>600<\/td><td>1,033<\/td>/);
+  assert.equal(html.match(/class="sbs-difference"/g)?.length, 3);
+  assert.match(html, /aria-expanded="false"[^>]*>.*All 1,633 differing inputs<\/button>/);
+  // A short set lists every differing input and offers no table.
+  const short = render(REVIEW);
+  assert.equal(short.match(/class="sbs-difference"/g)?.length, 1);
+  assert.doesNotMatch(short, /differing inputs<\/button>/);
+});
+
+test("a person's plan parts group by plan with each shared review and reason once", () => {
+  const part = (partId: string, reviewIds: number[], read = true) =>
+    ({
+      ask: "approve",
+      feature: partId.split("/")[0],
+      person: "ines",
+      partId,
+      reviews: reviewIds.map((reviewId) => ({ ...REVIEW, reviewId })),
+      routing: { inPerson: true, reasons: [{ kind: "broken_invariant", scope: "tax", invariant: "tax-per-line", reviewId: 4 }] },
+      read,
+    }) as unknown as PlanPartRequest;
+  const groups = planGroups([part("money/v1#7", [4]), part("refunds/v2#1", []), part("money/v1#21", [4, 5], false), part("money/v1#22", [4])]);
+  assert.deepEqual(
+    groups.map((group) => [group.planId, group.feature, group.parts.map((each) => partNumber(each.partId)), group.reviews.map((review) => review.reviewId), group.reasons, group.unread]),
+    [
+      ["money/v1", "money", ["#7", "#21", "#22"], [4, 5], ["The review reports tax-per-line broken in tax"], true],
+      ["refunds/v2", "refunds", ["#1"], [], ["The review reports tax-per-line broken in tax"], false],
+    ],
+  );
 });

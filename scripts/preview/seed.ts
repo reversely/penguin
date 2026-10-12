@@ -64,6 +64,7 @@ import { PlanStore } from "../../services/project-agent/src/plan-store.ts";
 import { proposePlan, type ProposePlanOutcome } from "../../services/project-agent/src/propose-plan.ts";
 import { claimReviews, recordReview } from "../../services/project-agent/src/review-record.ts";
 import { ReviewStore, submitReview } from "../../services/project-agent/src/review-submit.ts";
+import { reviewDifferences } from "../../services/project-agent/src/review-view.ts";
 import { SessionStore } from "../../services/project-agent/src/session-store.ts";
 import { gitReader } from "../../services/project-agent/test/git-reader.ts";
 
@@ -547,6 +548,10 @@ export class PreviewProject {
       featurePlan: async (owner, featureId) => buildFeaturePlan(this.viewDeps(), featureId, owner),
       team: async (owner) => buildTeamView(this.viewDeps(), owner),
       featurePage: async (owner, featureId) => buildFeaturePage(this.viewDeps(), featureId, owner),
+      reviewDifferences: async (reviewId) => {
+        const review = this.reviews.get(reviewId);
+        return review === undefined ? undefined : reviewDifferences(review);
+      },
       overlapRequests: async (owner) => ({
         requests: this.inbox.items(owner).flatMap((item) => {
           if (item.reason !== "overlap") return [];

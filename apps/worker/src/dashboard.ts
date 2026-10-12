@@ -33,6 +33,10 @@
  *   - GET /api/features/<id>/page: the feature page as the signed-in person may see it (FeaturePage in
  *     @penguin/protocol): a part's changed lines only for the feature's person, the part's owner and
  *     that owner's delegate; 404 for no such feature.
+ *   - GET /api/reviews/<id>/differences: every differing input of a review's side-by-side run, with
+ *     each side's outcome and no arguments (ReviewDifferences in @penguin/protocol), checked against
+ *     REVIEW_DIFFERENCES_SCHEMA; 404 for no such review or one without a run. Any signed-in person
+ *     may read it, as the feature page shows every review.
  *   - GET /api/features/<id>/plan: the feature's newest merge plan with its facts and parts, as
  *     JSON (ViewerPlan in @penguin/protocol); 404 when it has none. A part's patch and changed lines
  *     (`diff.patch`, `diff.files`) follow the feature page's rule; for anyone else both are null.
@@ -55,14 +59,15 @@
  *     part outside the feature's newest plan, a stale revision and a part already decided.
  *   - POST /api/operations: one issue operation, applied with the signed-in person as author. An
  *     operation that carries `author` is refused: only the session names the author.
- *   - GET /api/live: the WebSocket to the ProjectAgent, which sends a message on each index change.
+ *   - GET /api/live: the WebSocket to the ProjectAgent, which sends a message on each index change
+ *     and each change to a feature, its plan, a part's decision or a review.
  *
  * Every response here sends a Content Security Policy that allows scripts, styles and fonts from the
  * Worker's own origin only, so no inline script runs and no third-party origin receives a request. POST routes also require a same-origin
  * `Origin` header, on top of the SameSite=Lax session cookie.
  */
 
-import { checkInbox, checkOverlapRequests, checkPlanInbox, SEGMENT_PATTERN } from "@penguin/protocol";
+import { checkInbox, checkOverlapRequests, checkPlanInbox, checkReviewDifferences, SEGMENT_PATTERN } from "@penguin/protocol";
 
 import type { FeatureOpenResult, FeatureView } from "./features.ts";
 import {
@@ -133,6 +138,8 @@ export interface DashboardBackend {
   team(owner: string): Promise<unknown>;
   /** The feature page as `owner` may see it (FeaturePage in @penguin/protocol), or undefined. */
   featurePage(owner: string, featureId: string): Promise<unknown>;
+  /** Every differing input of a review's side-by-side run (ReviewDifferences in @penguin/protocol), or undefined. */
+  reviewDifferences(reviewId: number): Promise<unknown>;
   /** The overlapping starts waiting for `owner` as plain JSON (OverlapRequests in @penguin/protocol). */
   overlapRequests(owner: string): Promise<unknown>;
   /** Approves the start of `blockedFeatureId` beside `featureId` as `owner`; the ProjectAgent checks ownership. */
@@ -596,6 +603,13 @@ async function handleApi(
   if (url.pathname === "/api/team") {
     if (request.method !== "GET") return methodNotAllowed("GET");
     return json(await (await handlers.dashboard()).team(session.owner));
+  }
+  const reviewId = /^\/api\/reviews\/([1-9][0-9]{0,8})\/differences$/.exec(url.pathname)?.[1];
+  if (reviewId !== undefined) {
+    if (request.method !== "GET") return methodNotAllowed("GET");
+    const table = await (await handlers.dashboard()).reviewDifferences(Number(reviewId));
+    if (table === undefined) return json({ error: "not found", message: `review ${reviewId} has no side-by-side run` }, 404);
+    return checkReviewDifferences(table).length === 0 ? json(table) : json({ error: "invalid review differences" }, 500);
   }
   if (url.pathname === "/api/board") {
     if (request.method !== "GET") return methodNotAllowed("GET");

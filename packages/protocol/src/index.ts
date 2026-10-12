@@ -21,12 +21,15 @@ export {
   type OperationFileRef,
 } from "./order.ts";
 export {
+  FEATURES_CHANGED,
+  featuresChangedMessage,
   IDENTITIES_CHANGED,
   identitiesChangedMessage,
   INBOX_CHANGED,
   inboxChangedMessage,
   INDEX_CHANGED,
   indexChangedMessage,
+  isFeaturesChanged,
   isIdentitiesChanged,
   isInboxChanged,
   parseIndexChanged,

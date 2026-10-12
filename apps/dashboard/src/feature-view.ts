@@ -2,7 +2,17 @@
 // pure functions so the rules are tested without a browser (test/feature-view.test.ts). Labels here
 // are bare data labels: a state, a count, a place, a tool and what it found.
 
-import type { BlockCheck, FeatureException, FeatureStateWord, PartRoutingReason, PlanPartState, PlanPlace, ReviewException } from "@penguin/protocol";
+import type {
+  BlockCheck,
+  FeatureException,
+  FeatureStateWord,
+  PartRoutingReason,
+  PlanPartRequest,
+  PlanPartState,
+  PlanPlace,
+  ReviewException,
+  ReviewView,
+} from "@penguin/protocol";
 
 /** The CSS classes of a feature's state tag, a neutral tag for every state. */
 export function stateClass(state: FeatureStateWord): string {
@@ -113,9 +123,76 @@ export function checksByTool(checks: readonly BlockCheck[]): ToolChecks[] {
   }));
 }
 
-/** A count with its noun, singular for one: `1 input`, `3 inputs`. */
+const NUMBER = new Intl.NumberFormat("en-US");
+
+/** A count as the dashboard prints it, grouped by thousands: `1,633`. */
+export function formatCount(count: number): string {
+  return NUMBER.format(count);
+}
+
+/** A count with its noun, singular for one: `1 input`, `3 inputs`, `1,633 inputs`. */
 export function counted(count: number, one: string, many = `${one}s`): string {
-  return `${count} ${count === 1 ? one : many}`;
+  return `${formatCount(count)} ${count === 1 ? one : many}`;
+}
+
+/** One merge plan's parts in a person's approvals, with what the parts share said once. */
+export interface PlanGroup {
+  /** The plan's id, `money-minor-units/v1`, taken from its parts' ids. */
+  readonly planId: string;
+  readonly feature: string;
+  readonly person: string;
+  readonly parts: readonly PlanPartRequest[];
+  /** Each review the parts carry, once, in the order the parts first name them. */
+  readonly reviews: readonly ReviewView[];
+  /** Why the plan needs the person in person, each line once. */
+  readonly reasons: readonly string[];
+  readonly unread: boolean;
+}
+
+/** The plan a part belongs to: its id up to the part number. */
+function planOf(partId: string): string {
+  const hash = partId.lastIndexOf("#");
+  return hash === -1 ? partId : partId.slice(0, hash);
+}
+
+/**
+ * The person's plan parts grouped by plan, in the order each plan first appears. Several parts of one
+ * plan often touch the same scope, so they carry the same review and the same reasons; the group holds
+ * each once (#107: three parts of the money plan repeated one review and its 1,633-input run).
+ */
+export function planGroups(parts: readonly PlanPartRequest[]): PlanGroup[] {
+  interface Building {
+    readonly feature: string;
+    readonly person: string;
+    readonly parts: PlanPartRequest[];
+    readonly reviews: Map<number, ReviewView>;
+    readonly reasons: Set<string>;
+    unread: boolean;
+  }
+  const groups = new Map<string, Building>();
+  for (const part of parts) {
+    const planId = planOf(part.partId);
+    const group: Building = groups.get(planId) ?? { feature: part.feature, person: part.person, parts: [], reviews: new Map(), reasons: new Set(), unread: false };
+    group.parts.push(part);
+    for (const review of part.reviews) if (!group.reviews.has(review.reviewId)) group.reviews.set(review.reviewId, review);
+    for (const reason of part.routing.reasons) group.reasons.add(reasonText(reason));
+    group.unread ||= !part.read;
+    groups.set(planId, group);
+  }
+  return [...groups.entries()].map(([planId, group]) => ({
+    planId,
+    feature: group.feature,
+    person: group.person,
+    parts: group.parts,
+    reviews: [...group.reviews.values()],
+    reasons: [...group.reasons],
+    unread: group.unread,
+  }));
+}
+
+/** The element id of a review's card, which a review exception shown with its plan links to. */
+export function reviewAnchor(reviewId: number): string {
+  return `review-${reviewId}`;
 }
 
 /** The round of a part against the project's limit: `round 2 of 3`. */

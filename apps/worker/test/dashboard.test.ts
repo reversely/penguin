@@ -166,6 +166,13 @@ class Backend implements DashboardBackend {
     this.viewReads.push({ owner, featureId });
     return this.pages.get(featureId);
   }
+  /** The full tables of differing inputs the ProjectAgent holds, by review id, and each id read. */
+  readonly tables = new Map<number, unknown>();
+  readonly tableReads: number[] = [];
+  async reviewDifferences(reviewId: number) {
+    this.tableReads.push(reviewId);
+    return this.tables.get(reviewId);
+  }
   /** What GET /api/plan-parts answers; a test may break it to see the schema check. */
   planInbox: unknown = { parts: [], reviewExceptions: [], returnedPlans: [] };
   readonly decisions: { owner: string; decision: PlanPartDecision }[] = [];
@@ -778,6 +785,30 @@ describe("a signed-in person's merge plan parts", () => {
     assert.equal((await browser.request("/api/plan-parts")).status, 401);
     assert.equal((await browser.post("/api/plan-parts/approve", { feature: "a", part: "a/v1#1", revision: 1 })).status, 401);
     assert.deepEqual(browser.backend.decisions, []);
+  });
+});
+
+describe("a review's full table of differing inputs", () => {
+  const table = { reviewId: 4, sets: [{ contract: "tax/invoice.py::invoice_tax_minor", file: null, list: "lines", differing: [{ name: "order-0003", main: "36", fork: "35", length: 3 }], omitted: 0 }] };
+
+  test("answers any signed-in person with the table, checked against the schema", async () => {
+    const browser = new Browser();
+    await browser.signIn("jun-gh");
+    browser.backend.tables.set(4, table);
+    assert.deepEqual(await (await browser.request("/api/reviews/4/differences")).json(), table);
+    assert.equal((await browser.request("/api/reviews/5/differences")).status, 404);
+    assert.equal((await browser.request("/api/reviews/04/differences")).status, 404);
+    assert.equal((await browser.request("/api/reviews/abc/differences")).status, 404);
+    assert.equal((await browser.post("/api/reviews/4/differences", {})).status, 405);
+    browser.backend.tables.set(6, { ...table, sets: [{ ...table.sets[0], differing: [{ name: "x", main: "1", fork: "2", length: 1, args: "{}" }] }] });
+    assert.equal((await browser.request("/api/reviews/6/differences")).status, 500);
+    assert.deepEqual(browser.backend.tableReads, [4, 5, 6]);
+  });
+
+  test("without a session it answers 401 and reads nothing", async () => {
+    const browser = new Browser();
+    assert.equal((await browser.request("/api/reviews/4/differences")).status, 401);
+    assert.deepEqual(browser.backend.tableReads, []);
   });
 });
 

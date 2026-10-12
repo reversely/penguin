@@ -1982,16 +1982,12 @@ a.row-title {
   max-width: 100rem;
 }
 
-/* A page's heading row, with its action at the right edge (the team map and the inbox). */
+/* A page's heading row. */
 .page-header {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 0.5rem 1rem;
-}
-
-.page-header-action {
-  margin-left: auto;
 }
 
 /* The link under a windowed list to its full form; its height keeps a phone's tap target. */
@@ -2661,68 +2657,14 @@ a.row-title {
   }
 }
 
-/* On a phone the rows fill the page; their avatars line up with the page's edge. */
-.centre .inbox-list {
-  margin: 0 calc(-1 * var(--space-1));
-}
-
-/* The person's own identities, as 56px characters that scroll sideways past the screen's edge. */
-.identity-strip {
-  --row-fill: var(--field);
-  display: flex;
-  gap: var(--space-2);
-  margin: 0 -16px;
-  padding: 0 16px;
-  overflow-x: auto;
-  list-style: none;
-  scroll-padding-inline: 16px;
-}
-
-.identity-strip-link {
-  display: grid;
-  justify-items: center;
-  gap: var(--space-1);
-  width: 4.5rem;
-  padding: var(--space-1) 0;
-  border-radius: var(--radius-sm);
-  color: var(--ink);
-  text-decoration: none;
-  transition: scale var(--dur-press) var(--ease-out);
-}
-
-.identity-strip-link:active {
-  scale: 0.96;
-}
-
-.identity-strip .dot-online {
-  right: 3px;
-  bottom: 3px;
-}
-
-/* The owner on the first line and the name on the second, so the part that differs stays in view. */
-.identity-strip-handle {
-  display: -webkit-box;
-  max-width: 100%;
-  min-height: calc(2 * 1.4em);
-  overflow: hidden;
-  color: var(--ink-muted);
-  font: var(--text-meta);
-  text-align: center;
-  overflow-wrap: anywhere;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-}
-
 @media (prefers-reduced-motion: reduce) {
   .inbox-row,
-  .inbox-row-mark,
-  .identity-strip-link {
+  .inbox-row-mark {
     transition: none;
   }
 
   .inbox-row:has(> .inbox-row-link:active),
-  .inbox-row-mark:active,
-  .identity-strip-link:active {
+  .inbox-row-mark:active {
     scale: none;
   }
 }
@@ -3798,9 +3740,68 @@ label.button:has(input:focus-visible) {
   font-style: normal;
 }
 
-.inbox-hint {
+/* A plan's card lists the person's parts one per row, ruled apart, under the reviews they share. */
+.plan-parts {
+  display: grid;
+  min-width: 0;
   margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.plan-part {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+  padding-block: var(--space-2);
+  border-top: 1px solid var(--line);
+}
+
+.plan-part:last-child {
+  padding-bottom: 0;
+}
+
+/* The part's place, rounds and state, then its decision at the row's end, so opening its facts
+   below never moves the buttons. */
+.plan-part-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  min-width: 0;
+}
+
+.plan-part-place {
   color: var(--ink-muted);
+  font-weight: 400;
+}
+
+.plan-part-state {
+  margin-left: auto;
+}
+
+.plan-part-head > .approval-actions {
+  flex: none;
+}
+
+.plan-part > .approval-reason {
+  margin-bottom: var(--space-2);
+}
+
+/* With a fine pointer a part's counting line takes a 28px row, so three parts and their shared
+   review fit one 1440 by 900 screen; touch keeps the 44px target. */
+@media (min-width: 760px) and (pointer: fine) {
+  .plan-part > .part-details > summary {
+    min-height: 1.75rem;
+  }
+}
+
+/* A review exception whose review a plan card already shows links to it. */
+.review-link {
+  display: inline-flex;
+  align-items: center;
+  justify-self: start;
+  min-height: 2.75rem;
   font: var(--text-ui);
 }
 
@@ -3811,6 +3812,28 @@ label.button:has(input:focus-visible) {
   border-radius: var(--radius-sm);
   background: var(--field);
   box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.review-form {
+  display: grid;
+  align-content: start;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+/* In a wide centre the form and its side-by-side run sit side by side, so a plan's card fits one
+   screen; narrower, the run follows the form. */
+@container centre (min-width: 900px) {
+  .review {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
+    column-gap: var(--space-4);
+  }
+
+  /* An open full table takes the card's width under the form. */
+  .review:has(.sbs-table) > .side-by-side {
+    grid-column: 1 / -1;
+  }
 }
 
 .review-head,
@@ -3990,10 +4013,28 @@ label.button:has(input:focus-visible) {
   font: var(--text-meta);
 }
 
-@media (min-width: 640px) {
+/* The rows lay out by the run's own width, which halves beside the form in a wide review: the name
+   takes its own line until the run is wide enough for three columns. */
+.side-by-side {
+  container: run / inline-size;
+}
+
+.sbs-difference {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: baseline;
+}
+
+.sbs-name {
+  grid-column: 1 / -1;
+}
+
+@container run (min-width: 440px) {
   .sbs-difference {
-    grid-template-columns: minmax(6rem, 14rem) repeat(2, minmax(0, 1fr));
-    align-items: baseline;
+    grid-template-columns: minmax(5rem, 3fr) repeat(2, minmax(0, 4fr));
+  }
+
+  .sbs-name {
+    grid-column: auto;
   }
 }
 
@@ -4011,6 +4052,90 @@ label.button:has(input:focus-visible) {
 
 .sbs-label {
   color: var(--ink-muted);
+}
+
+.sbs-length {
+  margin-left: var(--space-2);
+  color: var(--ink-muted);
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+/* How the differing inputs spread over their list's length: the lengths, then the counts. A long
+   spread scrolls inside its own box, never the page. */
+.sbs-breakdown {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.sbs-breakdown table {
+  border-collapse: collapse;
+  font: var(--text-meta);
+  font-variant-numeric: tabular-nums;
+}
+
+.sbs-breakdown th {
+  padding: 2px var(--space-3) 2px 0;
+  color: var(--ink-muted);
+  font-weight: 400;
+  text-align: left;
+}
+
+.sbs-breakdown td {
+  min-width: 2.5rem;
+  padding: 2px var(--space-2);
+  text-align: right;
+}
+
+.sbs-breakdown tr:first-child td {
+  color: var(--ink-muted);
+}
+
+.sbs-breakdown tr:last-child td {
+  border-top: 1px solid var(--line);
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.sbs-toggle {
+  justify-self: start;
+  gap: var(--space-1);
+  padding: 0;
+  font: var(--text-meta);
+  font-variant-numeric: tabular-nums;
+}
+
+.disclosure-mark[data-open] {
+  rotate: none;
+}
+
+/* The full table holds its place while it loads, so the button under it does not jump. */
+.sbs-table {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+  min-height: 6rem;
+}
+
+.sbs-pager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+  font: var(--text-meta);
+  font-variant-numeric: tabular-nums;
+}
+
+.sbs-pager .button {
+  padding: 0;
+  font: var(--text-meta);
+}
+
+@media (max-width: 759.98px), (pointer: coarse) {
+  .sbs-toggle,
+  .sbs-pager .button {
+    min-height: 2.75rem;
+  }
 }
 
 .break {

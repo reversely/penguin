@@ -13,7 +13,6 @@ import {
   markedRead,
   newest,
   raisedLabel,
-  unreadCount,
   WAITING_PREVIEW,
   waitingFor,
 } from "../src/inbox-view.ts";
@@ -157,11 +156,9 @@ test("the raised time is the time today, the weekday this past week and the date
   assert.equal(raisedLabel("not a time", now, "en-US"), "");
 });
 
-test("the unread count counts unread items; marking one read changes only that item", () => {
+test("marking one item read changes only that item", () => {
   const items = [entry("40", "assigned"), entry("40", "closed"), entry("41", "mentioned", true)];
-  assert.equal(unreadCount(items), 2);
   const after = markedRead(items, itemKey(entry("40", "closed")));
-  assert.equal(unreadCount(after), 1);
   assert.deepEqual(
     after.map((item) => [itemKey(item), item.read]),
     [

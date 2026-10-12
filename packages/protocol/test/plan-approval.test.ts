@@ -7,6 +7,7 @@ import { test } from "node:test";
 
 import {
   checkPlanInbox,
+  checkReviewDifferences,
   partRouting,
   reviewExceptions,
   SIDE_BY_SIDE_COMMAND_ID,
@@ -157,6 +158,21 @@ test("the dashboard answer schema takes a part with its routing and refuses mark
   assert.deepEqual(checkPlanInbox({ ...empty, reviewExceptions: [exception], returnedPlans: [returned] }), []);
   assert.notDeepEqual(checkPlanInbox({ ...empty, returnedPlans: [{ ...returned, feature: "../main" }] }), []);
   assert.notDeepEqual(checkPlanInbox({ parts: [], reviewExceptions: [] }), []);
+  // A breakdown names its list and counts at most REVIEW_VIEW_LIMITS.breakdownLengths lengths.
+  const set = REVIEW.sideBySide.sets[0]!;
+  const withBreakdown = (breakdown: unknown) => ({ ...REVIEW, sideBySide: { ...REVIEW.sideBySide, sets: [{ ...set, breakdown }] } });
+  assert.deepEqual(checkPlanInbox({ ...empty, parts: [{ ...item, reviews: [withBreakdown(null)] }] }), []);
+  const wide = { list: "lines", counts: Array.from({ length: 33 }, (_, length) => ({ length, inputs: 1 })) };
+  assert.notDeepEqual(checkPlanInbox({ ...empty, parts: [{ ...item, reviews: [withBreakdown(wide)] }] }), []);
+});
+
+test("the full table answer takes each differing input with its length and refuses arguments", () => {
+  const row = { name: "order-0003", main: "36", fork: "35", length: 3 };
+  const answer = { reviewId: 4, sets: [{ contract: "tax/invoice.py::invoice_tax_minor", file: "tax/examples/invoice_tax.json", list: "lines", differing: [row], omitted: 0 }] };
+  assert.deepEqual(checkReviewDifferences(answer), []);
+  assert.deepEqual(checkReviewDifferences({ reviewId: 4, sets: [{ ...answer.sets[0], list: null, differing: [{ ...row, length: null }] }] }), []);
+  assert.notDeepEqual(checkReviewDifferences({ reviewId: 4, sets: [{ ...answer.sets[0], differing: [{ ...row, args: "{}" }] }] }), []);
+  assert.notDeepEqual(checkReviewDifferences({ reviewId: 4, sets: [{ ...answer.sets[0], differing: [{ ...row, main: "x".repeat(400) }] }] }), []);
 });
 
 /** A review as the dashboard shows it: the form's rows, the runner's verdict and its side-by-side run. */
@@ -187,6 +203,7 @@ const REVIEW = {
         differing: [{ name: "order-0003", args: '{"order":1}', main: "36", fork: "35" }],
         omitted: 1632,
         invalid: 0,
+        breakdown: { list: "lines", counts: [{ length: 2, inputs: 400 }, { length: 3, inputs: 1233 }] },
       },
     ],
   },

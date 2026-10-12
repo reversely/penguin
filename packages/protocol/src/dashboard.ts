@@ -1,6 +1,7 @@
 // What the dashboard's PRD 0.4 views read (PRD section 10): the team of people with their features
-// and agents (GET /api/team), one feature's page (GET /api/features/<id>/page), and the review a plan
-// part or a review exception carries in the approvals inbox (GET /api/plan-parts).
+// and agents (GET /api/team), one feature's page (GET /api/features/<id>/page), the review a plan
+// part or a review exception carries in the approvals inbox (GET /api/plan-parts), and a review's
+// full table of differing inputs (GET /api/reviews/<id>/differences).
 //
 // The ProjectAgent builds every view from its own state (services/project-agent/src/dashboard-views.ts
 // and review-view.ts). No view carries an agent's session transcript: Penguin never holds one. Every
@@ -12,7 +13,7 @@ import type { ImpactUse } from "./impact.ts";
 import type { Plan, PlanFactSource, PlanFileDiff, PlanInvariantFact, PlanPart, PlanPartKind, PlanPartState, PlanPlace } from "./plan.ts";
 import type { PlanPartFile } from "./plan-approval.ts";
 import { REVIEW_REFUSAL_CODES, REVIEW_VERDICTS, type ReviewException, type ReviewRefusalCode, type ReviewVerdict } from "./review.ts";
-import type { JsonSchema } from "./schema-check.ts";
+import { checkSchema, type JsonSchema, type SchemaError } from "./schema-check.ts";
 
 /**
  * A feature's one-word state on the team view (PRD section 10). `building`: its agents work on the
@@ -90,6 +91,19 @@ export interface SideBySideDifferenceView {
   readonly fork: string;
 }
 
+/**
+ * How a set's differing inputs spread over the length of one list in their arguments, such as an
+ * order's `lines`. The list is the first one the first differing input holds, counted only when every
+ * differing input holds a list at the same place (sideBySideBreakdown in
+ * services/project-agent/src/review-view.ts).
+ */
+export interface SideBySideBreakdown {
+  /** The list's key in the arguments, such as `lines`. */
+  readonly list: string;
+  /** How many differing inputs hold a list of each length, shortest first. */
+  readonly counts: readonly { readonly length: number; readonly inputs: number }[];
+}
+
 export interface SideBySideSetView {
   readonly source: "examples" | "risky-inputs";
   readonly file: string | null;
@@ -100,6 +114,8 @@ export interface SideBySideSetView {
   /** Differing inputs left out past REVIEW_VIEW_LIMITS.differencesPerSet. */
   readonly omitted: number;
   readonly invalid: number;
+  /** Null when the differing inputs share no list or its lengths spread past REVIEW_VIEW_LIMITS.breakdownLengths. */
+  readonly breakdown: SideBySideBreakdown | null;
 }
 
 /** The side-by-side run of one review, as the dashboard shows it. */
@@ -146,7 +162,41 @@ export const REVIEW_VIEW_LIMITS = {
   valueLength: 300,
   /** Differing inputs shown per set. */
   differencesPerSet: 5,
+  /** Distinct list lengths a breakdown counts; a wider spread gets no breakdown. */
+  breakdownLengths: 32,
+  /** Differing inputs per set in the full table of GET /api/reviews/<id>/differences. */
+  differencesInTable: 10_000,
 } as const;
+
+/** One differing input in a review's full table: its name, each side's outcome and its list's length. */
+export interface ReviewDifferenceRow {
+  readonly name: string;
+  readonly main: string;
+  readonly fork: string;
+  /** The length of the set's breakdown list in this input, or null when the set has no breakdown. */
+  readonly length: number | null;
+}
+
+/** One set of a review's full table. */
+export interface ReviewDifferenceSet {
+  readonly contract: string;
+  readonly file: string | null;
+  /** The breakdown list's key, which names the table's length column; null for none. */
+  readonly list: string | null;
+  readonly differing: readonly ReviewDifferenceRow[];
+  /** Differing inputs left out past REVIEW_VIEW_LIMITS.differencesInTable. */
+  readonly omitted: number;
+}
+
+/**
+ * GET /api/reviews/<id>/differences: every differing input of each set of a review's side-by-side
+ * run, in the run's order, which a set's summary opens. Arguments are left out and outcomes are cut at
+ * REVIEW_VIEW_LIMITS.valueLength, so the answer stays small next to the record.
+ */
+export interface ReviewDifferences {
+  readonly reviewId: number;
+  readonly sets: readonly ReviewDifferenceSet[];
+}
 
 /** A test that breaks on a merged tree, as a plan states it. */
 export interface BreakView {
@@ -314,6 +364,11 @@ const record = (properties: Record<string, JsonSchema>): JsonSchema => ({
 });
 const list = (items: JsonSchema): JsonSchema => ({ type: "array", items });
 const SHA: JsonSchema = { type: "string", pattern: "^[0-9a-f]{40}(?:[0-9a-f]{24})?$" };
+const LIST_KEY = text(200);
+const BREAKDOWN: JsonSchema = record({
+  list: LIST_KEY,
+  counts: { type: "array", maxItems: REVIEW_VIEW_LIMITS.breakdownLengths, items: record({ length: COUNT, inputs: COUNT }) },
+});
 
 /** JSON Schema (draft 2020-12) of one ReviewView, nested in the GET /api/plan-parts answer. */
 export const REVIEW_VIEW_SCHEMA: JsonSchema = record({
@@ -362,6 +417,7 @@ export const REVIEW_VIEW_SCHEMA: JsonSchema = record({
             ),
             omitted: COUNT,
             invalid: COUNT,
+            breakdown: { anyOf: [{ type: "null" }, BREAKDOWN] },
           }),
         ),
       }),
@@ -383,3 +439,34 @@ export const BREAK_VIEW_SCHEMA: JsonSchema = record({
   assertion: { anyOf: [{ type: "null" }, text(300)] },
   error: { anyOf: [{ type: "null" }, text(300)] },
 });
+
+/** JSON Schema (draft 2020-12) for the GET /api/reviews/<id>/differences answer. */
+export const REVIEW_DIFFERENCES_SCHEMA: JsonSchema = {
+  $schema: "https://json-schema.org/draft/2020-12/schema",
+  title: "Penguin review differences",
+  ...record({
+    reviewId: COUNT,
+    sets: list(
+      record({
+        contract: text(512),
+        file: { anyOf: [{ type: "null" }, text(1_024)] },
+        list: { anyOf: [{ type: "null" }, LIST_KEY] },
+        differing: {
+          type: "array",
+          maxItems: REVIEW_VIEW_LIMITS.differencesInTable,
+          items: record({
+            name: text(200),
+            main: text(REVIEW_VIEW_LIMITS.valueLength + 1),
+            fork: text(REVIEW_VIEW_LIMITS.valueLength + 1),
+            length: { anyOf: [{ type: "null" }, COUNT] },
+          }),
+        },
+        omitted: COUNT,
+      }),
+    ),
+  }),
+};
+
+export function checkReviewDifferences(value: unknown): SchemaError[] {
+  return checkSchema(REVIEW_DIFFERENCES_SCHEMA, value);
+}

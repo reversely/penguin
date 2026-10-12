@@ -1,19 +1,18 @@
-// The inbox (PRD section 8; identity plan sections 4 and 5): the signed-in person's items in five
-// lists of rows, each opening its issue beside the list, with a dot that marks an unread item read.
-// From 760px the rows sit in the shell's sidebar, on the inbox and beside an open issue. The centre
-// pane shows an empty state until a row is opened. Below 760px they fill the inbox page under
-// a strip of the person's own identities. The shell reads the inbox again on every live change, so a
-// new item shows without reload. It also reads it again on an inbox-changed message, so marking an
-// item read in one browser shows in the person's others. The board, read again on every live change,
-// says what an item waits on the person for and which assignees run a session. Every value renders
-// as React text, so markup in a title or a handle shows as text and runs nothing.
+// The inbox page holds the approvals that wait on the signed-in person (approvals.tsx, PRD 0.4
+// section 10). The issue pages from before PRD 0.4 keep the person's issue items beside an open issue
+// (PRD section 8; identity plan sections 4 and 5): five lists of rows, each opening its issue, with a
+// dot that marks an unread item read. From 760px the rows sit in the shell's sidebar on an issue
+// page; the inbox page and the rest of PRD 0.4's navigation carry no issue list. The shell reads the
+// issue items again on every live change, so a new item shows without reload, and on an inbox-changed
+// message, so marking an item read in one browser shows in the person's others. The board, read again
+// on every live change, says what an item waits on the person for and which assignees run a session.
+// Every value renders as React text, so markup in a title or a handle shows as text and runs nothing.
 
-import type { IdentityEntry, InboxEntry, IssuePageState } from "@penguin/protocol";
+import type { InboxEntry, IssuePageState } from "@penguin/protocol";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { fetchBoard, fetchIdentities, fetchInbox, markInboxRead, SignedOut } from "./api.ts";
+import { fetchBoard, fetchInbox, markInboxRead, SignedOut } from "./api.ts";
 import { IdentityAvatar } from "./avatar.tsx";
-import { useMediaQuery } from "./details-pane.tsx";
 import { Icon } from "./icon.tsx";
 import {
   boardFacts,
@@ -32,10 +31,9 @@ import {
 import { STATE_LABEL } from "./issue-view.ts";
 import { linkHandler } from "./links.ts";
 import { useArrivals } from "./motion.tsx";
-import { NewIssueLink } from "./new-issue-page.tsx";
-import { approvalCount, ApprovalsInbox, useApprovals } from "./approvals.tsx";
-import { INBOX_ALL_PATH, type Route } from "./routes.ts";
-import { SIDEBAR_LIST, SidebarList } from "./sidebar-slot.tsx";
+import { approvalCount, ApprovalsInbox, type ApprovalsState } from "./approvals.tsx";
+import { issueAllPath, type Route } from "./routes.ts";
+import { SidebarList } from "./sidebar-slot.tsx";
 import type { Live } from "./use-live.ts";
 
 export type InboxLoad =
@@ -151,17 +149,13 @@ interface HostProps {
   readonly onSignedOut: () => void;
 }
 
-/** The rows in the shell's sidebar from 760px, on the inbox and beside an open issue. */
+/** The issue rows in the shell's sidebar from 760px, beside an open issue. */
 export function InboxSidebar({ route, ...props }: HostProps & { readonly route: Route | undefined }) {
-  if (route?.page !== "inbox" && route?.page !== "issue") return null;
-  // One element in both routes, so opening a row keeps the list, its board and its scroll.
+  if (route?.page !== "issue") return null;
+  // One element across issues, so opening a row keeps the list, its board and its scroll.
   return (
     <SidebarList>
-      <SidebarInbox
-        {...props}
-        showAll={route.page === "inbox" && route.showAll}
-        openIssue={route.page === "issue" ? route.issueId : undefined}
-      />
+      <SidebarInbox {...props} showAll={route.showAll} openIssue={route.issueId} />
     </SidebarList>
   );
 }
@@ -172,48 +166,24 @@ function SidebarInbox({ inbox, viewer, live, showAll, openIssue, navigate, onSig
   return <InboxList inbox={inbox} facts={facts} viewer={viewer} now={new Date()} showAll={showAll} openIssue={openIssue} navigate={navigate} />;
 }
 
-/**
- * The inbox page: the approvals that wait on the person, with the facts behind each; then, from 760px,
- * a pointer to the sidebar's issue rows, and below 760px the rows themselves.
- */
-export function InboxPage({ inbox, viewer, live, showAll, navigate, onSignedOut }: HostProps & { readonly showAll: boolean }) {
-  const wide = useMediaQuery(SIDEBAR_LIST);
-  const approvals = useApprovals(live, onSignedOut);
-  const { load } = inbox;
-  if (load.kind === "loading" || !approvals.loaded) return <div className="inbox" aria-busy="true" />;
-  const waiting = approvalCount(approvals.approvals);
+interface PageProps {
+  readonly approvals: ApprovalsState;
+  readonly navigate: (path: string) => void;
+  readonly onSignedOut: () => void;
+}
+
+/** The inbox page: the approvals that wait on the person, with the facts behind each. */
+export function InboxPage({ approvals, navigate, onSignedOut }: PageProps) {
+  if (!approvals.loaded) return <div className="inbox" aria-busy="true" />;
+  const empty = approvalCount(approvals.approvals) === 0 && !approvals.failed;
   return (
     <div className="inbox">
       <header className="page-header">
         <h1>Inbox</h1>
-        <NewIssueLink navigate={navigate} />
       </header>
       <ApprovalsInbox state={approvals} navigate={navigate} onSignedOut={onSignedOut} />
-      {wide ? (
-        // The sidebar holds the rows and says when the inbox could not be read.
-        load.kind === "ready" && (load.items.length > 0 || (waiting === 0 && !approvals.failed)) ? (
-          <p className={waiting === 0 ? "inbox-empty" : "inbox-hint"}>
-            {load.items.length > 0 ? "Please choose an issue in the list to open it" : "Nothing needs you right now"}
-          </p>
-        ) : null
-      ) : (
-        <PhoneInbox inbox={inbox} viewer={viewer} live={live} showAll={showAll} navigate={navigate} onSignedOut={onSignedOut} />
-      )}
+      {empty ? <p className="inbox-empty">Nothing needs you right now</p> : null}
     </div>
-  );
-}
-
-function PhoneInbox({ inbox, viewer, live, showAll, navigate, onSignedOut }: HostProps & { readonly showAll: boolean }) {
-  const { settled, facts } = useBoardFacts(live, onSignedOut);
-  const identities = useRead(fetchIdentities, `${live.identitiesRevision}:${live.status === "live"}`, onSignedOut);
-  // Both arrive before the rows show, so the strip never pushes the rows down after they paint.
-  if (!settled || identities.kind === "loading") return <div className="inbox-list" aria-busy="true" />;
-  const own = identities.kind === "ready" ? identities.value.identities.filter((identity) => identity.owners.includes(viewer)) : [];
-  return (
-    <>
-      <IdentityStrip identities={own} facts={facts} navigate={navigate} />
-      <InboxList inbox={inbox} facts={facts} viewer={viewer} now={new Date()} showAll={showAll} openIssue={undefined} navigate={navigate} />
-    </>
   );
 }
 
@@ -246,6 +216,8 @@ export function InboxList({ inbox, facts, viewer, now, showAll, openIssue, navig
     );
   }
   const groups = groupInbox(load.items);
+  // Show all keeps the open issue beside the longer list.
+  const allPath = openIssue === undefined ? undefined : issueAllPath(openIssue);
   return (
     <nav className="inbox-list" aria-label="Inbox items">
       {inbox.markFailed ? (
@@ -280,8 +252,8 @@ export function InboxList({ inbox, facts, viewer, now, showAll, openIssue, navig
                 ))}
               </ol>
             )}
-            {shown.length < items.length ? (
-              <a className="show-all" href={INBOX_ALL_PATH} aria-describedby={headingId} onClick={linkHandler(navigate, INBOX_ALL_PATH)}>
+            {shown.length < items.length && allPath !== undefined ? (
+              <a className="show-all" href={allPath} aria-describedby={headingId} onClick={linkHandler(navigate, allPath)}>
                 Show all
                 <Icon name="chevron" />
               </a>
@@ -382,47 +354,5 @@ function StateGlyph({ state }: { state: IssuePageState }) {
     <span className="avatar avatar-row inbox-row-glyph" aria-hidden="true">
       <Icon name={state === "closed" ? "check" : "clock"} />
     </span>
-  );
-}
-
-interface StripProps {
-  readonly identities: readonly IdentityEntry[];
-  readonly facts: BoardFacts | undefined;
-  readonly navigate: (path: string) => void;
-}
-
-/**
- * On a phone, the person's own identities above the rows, each opening it on the identities page.
- * Those running a session come first, as the strip is where a glance finds who is working.
- */
-export function IdentityStrip({ identities, facts, navigate }: StripProps) {
-  if (identities.length === 0) return null;
-  const online = (identity: IdentityEntry) => isOnline(facts?.identities.get(identity.handle));
-  const ordered = [...identities.filter(online), ...identities.filter((identity) => !online(identity))];
-  return (
-    <ul className="identity-strip" aria-label="Your identities">
-      {ordered.map((identity) => {
-        const path = `/identities?identity=${encodeURIComponent(identity.id)}`;
-        const isOn = online(identity);
-        // Every handle in the strip starts with an owner, so the name after it may take the second line.
-        const slash = identity.handle.indexOf("/") + 1;
-        return (
-          <li key={identity.id}>
-            <a className="identity-strip-link" href={path} onClick={linkHandler(navigate, path)}>
-              <span className="avatar-slot">
-                <IdentityAvatar handle={identity.handle} image={identity.avatar} size="header" />
-                {isOn ? <span className="dot dot-online" /> : null}
-              </span>
-              <span className="identity-strip-handle">
-                {identity.handle.slice(0, slash)}
-                <wbr />
-                {identity.handle.slice(slash)}
-              </span>
-              {isOn ? <span className="visually-hidden">online</span> : null}
-            </a>
-          </li>
-        );
-      })}
-    </ul>
   );
 }

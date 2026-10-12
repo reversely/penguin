@@ -22,17 +22,15 @@ test("no dashboard source writes raw HTML, so every user value renders as React 
 });
 
 test("markup in an issue title and an assignee's or identity's handle renders as escaped text in the inbox rows", async () => {
-  // The rows and the identity strip take their data as props, so they render on the server without a fetch.
+  // The rows take their data as props, so they render on the server without a fetch.
   const { render } = await load<{ render: (items: unknown[], identities: unknown[]) => string }>(`
     import { renderToStaticMarkup } from "react-dom/server";
-    import { createElement, Fragment } from "react";
-    import { IdentityStrip, InboxList } from "./src/inbox-page.tsx";
+    import { createElement } from "react";
+    import { InboxList } from "./src/inbox-page.tsx";
     export function render(items, identities) {
       const inbox = { load: { kind: "ready", items }, marking: new Set(), markFailed: false, markRead() {} };
       const facts = { issues: new Map(), identities: new Map(identities.map((identity) => [identity.handle, { ...identity, sessions: [{}] }])) };
-      return renderToStaticMarkup(createElement(Fragment, null,
-        createElement(IdentityStrip, { identities, facts, navigate() {} }),
-        createElement(InboxList, { inbox, facts, viewer: "jun", now: new Date(), showAll: false, openIssue: "40", navigate() {} })));
+      return renderToStaticMarkup(createElement(InboxList, { inbox, facts, viewer: "jun", now: new Date(), showAll: false, openIssue: "40", navigate() {} }));
     }`);
   const handle = `@jun/${MARKUP}`;
   const html = render(
@@ -45,7 +43,6 @@ test("markup in an issue title and an assignee's or identity's handle renders as
   assert.match(html, /&lt;img src=x onerror=&quot;globalThis\.pwned = 1&quot;&gt; @jun\/&lt;b&gt;reports&lt;\/b&gt;/);
   assert.match(html, /&lt;script&gt;globalThis\.pwned = 2&lt;\/script&gt;/);
   assert.match(html, />@jun\/&lt;img src=x onerror=&quot;globalThis\.pwned = 1&quot;&gt; online</, "the row names its online assignee");
-  assert.match(html, /class="identity-strip-handle">@jun\/<wbr\/>&lt;img src=x onerror=&quot;globalThis\.pwned = 1&quot;&gt;</);
   assert.match(html, /Waiting for you to start a session/);
   assert.doesNotMatch(html, /<img|<script|<b>|onerror="/);
 });

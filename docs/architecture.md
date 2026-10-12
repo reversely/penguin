@@ -80,7 +80,7 @@ flowchart TB
 | Artifacts repos | One namespace, `penguin` | Every Git client and the Worker | Versioned source and the issue operation log |
 | `penguin-bridge` | `services/local-bridge/src/` | One owner on one machine | Checkpoint publishing with consent, the issue command line, the safe-checkpoint hook, the outbound spool |
 | Integration runner | `penguin-bridge runner` on a designated machine | The project | Pushing queued operations, combined runs, plan facts runs, block runs, verification runs, the `approved` branch |
-| Dashboard | `apps/dashboard/src/` | People in a browser | The team map, the inbox with its overlapping starts to approve, the issue page, the identities page |
+| Dashboard | `apps/dashboard/src/` | People in a browser | The team map, the approvals inbox with one card per merge plan, the feature page, the issue page, the identities page |
 | MCP tools | `services/mcp/src/tools.ts` | Agent sessions | `register_session`, `get_work`, `get_issue`, `post_update`, `report_checkpoint`, `open_feature`, `feature_token`, `declare_area`, `submit_review`, `propose_plan`, `revise_plan_part`, `fix_token`, `report_fix_write`, `land_feature` |
 
 Shared rules live in packages that both the Worker and the bridge import: the operation schema and
@@ -260,8 +260,10 @@ A checkpoint of a running feature whose area meets another feature's announced p
 
 The dashboard opens a WebSocket at `/api/live`. The Worker forwards it to the ProjectAgent with the
 signed-in person's owner id in the `X-Penguin-Owner` header. The agent sends a message naming the
-changed issues and sessions after each change; the dashboard then reads what it shows again through
-the API. The socket never carries issue data (`packages/protocol/src/live.ts`).
+changed issues and sessions after each change. It sends a features-changed message after each write
+to a feature, a merge plan, a part's decision or a review, so every open team view shows the new
+state. The dashboard then reads what it shows again through the API. The socket never carries issue
+data (`packages/protocol/src/live.ts`).
 
 ## Outbound connections only
 

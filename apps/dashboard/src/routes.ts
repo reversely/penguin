@@ -4,17 +4,20 @@
 export type Route =
   /** The team map, or one person's view of it when `person` names them. */
   | { readonly page: "team"; readonly person: string | null }
-  | { readonly page: "inbox"; readonly showAll: boolean }
+  | { readonly page: "inbox" }
   | { readonly page: "identities" }
   | { readonly page: "new-issue" }
   /** One feature's page: its declaration, merge plan, checks, tools and record. */
   | { readonly page: "feature"; readonly featureId: string }
-  | { readonly page: "issue"; readonly issueId: string };
+  /** One issue, beside the issue list, whose Closed issues show every item when `showAll` holds. */
+  | { readonly page: "issue"; readonly issueId: string; readonly showAll: boolean };
 
 export type Page = Route["page"];
 
-/** The inbox with every closed issue; it lists only the newest by default. */
-export const INBOX_ALL_PATH = "/inbox?closed=all";
+/** An issue with the issue list beside it showing every closed issue; it lists only the newest by default. */
+export function issueAllPath(issueId: string): string {
+  return `/issues/${encodeURIComponent(issueId)}?closed=all`;
+}
 
 /** A person's view of the team map. */
 export function personPath(person: string): string {
@@ -36,7 +39,7 @@ export function parseRoute(pathname: string, search = ""): Route | undefined {
   const query = new URLSearchParams(search);
   // A history entry from before the board was retired still opens the team map.
   if (pathname === "/" || pathname === "/board") return { page: "team", person: query.get("person") || null };
-  if (pathname === "/inbox") return { page: "inbox", showAll: query.get("closed") === "all" };
+  if (pathname === "/inbox") return { page: "inbox" };
   if (pathname === "/identities") return { page: "identities" };
   // No issue takes this id: a number is digits and a temporary ID is an op_id, which has hyphens.
   if (pathname === "/issues/new") return { page: "new-issue" };
@@ -44,7 +47,7 @@ export function parseRoute(pathname: string, search = ""): Route | undefined {
   const featureId = /^\/features\/([a-z0-9.-]{1,63})$/.exec(pathname)?.[1];
   if (featureId !== undefined) return { page: "feature", featureId };
   const issueId = /^\/issues\/([A-Za-z0-9_-]+)$/.exec(pathname)?.[1];
-  return issueId === undefined ? undefined : { page: "issue", issueId };
+  return issueId === undefined ? undefined : { page: "issue", issueId, showAll: query.get("closed") === "all" };
 }
 
 /** The navigation entries in the shell's header, in order. */

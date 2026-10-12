@@ -90,6 +90,7 @@ import { OWNERS_PATH, parseOwnersFile, parseScopeFile, SCOPE_MAP_PATH } from "./
 import { ReviewStore, submitReview, type ReviewInput, type ReviewOutcome, type StoredReview } from "./review-submit.ts";
 import { buildFeaturePage, buildFeaturePlan, buildTeamView, type DashboardViewDeps } from "./dashboard-views.ts";
 import { claimReviews, recordReview, type ReviewClaim, type ReviewReportOutcome } from "./review-record.ts";
+import { reviewDifferences } from "./review-view.ts";
 import {
   AgentToolStore,
   requestTool,
@@ -201,6 +202,7 @@ import {
   type OverlapRequests,
   type PlanInbox,
   type PlanFactsRequest,
+  type ReviewDifferences,
   type TeamView,
   type Promotion,
   type VerificationRunSpec,
@@ -1534,11 +1536,12 @@ export class ProjectAgent extends Agent {
    * joins it. The Worker then forks main and calls `recordFeatureRepo`.
    */
   openFeature(owner: string, input: FeatureOpenInput, sessionId: string | null, repos: ProjectRepos): Promise<FeatureOpenOutcome> {
-    return openFeature(this.#featureDeps(repos), owner, input, sessionId);
+    return this.#featuresChanging(openFeature(this.#featureDeps(repos), owner, input, sessionId));
   }
 
   /** Records the fork the Worker made for a feature, which turns the feature to `building`. */
   recordFeatureRepo(featureId: string, repo: string): Feature | undefined {
+    this.#liveFeed().featuresChanged();
     return recordFeatureRepo(this.#featureStore(), featureId, repo);
   }
 
@@ -1558,7 +1561,7 @@ export class ProjectAgent extends Agent {
     sessionId: string | null,
     repos: ProjectRepos,
   ): Promise<FeatureOutcome> {
-    return declareArea(this.#featureDeps(repos), owner, featureId, area, sessionId);
+    return this.#featuresChanging(declareArea(this.#featureDeps(repos), owner, featureId, area, sessionId));
   }
 
   /**
@@ -1629,7 +1632,7 @@ export class ProjectAgent extends Agent {
           );
         }),
     };
-    return reportFeatureCheckpoint(deps, owner, sessionId, featureId, sha);
+    return this.#featuresChanging(reportFeatureCheckpoint(deps, owner, sessionId, featureId, sha));
   }
 
   /** Every feature, newest first, for the dashboard. */
@@ -1647,7 +1650,7 @@ export class ProjectAgent extends Agent {
    * `featureId` may, once; the approval is a signed record.
    */
   approveOverlap(caller: string, featureId: string, blockedFeatureId: string, repos: ProjectRepos): Promise<ApproveOutcome> {
-    return this.#lockStep(() => approveOverlap(this.#overlapDeps(repos), caller, featureId, blockedFeatureId));
+    return this.#featuresChanging(this.#lockStep(() => approveOverlap(this.#overlapDeps(repos), caller, featureId, blockedFeatureId)));
   }
 
   /** The dashboard's overlapping starts waiting for `caller`: their overlap inbox items with each lock. */
@@ -1740,7 +1743,7 @@ export class ProjectAgent extends Agent {
    * on main and the evidence in the feature's fork at its latest checkpoint.
    */
   submitReview(owner: string, sessionId: string, input: ReviewInput, repos: ProjectRepos): Promise<ReviewOutcome> {
-    return submitReview(
+    return this.#featuresChanging(submitReview(
       {
         features: this.#featureStore(),
         reviews: this.#reviewStore(),
@@ -1754,7 +1757,7 @@ export class ProjectAgent extends Agent {
       owner,
       sessionId,
       input,
-    );
+    ));
   }
 
   /**
@@ -1770,7 +1773,7 @@ export class ProjectAgent extends Agent {
    * the scope's owner gets a `review_exception` inbox item.
    */
   reportReview(caller: BridgeCaller, reviewId: number, record: unknown): Promise<ReviewReportOutcome> {
-    return recordReview(
+    return this.#featuresChanging(recordReview(
       {
         reviews: this.#reviewStore(),
         routeToOwner: (ownerId, review) => {
@@ -1781,12 +1784,31 @@ export class ProjectAgent extends Agent {
       caller,
       reviewId,
       record,
-    );
+    ));
   }
 
   /** The reviews of one feature, oldest first, each with its record once the runner attached it. */
   featureReviews(featureId: string): StoredReview[] {
     return this.#reviewStore().list(featureId);
+  }
+
+  /**
+   * Every differing input of review `reviewId`'s side-by-side run (review-view.ts), for the dashboard's
+   * full table; undefined for no such review or one the runner has not reported on. Any signed-in
+   * person may read it, as the feature page shows every review to them.
+   */
+  reviewDifferences(reviewId: number): ReviewDifferences | undefined {
+    const review = this.#reviewStore().get(reviewId);
+    return review === undefined ? undefined : reviewDifferences(review);
+  }
+
+  /**
+   * Tells every dashboard, once after the current task, that a feature, its merge plan, a part's
+   * decision, a fix write or a review may have changed (live-feed.ts). It runs whether the write was
+   * taken or refused; a refused write changed nothing, and the dashboards only read their views again.
+   */
+  #featuresChanging<T>(write: Promise<T>): Promise<T> {
+    return write.finally(() => this.#liveFeed().featuresChanged());
   }
 
   #reviewStore(): ReviewStore {
@@ -1901,7 +1923,7 @@ export class ProjectAgent extends Agent {
       ),
     );
     this.#planSteps = run.catch(() => undefined);
-    return run;
+    return this.#featuresChanging(run);
   }
 
   /**
@@ -1961,28 +1983,30 @@ export class ProjectAgent extends Agent {
    * steps before it.
    */
   approvePlanPart(caller: string, input: PartDecisionInput, repos: ProjectRepos): Promise<PartDecisionOutcome> {
-    return this.#planStep(() => approvePlanPart(this.#planApprovalDeps(repos), caller, input));
+    return this.#featuresChanging(this.#planStep(() => approvePlanPart(this.#planApprovalDeps(repos), caller, input)));
   }
 
   /** `caller` asks for a change to one revision of a plan part; see plan-approval.ts. */
   requestPlanChange(caller: string, input: ChangeRequestInput, repos: ProjectRepos): Promise<PartDecisionOutcome> {
-    return this.#planStep(() => requestPlanChange(this.#planApprovalDeps(repos), caller, input));
+    return this.#featuresChanging(this.#planStep(() => requestPlanChange(this.#planApprovalDeps(repos), caller, input)));
   }
 
   /** `revise_plan_part`: the originating agent's revision of a part its author asked to change. */
   revisePlanPart(owner: string, sessionId: string, input: RevisionInput, repos: ProjectRepos): Promise<PartDecisionOutcome> {
-    return this.#planStep(() =>
-      revisePlanPart(
-        {
-          ...this.#planApprovalDeps(repos),
-          facts: this.#planFactsStore(),
-          scopeMap: () => this.#scopeMap(repos),
-          readRepo: (repo, use) => withRepo(this.env.ARTIFACTS, repo, (opened) => use(opened as unknown as GitObjectReader)),
-          heartbeat: (caller, session) => this.sessionHeartbeat(caller, session),
-        },
-        owner,
-        sessionId,
-        input,
+    return this.#featuresChanging(
+      this.#planStep(() =>
+        revisePlanPart(
+          {
+            ...this.#planApprovalDeps(repos),
+            facts: this.#planFactsStore(),
+            scopeMap: () => this.#scopeMap(repos),
+            readRepo: (repo, use) => withRepo(this.env.ARTIFACTS, repo, (opened) => use(opened as unknown as GitObjectReader)),
+            heartbeat: (caller, session) => this.sessionHeartbeat(caller, session),
+          },
+          owner,
+          sessionId,
+          input,
+        ),
       ),
     );
   }
@@ -2023,7 +2047,7 @@ export class ProjectAgent extends Agent {
 
   /** `report_fix_write`: checks the commit the originating agent pushed and keeps it as a signed record. */
   reportFixWrite(owner: string, sessionId: string, input: FixPartInput & { readonly commit: unknown }, repos: ProjectRepos): Promise<FixWriteOutcome> {
-    return this.#planStep(() => agentFixReport(this.#fixWriteDeps(repos), (caller, session) => this.sessionHeartbeat(caller, session), owner, sessionId, input));
+    return this.#featuresChanging(this.#planStep(() => agentFixReport(this.#fixWriteDeps(repos), (caller, session) => this.sessionHeartbeat(caller, session), owner, sessionId, input)));
   }
 
   /** The check runner's claim of the mechanical parts' writes; refused unless `caller` holds the runner role. */
@@ -2033,7 +2057,7 @@ export class ProjectAgent extends Agent {
 
   /** The check runner reports the commit of write `writeId`, which it claimed. */
   reportRunnerFixWrite(caller: BridgeCaller, writeId: number, body: unknown, repos: ProjectRepos): Promise<FixWriteOutcome> {
-    return this.#planStep(() => runnerFixReport(this.#fixWriteDeps(repos), caller, writeId, body));
+    return this.#featuresChanging(this.#planStep(() => runnerFixReport(this.#fixWriteDeps(repos), caller, writeId, body)));
   }
 
   #fixWriteDeps(repos: ProjectRepos): FixWriteDeps {
@@ -2087,6 +2111,7 @@ export class ProjectAgent extends Agent {
     if (caller.role !== "runner") {
       return { status: "rejected", reason: "forbidden", message: `bridge ${caller.bridgeId} does not hold the runner role` };
     }
+    this.#liveFeed().featuresChanged();
     return this.#planFactsStore().record(runId, caller.bridgeId, report);
   }
 
@@ -2160,7 +2185,7 @@ export class ProjectAgent extends Agent {
    * Runs after the plan steps before it.
    */
   landFeature(owner: string, sessionId: string, input: LandInput, repos: ProjectRepos): Promise<LandAnswer> {
-    return this.#planStep(async () => landAnswer(await requestLand(this.#landDeps(repos), owner, sessionId, input)));
+    return this.#featuresChanging(this.#planStep(async () => landAnswer(await requestLand(this.#landDeps(repos), owner, sessionId, input))));
   }
 
   /** For the check runner only: the waiting block runs of every feature, each claimed by `caller`. */
@@ -2188,7 +2213,7 @@ export class ProjectAgent extends Agent {
   /** Main moved to the feature's checkpoint: the feature is landed, its plan retired and the starts it held checked again. */
   featureLanded(featureId: string, promotion: Promotion, repos: ProjectRepos): Promise<void> {
     const notify = (personId: string) => sendToOwner(this.getConnections<{ owner?: string }>(), personId, inboxChangedMessage());
-    return featureLanded(
+    return this.#featuresChanging(featureLanded(
       {
         features: this.#featureStore(),
         queue: this.#blockQueueStore(),
@@ -2203,11 +2228,12 @@ export class ProjectAgent extends Agent {
       },
       featureId,
       promotion,
-    );
+    ));
   }
 
   /** A land run failed its checks or its push: the feature is building again. */
   landFailed(featureId: string, _runId: string): void {
+    this.#liveFeed().featuresChanged();
     landFailed({ features: this.#featureStore(), notify: (personId) => sendToOwner(this.getConnections<{ owner?: string }>(), personId, inboxChangedMessage()) }, featureId);
   }
 
