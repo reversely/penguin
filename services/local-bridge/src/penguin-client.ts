@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 
 import {
   BLOCK_RUN_PURPOSES,
+  checkEditTaskSpec,
   checkFixWriteSpec,
   featureOfBlockRun,
   isBranchName,
@@ -16,6 +17,8 @@ import {
   type BlockRunReport,
   type BlockRunRequest,
   type BlockRunTarget,
+  type EditTaskReport,
+  type EditTaskSpec,
   type FixWriteSpec,
   type ApprovalReport,
   type ApprovalSpec,
@@ -43,6 +46,7 @@ import {
   type RepoToken,
   type TokenSource,
 } from "./git-remote.ts";
+import type { ClaimedEditTask, EditClaimAnswer } from "./edit-run.ts";
 import type { ClaimedFixWrite, FixWriteReply } from "./fix-write.ts";
 import { loadSigningKey, type KeyStore } from "./key-store.ts";
 
@@ -973,6 +977,67 @@ async function runnerRequest(
   }
   if (response.status === 401) throw new RemoteUnavailableError("Penguin refused the bridge token; register the bridge again");
   if (response.status === 403) throw new RemoteRefusedError(`Penguin answers ${route} only to a runner bridge`);
+  const parsed = (await response.json().catch(() => ({}))) as unknown;
+  const record = typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed : {};
+  return { status: response.status, body: record as Record<string, unknown> };
+}
+
+export const EDIT_TASK_ROUTE = "/edit-tasks";
+
+/**
+ * Claims the waiting edit tasks of this bridge's person (PRD 0.5 section 4.4a), each with a write
+ * token minted for that task on its fork alone, and the person's queue. Every task is checked against
+ * the spec schema before it is returned. Any registered bridge may ask; Penguin reads the person from
+ * the bridge token.
+ */
+export async function claimEditTasks(server: string, bridgeToken: string, fetchImpl: Fetch = fetch): Promise<EditClaimAnswer> {
+  const { status, body } = await bridgeRequest(server, bridgeToken, `${EDIT_TASK_ROUTE}/claim`, {}, fetchImpl);
+  if (status !== 200 || !Array.isArray(body["tasks"])) throw new RemoteUnavailableError(`Penguin could not hand out edit tasks (HTTP ${status})`);
+  const queue = body["queue"] as Record<string, unknown> | undefined;
+  const count = (key: string) => (typeof queue?.[key] === "number" ? (queue[key] as number) : 0);
+  const tasks = body["tasks"].map((entry: unknown): ClaimedEditTask => {
+    const { token: tokenField, fixWrite, ...fields } = (entry ?? {}) as Record<string, unknown>;
+    const fix = fixWrite === null || fixWrite === undefined ? null : fixWriteSpecOf(fixWrite);
+    const spec = { ...fields, fixWrite: fix ?? null } as unknown as EditTaskSpec;
+    const { token, remote, expiresAt } = (tokenField ?? {}) as Record<string, unknown>;
+    if (checkEditTaskSpec(spec).length > 0 || fix === undefined || typeof token !== "string" || typeof remote !== "string" || typeof expiresAt !== "string") {
+      throw new RemoteUnavailableError("Penguin listed an edit task without its spec and token");
+    }
+    checkedOrigin(remote, "the Artifacts remote");
+    return { spec, token: { token, remote, expiresAt } };
+  });
+  return { tasks, queue: { running: count("running"), queued: count("queued"), asked: count("asked"), cap: count("cap") } };
+}
+
+/** Reports one claimed task's run: done with its commit, failed or timed out, with a one-line outcome. */
+export async function reportEditTask(server: string, bridgeToken: string, taskId: number, report: EditTaskReport, fetchImpl: Fetch = fetch): Promise<Record<string, unknown>> {
+  const { status, body } = await bridgeRequest(server, bridgeToken, `${EDIT_TASK_ROUTE}/${taskId}`, report, fetchImpl);
+  if (status === 200) return body;
+  const message = typeof body["message"] === "string" ? `: ${body["message"]}` : "";
+  if ([400, 403, 404, 409].includes(status)) throw new RemoteRefusedError(`Penguin refused the report of edit task ${taskId} (HTTP ${status})${message}`);
+  throw new RemoteUnavailableError(`Penguin could not take the report of edit task ${taskId} (HTTP ${status})${message}`);
+}
+
+/** One request of a bridge acting for its own person: POST of `body` as JSON. A 401 throws. */
+async function bridgeRequest(
+  server: string,
+  bridgeToken: string,
+  route: string,
+  body: unknown,
+  fetchImpl: Fetch,
+): Promise<{ readonly status: number; readonly body: Record<string, unknown> }> {
+  const origin = checkedOrigin(server, "the Penguin server").origin;
+  let response: Response;
+  try {
+    response = await fetchImpl(`${origin}${route}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${bridgeToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (error) {
+    throw new RemoteUnavailableError(`Penguin at ${origin} is unreachable: ${(error as Error).message}`);
+  }
+  if (response.status === 401) throw new RemoteUnavailableError("Penguin refused the bridge token; register the bridge again");
   const parsed = (await response.json().catch(() => ({}))) as unknown;
   const record = typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed : {};
   return { status: response.status, body: record as Record<string, unknown> };

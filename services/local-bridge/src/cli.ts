@@ -9,6 +9,7 @@ import { CheckpointPublisher, type ConsentScope } from "./checkpoint.ts";
 import { CHECK_USAGE, runCheckCommand } from "./check-cli.ts";
 import { bridgeReporter } from "./checkpoint-report.ts";
 import { CONSENT_USAGE, runConsentCommand } from "./consent-cli.ts";
+import { EDITS_USAGE, runEditsCommand } from "./edits-cli.ts";
 import { bridgeConsent } from "./consent-store.ts";
 import { isPenguinRemote, penguinRemote } from "./git-remote.ts";
 import { FIX_WRITE_USAGE, runFixWriteCommand } from "./fix-write-cli.ts";
@@ -73,6 +74,7 @@ export async function runCli(argv: readonly string[], io: CliIo, deps: CliDepend
   if (command === "session-checkpoint") return runSessionCheckpointCommand(rest, io, keyStore, stateDir, deps.fetch);
   if (command === "worktree-id") return runWorktreeIdCommand(rest, io);
   if (command === "consent") return runConsentCommand(rest, io, stateDir);
+  if (command === "edits") return runEditsCommand(rest, io, keyStore, stateDir, deps.fetch);
   if (command === "impact") return runImpactCommand(rest, io);
   if (command === "review") return runReviewCommand(rest, io);
   if (command === "check") return runCheckCommand(rest, io);
@@ -87,6 +89,7 @@ export async function runCli(argv: readonly string[], io: CliIo, deps: CliDepend
         ISSUE_USAGE +
         SPOOL_USAGE +
         RUNNER_USAGE +
+        EDITS_USAGE +
         SESSION_CHECKPOINT_USAGE +
         IMPACT_USAGE +
         REVIEW_USAGE +

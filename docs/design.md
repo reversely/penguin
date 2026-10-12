@@ -594,7 +594,8 @@ agent becomes an edit task for one of them.
    block, so one block check covers them.
 3. A running session of the identity takes the task at its next safe checkpoint.
 4. With no such session, the person's bridge runs the identity headless in a fresh worktree of the
-   target fork.
+   target fork, with `claude -p` or `codex exec`
+   ([bridge-and-runner.md](bridge-and-runner.md#edit-tasks)).
 5. A person runs at most two background runs at once by default. Further tasks queue behind the
    steward.
 6. The person is asked to start a session only when no identity can take the task: their bridge

@@ -39,6 +39,20 @@ export type { ToolPassOptions, ToolPassResult, ToolRunResult } from "./tool-run.
 export { fixWritePass, formatFixWritePass, writeFix } from "./fix-write.ts";
 export type { ClaimedFixWrite, FixWritePassOptions, FixWritePassResult, FixWriteReply, FixWriteResult, FixWriterOptions } from "./fix-write.ts";
 export { runFixWriteCommand } from "./fix-write-cli.ts";
+export {
+  CLAUDE_ALLOWED_TOOLS,
+  consentWorktree,
+  EDIT_RUN_TIMEOUT_DEFAULT_MS,
+  EDIT_VENDORS,
+  editPass,
+  editPrompt,
+  formatEditPass,
+  runEditTask,
+  runVendor,
+  vendorArgs,
+} from "./edit-run.ts";
+export type { ClaimedEditTask, EditClaimAnswer, EditPassOptions, EditPassResult, EditRunnerOptions, EditRunResult, EditVendor } from "./edit-run.ts";
+export { EDITS_USAGE, runEditsCommand } from "./edits-cli.ts";
 export { runPreviewCommand } from "./preview-cli.ts";
 export { blockPass, formatBlockPass } from "./block-run.ts";
 export { failureText, noteFailure, type FailRun, type FailureNote, type RunFailureReply } from "./run-failure.ts";
@@ -93,7 +107,10 @@ export {
   claimPartTrials,
   claimReviews,
   claimToolRuns,
+  claimEditTasks,
   claimFixWrites,
+  EDIT_TASK_ROUTE,
+  reportEditTask,
   fixWriteSpecOf,
   reportFixWrite,
   COMBINED_RUN_CLAIM_ROUTE,

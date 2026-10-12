@@ -190,6 +190,99 @@ and Codex: it prints a hook answer only when something arrived and always exits 
 Penguin never stops the agent. [mcp-setup.md](mcp-setup.md#fix-tasks-and-safe-checkpoints) has the
 hook settings.
 
+## Edit tasks
+
+```sh
+penguin-bridge edits [--once] [--interval <ms>] [--vendor claude|codex] [--program <path>]
+                     [--model <name>] [--timeout-minutes <n>] [--repo <path>] [--project <id>]
+```
+
+Penguin routes each edit its procedure needs to the owner's steward or to a feature's builder
+([design.md](design.md#edit-tasks-and-who-runs-them)). A task no running session takes waits for the
+owner's bridge. `edits` claims those tasks and runs each identity headless on the owner's machine,
+with the owner's own agent account (`edit-run.ts`, `edits-cli.ts`). It runs no task when the owner
+is away from the machine and the command is not running: Penguin then asks the owner to start a
+session.
+
+Each pass:
+
+1. **Claim.** `POST /edit-tasks/claim` hands the bridge its owner's oldest waiting tasks, at most
+   `PENGUIN_BACKGROUND_RUN_CAP` running at once (default 2). Each task names its fork, files, allowed
+   paths, Penguin's instructions and the checks that verify it. Each comes with a write token minted
+   for that task on that fork alone, for `PENGUIN_EDIT_RUN_MINUTES` (default 20). The claim also
+   holds the owner's queue.
+2. **Worktree.** The bridge fetches the fork's `main` with the task's token into `<state>/edits/repo`
+   and adds a fresh detached worktree of its head under `<state>/edits/worktrees`.
+3. **Run.** The bridge starts one CLI process per task in that worktree, with a prompt built from the
+   task. The token reaches Git only through the fetch and push environment, never the CLI's.
+
+   | `--vendor` | Command | What restricts the agent |
+   |---|---|---|
+   | `claude` (default) | `claude -p <prompt> --output-format json --permission-mode dontAsk --restricted --allowedTools Read,Edit,Write,Glob,Grep` | `--restricted` removes the tools that run commands or code, ignores the user, project and local settings files and confines the file tools to the working directory. `dontAsk` denies every call the allowed tools do not cover |
+   | `codex` | `codex exec --sandbox workspace-write --cd <worktree> --ephemeral --json -c approval_policy="never" <prompt>` | The workspace-write sandbox allows writes in the worktree only. No command asks for approval |
+
+   The flags come from each CLI's own help on the owner's machine (`claude --help`, `codex exec
+   --help`). `--model` passes a model name through.
+4. **Time limit.** A run past `--timeout-minutes` (default 15) is stopped with `SIGTERM`, then
+   `SIGKILL`. Keep the limit below `PENGUIN_EDIT_RUN_MINUTES` so the task's report reaches Penguin
+   before its claim runs out.
+5. **Commit.** The bridge stages what the agent changed. A run that changed nothing, or changed a file
+   outside the task's allowed paths, publishes nothing. Otherwise the change becomes one commit on the
+   fork's head with a `Penguin-Agent: <handle> (<vendor>)` trailer.
+6. **Consent.** The bridge prints the preview: the commit and each file with its added and deleted
+   lines. The owner's yes stands for later results of the same identity on the same fork
+   (`edit-<handle>-<fork>` in `consent list`). Without a standing yes, the bridge asks at the terminal.
+   `consent revoke --all` withdraws it.
+7. **Publish.** The bridge pushes the commit with no force, so a fork whose head moved refuses it. It
+   reports the task to `POST /edit-tasks/<task id>` with the commit and a one-line outcome. For a fork
+   of the owner's own feature it then reports the commit at `POST /checkpoints`. Penguin's checks
+   follow as for any checkpoint.
+8. **Clean up.** The bridge removes the worktree and its fetch ref, whatever happened.
+
+An approved fix needs no agent: its patch is fixed, so the bridge writes it with the fix-write code
+([Fix writes](#fix-writes)) and reports that commit.
+
+Penguin keeps a reported commit only when it has one parent, sits on the fork's `main` and changes
+only the task's allowed paths. Otherwise the task goes back to the owner with Penguin's reason.
+
+The outcome line is built from facts: the CLI, its exit, the number of files changed, the time and
+the commit. Nothing the agent printed leaves the machine. The CLI's JSON output is read locally for
+its error flag only. Each CLI keeps its own session record on the owner's machine.
+
+**Failures release the task.** The bridge reports a failed run, an error result, a timeout or a
+refused consent at once. Penguin then asks the owner. When the command is interrupted, it stops every
+running CLI and reports each task as stopped. A bridge that stops without reporting loses the claim
+when `PENGUIN_EDIT_RUN_MINUTES` runs out. Penguin then asks the owner. A bridge that has not polled
+for two minutes counts as offline: its owner's waiting tasks ask the owner. They return to the queue
+when the bridge polls again.
+
+**Status line.** Each pass ends with the owner's queue:
+
+```text
+Edit task 11 (@jun/weekly-report on feature-weekly-report): done: claude -p changed 1 file in 41 s; pushed 3f2a9c1d0b7e
+Edit tasks for jun: 1 running, 2 queued, 0 asked (cap 2).
+```
+
+`--once` runs one pass and exits 1 when any task did not finish as done.
+
+### Edit task live check
+
+`tests/e2e/edit-task-run.test.ts` runs one task on the helpful-fix fixture against real Artifacts.
+The Worker runs under local `wrangler dev` with every repo under a prefix unique to the run. Priya
+and Jun open their features and push their first checkpoints. Jun's session then goes offline.
+Priya's agent lands the UTC change. The runner's block run fails Jun's tests on Jun's fork, so Penguin opens
+a next-step task for Jun's builder. Jun's bridge runs `penguin-bridge edits --once --vendor claude`.
+The test checks the task is done and that its commit sits on Jun's fork head with changes under
+`analytics/` only. It deletes every repo under the prefix at the end and prints no token.
+
+```sh
+PENGUIN_EDIT_E2E=1 node --test tests/e2e/edit-task-run.test.ts
+```
+
+It needs `wrangler` signed in to the account that holds the Artifacts namespace, `claude` signed in
+on the machine and `uv sync` for the runner's tests. `PENGUIN_EDIT_E2E_MODEL` picks the model
+(default `sonnet`). `PENGUIN_EDIT_E2E_OUT` names the folder for `evidence.json` and the Worker log.
+
 ## Runner mode
 
 One designated machine runs the bridge as the project's integration runner. The deployer issues a

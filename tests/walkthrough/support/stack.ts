@@ -94,6 +94,8 @@ export interface StackOptions {
   readonly login: (owner: string) => string;
   /** Where the Worker's console output goes. */
   readonly logFile: string;
+  /** Further Worker settings for this run, such as a shorter session offline window. */
+  readonly vars?: Readonly<Record<string, string>>;
 }
 
 /** The Worker's settings and secrets as the env file wrangler dev reads holds them, and the secrets to redact. */
@@ -176,6 +178,7 @@ export class LocalStack {
         GITHUB_OAUTH_CLIENT_ID: DOUBLE_CLIENT.clientId,
         GITHUB_OAUTH_CLIENT_SECRET: DOUBLE_CLIENT.clientSecret,
         PENGUIN_DASHBOARD_OWNERS: options.owners.map((owner) => `${options.login(owner)}:${owner}`).join(","),
+        ...options.vars,
       },
       secrets: [deployerToken, signing],
     };
