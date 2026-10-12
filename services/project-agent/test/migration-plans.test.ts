@@ -4,6 +4,11 @@
 // task for the place's builder or the steward of its scope's DRI; a later caller joins its owner's open
 // plan or, once that plan landed, opens the next; and when the originating feature no longer runs, the
 // contract step is carried by a feature Penguin opens from main for the defining scope's DRI.
+//
+// The rules of #139: a rule-written part needs no form and is approved when its trial's tests pass and
+// its formless side-by-side run shows no protected difference; a failing trial is an edit task with the
+// failing check, and a person only once that task fails; a plan of running features closes when every
+// fix is written; and a feature Penguin opens goes through the overlap lock.
 
 import assert from "node:assert/strict";
 import { beforeEach, describe, test } from "node:test";
@@ -12,6 +17,9 @@ import {
   IMPACT_COMMAND_ID,
   IMPACT_SCHEMA_VERSION,
   IMPACT_TOOL,
+  REVIEW_SCHEMA_VERSION,
+  SIDE_BY_SIDE_COMMAND_ID,
+  SIDE_BY_SIDE_TOOL,
   type AgentToolResult,
   type ImpactFork,
   type ImpactReport,
@@ -19,29 +27,47 @@ import {
   type MigrationRewritePlace,
   type Plan,
   type RewriteRule,
+  type SideBySideRecord,
 } from "@penguin/protocol";
-import { parseScopeMap } from "@penguin/scope-map";
+import { parseScopeMap, type ScopeMap } from "@penguin/scope-map";
 
 import { recordToolResult } from "../src/agent-tool-runner.ts";
 import { AgentToolStore } from "../src/agent-tools.ts";
 import { EditRoster } from "../src/edit-roster.ts";
 import { EditTaskStore } from "../src/edit-tasks.ts";
 import { editRouting } from "../src/edit-work.ts";
+import { claimRunnerWrites, FixGrantStore, runnerFixReport, type FixWriteDeps } from "../src/fix-write.ts";
 import { IdentityStore } from "../src/identity-store.ts";
-import { carryContract, migrationBlockLanded, migrationsChecked, migrationsCounted, migrationTrialReported, MigrationStore, rewritesReported, type MigrationDeps } from "../src/migration-plans.ts";
+import {
+  carryContract,
+  migrationBlockLanded,
+  migrationsChecked,
+  migrationsCounted,
+  migrationTasksSettled,
+  migrationTrialReported,
+  migrationWrites,
+  MigrationStore,
+  rewritesReported,
+  type MigrationDeps,
+} from "../src/migration-plans.ts";
+import { approveOverlap, checkOverlap } from "../src/overlap-lock.ts";
 import { PartTrialStore, type StoredPartTrial } from "../src/part-trial.ts";
 import { closeRemoved, countReported, PENGUIN_SESSION, requestRetiringCount, type RetiringCountDeps } from "../src/retiring-count.ts";
+import { PlanRouteStore } from "../src/plan-approval.ts";
 import { ReviewStore } from "../src/review-submit.ts";
+import { gitReader } from "./git-reader.ts";
+import { GitRepo } from "./issues-repo.ts";
 import { PlanProject } from "./plan-project.ts";
 
 const scope = (id: string, owner: string, paths: string[], contracts: string[]) => ({ id, name: id, owner, paths, test_command: "true", contracts, depends_on: [] });
-const scopeMap = parseScopeMap({
-  scopes: [
-    scope("money", "ines", ["shared/money/"], ["shared/money/api.py::price"]),
-    scope("orders", "tomas", ["orders/"], ["orders/model.py::line_total"]),
-    scope("billing", "bea", ["billing/"], ["billing/api.py::fee"]),
-  ],
-});
+const SCOPES = [
+  scope("money", "ines", ["shared/money/"], ["shared/money/api.py::price"]),
+  scope("orders", "tomas", ["orders/"], ["orders/model.py::line_total"]),
+  scope("billing", "bea", ["billing/"], ["billing/api.py::fee"]),
+];
+const scopeMap = parseScopeMap({ scopes: SCOPES });
+/** Billing declares that fees round per line, protected: a side-by-side difference on it fails a trial. */
+const INVARIANTS = [{ id: "fee-rounding", scopeId: "billing", statement: "fees round per line", protected: true }];
 
 const BASE = "a".repeat(40);
 const EXPAND = "b".repeat(40);
@@ -84,6 +110,22 @@ function impact(head: string, fields: Partial<ImpactReport>): ImpactReport {
   };
 }
 
+/** Billing's side-by-side run over its declared fee examples, `differing` of its two inputs differing. */
+function sideBySideRecord(base: string, fork: string, differing: number): SideBySideRecord {
+  const changed = { name: "small", args: { amount: 1 }, main: { status: "returned" as const, value: 1 }, fork: { status: "returned" as const, value: 2 } };
+  return {
+    schemaVersion: REVIEW_SCHEMA_VERSION,
+    tool: SIDE_BY_SIDE_TOOL,
+    commandId: SIDE_BY_SIDE_COMMAND_ID,
+    base,
+    fork,
+    scope: "billing",
+    sets: [{ source: "examples", file: "billing/examples/fee.json", contract: FEE.contract, invariants: ["fee-rounding"], inputs: ["small", "large"], differing: differing > 0 ? [changed] : [], invalid: [], mainMs: 1, forkMs: 1 }],
+    totals: { inputs: 2, differing, invalid: 0 },
+    timings: { mainMs: 1, forkMs: 1, totalMs: 2 },
+  };
+}
+
 function result(main: string, fields: Partial<AgentToolResult>): AgentToolResult {
   return { schemaVersion: 1, tool: "impact", base: main, checkpoint: main, result: "found", summary: "ran", impact: null, checks: [], decisions: [], fix: null, fixRef: null, pushed: false, durationMs: 4, ...fields };
 }
@@ -95,9 +137,11 @@ describe("migration plans of a split, one per owner group", () => {
   let tasks: EditTaskStore;
   let roster: EditRoster;
   let trials: PartTrialStore;
+  let grants: FixGrantStore;
   let deps: MigrationDeps;
   let count: RetiringCountDeps;
   let forked: string[];
+  let scopeMapNow: ScopeMap;
 
   beforeEach(async () => {
     project = new PlanProject(scopeMap, "");
@@ -106,7 +150,9 @@ describe("migration plans of a split, one per owner group", () => {
     tasks = new EditTaskStore(project.sql);
     roster = new EditRoster(project.sql, new IdentityStore(project.sql));
     trials = new PartTrialStore(project.sql);
+    grants = new FixGrantStore(project.sql);
     forked = [];
+    scopeMapNow = scopeMap;
     deps = {
       store,
       features: project.features,
@@ -114,12 +160,17 @@ describe("migration plans of a split, one per owner group", () => {
       retiring: project.retiring,
       trials,
       reviews: new ReviewStore(project.sql),
-      scopeMap: async () => scopeMap,
+      scopeMap: async () => scopeMapNow,
       sign: (draft) => project.sign(draft),
       openTask: async (source, adjust) => {
-        roster.sync(scopeMap, project.features.list());
-        return tasks.open(source, adjust(editRouting({ roster, features: project.features }, scopeMap, () => true)));
+        roster.sync(scopeMapNow, project.features.list());
+        return tasks.open(source, adjust(editRouting({ roster, features: project.features }, scopeMapNow, () => true)));
       },
+      tasks,
+      grants,
+      invariants: async () => INVARIANTS,
+      checkOverlap: (feature) =>
+        checkOverlap({ db: project.sql, features: project.features, overlaps: project.overlaps, scopeMap: async () => scopeMapNow, sign: (draft) => project.sign(draft) }, feature),
       adminMode: false,
       fork: async (featureId) => {
         forked.push(featureId);
@@ -165,6 +216,28 @@ describe("migration plans of a split, one per owner group", () => {
       .filter((each) => each.type === type);
   const rewriteRuns = () => runs.list("money-minor").filter((run) => run.input["search"] === "rewrite" && run.input["origin"] === "money-minor");
 
+  /** The fix-write deps the ProjectAgent wires, every fork read from `repo`, with the migration parts' writes. */
+  const writeDeps = (repo: GitRepo): FixWriteDeps => ({
+    features: project.features,
+    routes: new PlanRouteStore(project.sql),
+    grants,
+    keeper: () => project.plans,
+    scopeMap: async () => scopeMapNow,
+    readFork: async (_name, read) =>
+      read({
+        ...gitReader(repo.dir),
+        log: async ({ ref, limit }) =>
+          repo
+            .git("log", "--format=%H", `-n${limit}`, ref)
+            .split("\n")
+            .filter(Boolean)
+            .map((hash) => ({ hash })),
+      }),
+    sign: (draft) => project.sign(draft),
+    notify: () => undefined,
+    migration: migrationWrites(deps),
+  });
+
   test("a count becomes one plan per owner group, each carrying only its originating feature's declarations", async () => {
     const changed = await counted(sha(1), {
       headUses: [lineUse("orders/report.py"), lineUse("orders/tests/test_model.py")],
@@ -201,63 +274,167 @@ describe("migration plans of a split, one per owner group", () => {
     assert.deepEqual(records("migrate-tomas-money-minor", "open_feature").map((each) => each.author), [{ penguin: true }]);
   });
 
-  test("the runner writes a part its rules rewrite whole, and its trial decides it; any other part is an edit task", async () => {
+  /** Counts Bea's fees feature with one price call and reports the rules' rewrite of it, at `fees` (FEES by default). */
+  async function rewritten(fees = FEES, patchText = PATCH) {
     await counted(sha(1), { forks: [fork("fees", [priceUse("billing/fees.py", "billing")], sha(1)), fork("money-minor", [], sha(1))] });
     const [request] = rewriteRuns();
     assert.ok(request);
-    const rewrite = (residual: number): MigrationRewritePlace => ({
-      place: { kind: "feature", feature: "fees" },
-      target: "fees",
-      sha: FEES,
-      files: [{ path: "billing/fees.py", rules: ["price-times"] }],
-      patch: PATCH,
-      residual,
-      error: null,
-    });
-    const recorded = recordToolResult(runs, RUNNER, request.id, result(sha(1), { rewrites: [rewrite(0)] }));
+    const place = { kind: "feature" as const, feature: "fees" };
+    const rewrite: MigrationRewritePlace = { place, target: "fees", sha: fees, files: [{ path: "billing/fees.py", rules: ["price-times"] }], patch: patchText, residual: 0, error: null };
+    const recorded = recordToolResult(runs, RUNNER, request.id, result(sha(1), { rewrites: [rewrite] }));
     assert.equal(recorded.status, "recorded", JSON.stringify(recorded));
-    if (recorded.status !== "recorded") return;
+    if (recorded.status !== "recorded") throw new Error("not recorded");
     assert.deepEqual(await rewritesReported(deps, recorded.run), ["migrate:money-minor:bea:1"]);
-    const [part] = store.plans("money-minor")[0]?.parts ?? [];
+    const [trial] = trials.current("migrate-bea-money-minor");
+    assert.ok(trial);
+    return trial;
+  }
+
+  /** The runner's report of `trial`: billing's tests with `status`, and billing's side-by-side run with `differing` inputs differing. */
+  const trialReport = (trial: StoredPartTrial, status: "passed" | "failed", differing = 0) => ({
+    schemaVersion: 1 as const,
+    trialId: trial.id,
+    partId: trial.partId,
+    revision: 1,
+    checkpoint: sha(1),
+    target: trial.request.target.sha,
+    status: "built" as const,
+    tree: sha(9),
+    reason: null,
+    tests: [{ scopeId: "billing", commandId: "test:billing", status, breaks: status === "failed" ? ["billing/tests/test_fees.py::test_fee"] : [], reason: null, durationMs: 3 }],
+    reviews: [],
+    sideBySide: [{ scope: "billing", record: sideBySideRecord(trial.request.target.sha, sha(9), differing) }],
+    durationMs: 9,
+  });
+  const decide = async (trial: StoredPartTrial, status: "passed" | "failed", differing = 0) => migrationTrialReported(deps, trials.record(trial.id, trialReport(trial, status, differing)) as StoredPartTrial);
+
+  test("a rule-written part needs no review form: Penguin approves it when its tests pass and no protected invariant differs", async () => {
+    const trial = await rewritten();
+    const part = store.part(trial.partId);
     assert.deepEqual([part?.writer, part?.state, part?.reason], ["runner", "trial", "the rules price-times rewrite every use in the place"]);
     assert.deepEqual(records("money-minor", "migration_routed").map((each) => each.payload["parts"]), [
-      [{ part: part?.partId, place: { kind: "feature", feature: "fees" }, writer: "runner", reason: "the rules price-times rewrite every use in the place" }],
+      [{ part: trial.partId, place: { kind: "feature", feature: "fees" }, writer: "runner", reason: "the rules price-times rewrite every use in the place" }],
     ]);
-    // The trial applies the runner's patch to Bea's fork head, merged with main at the count.
-    const [trial] = trials.current("migrate-bea-money-minor");
-    assert.deepEqual([trial?.request.fork, trial?.request.checkpoint, trial?.request.target, trial?.request.fix, trial?.request.commandIds], [
+    // The trial applies the runner's patch to Bea's fork head, merged with main at the count, carries no
+    // form and asks for billing's side-by-side run on its own.
+    assert.deepEqual([trial.request.fork, trial.request.checkpoint, trial.request.target, trial.request.fix, trial.request.commandIds, trial.request.reviews, trial.request.sideBySide], [
       "base",
       sha(1),
       { id: "fees", repo: "feature-fees", sha: FEES },
       { kind: "patch", patch: PATCH },
       ["test:billing"],
+      [],
+      ["billing"],
     ]);
-    assert.ok(trial);
-    const report = (status: "passed" | "failed") => ({
-      schemaVersion: 1 as const,
-      trialId: trial.id,
-      partId: trial.partId,
-      revision: 1,
-      checkpoint: sha(1),
-      target: FEES,
-      status: "built" as const,
-      tree: sha(9),
-      reason: null,
-      tests: [{ scopeId: "billing", commandId: "test:billing", status, breaks: status === "failed" ? ["billing/tests/test_fees.py::test_fee"] : [], reason: null, durationMs: 3 }],
-      reviews: [],
-      durationMs: 9,
-    });
-    // Clean tests, no form yet: the part waits for the form, which Bea's steward is asked for.
-    await migrationTrialReported(deps, trials.record(trial.id, report("passed")) as StoredPartTrial);
-    assert.deepEqual([store.part(trial.partId)?.state, store.part(trial.partId)?.reason], ["waiting_review", "the review form of billing is missing"]);
-    const [review] = tasks.forFeature("migrate-bea-money-minor").filter((each) => each.kind === "review");
-    assert.deepEqual([review?.handle, review?.scopes], ["@bea/steward", ["billing"]]);
-    // A failing test on the trial tree sends the part to its owner in person.
+    assert.equal(await decide(trial, "passed"), "approved");
+    assert.deepEqual([store.part(trial.partId)?.approvedBy, store.part(trial.partId)?.reason], ["penguin", "the trial's tests pass and no protected invariant differs; a rule-written part needs no review form"]);
+    // No form is asked for, and the check runner's write into Bea's fork is queued.
+    assert.deepEqual(tasks.forFeature("migrate-bea-money-minor"), []);
+    assert.deepEqual(grants.claimable().map((grant) => [grant.planId, grant.partId, grant.targetFeatureId, grant.writer]), [["migrate:money-minor:bea:1", trial.partId, "fees", "runner"]]);
+    assert.equal(store.plan("migrate:money-minor:bea:1")?.state, "approved");
+    assert.deepEqual(records("money-minor", "migration_part_decided").map((each) => [each.payload["decision"], each.payload["approved_by"]]), [["approved", "penguin"]]);
+  });
+
+  test("a rule-written part whose trial fails becomes an edit task with the failing check, and reaches a person only when that task fails", async () => {
+    const trial = await rewritten();
+    assert.equal(await decide(trial, "failed"), "task");
+    const part = store.part(trial.partId);
+    assert.deepEqual([part?.writer, part?.reason], ["task", "the rules' patch failed its trial: test:billing failed on the trial tree"]);
+    const [task] = tasks.forSource(`migrate:${trial.partId}`);
+    assert.deepEqual([task?.kind, task?.via, task?.handle, task?.target], ["migration", "builder", "@bea/fees", "fees"]);
+    assert.deepEqual(task?.evidence, ["test:billing failed on the trial tree", "test:billing fails billing/tests/test_fees.py::test_fee", "billing/fees.py"]);
+    assert.deepEqual(await migrationTasksSettled(deps), []);
+    // Bea's bridge runs the task and the run fails: now Bea decides in person.
+    assert.ok(task);
+    tasks.claim("bea", "br_bea", 2, 60_000, () => false);
+    assert.equal(tasks.report("br_bea", task.id, { status: "failed", outcome: "claude -p stopped: tests still fail" }).status, "ok");
+    assert.deepEqual(await migrationTasksSettled(deps), ["migrate:money-minor:bea:1"]);
+    assert.deepEqual([store.part(trial.partId)?.state, store.part(trial.partId)?.reason], ["in_person", "the edit task for @bea/fees failed (run_failed): claude -p stopped: tests still fail"]);
+    assert.deepEqual(records("money-minor", "migration_part_decided").map((each) => each.payload["decision"]), ["task", "in_person"]);
+  });
+
+  test("a protected invariant the side-by-side run shows differing fails the trial; a protected path needs a person", async () => {
+    const trial = await rewritten();
+    assert.equal(await decide(trial, "passed", 1), "task");
+    assert.equal(store.part(trial.partId)?.reason, "the rules' patch failed its trial: 1 inputs of billing/api.py::fee differ on protected fee-rounding");
+    const [task] = tasks.forSource(`migrate:${trial.partId}`);
+    assert.deepEqual(task?.evidence.slice(0, 2), [
+      "1 inputs of billing/api.py::fee differ on protected fee-rounding",
+      'billing/api.py::fee small: main {"status":"returned","value":1}, patched {"status":"returned","value":2}',
+    ]);
+    // The same patch under a path Bea protects goes to Bea in person: no agent's edit settles it.
+    scopeMapNow = parseScopeMap({ scopes: SCOPES.map((each) => (each.id === "billing" ? { ...each, protected_paths: ["billing/fees.py"] } : each)) });
     const { trialId: _trialId, ...spec } = trial.request;
     const again = trials.queue(spec, ["billing"]);
-    await migrationTrialReported(deps, trials.record(again.id, { ...report("failed"), trialId: again.id }) as StoredPartTrial);
-    assert.equal(store.part(trial.partId)?.state, "in_person");
-    assert.deepEqual(records("money-minor", "migration_part_decided").map((each) => each.payload["decision"]), ["waiting_review", "in_person"]);
+    store.updatePart(trial.partId, { state: "trial" });
+    assert.equal(await decide(again, "passed"), "in_person");
+    assert.equal(store.part(trial.partId)?.reason, "billing/fees.py lies under bea's protected billing/fees.py");
+  });
+
+  test("a plan whose places are all running features closes once every fix is written into its fork", async () => {
+    const repo = new GitRepo();
+    const head = repo.commit({ "billing/fees.py": "x = api.price(a * b)\n" }, "Bea's fees checkpoint");
+    const trial = await rewritten(head);
+    assert.equal(await decide(trial, "passed"), "approved");
+    // The check runner claims the write on Bea's fork, as it claims a mechanical fix.
+    const fixDeps = writeDeps(repo);
+    const claim = await claimRunnerWrites(fixDeps, RUNNER);
+    assert.ok(claim.status === "ok");
+    const [write] = claim.writes;
+    assert.deepEqual([write?.repo, write?.spec.target, write?.spec.parent, write?.spec.kind, write?.spec.paths], ["feature-fees", "fees", head, "mechanical", ["billing/fees.py"]]);
+    assert.ok(write);
+    repo.commit({ "billing/fees.py": "x = a.times(b)\n" }, write.spec.message);
+    const kept = await runnerFixReport(fixDeps, RUNNER, write.spec.writeId, { commit: repo.git("rev-parse", "HEAD") });
+    assert.equal(kept.status, "ok", JSON.stringify(kept));
+    // Every live part is written and no place is on main: the plan closes with nothing to promote.
+    assert.equal(store.part(trial.partId)?.state, "written");
+    assert.equal(store.plan("migrate:money-minor:bea:1")?.state, "closed");
+    assert.deepEqual(records("money-minor", "migration_part_written").map((each) => [each.payload["part"], each.payload["written_by"]]), [[trial.partId, "penguin"]]);
+    assert.deepEqual(records("money-minor", "migration_closed").map((each) => each.payload["plan"]), ["migrate:money-minor:bea:1"]);
+    assert.deepEqual(forked, []);
+    // A caller found later in Bea's work opens Bea's next plan.
+    await counted(sha(2), { forks: [fork("fees", [priceUse("billing/fees.py", "billing")], sha(2))] });
+    assert.deepEqual(store.plans("money-minor").map((plan) => [plan.planId, plan.state]), [
+      ["migrate:money-minor:bea:1", "closed"],
+      ["migrate:money-minor:bea:2", "open"],
+    ]);
+  });
+
+  test("an edit task's kept commit writes its part; code on main is carried by the plan's block, which lands", async () => {
+    await counted(sha(1), { headUses: [lineUse("orders/report.py")] });
+    const [part] = store.plans("money-minor")[0]?.parts ?? [];
+    assert.ok(part);
+    const [task] = tasks.forSource(`migrate:${part.partId}`);
+    assert.ok(task);
+    tasks.close(task.sourceKey, "done", "the steward moved orders/report.py", "f".repeat(40));
+    await migrationTasksSettled(deps);
+    assert.equal(store.part(part.partId)?.state, "written");
+    // Code on main lands with the block, so the plan waits for it rather than closing.
+    assert.equal(store.plan("migrate:money-minor:tomas:1")?.state, "approved");
+    await migrationBlockLanded(deps, "migrate-tomas-money-minor", sha(2));
+    assert.deepEqual([store.plan("migrate:money-minor:tomas:1")?.state, store.part(part.partId)?.state], ["landed", "landed"]);
+  });
+
+  test("a feature Penguin opens goes through the overlap lock, and the runner writes nothing into it until the lock is approved", async () => {
+    // Bea's checkout work runs in orders, which Tomas's block will cover.
+    await project.open("checkout", "bea", { scopes: ["orders"] }, { id: "s-bea3", handle: "@bea/orders" });
+    const main = new GitRepo();
+    const before = main.commit({ "orders/report.py": "t = model.line_total(x)\n" }, "main");
+    await counted(sha(1), { headUses: [lineUse("orders/report.py")] });
+    const block = "migrate-tomas-money-minor";
+    assert.deepEqual(project.overlaps.locksOn(block).map((lock) => [lock.featureId, lock.personId, lock.state]), [["checkout", "bea", "open"]]);
+    assert.deepEqual(records(block, "overlap_check").map((each) => (each.payload["locks_opened"] as { feature: string }[]).map((lock) => lock.feature)), [["checkout"]]);
+    // An approved part's write into the block waits on the lock.
+    const [part] = store.plans("money-minor")[0]?.parts ?? [];
+    assert.ok(part);
+    store.updatePart(part.partId, { state: "approved", writer: "runner", patch: "--- a/orders/report.py\n+++ b/orders/report.py\n@@ -1 +1 @@\n-t = model.line_total(x)\n+t = model.line_total_minor(x)\n", targetSha: before });
+    grants.open("money-minor", "migrate:money-minor:tomas:1", { partId: part.partId, revision: 1 }, block, "runner");
+    const locked = { ...writeDeps(main), locked: (featureId: string) => project.overlaps.status(featureId).waitingOn.length > 0 };
+    assert.deepEqual(await claimRunnerWrites(locked, RUNNER), { status: "ok", writes: [] });
+    await approveOverlap({ db: project.sql, features: project.features, overlaps: project.overlaps, scopeMap: async () => scopeMapNow, sign: (draft) => project.sign(draft) }, "bea", "checkout", block);
+    const claim = await claimRunnerWrites(locked, RUNNER);
+    assert.ok(claim.status === "ok");
+    assert.deepEqual(claim.writes.map((each) => [each.spec.target, each.spec.parent]), [[block, before]]);
   });
 
   test("a part the rules leave uses in goes to the running feature's builder", async () => {

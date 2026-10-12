@@ -117,6 +117,8 @@ export type FeatureRecordType =
   | "migration_joined"
   | "migration_routed"
   | "migration_part_decided"
+  | "migration_part_written"
+  | "migration_closed"
   | "migration_landed";
 
 export interface FeatureRecord {

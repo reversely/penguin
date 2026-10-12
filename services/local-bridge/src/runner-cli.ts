@@ -60,6 +60,7 @@ import {
   type Fetch,
 } from "./penguin-client.ts";
 import { runReview } from "./review-harness.ts";
+import { runSideBySide } from "./side-by-side.ts";
 import { formatReviewPass, reviewPass, type ReviewPassResult } from "./review-run.ts";
 import type { FailRun } from "./run-failure.ts";
 import { fetchRepoBranches } from "./runner-repo.ts";
@@ -263,7 +264,12 @@ async function testJobsPass(
   const fixes = new FixApplier({ repoPath: repo, ruff: programs.ruff });
   const facts = new PlanFactsRunner({ repoPath: repo, runner, impact, fixes });
   const combined = new CombinedRunner({ repoPath: repo, runner, impact, checks });
-  const trials = new PartTrialRunner({ repoPath: repo, runner, review: (request) => runReview({ repoPath: repo, python: programs.python, analyzer: impact }, request) });
+  const trials = new PartTrialRunner({
+    repoPath: repo,
+    runner,
+    review: (request) => runReview({ repoPath: repo, python: programs.python, analyzer: impact }, request),
+    sideBySide: (request) => runSideBySide({ repoPath: repo, python: programs.python }, request),
+  });
   const settle = <T>(job: () => Promise<T>): Promise<T | Error> => job().catch((error: unknown) => error as Error);
   // A run a pass stops on goes back to Penguin with its reason, which frees it for any runner at once.
   const fail: FailRun = (failure) => reportRunFailure(server, bridgeToken, failure, fetchImpl);

@@ -14,7 +14,7 @@ import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { buildTrialTree, PartTrialRunner, pythonImpactAnalyzer, runReview, TestRunner } from "@penguin/local-bridge";
+import { buildTrialTree, PartTrialRunner, pythonImpactAnalyzer, runReview, runSideBySide, TestRunner } from "@penguin/local-bridge";
 import { parsePartTrialReport, readOnlyShapes, type PartTrialRequest, type ReviewForm } from "@penguin/protocol";
 
 const REPO_ROOT = fileURLToPath(new URL("../../", import.meta.url));
@@ -181,6 +181,25 @@ test("a trial runs the part's tests and each form on its tree, and its report is
   assert.equal(report.status, "built");
   assert.deepEqual(report.tests.map((each) => [each.commandId, each.status]), [["test:messaging", "passed"]]);
   assert.deepEqual(report.reviews.map((each) => [each.reviewId, each.record.base, each.record.fork]), [[7, request.target.sha, report.tree]]);
+});
+
+test("a trial with no form runs the side-by-side run alone for each scope it names, as a rule-written migration part's does", async () => {
+  const scratch = await mkdtemp(join(root, "runner-"));
+  const options = reviewOptions(helpful);
+  const tests = new TestRunner({ repoPath: helpful.repo, env: ENV, scratchDir: scratch, consent: () => true });
+  const review = (request: Parameters<typeof runReview>[1]) => runReview(options, request);
+  const runner = new PartTrialRunner({ repoPath: helpful.repo, runner: tests, review, sideBySide: (request) => runSideBySide(options, request), scratchDir: scratch });
+  const request = featureTrial(helpful, "jun", "analytics", ["analytics"], { sideBySide: ["analytics"] });
+  const report = await runner.run(request);
+  const parsed = parsePartTrialReport(JSON.parse(JSON.stringify(report)));
+  assert.ok(parsed.ok, JSON.stringify(parsed));
+  assert.deepEqual(report.reviews, []);
+  assert.deepEqual(report.sideBySide?.map((each) => [each.scope, each.record.base, each.record.fork]), [["analytics", request.target.sha, report.tree]]);
+  // Jun's fork declares weekly_report's examples; each runs on the target and on the trial tree.
+  const examples = JSON.parse(helpful.git("show", `${request.target.sha}:analytics/examples/weekly_report.json`)) as { cases: unknown[] };
+  assert.equal(report.sideBySide?.[0]?.record.totals.inputs, examples.cases.length);
+  // A runner with no side-by-side run refuses such a trial rather than report it without one.
+  await assert.rejects(new PartTrialRunner({ repoPath: helpful.repo, runner: tests, review, scratchDir: scratch }).run(request), /no side-by-side run/u);
 });
 
 test("on the fixture's own forms the stored data rule asks a marker only of a scope whose own stored data changes", async () => {

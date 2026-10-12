@@ -28,7 +28,8 @@
 // that verify it, plus, for a fix, the approved write. A review also gets its part revision and scope,
 // the revision's trial tree for the bridge to check out (the target, the checkpoint and the fix, as
 // the part's trial builds it, #140), and a task token for Penguin's MCP server that allows that form
-// alone (review-task.ts, #138). Its report of a done run names one commit, which Penguin reads from the fork before keeping it: one
+// alone (review-task.ts, #138). The claim leaves an edit whose target fork waits on an overlap lock in
+// the queue. A task's report of a done run names one commit, which Penguin reads from the fork before keeping it: one
 // parent, on the fork's branch, changing only the task's allowed paths. A fix's commit goes through
 // the fix-write checks instead. A review's done report names no commit: Penguin keeps it only when
 // the run submitted a form Penguin did not refuse. Every report revokes the task's token.
@@ -362,7 +363,9 @@ export async function claimEditTasks(deps: EditWorkDeps, person: string, bridgeI
   await syncEditWork(deps);
   const scopeMap = await deps.scopeMap();
   // Without task tokens a review cannot run headless, so the claim leaves reviews to sessions.
-  const claimable = deps.taskTokens === undefined ? (task: Pick<EditTask, "kind">) => task.kind !== "review" : () => true;
+  const headless = deps.taskTokens === undefined ? (task: Pick<EditTask, "kind">) => task.kind !== "review" : () => true;
+  // A fork whose start waits on an overlap lock gets no write token yet, so its edits wait in the queue.
+  const claimable = (task: EditTask) => headless(task) && (task.kind === "review" || deps.fix.locked?.(task.target) !== true);
   const claimed = deps.tasks.claim(person, bridgeId, deps.cap, deps.leaseMs, sessionFor(deps), claimable);
   const specs: EditTaskSpec[] = [];
   const mcp: Record<number, IssuedTaskToken> = {};

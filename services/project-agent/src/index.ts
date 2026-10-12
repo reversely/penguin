@@ -182,7 +182,9 @@ import {
   migrationBlockLanded,
   migrationsChecked,
   migrationsCounted,
+  migrationTasksSettled,
   migrationTrialReported,
+  migrationWrites,
   MigrationStore,
   rewritesReported,
   type MigrationDeps,
@@ -281,7 +283,7 @@ import {
   parseRunFailureLimit,
   type RunFailureOutcome,
 } from "@penguin/protocol";
-import { INVARIANTS_PATH, routeScope, type ScopeMap } from "@penguin/scope-map";
+import { INVARIANTS_PATH, parseInvariantsBytes, routeScope, type ScopeMap } from "@penguin/scope-map";
 
 import {
   BridgeRegistry,
@@ -483,7 +485,9 @@ export {
   migrationBlockLanded,
   migrationsChecked,
   migrationsCounted,
+  migrationTasksSettled,
   migrationTrialReported,
+  migrationWrites,
   MigrationStore,
   MIGRATION_SCHEMA,
   rewritesReported,
@@ -2281,6 +2285,11 @@ export class ProjectAgent extends Agent {
       scopeMap: () => this.#scopeMap(repos),
       sign: async (record) => signFeatureRecord(record, (await this.#loadServiceKey()).privateKey),
       openTask: (source, adjust) => openEditTask(this.#editWorkDeps(repos), source, adjust),
+      tasks: this.#editTaskStore(),
+      grants: this.#fixGrantStore(),
+      invariants: async () => parseInvariantsBytes(await this.#baseFile(repos, INVARIANTS_PATH), await this.#scopeMap(repos)).invariants,
+      // A feature Penguin opens goes through the overlap lock like any other (PRD 0.5 section 4.2 step 2).
+      checkOverlap: (feature) => this.#lockStep(() => checkOverlap(this.#overlapDeps(repos), this.#featureStore().get(feature.id) ?? feature)),
       adminMode: this.#adminMode(),
       fork: (featureId) => this.#forkFromMain(repos, featureId),
       notify: (person) => sendToOwner(this.getConnections<{ owner?: string }>(), person, inboxChangedMessage()),
@@ -2457,7 +2466,7 @@ export class ProjectAgent extends Agent {
   async #dashboardViewDeps(repos: ProjectRepos): Promise<DashboardViewDeps> {
     const rules = await this.#reviewRules(repos);
     // Every task's state is brought up to date before a view shows it.
-    await syncEditWork(this.#editWorkDeps(repos));
+    await this.#syncEditWork(repos);
     return {
       editTasks: (featureId) => this.#editTaskStore().forFeature(featureId).map(editTaskView),
       steward: (person) => this.#stewardView(person),
@@ -2613,6 +2622,10 @@ export class ProjectAgent extends Agent {
       readFork: (repo, use) => withRepo(this.env.ARTIFACTS, repo, (opened) => use(opened as unknown as ForkReader)),
       // The identity a fix's edit task was routed to writes it too (PRD 0.5 section 4.4a).
       holds: (sessionId, partId, revision) => holdsFixTask(this.#editTaskStore(), sessionId, partId, revision),
+      // An approved rule-written migration part is written by the runner the same way (migration-plans.ts).
+      migration: migrationWrites(this.#migrationDeps(repos)),
+      // A fork whose start waits on an overlap lock gets no write token yet.
+      locked: (featureId) => this.#overlapStore().status(featureId).waitingOn.length > 0,
     };
   }
 
@@ -2621,7 +2634,7 @@ export class ProjectAgent extends Agent {
   /** For `get_work`: the edit tasks delivered to `caller`'s session and the person's queue; undefined for another person's session. */
   async editTaskWork(caller: string, sessionId: string, repos: ProjectRepos): Promise<{ readonly tasks: EditTaskView[]; readonly queue: EditQueue } | undefined> {
     if (this.sessionHeartbeat(caller, sessionId).status !== "ok") return undefined;
-    await syncEditWork(this.#editWorkDeps(repos));
+    await this.#syncEditWork(repos);
     return { tasks: this.#editTaskStore().forSession(sessionId).map(editTaskView), queue: this.#editTaskStore().queue(caller, this.#backgroundRunCap()) };
   }
 
@@ -2634,14 +2647,36 @@ export class ProjectAgent extends Agent {
   }
 
   /** The claiming bridge reports one run's end: done with its commit, failed or timed out. */
-  reportEditTask(caller: { readonly bridgeId: string; readonly ownerId: string }, taskId: number, body: unknown, repos: ProjectRepos): Promise<EditReportOutcome> {
-    return this.#planStep(() => reportEditTask(this.#editWorkDeps(repos), caller.ownerId, caller.bridgeId, taskId, body));
+  async reportEditTask(caller: { readonly bridgeId: string; readonly ownerId: string }, taskId: number, body: unknown, repos: ProjectRepos): Promise<EditReportOutcome> {
+    const outcome = await this.#planStep(() => reportEditTask(this.#editWorkDeps(repos), caller.ownerId, caller.bridgeId, taskId, body));
+    // A migration part's task done writes the part; one whose run failed sends it to a person (migration-plans.ts).
+    if (outcome.status === "ok" && outcome.task.kind === "migration") await this.#settleMigrationTasks(repos, taskId);
+    return outcome;
   }
 
   /** A block run of the feature reported (block-land.ts): its agent steps become next-step tasks, or a pass does them. */
   async blockReported(featureId: string, run: { readonly runId: string; readonly checkpoint: string; readonly passed: boolean }, decisions: readonly LadderDecision[], repos: ProjectRepos): Promise<void> {
     await blockReported(this.#editWorkDeps(repos), featureId, run, decisions);
     this.#liveFeed().featuresChanged();
+  }
+
+  /**
+   * Brings every edit task up to date (edit-work.ts `syncEditWork`); a migration part whose task's
+   * claim ran out with no report goes to a person then (migration-plans.ts). A failure there is logged.
+   */
+  async #syncEditWork(repos: ProjectRepos): Promise<void> {
+    await syncEditWork(this.#editWorkDeps(repos));
+    await this.#settleMigrationTasks(repos, null);
+  }
+
+  /** Each migration part whose edit task was done or failed moves on, after the plan steps before it. */
+  async #settleMigrationTasks(repos: ProjectRepos, taskId: number | null): Promise<void> {
+    try {
+      const changed = await this.#planStep(() => migrationTasksSettled(this.#migrationDeps(repos)));
+      if (changed.length > 0) this.#liveFeed().featuresChanged();
+    } catch (error) {
+      console.error(JSON.stringify({ event: "migration_tasks_failed", task: taskId, error: String(error).slice(0, 200) }));
+    }
   }
 
   /** Opens an edit task from another source, such as a migration part of a split (#131). */

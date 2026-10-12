@@ -30,6 +30,7 @@ import {
   pythonDependencyAnalyzer,
   pythonImpactAnalyzer,
   runReview,
+  runSideBySide,
   TestRunner,
   toolPass,
 } from "@penguin/local-bridge";
@@ -46,7 +47,7 @@ import {
   type RewriteRule,
   type StewardView,
 } from "@penguin/protocol";
-import { parseScopeMap, type ScopeMap } from "@penguin/scope-map";
+import { parseInvariantsBytes, parseScopeMap, type ScopeMap } from "@penguin/scope-map";
 
 import type { DashboardBackend } from "../../apps/worker/src/dashboard.ts";
 import { featureView } from "../../apps/worker/src/features.ts";
@@ -58,6 +59,7 @@ import { contractWork, ContractSplitStore, recordSplit, scheduleSort, type Contr
 import { buildFeaturePage, buildFeaturePlan, buildTeamView, type DashboardViewDeps } from "../../services/project-agent/src/dashboard-views.ts";
 import { openFeature, recordFeatureRepo, reportFeatureCheckpoint, type FeatureDeps } from "../../services/project-agent/src/feature-open.ts";
 import { FeatureStore, signFeatureRecord } from "../../services/project-agent/src/feature-store.ts";
+import { FixGrantStore } from "../../services/project-agent/src/fix-write.ts";
 import { buildIdentitiesPage } from "../../services/project-agent/src/identities-page.ts";
 import { IdentityStore } from "../../services/project-agent/src/identity-store.ts";
 import { buildInbox } from "../../services/project-agent/src/inbox-page.ts";
@@ -108,7 +110,6 @@ import { claimReviews, recordReview } from "../../services/project-agent/src/rev
 import { ReviewStore, submitReview } from "../../services/project-agent/src/review-submit.ts";
 import { reviewDifferences } from "../../services/project-agent/src/review-view.ts";
 import { SessionStore } from "../../services/project-agent/src/session-store.ts";
-import { FixGrantStore } from "../../services/project-agent/src/fix-write.ts";
 import { gitReader } from "../../services/project-agent/test/git-reader.ts";
 
 const ROOT = join(import.meta.dirname, "../..");
@@ -368,6 +369,11 @@ export class PreviewProject {
         this.roster.sync(this.scopeMap, this.features.list());
         return this.editTasks.open(source, adjust(editRouting({ roster: this.roster, features: this.features }, this.scopeMap, () => true)));
       },
+      tasks: this.editTasks,
+      grants: this.fixGrants,
+      invariants: async () => parseInvariantsBytes(new TextEncoder().encode(this.git("show", "main:penguin/invariants.json")), this.scopeMap).invariants,
+      // A feature Penguin opens goes through the overlap lock, as the ProjectAgent wires it.
+      checkOverlap: (feature) => checkOverlap(this.overlapDeps(), this.features.get(feature.id) ?? feature),
       adminMode: this.adminMode,
       // The fixture's repository stands in for Artifacts: a fork of main is a branch at main's head.
       fork: async (featureId) => {
@@ -694,6 +700,7 @@ export class PreviewProject {
       runner: new TestRunner({ repoPath: this.repo, env: ENV, scratchDir: scratch, consent: () => true }),
       review: (request) =>
         runReview({ repoPath: this.repo, python: PYTHON, env: ENV, scratchDir: scratch, analyzer: pythonImpactAnalyzer({ repoPath: this.repo, python: PYTHON, env: ENV }) }, request),
+      sideBySide: (request) => runSideBySide({ repoPath: this.repo, python: PYTHON, env: ENV, scratchDir: scratch }, request),
       scratchDir: scratch,
     });
     for (const request of claimed.trials) {

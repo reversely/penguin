@@ -28,11 +28,19 @@
 //   patch applied to the parent. The commit must also be on the fork's `main`. A kept write is a signed `fix_write` record
 //   and a `FixWrite` row in the feature's plan store; a refused one is a signed `fix_write_refused`
 //   record.
+// - Migration parts. An approved rule-written part of a split's migration plan (migration-plans.ts,
+//   PRD 0.5 section 4.2 step 2) is written by the check runner the same way, into its running
+//   feature's fork or into the plan's block feature for code on main, with the same token scope and
+//   the same commit check. Its grant names its migration plan; `MigrationWrites` answers the part, and
+//   a kept write makes it `written` there in place of a FixWrite row. A target fork whose head no
+//   longer takes the patch makes the part an edit task. A target whose start waits on an overlap lock
+//   gets no write until the lock is approved.
 
 import {
   applyPatchFile,
   FIX_WRITE_BRANCH,
   fixCommitMessage,
+  isMigrationPlanId,
   parsePatch,
   RUNNER_WRITER,
   type FixWriter,
@@ -132,7 +140,7 @@ export class FixGrantStore {
   }
 
   /** The write of one revision of a part, made `queued` for `writer` when there is none yet. */
-  open(featureId: string, planId: string, part: PlanPart, target: string, writer: FixWriter): FixGrant {
+  open(featureId: string, planId: string, part: Pick<PlanPart, "partId" | "revision">, target: string, writer: FixWriter): FixGrant {
     this.#db.exec(
       `INSERT OR IGNORE INTO FixWriteGrant (feature_id, plan_id, part_id, revision, target_feature_id, writer, state, created_at)
        VALUES (?, ?, ?, ?, ?, ?, 'queued', ?)`,
@@ -228,6 +236,20 @@ export interface FixWriteDeps {
    * the originating agent writes.
    */
   readonly holds?: (sessionId: string, partId: string, revision: number) => boolean;
+  /** The approved parts of the split's migration plans (migration-plans.ts); absent, their writes are withdrawn. */
+  readonly migration?: MigrationWrites;
+  /** Whether the feature's start waits on an open overlap lock: its fork gets no write yet. Absent is never. */
+  readonly locked?: (featureId: string) => boolean;
+}
+
+/** What fix writes read and tell about a migration part (migration-plans.ts). */
+export interface MigrationWrites {
+  /** The approved part's write, or why it can no longer be written. */
+  approved(partId: string): Promise<ApprovedWrite | FixRejection>;
+  /** The target fork moved to `head` and the patch no longer applies there: the part becomes an edit task. */
+  headMoved(partId: string, head: string, problem: string): Promise<void>;
+  /** The runner's commit was kept: the part is written. */
+  written(partId: string, commit: string, recordId: string): Promise<void>;
 }
 
 export type FixRejectReason = FeatureRejectReason | "not_approved" | "head_moved";
@@ -257,13 +279,22 @@ const rejected = (reason: FixRejectReason, message: string): FixRejection => ({ 
 const SHA = /^[0-9a-f]{40}$/u;
 const PART_ID_MAX_LENGTH = 128;
 
-interface ApprovedPart {
+/** An approved write: the part, its patch against `base` and the fork it goes into. */
+export interface ApprovedWrite {
+  /** The feature whose plan the part is in. */
   readonly featureId: string;
-  readonly plan: Plan;
-  readonly part: PlanPart & { readonly place: { readonly kind: "feature"; readonly feature: string } };
+  readonly plan: Pick<Plan, "planId" | "proposedBy" | "person">;
+  readonly part: Pick<PlanPart, "partId" | "revision" | "kind" | "scopes" | "approvedBy"> & {
+    readonly diff: Pick<PlanPart["diff"], "files" | "ref">;
+  };
   readonly patch: string;
   readonly base: string;
   readonly target: Feature & { readonly repo: string };
+}
+
+interface ApprovedPart extends ApprovedWrite {
+  readonly plan: Plan;
+  readonly part: PlanPart & { readonly place: { readonly kind: "feature"; readonly feature: string } };
 }
 
 const isRejection = (value: unknown): value is FixRejection =>
@@ -312,6 +343,13 @@ async function approvedPart(deps: FixWriteDeps, input: FixPartInput): Promise<Ap
   };
 }
 
+/** The approved write a grant names: a migration part's, or a plan part's current revision. */
+async function grantedWrite(deps: FixWriteDeps, grant: FixGrant): Promise<ApprovedWrite | FixRejection> {
+  if (!isMigrationPlanId(grant.planId)) return approvedPart(deps, { feature: grant.featureId, part: grant.partId, revision: grant.revision });
+  if (deps.migration === undefined) return rejected("not_found", `part ${grant.partId} of migration plan ${grant.planId} is not known here`);
+  return deps.migration.approved(grant.partId);
+}
+
 /** The fork's head on its `main`, or null when the branch has no commit. */
 async function forkHead(deps: FixWriteDeps, repo: string): Promise<string | null> {
   const [head] = await deps.readFork(repo, (reader) => reader.log({ ref: FIX_WRITE_BRANCH, limit: 1 }));
@@ -319,7 +357,7 @@ async function forkHead(deps: FixWriteDeps, repo: string): Promise<string | null
 }
 
 /** The patch's files, each checked to lie inside the part's scopes and in its approved diff. */
-function checkedFiles(approved: ApprovedPart, scopeMap: ScopeMap): PlanFileDiff[] | FixRejection {
+function checkedFiles(approved: ApprovedWrite, scopeMap: ScopeMap): PlanFileDiff[] | FixRejection {
   const parsed = parsePatch(approved.patch);
   if (!parsed.ok) return rejected("invalid", `the approved patch no longer parses: ${parsed.message}`);
   const scopes = new Set(approved.part.scopes);
@@ -391,7 +429,13 @@ async function sendBack(deps: FixWriteDeps, approved: ApprovedPart, head: string
  * fast-forward read from the fork. A head that moved past the patch's base and no longer takes the
  * patch sends the part back for revision and refuses.
  */
-async function prepare(deps: FixWriteDeps, approved: ApprovedPart, grant: FixGrant, writtenBy: string): Promise<FixGrantOutcome> {
+async function prepare(
+  deps: FixWriteDeps,
+  approved: ApprovedWrite,
+  grant: FixGrant,
+  writtenBy: string,
+  headMoved: (head: string, problem: string) => Promise<string>,
+): Promise<FixGrantOutcome> {
   const { plan, part, target } = approved;
   const files = checkedFiles(approved, await deps.scopeMap());
   if (isRejection(files)) return files;
@@ -401,8 +445,7 @@ async function prepare(deps: FixWriteDeps, approved: ApprovedPart, grant: FixGra
   if (head !== approved.base) {
     const problem = await applyProblem(deps, target.repo, head, files);
     if (problem !== null) {
-      await sendBack(deps, approved, head, problem);
-      return rejected("head_moved", `feature ${target.id}'s fork moved to ${head} and the patch no longer applies there; part ${part.partId} went back to the originating agent to revise`);
+      return rejected("head_moved", `feature ${target.id}'s fork moved to ${head} and the patch no longer applies there; ${await headMoved(head, problem)}`);
     }
     parent = head;
   }
@@ -467,7 +510,7 @@ export async function agentFixGrant(
   if (grant.state === "written") {
     return rejected("conflict", `revision ${grant.revision} of part ${grant.partId} is already written as ${grant.commitSha}`);
   }
-  const prepared = await prepare(deps, approved, grant, approved.plan.proposedBy);
+  const prepared = await prepare(deps, approved, grant, approved.plan.proposedBy, revise(deps, approved));
   if (prepared.status === "ok") deps.grants.grant(grant.id, prepared.spec.parent, prepared.spec.rebased, null, null);
   else if (prepared.reason === "head_moved") deps.grants.withdraw(grant.id);
   return prepared;
@@ -488,7 +531,7 @@ export async function taskFixGrant(deps: FixWriteDeps, input: FixPartInput, hold
   if (grant.state === "written") {
     return rejected("conflict", `revision ${grant.revision} of part ${grant.partId} is already written as ${grant.commitSha}`);
   }
-  const prepared = await prepare(deps, approved, grant, holder);
+  const prepared = await prepare(deps, approved, grant, holder, revise(deps, approved));
   if (prepared.status === "ok") deps.grants.grant(grant.id, prepared.spec.parent, prepared.spec.rebased, null, null);
   else if (prepared.reason === "head_moved") deps.grants.withdraw(grant.id);
   return prepared;
@@ -503,6 +546,14 @@ export async function taskFixReport(deps: FixWriteDeps, input: FixPartInput, hol
 
 function holdsTask(deps: FixWriteDeps, sessionId: string, input: FixPartInput): boolean {
   return typeof input.part === "string" && typeof input.revision === "number" && deps.holds?.(sessionId, input.part, input.revision) === true;
+}
+
+/** A plan part whose fork head moved goes back to the originating agent (`sendBack`). */
+function revise(deps: FixWriteDeps, approved: ApprovedPart): (head: string, problem: string) => Promise<string> {
+  return async (head, problem) => {
+    await sendBack(deps, approved, head, problem);
+    return `part ${approved.part.partId} went back to the originating agent to revise`;
+  };
 }
 
 /** On an approval: queues the check runner's write of a mechanical part on a running feature. */
@@ -523,12 +574,22 @@ export async function claimRunnerWrites(
   const now = deps.now ?? Date.now;
   const writes: { spec: FixWriteSpec; repo: string }[] = [];
   for (const grant of deps.grants.claimable()) {
-    const approved = await approvedPart(deps, { feature: grant.featureId, part: grant.partId, revision: grant.revision });
+    // A fork whose start waits on an overlap lock gets no token yet; the write stays queued.
+    if (deps.locked?.(grant.targetFeatureId) === true) continue;
+    const approved = await grantedWrite(deps, grant);
     if (isRejection(approved) || approved.part.kind !== "mechanical") {
       deps.grants.withdraw(grant.id);
       continue;
     }
-    const prepared = await prepare(deps, approved, grant, RUNNER_WRITER);
+    const migration = deps.migration;
+    const headMoved =
+      isMigrationPlanId(grant.planId) && migration !== undefined
+        ? async (head: string, problem: string) => {
+            await migration.headMoved(grant.partId, head, problem);
+            return `migration part ${grant.partId} became an edit task`;
+          }
+        : revise(deps, approved as ApprovedPart);
+    const prepared = await prepare(deps, approved, grant, RUNNER_WRITER, headMoved);
     if (prepared.status !== "ok") {
       // A moved head sent the part back for revision; anything else stays queued for the next claim.
       if (prepared.reason === "head_moved") deps.grants.withdraw(grant.id);
@@ -582,7 +643,7 @@ async function recordFixWrite(deps: FixWriteDeps, grant: FixGrant, writtenBy: st
   if (typeof commit !== "string" || !SHA.test(commit)) return rejected("invalid", "the commit must be a full 40-character SHA");
   if (grant.state === "written") return rejected("conflict", `revision ${grant.revision} of part ${grant.partId} is already written as ${grant.commitSha}`);
   if (grant.state !== "granted" || grant.parent === null) return rejected("conflict", `the write of part ${grant.partId} revision ${grant.revision} is not granted`);
-  const approved = await approvedPart(deps, { feature: grant.featureId, part: grant.partId, revision: grant.revision });
+  const approved = await grantedWrite(deps, grant);
   if (isRejection(approved)) {
     deps.grants.withdraw(grant.id);
     return rejected("conflict", `part ${grant.partId} moved on since the write was granted: ${approved.message}`);
@@ -628,11 +689,13 @@ async function recordFixWrite(deps: FixWriteDeps, grant: FixGrant, writtenBy: st
     recordId: record.record_id,
     writtenAt: new Date(now).toISOString(),
   };
-  if (!(await deps.keeper(grant.featureId).keepFixWrite(write))) {
+  const migration = isMigrationPlanId(grant.planId) ? deps.migration : undefined;
+  if (migration === undefined && !(await deps.keeper(grant.featureId).keepFixWrite(write))) {
     return rejected("conflict", `revision ${grant.revision} of part ${grant.partId} is already written`);
   }
   deps.features.addRecord(record);
   deps.grants.written(grant.id, commit, record.record_id);
+  await migration?.written(grant.partId, commit, record.record_id);
   deps.notify(approved.target.personId);
   deps.notify(approved.plan.person);
   return { status: "ok", write, durationMs: Math.max(0, now - grant.createdAt) };

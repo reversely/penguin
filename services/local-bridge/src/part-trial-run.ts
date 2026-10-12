@@ -6,17 +6,30 @@
 // review harness runs with the target as its base (main at the plan's baseline, or the affected fork's
 // head) and the trial tree as the fork, so a form's evidence, the stored data rule's marker and the
 // side-by-side run all read the affected code with the part's fix in place, and the scope's invariants
-// and examples are those its owner declared at the target. A trial whose commits cannot be fetched stays claimed until its lease
+// and examples are those its owner declared at the target. A rule-written migration part needs no
+// form: each scope its request names in `sideBySide` gets the side-by-side run alone, over the
+// examples the scope declares, with the same base and fork. A trial whose commits cannot be fetched stays claimed until its lease
 // runs out and is run again. A trial tree that does not build is reported as a conflict, with no test
 // and no review run.
 
 import { isObjectId } from "@penguin/git-analysis";
-import { boundPartTrialReport, PART_TRIAL_SCHEMA_VERSION, PLAN_LIMITS, type PartTrialReport, type PartTrialRequest, type PartTrialTest, type ReviewRecord } from "@penguin/protocol";
+import {
+  boundPartTrialReport,
+  PART_TRIAL_SCHEMA_VERSION,
+  PLAN_LIMITS,
+  type PartTrialReport,
+  type PartTrialRequest,
+  type PartTrialSideBySide,
+  type PartTrialTest,
+  type ReviewRecord,
+  type SideBySideRecord,
+} from "@penguin/protocol";
 
 import { parseFailingTests } from "./combined-run.ts";
 import { resolveCommand } from "./command-allowlist.ts";
 import type { RemoteResolver } from "./git-remote.ts";
 import type { ReviewRequest } from "./review-harness.ts";
+import type { SideBySideRequest } from "./side-by-side.ts";
 import { fetchRepoBranches, hasCommit } from "./runner-repo.ts";
 import { failureText, noteFailure, type FailRun, type FailureNote } from "./run-failure.ts";
 import type { TestRunner } from "./test-runner.ts";
@@ -28,11 +41,14 @@ export interface PartTrialRunnerOptions {
   readonly runner: TestRunner;
   /** Runs the review harness in `repoPath`, such as `runReview` bound to the runner's options. */
   readonly review: (request: ReviewRequest) => Promise<ReviewRecord>;
+  /** Runs the side-by-side run alone in `repoPath`, such as `runSideBySide` bound to the runner's options. */
+  readonly sideBySide?: (request: SideBySideRequest) => Promise<SideBySideRecord>;
   readonly scratchDir?: string;
 }
 
 const PROJECT_REPO = /^(?:base|feature-[a-z0-9]+(?:[.-][a-z0-9]+)*)$/u;
 const TEST_COMMAND = /^test:[A-Za-z0-9][A-Za-z0-9._-]*$/u;
+const SCOPE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/u;
 
 /** Checks a claimed trial before anything runs: full SHAs, project repos and test command IDs only. */
 export function checkTrialRequest(request: PartTrialRequest): void {
@@ -41,6 +57,7 @@ export function checkTrialRequest(request: PartTrialRequest): void {
     if (!PROJECT_REPO.test(repo)) throw new Error(`${JSON.stringify(repo)} is not the base repo or a feature fork`);
   }
   for (const id of request.commandIds) if (!TEST_COMMAND.test(id)) throw new Error(`${JSON.stringify(id)} is not a test command ID`);
+  for (const scope of request.sideBySide ?? []) if (!SCOPE_ID.test(scope)) throw new Error(`${JSON.stringify(scope)} is not a scope ID`);
 }
 
 /** What a trial tree is built from: the originating fork and checkpoint, the target and the fix. */
@@ -71,7 +88,9 @@ export class PartTrialRunner {
    */
   async run(request: PartTrialRequest): Promise<PartTrialReport> {
     checkTrialRequest(request);
-    const { repoPath, scratchDir } = this.#options;
+    const { repoPath, scratchDir, sideBySide } = this.#options;
+    const formless = request.sideBySide ?? [];
+    if (formless.length > 0 && sideBySide === undefined) throw new Error("this runner has no side-by-side run for a part with no form");
     for (const sha of trialCommits(request)) if (!(await hasCommit(repoPath, sha))) throw new Error(`commit ${sha} is not in the runner's repository`);
     const started = performance.now();
     const header = {
@@ -93,7 +112,10 @@ export class PartTrialRunner {
     for (const { reviewId, scope, form } of request.reviews) {
       reviews.push({ reviewId, scope, record: await this.#options.review({ base: request.target.sha, fork: built.tree, scope, form }) });
     }
-    return boundPartTrialReport({ ...header, status: "built", tree: built.tree, reason: null, tests, reviews, durationMs: elapsed(started) });
+    const runs: PartTrialSideBySide[] = [];
+    for (const scope of formless) runs.push({ scope, record: await (sideBySide as NonNullable<typeof sideBySide>)({ base: request.target.sha, fork: built.tree, scope }) });
+    const report = { ...header, status: "built" as const, tree: built.tree, reason: null, tests, reviews, durationMs: elapsed(started) };
+    return boundPartTrialReport(formless.length === 0 ? report : { ...report, sideBySide: runs });
   }
 
   async #test(commandId: string, tree: string): Promise<PartTrialTest> {
@@ -169,7 +191,8 @@ function summary(report: PartTrialReport): string {
   if (report.status === "conflict") return `no trial tree: ${report.reason}`;
   const tests = report.tests.map((test) => `${test.commandId} ${test.status}`);
   const reviews = report.reviews.map((review) => `review of ${review.scope} ${review.record.state}, ${review.record.sideBySide.totals.differing} inputs differ`);
-  return `tree ${report.tree?.slice(0, 12)}: ${[...tests, ...reviews].join(", ") || "nothing to run"}`;
+  const formless = (report.sideBySide ?? []).map((run) => `side-by-side of ${run.scope}, ${run.record.totals.differing} inputs differ`);
+  return `tree ${report.tree?.slice(0, 12)}: ${[...tests, ...reviews, ...formless].join(", ") || "nothing to run"}`;
 }
 
 export function formatPartTrialPass(result: PartTrialPassResult): string {

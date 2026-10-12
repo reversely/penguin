@@ -524,7 +524,10 @@ fork ([design.md](design.md#steps-1-and-3-in-the-build)). Two writers use the sa
   The command fetches the fork into `<state-dir>/fix-writes`, or `--repo <path>`, writes the fix and
   prints the commit as JSON for `report_fix_write`.
 - Runner mode claims the writes of approved mechanical parts at `POST /fix-writes/claim` under a
-  10-minute lease. Each claim carries a `write` token minted for that part on that fork. The runner
+  10-minute lease. An approved rule-written part of a split's migration plan comes the same way,
+  onto its running feature's fork or its plan's block feature
+  ([design.md](design.md#migration-plans-in-the-build)); a fork whose start waits on an overlap lock
+  is left out of the claim. Each claim carries a `write` token minted for that part on that fork. The runner
   writes each fix and reports the commit to `POST /fix-writes/<write id>`. A write that stops is
   reported as a [failed run](#failed-runs). Penguin queues it again. The next claim prepares it with
   a new token.
@@ -594,8 +597,9 @@ Each revision of a merge plan's part is tested on the tree it would reach main a
 ([design.md](design.md#part-trials)). Each pass claims the waiting trials from
 `POST /part-trials/claim` under a 30-minute lease. A claimed trial names the originating fork and the
 plan's checkpoint, the target (main at the plan's baseline, or the affected feature's fork head), the
-part's fix (a commit in the originating fork with its base, or a patch), `test:<scope>` command IDs
-and the forms to review. For each trial the runner (`part-trial-run.ts`):
+part's fix (a commit in the originating fork with its base, or a patch), `test:<scope>` command IDs,
+the forms to review and, for a rule-written migration part, the scopes in `sideBySide` whose
+side-by-side run goes ahead with no form. For each trial the runner (`part-trial-run.ts`):
 
 1. refuses a claim that names a repo other than `base` or a `feature-<id>` fork, a commit that is not
    a full SHA or a command that is not a test command, then fetches each repo it names;
@@ -604,7 +608,10 @@ and the forms to review. For each trial the runner (`part-trial-run.ts`):
    `git merge-tree --merge-base`. A step that does not apply reports a conflict and runs nothing;
 3. runs each test command on the tree in a throwaway worktree;
 4. runs the [review harness](#side-by-side-runs) for each form with the target as base and the tree
-   as fork.
+   as fork;
+5. runs the [side-by-side run](#side-by-side-runs) alone for each scope in `sideBySide`, with the
+   same base and fork, over the examples the scope declares. A runner built without it refuses such
+   a trial.
 
 The runner reports to `POST /part-trials/<id>`. A trial whose repos cannot be fetched is reported
 as a [failed run](#failed-runs). A report of a trial a newer one replaced answers `superseded`.

@@ -395,6 +395,11 @@ export class EditTaskStore {
     return this.#db.exec(`SELECT * FROM EditTask WHERE feature_id = ? OR target_feature_id = ? ORDER BY id`, featureId, featureId).map(taskOf);
   }
 
+  /** Every task one source opened, open or closed. */
+  forSource(sourceKey: string): EditTask[] {
+    return this.#db.exec(`SELECT * FROM EditTask WHERE source_key = ? ORDER BY id`, sourceKey).map(taskOf);
+  }
+
   /** Whether the person's bridge polled within the online window. */
   bridgeOnline(person: string): boolean {
     const [row] = this.#db.exec(`SELECT seen_at FROM BridgeSeen WHERE person = ?`, person);

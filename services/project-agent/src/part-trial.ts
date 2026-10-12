@@ -14,6 +14,9 @@
 //   in place, and a running feature's own declared examples run. A form
 //   still pending when its trial reports is completed with the trial's record; until then the review
 //   claim leaves it to the trial (review-submit.ts).
+// - Side-by-side with no form. A rule-written migration part needs no form (migration-plans.ts): its
+//   trial names its scopes in `sideBySide`, and the report must carry one side-by-side run of each,
+//   on the trial tree against the target.
 // - Claim and report. The runner claims trials under a lease, as it claims reviews, and reports each
 //   to POST /part-trials/<id>. The report must name its trial's part, revision, checkpoint and target,
 //   run exactly its test commands and review exactly its forms on the tree it built.
@@ -314,6 +317,11 @@ function mismatch(request: PartTrialRequest, report: PartTrialReport): string | 
   if (report.status === "conflict" && ran.length > 0) return "a trial with no tree reviews nothing";
   for (const review of report.reviews) {
     if (asked.get(review.reviewId) !== review.scope || review.record.base !== request.target.sha) return `review ${review.reviewId} is not of a form the trial carries, against the trial's target`;
+  }
+  // A rule-written migration part's trial runs the side-by-side run of each scope it names, with no form.
+  const formless = report.status === "built" ? [...(request.sideBySide ?? [])].sort() : [];
+  if ((report.sideBySide ?? []).map((run) => run.scope).sort().join("\n") !== formless.join("\n")) {
+    return "it must run the side-by-side run of each scope the trial names once, and only on a built tree";
   }
   return null;
 }

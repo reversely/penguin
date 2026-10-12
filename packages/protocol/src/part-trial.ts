@@ -8,7 +8,9 @@
 // newest form each scope's agent submitted: the evidence check, the stored data rule and the
 // side-by-side run. The harness compares the place before the part (the target) with the trial
 // tree, and reads the scope's invariants and examples at the target, so a running feature's own
-// declared examples run. Penguin keeps the report against the part revision, so the approval checks
+// declared examples run. A part the plan's rewrite rules write in full needs no form (PRD 0.5 section
+// 4.2 step 2): its request names its scopes in `sideBySide`, and the runner runs the side-by-side run
+// alone for each, over the examples the scope declares, inside the same trial. Penguin keeps the report against the part revision, so the approval checks
 // of PRD 4.3 step 3 read a fix that a run has tested. A new revision, or a newer form, asks for a new
 // trial; the older one no longer counts.
 //
@@ -17,6 +19,7 @@
 import { PLAN_LIMITS, PLAN_RESULT_STATUSES, type PlanResultStatus } from "./plan.ts";
 import {
   boundReviewRecord,
+  boundSideBySideRecord,
   parseReviewRecord,
   readOnlyShapes,
   reviewExceptions,
@@ -24,7 +27,9 @@ import {
   type ReviewException,
   type ReviewForm,
   type ReviewRecord,
+  type SideBySideRecord,
   type StoredShapeChange,
+  SIDE_BY_SIDE_RECORD_SCHEMA,
 } from "./review.ts";
 import { checkSchema, type JsonSchema } from "./schema-check.ts";
 
@@ -72,6 +77,14 @@ export interface PartTrialRequest {
   /** `test:<scope>` for each of the part's scopes. */
   readonly commandIds: readonly string[];
   readonly reviews: readonly PartTrialReviewRequest[];
+  /** Scopes whose side-by-side run goes ahead with no form: a rule-written migration part's. Absent is none. */
+  readonly sideBySide?: readonly string[];
+}
+
+/** One scope's side-by-side run on a trial tree with no form, the target as main and the tree as the fork. */
+export interface PartTrialSideBySide {
+  readonly scope: string;
+  readonly record: SideBySideRecord;
 }
 
 /** One test command's outcome on the trial tree; `breaks` names each failing test. */
@@ -108,6 +121,8 @@ export interface PartTrialReport {
   readonly reason: string | null;
   readonly tests: readonly PartTrialTest[];
   readonly reviews: readonly PartTrialReview[];
+  /** One per scope the request names in `sideBySide`; absent when it names none. */
+  readonly sideBySide?: readonly PartTrialSideBySide[];
   readonly durationMs: number;
 }
 
@@ -161,8 +176,14 @@ export const PART_TRIAL_REPORT_SCHEMA: JsonSchema = {
       maxItems: PART_TRIAL_LIMITS.reviews,
       items: record({ reviewId: { type: "integer", minimum: 1 }, scope: { type: "string", minLength: 1, maxLength: 128 }, record: { type: "object" } }),
     },
+    sideBySide: {
+      type: "array",
+      maxItems: PART_TRIAL_LIMITS.reviews,
+      items: record({ scope: { type: "string", minLength: 1, maxLength: 128 }, record: SIDE_BY_SIDE_RECORD_SCHEMA }),
+    },
     durationMs: COUNT,
   }),
+  required: ["schemaVersion", "trialId", "partId", "revision", "checkpoint", "target", "status", "tree", "reason", "tests", "reviews", "durationMs"],
 };
 
 export type ParsedPartTrialReport = { readonly ok: true; readonly report: PartTrialReport } | { readonly ok: false; readonly problems: string[] };
@@ -181,12 +202,19 @@ export function parsePartTrialReport(value: unknown): ParsedPartTrialReport {
       return { ok: false, problems: [`/reviews/${index} is not a run of its scope on the trial tree`] };
     }
   }
+  for (const [index, run] of (report.sideBySide ?? []).entries()) {
+    if (run.record.scope !== run.scope || report.tree === null || run.record.fork !== report.tree || run.record.base !== report.target) {
+      return { ok: false, problems: [`/sideBySide/${index} is not a run of its scope on the trial tree against the target`] };
+    }
+  }
   return { ok: true, report };
 }
 
 /** The report as the runner sends it, each review record bound as a review's own report is. */
 export function boundPartTrialReport(report: PartTrialReport): PartTrialReport {
-  return { ...report, reviews: report.reviews.map((review) => ({ ...review, record: boundReviewRecord(review.record) })) };
+  const reviews = report.reviews.map((review) => ({ ...review, record: boundReviewRecord(review.record) }));
+  if (report.sideBySide === undefined) return { ...report, reviews };
+  return { ...report, reviews, sideBySide: report.sideBySide.map((run) => ({ ...run, record: boundSideBySideRecord(run.record) })) };
 }
 
 /**

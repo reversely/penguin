@@ -487,27 +487,55 @@ Penguin proposes the migrate step's plans itself (`services/project-agent/src/mi
   ([Edit tasks in the build](#edit-tasks-in-the-build)). One signed `migration_routed` record per
   plan names each part's writer and why: no rule for its contracts, the rules rewrite nothing, the
   rules leave uses, or the runner could not run them.
-- **Trial and approval.** A runner part's trial applies its patch to its target and merges main at
-  the count ([Part trials](#part-trials)). Penguin reads the trial with the checks of
-  [Penguin's approval in the build](#penguins-approval-in-the-build). Every check clean approves the
-  part. A failed check sends it to its owner in person. A part waiting only for review forms asks
-  the steward of each scope's DRI for one with a `review` task. Each decision is a signed
-  `migration_part_decided` record. A plan whose live parts are all approved is `approved`.
+- **Rule-written parts.** A part the rules write in full is mechanical and needs no review form
+  (PRD 0.5 section 4.2 step 2). Its trial applies its patch to its target and merges main at the
+  count ([Part trials](#part-trials)). It carries no form: it names the part's scopes in
+  `sideBySide`. In the same run the check runner runs each scope's side-by-side run alone, over the
+  examples `penguin/invariants.json` declares for the scope, with the target as main and the trial
+  tree as the fork. Penguin reads the trial with the checks of
+  [Penguin's approval in the build](#penguins-approval-in-the-build) and leaves out the missing
+  forms. It adds each protected invariant of the project's invariants on main that a side-by-side
+  set shows differing (`ruleWrittenRouting`, `packages/protocol/src/migration.ts`):
+
+  | The trial shows | The part |
+  |---|---|
+  | Its scopes' tests pass and no protected invariant differs | Penguin approves it and asks the check runner to write it |
+  | A failing test, a trial tree that does not hold the patch, or a protected invariant that differs | Becomes a `migration` edit task for the target's builder or the steward of the scope's DRI, with each failing check, failing test and differing input attached as evidence |
+  | A protected path, a file outside the place, admin mode or another check no edit settles | Goes to its owner in person |
+
+  Each decision is a signed `migration_part_decided` record. Load: the side-by-side runs are part
+  of the trial the part already had; no run is added.
+- **Written.** The check runner writes an approved part's patch into its target fork through the
+  fix-write checks ([Steps 1 and 3 in the build](#steps-1-and-3-in-the-build)): a running feature's fork,
+  or the plan's block feature for code on main. Its grant names the migration plan; the commit is
+  checked exactly as a mechanical fix's is, with a token minted on that one fork, the same scope a
+  mechanical fix's write has. A fork whose head no longer takes the patch makes the part an edit
+  task. A `migration` edit task's kept commit writes its part. Either is a signed
+  `migration_part_written` record. An edit task whose run failed, timed out or stopped reporting
+  sends its part to a person under a signed `migration_part_decided` record: the only way a
+  rule-written part whose trial failed reaches one.
+- **Closing a plan.** A plan whose live parts are all approved or written is `approved`. A plan
+  whose places are all running features never opens a block: once every live part is written into
+  its fork it is `closed` under a signed `migration_closed` record, with nothing to promote. A
+  caller found later opens the owner's next plan.
 - **The block.** Each plan names its block feature, `migrate-<owner>-<feature>` (with `-<n>` from
-  the owner's second plan). Penguin opens it from main, with a fork, when the plan has code on main
-  for a steward to edit. A fix to a running feature's own changes goes into that feature's fork.
-  When the block feature reaches main, the plan is `landed` under a signed `migration_landed`
-  record.
+  the owner's second plan). Penguin opens it from main, with a fork, when the plan has code on main,
+  as the fork the runner's write or the steward's edit goes into. A part on main in a second scope
+  widens the block's area under a signed `declare_area` record. When the block feature reaches main,
+  the plan is `landed` under a signed `migration_landed` record.
 - **Features Penguin opens.** A block feature or a contract carrier is an `open_feature` record
   authored by Penguin, owned by the DRI it works for, forked from main through the Artifacts binding
   with the same name and `PENGUIN_FEATURE_FORK_DEFAULT_BRANCH_ONLY` setting as the Worker's forks.
-  It is not checked against running features for an overlapping start.
+  It goes through the overlap lock ([Steps 1 and 2 in the build](#steps-1-and-2-in-the-build)) like any other feature, at its
+  opening and at each wider area: a running feature of another person that covers its area holds
+  its start until that person approves. While a lock holds, no bridge claims an edit task into its
+  fork and the check runner writes nothing there.
 - **The view.** `contract.migration` in `get_work` and on the feature page lists each plan:
-  `planId`, `feature`, `owner`, `seq`, `state` (`open`, `approved`, `landed`), `block`,
+  `planId`, `feature`, `owner`, `seq`, `state` (`open`, `approved`, `closed`, `landed`), `block`,
   `promotion`, `recordId` and its `parts`. Each part has `partId`, `place`, `scopes`, `uses`,
   `files`, `contracts`, `rules`, `writer` (`runner` or `task`), `reason`, `state` (`rewriting`,
-  `task`, `trial`, `waiting_review`, `approved`, `in_person`, `landed` or `dropped`) and
-  `approvedBy`. The runner's patch stays out of the view.
+  `task`, `trial`, `approved`, `written`, `in_person`, `landed` or `dropped`) and `approvedBy`. The
+  runner's patch stays out of the view.
 
 ### Advance notice
 
@@ -675,7 +703,9 @@ that also fails another check stays with its author. Its stored data reason is l
   part. Its session on the originating feature calls `fix_token` with the part and the revision. A
   mechanical part is Penguin's codemod, so the check runner writes it: the approval queues the write
   and the runner claims it at `POST /fix-writes/claim`
-  ([bridge-and-runner.md](bridge-and-runner.md#fix-writes)). A part for code on main gets no token on
+  ([bridge-and-runner.md](bridge-and-runner.md#fix-writes)). An approved rule-written part of a
+  split's migration plan is queued the same way, onto its running feature's fork or its plan's block
+  feature ([Migration plans in the build](#migration-plans-in-the-build)). A part for code on main gets no token on
   another fork. Its fix is a commit in the originating fork already
   (`services/project-agent/src/fix-write.ts`).
 - **The token.** The Worker mints a `write` token on the affected feature's fork alone, for
@@ -759,12 +789,13 @@ agent becomes an edit task for one of them.
   | `review` | A plan part revision waiting on its owner, one task per scope of the part | The steward of the scope's DRI, or of the fallback standing in | A review form for that scope reaches the plan's feature and Penguin does not refuse it; the part leaving `pending` without one drops it |
   | `fix` | An approved behavioural part whose place is a running feature | The whole part to the target feature's builder, else the steward of the target's person: an approved patch is written as one commit, so it never splits | The write is kept as a `fix_write` record |
   | `next_step` | A failed block run's decision at ladder step 4 or 5, one source per failing target and check | Each failing file by charter, in the failing feature's fork, or in the originating fork for a failure on main | A newer run of the feature no longer shows it, a passing run, or the feature reaching main |
-  | `migration` | A part of a split's migration plan that the declared rewrite rules do not write whole, through `openEditTask` ([Migration plans in the build](#migration-plans-in-the-build)) | A running feature's own changes: each file by charter in that feature's fork, its builder first. Code on main: the steward of the scope's DRI, in the plan's block feature | The bridge's commit is kept |
+  | `migration` | A part of a split's migration plan that the declared rewrite rules do not write whole, or a rule-written part whose trial failed, with the failing checks as evidence, through `openEditTask` ([Migration plans in the build](#migration-plans-in-the-build)) | A running feature's own changes: each file by charter in that feature's fork, its builder first. Code on main: the steward of the scope's DRI, in the plan's block feature | The bridge's commit is kept, which writes the part. A failed run sends the part to a person |
   | `contract` | The removal of retiring symbols whose originating feature no longer runs | The steward of the DRI of the scope that defines them, in the feature Penguin opened from main to carry it | The bridge's commit is kept |
 
   A mechanical part asks for no task: the check runner writes it. A feature Penguin opened from main
   (a migration plan's block or a contract carrier) has no builder in routing, so its edits reach the
-  steward of the scope's DRI. The FeatureAgent reports each
+  steward of the scope's DRI. While an overlap lock holds such a feature's start, the bridge's
+  claim leaves an edit into its fork in the queue. The FeatureAgent reports each
   block run's decisions through `blockReported` on the ProjectAgent.
 - **One routing decision per task.** `EditTaskStore.open` routes a source once and keeps one row
   per identity or person. A source that opens again while its tasks are open is not routed again.
@@ -1338,11 +1369,16 @@ Each commit is written with fixed identities and dates, so one trial gives one t
 that does not apply makes the trial a `conflict`, with the reason and no tree. On a built tree the
 runner runs `test:<scope>` for each of the part's scopes and the review harness for each form the
 trial carries: the newest form of each of the part's scopes submitted on the plan's checkpoint that
-passed its check at submission. The review compares the target with the trial tree.
+passed its check at submission. The review compares the target with the trial tree. A rule-written
+migration part's trial carries no form and names its scopes in `sideBySide`: the runner runs each
+scope's side-by-side run alone on the same base and fork, over the examples the scope declares. It
+reports each run under `sideBySide`. A runner with no side-by-side run refuses such a trial
+([Migration plans in the build](#migration-plans-in-the-build)).
 
 The runner reports to `POST /part-trials/<id>`. Penguin keeps the report when it names its trial's
 part, revision, checkpoint and target. The report must run each of the trial's test commands once
-and review each of its forms once on the trial tree against the target. The first report wins; a second answers 409.
+and review each of its forms once on the trial tree against the target. It must run the side-by-side
+run of each scope the trial names in `sideBySide` once, on a built tree only. The first report wins; a second answers 409.
 A report of a superseded trial answers 200 with `superseded` and is not kept. Each form the trial ran
 that still waits as pending is completed with the trial's record. The exceptions are derived from the
 stored form, the invariants checked at submission and the trial's side-by-side run. An exception

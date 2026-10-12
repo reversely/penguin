@@ -3,10 +3,11 @@
 // programs as the preview seed wires them (scripts/preview/seed.ts). The expand wave's plan marks the
 // float API retiring; after each promotion Penguin counts the remaining callers and proposes one
 // migration plan per owner group; the check runner rewrites each place the declared rules cover and
-// counts the uses left; each part the rules write whole is tried on its trial tree and decided by the
-// approval checks; every other part is an edit task. Noor's pagination then adds a caller midway and
-// joins Noor's open plan. Expected features and owners are read from larder.json; every number the
-// diagnostics print is the runs' own.
+// counts the uses left; each part the rules write whole is tried on its trial tree with no form, its
+// scopes' tests and side-by-side runs deciding it (#139): Penguin approves it, or it becomes an edit task
+// with the failing check, or a check no edit settles sends it to a person; every other part is an edit
+// task. Noor's pagination then adds a caller midway and joins Noor's open plan. Expected features and
+// owners are read from larder.json; every number the diagnostics print is the runs' own.
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -79,15 +80,21 @@ before(async () => {
 const live = (plan: MigrationPlanView) => plan.parts.filter((part) => part.state !== "dropped");
 const placeName = (part: MigrationPlanView["parts"][number]) => (part.place.kind === "scope" ? `scope ${part.place.scope}` : part.place.feature);
 
+/** A part the rules wrote in full whose trial failed, now an edit task. */
+const failedTrial = (part: MigrationPlanView["parts"][number]) => part.reason?.startsWith("the rules' patch failed its trial") === true;
+
 /** The plans and parts of the money split as one diagnostic block. */
 function describePlans(t: TestContext, when: string): void {
   const plans = preview.migrations.plans(EXPAND.id).filter((plan) => live(plan).length > 0);
   const parts = plans.flatMap(live);
   const by = (state: string) => parts.filter((part) => part.state === state).length;
+  const tasks = parts.filter((part) => part.state === "task");
+  const locked = new Set(preview.migrations.plans(EXPAND.id).flatMap((plan) => preview.overlaps.locksOn(plan.block).filter((lock) => lock.state === "open").map(() => plan.block)));
   t.diagnostic(
-    `${when}: ${plans.length} plans, ${parts.length} parts; runner ${parts.filter((part) => part.writer === "runner").length}, ` +
-      `edit tasks ${parts.filter((part) => part.writer === "task").length}; approved ${by("approved")}, in person ${by("in_person")}, ` +
-      `waiting for forms ${by("waiting_review")}, in trial ${by("trial")}, at a task ${by("task")}, rewriting ${by("rewriting")}`,
+    `${when}: ${plans.length} plans, ${parts.length} parts; the rules wrote ${parts.filter((part) => part.writer === "runner" || failedTrial(part)).length}; ` +
+      `Penguin approved ${by("approved")}, edit tasks ${tasks.length} (${tasks.filter(failedTrial).length} from a failed trial), in person ${by("in_person")}, ` +
+      `in trial ${by("trial")}, rewriting ${by("rewriting")}, written ${by("written")}; plans approved ${plans.filter((plan) => plan.state === "approved").length}, ` +
+      `closed ${plans.filter((plan) => plan.state === "closed").length}; block features waiting on an overlap lock ${locked.size}`,
   );
   for (const plan of plans) {
     t.diagnostic(`  ${plan.owner} (${plan.block}): ${live(plan).map((part) => `${placeName(part)} ${part.uses} uses, ${part.writer ?? "-"} ${part.state}${part.reason === null ? "" : ` (${part.reason})`}`).join("; ")}`);
@@ -165,6 +172,31 @@ test("after the migrate waves, the remaining callers are all in the open plans' 
     );
   }
   describePlans(t, `after ${MIGRATE_WAVES.at(-1)?.id} (${callers} callers)`);
+});
+
+test("a rule-written part needs no form: its trial approves it, makes it an edit task or, for a check no edit settles, sends it to a person", () => {
+  const parts = preview.migrations.plans(EXPAND.id).flatMap(live);
+  // No migration part asks for a review form.
+  assert.deepEqual(preview.editTasks.forFeature(EXPAND.id).concat(...preview.migrations.plans(EXPAND.id).map((plan) => preview.editTasks.forFeature(plan.block))).filter((task) => task.kind === "review"), []);
+  for (const part of parts) {
+    if (part.state === "approved") assert.equal(part.approvedBy, "penguin");
+    // Only a check no agent's edit settles sends a part to a person here: no edit task has run.
+    if (part.state === "in_person") assert.doesNotMatch(part.reason ?? "", /^test:|differ on protected|edit task/u, part.partId);
+    // A part whose trial failed is an edit task with that check attached.
+    if (failedTrial(part)) {
+      const [task] = preview.editTasks.forSource(`migrate:${part.partId}`);
+      assert.ok(task !== undefined && task.kind === "migration" && task.evidence.length > part.files.length, part.partId);
+    }
+  }
+  // Each approved part waits for the check runner's write into its target fork.
+  const queued = new Set(preview.fixGrants.claimable().map((grant) => grant.partId));
+  for (const part of parts.filter((each) => each.state === "approved")) assert.ok(queued.has(part.partId), part.partId);
+  // Every feature Penguin opened went through the overlap lock.
+  for (const plan of preview.migrations.plans(EXPAND.id)) {
+    if (preview.features.get(plan.block) === undefined) continue;
+    const checks = preview.features.records(plan.block).filter((stored) => (JSON.parse(stored.file) as { type: string }).type === "overlap_check");
+    assert.ok(checks.length > 0, plan.block);
+  }
 });
 
 test("Noor's pagination adds callers midway and joins Noor's open plan", async (t: TestContext) => {

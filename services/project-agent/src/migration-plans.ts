@@ -19,24 +19,38 @@
 //    `openEditTask`): a running feature's own changes go to that feature's builder, then the
 //    steward of the scope's DRI; code on main goes to the steward of the scope's DRI, in the plan's
 //    block feature. One signed `migration_routed` record per plan lists each part's writer and why.
-// 4. **Trial and approval.** A part's trial (part-trial.ts) applies its patch to its place: main at
-//    the count for code on main, the feature's fork head for a running feature, merged with main. The
-//    checks of PRD 4.3 then read the trial (`partRouting`): Penguin approves a part whose checks are all
-//    clean; a part that fails one goes to its owner in person; a part waiting only for its scopes'
-//    review forms asks the steward of each scope's DRI for one. Each decision is a signed
-//    `migration_part_decided` record. A plan whose parts are all approved is `approved`.
-// 5. **The block.** Each plan names its own block feature, `migrate-<owner>-<feature>`. Penguin opens
-//    it from main when a part of the plan is code on main, as the fork the steward's edit goes into.
-//    When that feature's block reaches main, the plan is `landed` (`migrationBlockLanded`).
-// 6. **Contract after the originating feature landed.** A landed fork is read-only, so when no caller
+// 4. **Trial and approval of a rule-written part.** Its trial (part-trial.ts) applies its patch to its
+//    place: main at the count for code on main, the feature's fork head for a running feature, merged
+//    with main. A rule-written part is mechanical and needs no review form, so the trial runs its
+//    scopes' tests and, in the same run, the side-by-side run of each scope over its declared
+//    examples with no form. The checks of PRD 4.3 read the trial (`partRouting`, then
+//    `ruleWrittenRouting`): Penguin approves the part when the tests pass and no protected invariant
+//    differs. A failing trial makes the part an edit task for the target's builder or the steward of
+//    the scope's DRI, with the failing check attached. A check no edit settles, such as a protected
+//    path or admin mode, sends it to its owner in person. Each decision is a signed
+//    `migration_part_decided` record.
+// 5. **Written.** Penguin's check runner writes an approved part's patch into its target fork through
+//    the fix-write checks (fix-write.ts `MigrationWrites`): the running feature's fork, or the plan's
+//    block feature for code on main. An edit task's kept commit writes its part. Either is a signed
+//    `migration_part_written` record. An edit task whose run failed sends its part to a person:
+//    the only way a migration part reaches one besides a check no edit settles.
+// 6. **Closing and the block.** A plan whose live parts are all approved or written is `approved`.
+//    A plan whose places are all running features opens no block: once every live part is written it
+//    is `closed` under a signed `migration_closed` record, with nothing to promote, and a caller found
+//    later opens the owner's next plan. Each plan with code on main names its own block feature,
+//    `migrate-<owner>-<feature>`, which Penguin opens from main as the fork that part's fix is written
+//    into. When that feature's block reaches main, the plan is `landed` (`migrationBlockLanded`).
+// 7. **Contract after the originating feature landed.** A landed fork is read-only, so when no caller
 //    of a retiring symbol is left and its originating feature no longer runs, `carryContract` opens a
 //    short-lived feature from main for the DRI of each scope that defines the symbols,
 //    `contract-<owner>-<feature>`. It signs the contract proposal there: its plan has no places, so
 //    Penguin approves it. The removal becomes a `contract` edit task for that DRI's steward. When the
 //    carrying feature's block reaches main, retiring-count.ts `closeRemoved` closes the symbols.
 //
-// Features Penguin opens have no builder in routing: their edits go to the steward of the scope's DRI.
-// Every value reaches SQL as a bound parameter. Nothing here runs code.
+// Features Penguin opens go through the overlap lock like any other feature (overlap-lock.ts): while
+// a lock holds a block or carrier's start, no edit task into its fork is claimed and the runner
+// writes nothing there. They have no builder in routing: their edits go to the steward of the
+// scope's DRI. Every value reaches SQL as a bound parameter. Nothing here runs code.
 
 import {
   contractCarrierId,
@@ -46,14 +60,16 @@ import {
   migrationPlaceKey,
   migrationPlanId,
   migrationWriter,
-  needsPerson,
   parsePatch,
   partRouting,
   retiringUses,
+  reviewExceptions,
+  ruleWrittenRouting,
   isMigrationPlanId,
   type EditRoutingContext,
   type ImpactReport,
   type ImpactUse,
+  type InvariantView,
   type MigrationGroup,
   type MigrationPartState,
   type MigrationPartView,
@@ -70,12 +86,13 @@ import {
 import { scopeForPath, type ScopeMap } from "@penguin/scope-map";
 
 import { retiringInput, type AgentToolRun, type AgentToolStore } from "./agent-tools.ts";
-import type { EditSource, EditTask } from "./edit-tasks.ts";
+import type { EditSource, EditTask, EditTaskStore } from "./edit-tasks.ts";
 import type { Feature, FeatureArea, FeatureRecord, FeatureStore, UnsignedFeatureRecord } from "./feature-store.ts";
+import type { ApprovedWrite, FixGrantStore, FixRejection, MigrationWrites } from "./fix-write.ts";
 import type { SqlDatabase, SqlValue } from "./issue-index.ts";
 import { RUNNING_STATES } from "./overlap-lock.ts";
-import { protectedLookup, reviewResult, trialReviews } from "./part-checks.ts";
-import { trialEvidence, trialForms, type PartTrialStore, type StoredPartTrial } from "./part-trial.ts";
+import { protectedLookup } from "./part-checks.ts";
+import { trialEvidence, type PartTrialStore, type StoredPartTrial } from "./part-trial.ts";
 import { CALLERS_SEARCH, PENGUIN_SESSION, REWRITE_SEARCH } from "./retiring-count.ts";
 import type { RetiringStore } from "./retiring-store.ts";
 import type { ReviewStore } from "./review-submit.ts";
@@ -132,7 +149,7 @@ function partOf(row: Row): MigrationPart {
 }
 
 /** The states in which a part still waits on something before its plan can land. */
-const LIVE: readonly MigrationPartState[] = ["rewriting", "task", "trial", "waiting_review", "approved", "in_person"];
+const LIVE: readonly MigrationPartState[] = ["rewriting", "task", "trial", "approved", "written", "in_person"];
 
 export class MigrationStore {
   readonly #db: SqlDatabase;
@@ -164,10 +181,10 @@ export class MigrationStore {
     return row === undefined ? undefined : this.#planOf(row);
   }
 
-  /** The owner's newest plan of `featureId` that has not landed, or undefined. */
+  /** The owner's newest plan of `featureId` that has neither landed nor closed, or undefined. */
   openPlan(featureId: string, owner: string): MigrationPlanView | undefined {
     const [row] = this.#db.exec(
-      `SELECT * FROM MigrationPlan WHERE feature_id = ? AND owner = ? AND state != 'landed' ORDER BY seq DESC LIMIT 1`,
+      `SELECT * FROM MigrationPlan WHERE feature_id = ? AND owner = ? AND state NOT IN ('landed', 'closed') ORDER BY seq DESC LIMIT 1`,
       featureId,
       owner,
     );
@@ -260,6 +277,11 @@ export class MigrationStore {
     );
   }
 
+  /** Every part in `state`, oldest first. */
+  partsIn(state: MigrationPartState): MigrationPart[] {
+    return this.#db.exec(`SELECT * FROM MigrationPart WHERE state = ? ORDER BY rowid`, state).map(partOf);
+  }
+
   /** The parts waiting on rewrite request `runId`. */
   waitingOn(runId: number): MigrationPart[] {
     return this.#db.exec(`SELECT * FROM MigrationPart WHERE rewrite_run = ? AND state = 'rewriting' ORDER BY part_id`, runId).map(partOf);
@@ -314,6 +336,14 @@ export interface MigrationDeps {
   readonly sign: (record: UnsignedFeatureRecord) => Promise<FeatureRecord>;
   /** Opens one edit task (edit-work.ts `openEditTask`) with the routing narrowed by `adjust`. */
   readonly openTask: (source: EditSource, adjust: (routing: EditRoutingContext) => EditRoutingContext) => Promise<readonly EditTask[]>;
+  /** The edit tasks, read to see whether a migration part's task was done or failed. */
+  readonly tasks: Pick<EditTaskStore, "forSource">;
+  /** The writes the check runner makes (fix-write.ts): an approved part's patch into its target fork. */
+  readonly grants: Pick<FixGrantStore, "open">;
+  /** The project's invariants on main, every scope's: which ones are protected. */
+  readonly invariants: () => Promise<readonly InvariantView[]>;
+  /** The overlap lock's check of a feature Penguin opened or widened (overlap-lock.ts `checkOverlap`). */
+  readonly checkOverlap: (feature: Feature) => Promise<unknown>;
   /** The project requires a person for every part (PENGUIN_PLAN_ADMIN_MODE). */
   readonly adminMode: boolean;
   /** Forks main into the feature's repo and answers its name, or null when no fork can be made here. */
@@ -485,13 +515,13 @@ async function dropGone(deps: MigrationDeps, origin: string, groups: readonly Mi
   const present = new Set(groups.flatMap((group) => group.places.map((each) => `${group.owner}\0${migrationPlaceKey(each.place)}`)));
   const changed: string[] = [];
   for (const plan of deps.store.plans(origin)) {
-    if (plan.state === "landed") continue;
+    if (plan.state === "landed" || plan.state === "closed") continue;
     for (const part of plan.parts) {
       if (part.state === "dropped" || part.state === "landed" || present.has(`${plan.owner}\0${migrationPlaceKey(part.place)}`)) continue;
       deps.store.updatePart(part.partId, { state: "dropped", uses: 0, reason: `no caller is left in ${placeWords(part.place)} at promotion ${short(context.promotion)}` });
       changed.push(plan.planId);
     }
-    settlePlan(deps, plan.planId);
+    await settlePlan(deps, plan.planId);
   }
   return changed;
 }
@@ -567,8 +597,10 @@ export async function rewritesReported(deps: MigrationDeps, run: AgentToolRun): 
 }
 
 /**
- * Opens a feature from main for Penguin's own work and records its fork; an existing feature is kept.
- * Its opening is a signed `open_feature` record authored by Penguin.
+ * Opens a feature from main for Penguin's own work and records its fork; an existing feature keeps its
+ * fork and gains the scopes of `area` it lacks. Its opening is a signed `open_feature` record authored
+ * by Penguin, a wider area a signed `declare_area` one. Either goes through the overlap lock, as any
+ * feature's opening and declaration do (PRD 0.5 section 4.2 step 2).
  */
 async function openPenguinFeature(
   deps: MigrationDeps,
@@ -581,50 +613,69 @@ async function openPenguinFeature(
 ): Promise<Feature | undefined> {
   deps.store.rememberFeature(featureId, kind, origin, person);
   const existing = deps.features.get(featureId);
-  if (existing !== undefined) return existing;
+  if (existing !== undefined) {
+    const missing = area.scopes.filter((scope) => !existing.area.scopes.includes(scope));
+    if (missing.length === 0 || existing.state === "landed") return existing;
+    const wider: FeatureArea = { ...existing.area, scopes: [...existing.area.scopes, ...missing].sort() };
+    const record = await deps.sign(deps.features.draftRecord(featureId, "declare_area", { penguin: true }, { area: { ...wider } }));
+    const widened = deps.features.setArea(featureId, wider, record, null);
+    if (widened !== undefined) await deps.checkOverlap(widened);
+    return widened;
+  }
   const record = await deps.sign(
     deps.features.draftRecord(featureId, "open_feature", { penguin: true }, { person, area: { ...area }, opened_by: "penguin", origin, reason }),
   );
   if (!deps.features.insert(featureId, person, area, record)) return deps.features.get(featureId);
   const repo = (await deps.fork?.(featureId)) ?? null;
   if (repo !== null) deps.features.setRepo(featureId, repo);
+  const opened = deps.features.get(featureId);
+  if (opened !== undefined) await deps.checkOverlap(opened);
   deps.notify?.(person);
   return deps.features.get(featureId);
 }
 
-/** A part an agent writes: an edit task for the place's builder or the steward of its scope's DRI. */
-async function routeToTask(deps: MigrationDeps, plan: MigrationPlanView, part: MigrationPart, reason: string, promotion: string): Promise<void> {
-  let target: string;
-  let targetPerson: string;
+/** The fork a part's fix goes into: its running feature's, or the plan's block feature for code on main. */
+async function writeTarget(deps: MigrationDeps, plan: MigrationPlanView, part: MigrationPart): Promise<Feature | undefined> {
   if (part.place.kind === "feature") {
     const feature = deps.features.get(part.place.feature);
-    if (feature === undefined || !RUNNING_STATES.has(feature.state)) {
-      deps.store.updatePart(part.partId, { writer: "task", reason: `feature ${part.place.feature} no longer runs`, state: "dropped" });
-      return;
-    }
-    target = feature.id;
-    targetPerson = feature.personId;
-  } else {
-    // Code on main is written in the plan's own block feature, which Penguin opens from main.
-    const block = await openPenguinFeature(
-      deps,
-      plan.block,
-      "block",
-      plan.feature,
-      plan.owner,
-      { scopes: [part.place.scope], paths: [], contracts: [] },
-      `the block of migration plan ${plan.planId}`,
-    );
-    if (block === undefined) return;
-    target = block.id;
-    targetPerson = plan.owner;
+    return feature !== undefined && RUNNING_STATES.has(feature.state) ? feature : undefined;
   }
+  // Code on main is written in the plan's own block feature, which Penguin opens from main.
+  return openPenguinFeature(
+    deps,
+    plan.block,
+    "block",
+    plan.feature,
+    plan.owner,
+    { scopes: [part.place.scope], paths: [], contracts: [] },
+    `the block of migration plan ${plan.planId}`,
+  );
+}
+
+/**
+ * A part an agent writes: an edit task for the place's builder or the steward of its scope's DRI.
+ * `failing` lists the failing checks of a rule-written part's trial, attached to the task.
+ */
+async function routeToTask(
+  deps: MigrationDeps,
+  plan: MigrationPlanView,
+  part: MigrationPart,
+  reason: string,
+  promotion: string,
+  failing: readonly string[] = [],
+): Promise<void> {
+  const target = await writeTarget(deps, plan, part);
+  if (target === undefined) {
+    if (part.place.kind === "feature") deps.store.updatePart(part.partId, { writer: "task", reason: `feature ${part.place.feature} no longer runs`, state: "dropped" });
+    return;
+  }
+  const targetPerson = part.place.kind === "feature" ? target.personId : plan.owner;
   const scope = part.place.kind === "scope" ? part.place.scope : null;
   const source: EditSource = {
     key: `migrate:${part.partId}`,
     kind: "migration",
     feature: plan.feature,
-    target,
+    target: target.id,
     targetPerson,
     places: part.files.map((path) => (scope === null ? { path } : { path, scope })),
     instructions:
@@ -632,18 +683,23 @@ async function routeToTask(deps: MigrationDeps, plan: MigrationPlanView, part: M
       `${plural(part.uses, "use")} in ${part.files.join(", ")} as counted after promotion ${short(promotion)}. ` +
       `Call each replacement get_work lists under the split's retiring symbols, keep the behaviour, and report the change as a checkpoint. ${reason}.`,
     verifier: "Penguin's retiring-calls check finds no use of a retiring symbol in these files, and the part's trial runs the scope's tests on the merged tree.",
-    evidence: part.files,
+    evidence: [...failing, ...part.files],
     ref: { plan: plan.planId, part: part.partId },
   };
   deps.store.updatePart(part.partId, { writer: "task", reason, state: "task" });
   await deps.openTask(source, stewardsFor(deps.store));
 }
 
-/** The trial of a runner-written part: its patch applied to its place's target, merged with main at the count. */
+/**
+ * The trial of a runner-written part: its patch applied to its place's target, merged with main at the
+ * count. It carries no form: a rule-written part needs none, so each of its scopes gets the
+ * side-by-side run alone in the same trial.
+ */
 function queueMigrationTrial(deps: MigrationDeps, plan: MigrationPlanView, part: MigrationPart): StoredPartTrial | undefined {
   if (part.patch === null || part.targetSha === null) return undefined;
   const target =
     part.place.kind === "scope" ? { id: "main", repo: "base", sha: part.targetSha } : { id: part.place.feature, repo: `feature-${part.place.feature}`, sha: part.targetSha };
+  const scopes = [...part.scopes].sort();
   return deps.trials.queue(
     {
       feature: plan.block,
@@ -654,8 +710,9 @@ function queueMigrationTrial(deps: MigrationDeps, plan: MigrationPlanView, part:
       checkpoint: plan.promotion,
       target,
       fix: { kind: "patch", patch: part.patch },
-      commandIds: [...part.scopes].sort().map((scope) => `test:${scope}`),
-      reviews: trialForms(deps.reviews.list(plan.block), part.scopes, plan.promotion).map((review) => ({ reviewId: review.id, scope: review.scopeId, form: review.form })),
+      commandIds: scopes.map((scope) => `test:${scope}`),
+      reviews: [],
+      sideBySide: scopes,
     },
     part.scopes,
   );
@@ -686,32 +743,71 @@ function reasonWords(reason: PartRoutingReason): string {
 }
 
 /**
- * A part trial reported (part-trial.ts): the checks of PRD 4.3 on a migration part's trial. Penguin
- * approves a part whose checks are clean; a part that fails one goes to its owner in person; a part
- * that waits only for its scopes' forms asks the steward of each scope's DRI for one. Answers the
- * part's new state, or undefined for a trial of another kind of plan.
+ * The protected invariants the trial's formless side-by-side runs show differing, as routing reasons.
+ * The project's invariants say which are protected. `reviewId` is 0: no form is involved.
+ */
+function protectedDifferences(trial: StoredPartTrial, invariants: readonly InvariantView[]): PartRoutingReason[] {
+  return (trial.report?.sideBySide ?? []).flatMap((run) =>
+    reviewExceptions(
+      null,
+      invariants.filter((invariant) => invariant.scopeId === run.scope),
+      run.record,
+    ).flatMap((exception): PartRoutingReason[] =>
+      exception.kind === "protected_difference"
+        ? [{ kind: "protected_difference", scope: exception.scope, invariant: exception.invariant, contract: exception.contract, differing: exception.differing, reviewId: 0 }]
+        : [],
+    ),
+  );
+}
+
+/** The failing checks of a trial as evidence lines: each reason, each failing test and each differing input. */
+function failingChecks(trial: StoredPartTrial, reasons: readonly PartRoutingReason[]): string[] {
+  const lines = reasons.map(reasonWords);
+  for (const test of trial.report?.tests ?? []) {
+    if (test.status === "passed") continue;
+    lines.push(...(test.breaks.length > 0 ? test.breaks.map((name) => `${test.commandId} fails ${name}`) : [`${test.commandId} ${test.status}: ${test.reason ?? "no test named"}`]));
+  }
+  const protectedOnes = new Set(reasons.flatMap((reason) => (reason.kind === "protected_difference" ? [`${reason.scope}\0${reason.contract}`] : [])));
+  for (const run of trial.report?.sideBySide ?? []) {
+    for (const set of run.record.sets) {
+      if (!protectedOnes.has(`${run.scope}\0${set.contract}`)) continue;
+      for (const difference of set.differing.slice(0, 5)) {
+        lines.push(`${set.contract} ${difference.name}: main ${JSON.stringify(difference.main)}, patched ${JSON.stringify(difference.fork)}`);
+      }
+    }
+  }
+  return lines;
+}
+
+/**
+ * A part trial reported (part-trial.ts): the checks of PRD 4.3 on a rule-written migration part's
+ * trial, read by `ruleWrittenRouting` (PRD 0.5 section 4.2 step 2). The part needs no review form.
+ * Penguin approves it when its tests pass and no protected invariant differs, and asks the check
+ * runner to write it into its target fork. A failing trial makes it an edit task for the target's
+ * builder or steward with the failing checks attached. A check no edit settles sends it to its owner
+ * in person. Answers the part's new state, or undefined for a trial of another kind of plan.
  */
 export async function migrationTrialReported(deps: MigrationDeps, trial: StoredPartTrial): Promise<MigrationPartState | undefined> {
   if (!isMigrationPlanId(trial.planId)) return undefined;
   const plan = deps.store.plan(trial.planId);
   const part = deps.store.part(trial.partId);
-  if (plan === undefined || part === undefined || part.state !== "trial" && part.state !== "waiting_review") return undefined;
+  if (plan === undefined || part === undefined || part.state !== "trial") return undefined;
   const evidence = trialEvidence(deps.trials, deps.reviews, plan.block, { partId: part.partId, revision: 1 });
-  if (evidence === undefined) return undefined;
+  if (evidence === undefined || evidence.trialId !== trial.id) return undefined;
   const scopeMap = await deps.scopeMap();
   const parsed = part.patch === null ? null : parsePatch(part.patch);
   const files = parsed?.ok === true ? parsed.files.map((file) => ({ ...file, scopeId: scopeForPath(scopeMap, file.path) ?? null })) : [];
   const repo = part.place.kind === "scope" ? "base" : `feature-${part.place.feature}`;
   const diff: PlanPart["diff"] = { source: "patch", repo, ref: `${repo}@${part.targetSha}+migration`, commit: null, base: part.targetSha, patch: part.patch, files, truncated: false, outside: [] };
-  const reviews = trialReviews(deps.reviews.list(plan.block).map(reviewResult), { state: "recorded", evidence });
   const routing = partRouting(
     { scopes: part.scopes, diff, breaks: [], tests: evidence.tests, revision: 1, reversal: null },
-    { reviews, checkpoint: plan.promotion, adminMode: deps.adminMode },
+    { reviews: [], checkpoint: plan.promotion, adminMode: deps.adminMode },
     protectedLookup(scopeMap),
   );
-  const state: MigrationPartState = !routing.inPerson ? "approved" : needsPerson(routing) ? "in_person" : "waiting_review";
-  const reason = routing.reasons.length === 0 ? "every check is clean on the trial tree" : routing.reasons.map(reasonWords).join("; ");
-  if (state === part.state && reason === part.reason) return state;
+  const decided = ruleWrittenRouting([...routing.reasons, ...protectedDifferences(trial, await deps.invariants())]);
+  const words = decided.reasons.map(reasonWords);
+  const state: MigrationPartState = decided.route === "approve" ? "approved" : decided.route === "task" ? "task" : "in_person";
+  const reason = words.length === 0 ? "the trial's tests pass and no protected invariant differs; a rule-written part needs no review form" : words.join("; ");
   const record = await deps.sign(
     deps.features.draftRecord(plan.feature, "migration_part_decided", { penguin: true }, {
       plan: plan.planId,
@@ -719,44 +815,167 @@ export async function migrationTrialReported(deps: MigrationDeps, trial: StoredP
       trial: trial.id,
       decision: state,
       approved_by: state === "approved" ? "penguin" : null,
-      reasons: routing.reasons.slice(0, 20).map(reasonWords),
+      reasons: words.slice(0, 20),
     }),
   );
   deps.features.addRecord(record);
-  deps.store.updatePart(part.partId, { state, reason, approvedBy: state === "approved" ? "penguin" : null });
-  if (state === "waiting_review") await askReviews(deps, plan, part, routing.reasons);
-  settlePlan(deps, plan.planId);
-  deps.notify?.(plan.owner);
-  return state;
-}
-
-/** Asks the steward of each scope's DRI for the form a part waits on. */
-async function askReviews(deps: MigrationDeps, plan: MigrationPlanView, part: MigrationPart, reasons: readonly PartRoutingReason[]): Promise<void> {
-  const scopes = [...new Set(reasons.flatMap((reason) => (reason.kind === "review" ? [reason.scope] : [])))];
-  for (const scope of scopes) {
-    await deps.openTask(
-      {
-        key: `migrate-review:${part.partId}:${scope}`,
-        kind: "review",
-        feature: plan.block,
-        target: plan.block,
-        targetPerson: plan.owner,
-        places: [{ scope }],
-        instructions: `Review migration part ${part.partId} of feature ${plan.feature}'s split for scope ${scope}: fill in the review form for the scope's invariants on feature ${plan.block} and send it with submit_review.`,
-        verifier: "The part's trial runs the review harness on the form on the tree that holds the runner's patch.",
-        ref: { plan: plan.planId, part: part.partId, scope },
-      },
-      stewardsFor(deps.store),
-    );
+  if (state === "approved") {
+    deps.store.updatePart(part.partId, { state, reason, approvedBy: "penguin" });
+    const target = await writeTarget(deps, plan, part);
+    if (target !== undefined) deps.grants.open(plan.feature, plan.planId, { partId: part.partId, revision: 1 }, target.id, "runner");
+  } else if (state === "task") {
+    await routeToTask(deps, plan, part, `the rules' patch failed its trial: ${reason}`, plan.promotion, failingChecks(trial, decided.reasons));
+  } else {
+    deps.store.updatePart(part.partId, { state, reason, approvedBy: null });
   }
+  await settlePlan(deps, plan.planId);
+  deps.notify?.(plan.owner);
+  return deps.store.part(part.partId)?.state;
 }
 
-/** A plan whose live parts are all approved is `approved`; one with a live part waiting is `open`. */
-function settlePlan(deps: MigrationDeps, planId: string): void {
+/** Why an edit task's run counts as failed: it failed, timed out or stopped reporting. */
+const FAILED_RUNS: ReadonlySet<string> = new Set(["run_failed", "run_timeout", "lease_expired"]);
+
+/** A part's fix is in its target fork, under a signed `migration_part_written` record. */
+async function markWritten(
+  deps: MigrationDeps,
+  plan: MigrationPlanView,
+  part: MigrationPart,
+  written: { readonly by: string; readonly commit: string | null; readonly task?: number; readonly fixWrite?: string },
+): Promise<void> {
+  const record = await deps.sign(
+    deps.features.draftRecord(plan.feature, "migration_part_written", { penguin: true }, {
+      plan: plan.planId,
+      part: part.partId,
+      place: part.place,
+      written_by: written.by,
+      commit: written.commit,
+      task: written.task ?? null,
+      fix_write: written.fixWrite ?? null,
+    }),
+  );
+  deps.features.addRecord(record);
+  deps.store.updatePart(part.partId, { state: "written" });
+  await settlePlan(deps, plan.planId);
+  deps.notify?.(plan.owner);
+}
+
+/**
+ * The edit tasks of migration parts moved on (edit-work.ts): a task done with a kept commit writes its
+ * part; a task whose run failed, timed out or stopped reporting sends its part to a person under a
+ * signed `migration_part_decided` record. Answers the plans changed.
+ */
+export async function migrationTasksSettled(deps: MigrationDeps): Promise<string[]> {
+  const changed = new Set<string>();
+  for (const part of deps.store.partsIn("task")) {
+    const tasks = deps.tasks.forSource(`migrate:${part.partId}`);
+    const done = tasks.find((task) => task.state === "done");
+    const failed = tasks.find((task) => task.state === "asked" && FAILED_RUNS.has(task.askReason ?? ""));
+    const plan = deps.store.plan(part.planId);
+    if (plan === undefined || (done === undefined && failed === undefined)) continue;
+    changed.add(plan.planId);
+    if (done !== undefined) {
+      await markWritten(deps, plan, part, { by: done.handle ?? done.person, commit: done.commit, task: done.id });
+      continue;
+    }
+    const task = failed as EditTask;
+    const reason = `the edit task for ${task.handle ?? task.person} failed (${task.askReason}): ${task.outcome ?? "no outcome reported"}`;
+    const record = await deps.sign(
+      deps.features.draftRecord(plan.feature, "migration_part_decided", { penguin: true }, {
+        plan: plan.planId,
+        part: part.partId,
+        task: task.id,
+        decision: "in_person",
+        approved_by: null,
+        reasons: [reason],
+      }),
+    );
+    deps.features.addRecord(record);
+    deps.store.updatePart(part.partId, { state: "in_person", reason });
+    await settlePlan(deps, plan.planId);
+    deps.notify?.(plan.owner);
+  }
+  return [...changed];
+}
+
+const refused = (reason: FixRejection["reason"], message: string): FixRejection => ({ status: "rejected", reason, message });
+
+/**
+ * What the check runner's fix writes read and tell about approved migration parts (fix-write.ts): the
+ * part's patch and its target fork, a target that moved past the patch, and a kept commit.
+ */
+export function migrationWrites(deps: MigrationDeps): MigrationWrites {
+  return {
+    approved: async (partId): Promise<ApprovedWrite | FixRejection> => {
+      const part = deps.store.part(partId);
+      const plan = part === undefined ? undefined : deps.store.plan(part.planId);
+      if (part === undefined || plan === undefined) return refused("not_found", `no migration part ${partId}`);
+      if (part.state !== "approved" || part.patch === null || part.targetSha === null) {
+        return refused("not_approved", `migration part ${partId} is ${part.state.replaceAll("_", " ")}, not approved; nothing is written`);
+      }
+      const target = deps.features.get(part.place.kind === "feature" ? part.place.feature : plan.block);
+      if (target?.repo == null) return refused("not_found", `feature ${target?.id ?? plan.block} has no fork`);
+      if (target.state === "landed") return refused("conflict", `feature ${target.id} has landed; its fork is read-only`);
+      const parsed = parsePatch(part.patch);
+      if (!parsed.ok) return refused("invalid", `the rules' patch no longer parses: ${parsed.message}`);
+      const scopeMap = await deps.scopeMap();
+      const repo = part.place.kind === "scope" ? "base" : `feature-${part.place.feature}`;
+      return {
+        featureId: plan.feature,
+        plan: { planId: plan.planId, proposedBy: "penguin", person: plan.owner },
+        part: {
+          partId,
+          revision: 1,
+          kind: "mechanical",
+          scopes: part.scopes,
+          approvedBy: "penguin",
+          diff: { files: parsed.files.map((file) => ({ ...file, scopeId: scopeForPath(scopeMap, file.path) ?? null })), ref: `${repo}@${part.targetSha}+migration` },
+        },
+        patch: part.patch,
+        base: part.targetSha,
+        target: target as Feature & { readonly repo: string },
+      };
+    },
+    headMoved: async (partId, head, problem) => {
+      const part = deps.store.part(partId);
+      const plan = part === undefined ? undefined : deps.store.plan(part.planId);
+      if (part === undefined || plan === undefined || part.state !== "approved") return;
+      const reason = `the rules' patch no longer applies at the target fork's head ${short(head)}: ${problem}`;
+      await routeToTask(deps, plan, part, reason, plan.promotion, [reason]);
+      await settlePlan(deps, plan.planId);
+    },
+    written: async (partId, commit, recordId) => {
+      const part = deps.store.part(partId);
+      const plan = part === undefined ? undefined : deps.store.plan(part.planId);
+      if (part === undefined || plan === undefined || part.state !== "approved") return;
+      await markWritten(deps, plan, part, { by: "penguin", commit, fixWrite: recordId });
+    },
+  };
+}
+
+/**
+ * Settles a plan from its live parts: `approved` when every one is approved or written, `open` while
+ * one waits. A plan with no code on main whose live parts are all written is `closed` under a signed
+ * `migration_closed` record: every fix is in its running feature's fork, and nothing is promoted.
+ */
+async function settlePlan(deps: MigrationDeps, planId: string): Promise<void> {
   const plan = deps.store.plan(planId);
-  if (plan === undefined || plan.state === "landed") return;
+  if (plan === undefined || plan.state === "landed" || plan.state === "closed") return;
   const live = plan.parts.filter((part) => LIVE.includes(part.state));
-  const state: MigrationPlanState = live.length > 0 && live.every((part) => part.state === "approved") ? "approved" : "open";
+  if (live.length > 0 && live.every((part) => part.state === "written") && live.every((part) => part.place.kind === "feature")) {
+    const record = await deps.sign(
+      deps.features.draftRecord(plan.feature, "migration_closed", { penguin: true }, {
+        plan: plan.planId,
+        parts: live.map((part) => ({ part: part.partId, place: part.place })),
+        reason: "every place is a running feature and every part is written into its fork; there is nothing to promote",
+      }),
+    );
+    deps.features.addRecord(record);
+    deps.store.setPlan(planId, "closed", undefined, record.record_id);
+    deps.notify?.(plan.owner);
+    return;
+  }
+  const state: MigrationPlanState = live.length > 0 && live.every((part) => part.state === "approved" || part.state === "written") ? "approved" : "open";
   if (state !== plan.state) deps.store.setPlan(planId, state);
 }
 
@@ -776,7 +995,7 @@ export async function migrationBlockLanded(deps: MigrationDeps, featureId: strin
     }),
   );
   deps.features.addRecord(record);
-  for (const part of plan.parts) if (part.state === "approved") deps.store.updatePart(part.partId, { state: "landed" });
+  for (const part of plan.parts) if (part.state === "approved" || part.state === "written") deps.store.updatePart(part.partId, { state: "landed" });
   deps.store.setPlan(plan.planId, "landed", promotion, record.record_id);
   deps.notify?.(plan.owner);
   return plan.planId;

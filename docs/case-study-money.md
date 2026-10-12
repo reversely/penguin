@@ -212,6 +212,11 @@ runs it on the fixture.
 | `money-messaging-mobile` | 59 | 10 | 25 | 10 | 15 |
 | Noor's pagination checkpoint | 59 + 3 | 10 | 26 | 10 | 16 |
 
+| After | Approved by Penguin | Edit tasks from a failed trial | Edit tasks in all | In person |
+|---|---|---|---|---|
+| `money-messaging-mobile` | 1 | 9 | 24 | 0 |
+| Noor's pagination checkpoint | 1 | 9 | 25 | 0 |
+
 The migrate waves moved the callers on main of nine scopes, so those parts are dropped and Lena's
 plan is left with none. After the last wave, the 25 live parts cover all 59 callers:
 
@@ -232,10 +237,17 @@ plan is left with none. After the last wave, the 25 live parts cover all 59 call
   places, all running features' own changes. The other 15 are edit tasks: 11 places where the rules
   leave uses, 3 where they rewrite nothing and the orders scope, whose `line_total()` and
   `order_total()` have no rule.
-- **Approved.** Penguin approves none. 9 of the 10 runner parts fail their scope's tests on the
-  trial tree. In `store-league` the `display` rule turns `money.display(amount)` into
-  `amount.display()`, but `amount` is still a float there. Those 9 go to their owners in person.
-  Kofi's `instant-payouts` passes `test:payouts` and waits for the payouts review form.
+- **Approved.** A part the rules write in full needs no review form. Its trial runs its scope's
+  tests and the scope's side-by-side run over its declared examples. Penguin approves 1 of the 10:
+  Kofi's `instant-payouts` passes `test:payouts` with no protected difference. The check runner's
+  write of it into Kofi's fork is queued.
+- **Edit tasks from a failed trial.** The other 9 fail their scope's tests on the trial tree. In
+  `store-league` the `display` rule turns `money.display(amount)` into `amount.display()`, but
+  `amount` is still a float there. Each of the 9 becomes a `migration` edit task for the feature's
+  builder with the failing test attached. With the 15 parts the rules do not write in full, 24 of
+  the 25 parts are edit tasks.
+- **People.** No part reaches a person. A part reaches one only when its edit task's run fails or a
+  check no edit settles fails, such as a protected path.
 - **A later caller.** Noor's pagination checkpoint adds 3 uses. Its retiring-calls check adds the
   place to Noor's open plan with one `migration_joined` record. The rules leave 2 of the uses, so
   it is an edit task for the pagination feature's builder.

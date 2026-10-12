@@ -606,6 +606,32 @@ const OUTCOME: JsonSchema = {
 const NAME = text(REVIEW_LIMITS.nameLength, 1);
 const INPUTS_PER_SET = REVIEW_LIMITS.examplesPerFile + REVIEW_LIMITS.riskyInputs;
 
+/** JSON Schema (draft 2020-12) of one side-by-side run as the runner reports it. */
+export const SIDE_BY_SIDE_RECORD_SCHEMA: JsonSchema = object({
+  schemaVersion: { const: REVIEW_SCHEMA_VERSION },
+  tool: { const: SIDE_BY_SIDE_TOOL },
+  commandId: { const: SIDE_BY_SIDE_COMMAND_ID },
+  base: COMMIT,
+  fork: COMMIT,
+  scope: ID,
+  sets: array(
+    object({
+      source: { type: "string", enum: ["examples", "risky-inputs"] },
+      file: { anyOf: [{ type: "null" }, text(1_024, 1)] },
+      contract: text(512, 1),
+      invariants: array(ID, 1_000),
+      inputs: array(NAME, INPUTS_PER_SET),
+      differing: array(object({ name: NAME, args: { type: "object" }, main: OUTCOME, fork: OUTCOME }), INPUTS_PER_SET),
+      invalid: array(object({ name: NAME, side: { type: "string", enum: ["request", "main", "fork", "both"] }, reason: LINE }), INPUTS_PER_SET),
+      mainMs: MS,
+      forkMs: MS,
+    }),
+    1_000,
+  ),
+  totals: object({ inputs: COUNT, differing: COUNT, invalid: COUNT }),
+  timings: object({ mainMs: MS, forkMs: MS, totalMs: MS }),
+});
+
 /** JSON Schema (draft 2020-12) of a review record as the runner reports it. */
 export const REVIEW_RECORD_SCHEMA: JsonSchema = {
   $schema: "https://json-schema.org/draft/2020-12/schema",
@@ -622,30 +648,7 @@ export const REVIEW_RECORD_SCHEMA: JsonSchema = {
     ),
     invariants: array(object({ id: ID, scopeId: ID, statement: text(500), protected: { type: "boolean" } }), 1_000),
     storedShapes: { anyOf: [{ type: "null" }, array(object({ symbol: LINE, path: LINE, scope: { anyOf: [{ type: "null" }, ID] } }, ["scope"]), 2_000)] },
-    sideBySide: object({
-      schemaVersion: { const: REVIEW_SCHEMA_VERSION },
-      tool: { const: SIDE_BY_SIDE_TOOL },
-      commandId: { const: SIDE_BY_SIDE_COMMAND_ID },
-      base: COMMIT,
-      fork: COMMIT,
-      scope: ID,
-      sets: array(
-        object({
-          source: { type: "string", enum: ["examples", "risky-inputs"] },
-          file: { anyOf: [{ type: "null" }, text(1_024, 1)] },
-          contract: text(512, 1),
-          invariants: array(ID, 1_000),
-          inputs: array(NAME, INPUTS_PER_SET),
-          differing: array(object({ name: NAME, args: { type: "object" }, main: OUTCOME, fork: OUTCOME }), INPUTS_PER_SET),
-          invalid: array(object({ name: NAME, side: { type: "string", enum: ["request", "main", "fork", "both"] }, reason: LINE }), INPUTS_PER_SET),
-          mainMs: MS,
-          forkMs: MS,
-        }),
-        1_000,
-      ),
-      totals: object({ inputs: COUNT, differing: COUNT, invalid: COUNT }),
-      timings: object({ mainMs: MS, forkMs: MS, totalMs: MS }),
-    }),
+    sideBySide: SIDE_BY_SIDE_RECORD_SCHEMA,
     exceptions: array(
       {
         oneOf: [
@@ -685,6 +688,13 @@ export function boundReviewRecord(record: ReviewRecord): ReviewRecord {
   const limit = REVIEW_LIMITS.recordedPerSet;
   const sets = record.sideBySide.sets.map((set) => ({ ...set, differing: set.differing.slice(0, limit), invalid: set.invalid.slice(0, limit) }));
   return { ...record, sideBySide: { ...record.sideBySide, sets } };
+}
+
+/** A side-by-side run reported on its own, bound the way `boundReviewRecord` bounds the one in a review. */
+export function boundSideBySideRecord(record: SideBySideRecord): SideBySideRecord {
+  if (new TextEncoder().encode(JSON.stringify(record)).length <= REVIEW_LIMITS.recordBytes) return record;
+  const limit = REVIEW_LIMITS.recordedPerSet;
+  return { ...record, sets: record.sets.map((set) => ({ ...set, differing: set.differing.slice(0, limit), invalid: set.invalid.slice(0, limit) })) };
 }
 
 const outcomeText = (outcome: SideBySideOutcome): string =>
