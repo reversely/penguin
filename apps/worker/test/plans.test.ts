@@ -1,4 +1,4 @@
-// propose_plan (#89) without the network: an agent session calls the real MCP tool, which reaches the
+// propose_plan (#89) and revise_plan_part (#90) without the network: an agent session calls the real MCP tool, which reaches the
 // Worker's feature module and the ProjectAgent's real plan code. A Git repo on disk stands in for the
 // feature forks, read through the binding's object reads, and the check runner's report is the test's
 // own. Text from the repository and the run (the commit subject, a docstring, an assertion line, the
@@ -13,6 +13,8 @@ import { parseScopeMap } from "@penguin/scope-map";
 
 import { mcpFeatures, type FeatureDirectory, type FeaturePorts } from "../src/features.ts";
 import { RepoNames } from "../src/repos.ts";
+import { PlanRouteStore, requestPlanChange, revisePlanPart, type PlanApprovalDeps } from "../../../services/project-agent/src/plan-approval.ts";
+import { gitReader } from "../../../services/project-agent/test/git-reader.ts";
 import { GitRepo } from "../../../services/project-agent/test/issues-repo.ts";
 import { PlanProject } from "../../../services/project-agent/test/plan-project.ts";
 
@@ -28,7 +30,7 @@ const names = new RepoNames("t-");
 
 let nextId = 0;
 
-describe("the propose_plan tool", () => {
+describe("the propose_plan and revise_plan_part tools", () => {
   let repo: GitRepo;
   let project: PlanProject;
   let ports: FeaturePorts;
@@ -57,6 +59,19 @@ describe("the propose_plan tool", () => {
       features: () => project.features.list(),
       submitReview: unused,
       proposePlan: (owner, sessionId, input) => project.propose(owner, sessionId, input.feature as string, input.parts),
+      revisePlanPart: (owner, sessionId, input) =>
+        revisePlanPart(
+          {
+            ...approvalDeps(),
+            facts: project.facts,
+            scopeMap: async () => scopeMap,
+            readRepo: async (_repo, read) => read(gitReader(repo.dir)),
+            heartbeat: (caller, session) => project.heartbeat(caller, session),
+          },
+          owner,
+          sessionId,
+          input,
+        ),
     } as FeatureDirectory;
     ports = {
       directory: () => directory,
@@ -67,11 +82,23 @@ describe("the propose_plan tool", () => {
     };
   });
 
-  async function call(owner: string, args: unknown): Promise<{ value: any; isError: boolean }> {
+  const routes = () => new PlanRouteStore(project.sql);
+  const approvalDeps = (): PlanApprovalDeps => ({
+    features: project.features,
+    routes: routes(),
+    inbox: project.inbox,
+    keeper: () => project.plans,
+    delegates: async () => new Map(),
+    sign: (draft) => project.sign(draft),
+    roundLimit: 3,
+    notify: () => undefined,
+  });
+
+  async function call(owner: string, args: unknown, tool = "propose_plan"): Promise<{ value: any; isError: boolean }> {
     const request = new Request("https://penguin.test/mcp", {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: ++nextId, method: "tools/call", params: { name: "propose_plan", arguments: args } }),
+      body: JSON.stringify({ jsonrpc: "2.0", id: ++nextId, method: "tools/call", params: { name: tool, arguments: args } }),
     });
     const repos = { issues: names.issues, base: names.base, ownerFork: names.owner(owner) };
     const response = await serveMcp(request, owner, () => ({}) as McpProject, repos, mcpFeatures(ports, owner));
@@ -93,13 +120,8 @@ describe("the propose_plan tool", () => {
   const fixPatch = "--- a/tax/rounding.py\n+++ b/tax/rounding.py\n@@ -1 +1 @@\n-total = price(line)\n+total = price_minor(line)\n";
   const parts = () => [{ place: { feature: "tax-rounding" }, patch: { base: shas.main, diff: fixPatch }, note: `${MARKUP} ${PROMPT}` }];
 
-  test("answers what is missing, then stores the plan; repository text stays inside personWritten", async () => {
-    const first = await call("ines", { sessionId: "s-ines", feature: "money-minor", parts: parts() });
-    assert.equal(first.isError, true);
-    assert.equal(first.value.status, "missing");
-    assert.deepEqual(first.value.missing.map((item: { code: string }) => item.code), ["waiting_for_runner"]);
-    assert.equal(first.value.facts.personWritten.change, `Rename price ${MARKUP} ${PROMPT}`);
-
+  /** The check runner's report of the facts run the first proposal asked for. */
+  function recordFacts(): void {
     const [request] = project.facts.pending();
     const use = { path: "tax/rounding.py", line: 1, kind: "call" as const, symbol: "shared.money.api.price", name: "price", scope: "tax" };
     const report: PlanFactsReport = {
@@ -151,7 +173,16 @@ describe("the propose_plan tool", () => {
       durationMs: 2,
     };
     assert.equal(project.facts.record(request?.runId as string, "runner", report).status, "recorded");
+  }
 
+  test("answers what is missing, then stores the plan; repository text stays inside personWritten", async () => {
+    const first = await call("ines", { sessionId: "s-ines", feature: "money-minor", parts: parts() });
+    assert.equal(first.isError, true);
+    assert.equal(first.value.status, "missing");
+    assert.deepEqual(first.value.missing.map((item: { code: string }) => item.code), ["waiting_for_runner"]);
+    assert.equal(first.value.facts.personWritten.change, `Rename price ${MARKUP} ${PROMPT}`);
+
+    recordFacts();
     const stored = await call("ines", { sessionId: "s-ines", feature: "money-minor", parts: parts() });
     assert.equal(stored.isError, false, JSON.stringify(stored.value));
     assert.equal(stored.value.status, "stored");
@@ -166,6 +197,28 @@ describe("the propose_plan tool", () => {
     for (const text of [MARKUP, PROMPT, "<img", "price(line)"]) assert.equal(own.includes(text), false, text);
     // The facts name the tool each came from.
     assert.deepEqual(stored.value.facts.sources.map((source: { fact: string }) => source.fact).slice(0, 2), ["change", "contract_diff"]);
+  });
+
+  test("the originating agent revises a part its author asked to change; the author's words stay inside personWritten", async () => {
+    await call("ines", { sessionId: "s-ines", feature: "money-minor", parts: parts() });
+    recordFacts();
+    assert.equal((await call("ines", { sessionId: "s-ines", feature: "money-minor", parts: parts() })).value.status, "stored");
+    const part = { feature: "money-minor", part: "money-minor/v1#1", revision: 1 };
+    const asked = await requestPlanChange(approvalDeps(), "rahul", { ...part, text: `${MARKUP} ${PROMPT}` });
+    assert.equal(asked.status, "ok", JSON.stringify(asked));
+    // The tools offer no way to approve: only a person decides, on the dashboard.
+    const revisedPatch = "--- a/tax/rounding.py\n+++ b/tax/rounding.py\n@@ -1 +1 @@\n-total = price(line)\n+total = round(price_minor(line))\n";
+    const args = { sessionId: "s-ines", ...part, patch: { base: shas.main, diff: revisedPatch } };
+    assert.equal((await call("ines", { ...args, diff: { commit: shas.fix } }, "revise_plan_part")).isError, true);
+    assert.equal((await call("rahul", { ...args, sessionId: "s-rahul" }, "revise_plan_part")).value.error, "forbidden");
+    const revised = await call("ines", args, "revise_plan_part");
+    assert.equal(revised.isError, false, JSON.stringify(revised.value));
+    assert.deepEqual([revised.value.status, revised.value.part.revision, revised.value.part.approvalState, revised.value.part.kind], ["revised", 2, "pending", "behavioural"]);
+    assert.equal(revised.value.part.personWritten.changeRequest.text, `${MARKUP} ${PROMPT}`);
+    const own = JSON.stringify(penguinsOwn(revised.value));
+    for (const text of [MARKUP, PROMPT, "<img"]) assert.equal(own.includes(text), false, text);
+    // A second revision of the same request is refused: the part waits on its author again.
+    assert.equal((await call("ines", args, "revise_plan_part")).value.error, "conflict");
   });
 
   test("another person's session is refused, and malformed parts never reach Penguin", async () => {

@@ -679,6 +679,9 @@ describe("MCP: report_checkpoint", () => {
       newOverlaps: [],
       locksSettled: [],
       toolResults: [],
+      newPlanParts: [],
+      planDecisions: [],
+      reviewResults: [],
     });
     assert.deepEqual(project.commitReads, [[`${PREFIX}owner-jun`, CHECKPOINT]]);
     assert.deepEqual(project.forks.get("jun"), {

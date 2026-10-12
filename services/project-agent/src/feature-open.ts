@@ -275,6 +275,7 @@ export type FeatureCheckpointOutcome =
       readonly overlaps: readonly OverlapRef[];
       readonly settled: Delivery["settled"];
       readonly toolResults: Delivery["toolResults"];
+      readonly planNotices: Delivery["planNotices"];
       readonly durationMs: number;
     })
   | FeatureRejection;
@@ -283,8 +284,8 @@ export interface FeatureCheckpointDeps extends FeatureDeps {
   /** True when the commit is in the Artifacts repo (the binding's `readCommit` finds it). */
   readonly commitExists: (repo: string, sha: string) => Promise<boolean>;
   readonly readChange: CheckpointReader;
-  /** The session's safe checkpoint: the fix tasks, threads, overlapping starts and tool results it delivers (SessionStore.checkpoint). */
-  readonly deliver: (caller: string, sessionId: string) => Pick<Delivery, "delivered" | "threads" | "overlaps" | "settled" | "toolResults"> | undefined;
+  /** The session's safe checkpoint: the fix tasks, threads, overlapping starts, tool results and advance notice it delivers (SessionStore.checkpoint). */
+  readonly deliver: (caller: string, sessionId: string) => Pick<Delivery, "delivered" | "threads" | "overlaps" | "settled" | "toolResults" | "planNotices"> | undefined;
   readonly now?: () => number;
 }
 
@@ -329,9 +330,12 @@ export async function reportFeatureCheckpoint(
     overlaps: delivery?.overlaps ?? [],
     settled: delivery?.settled ?? [],
     toolResults: delivery?.toolResults ?? [],
+    planNotices: delivery?.planNotices ?? NO_PLAN_NOTICES,
     durationMs: now() - started,
   };
 }
+
+const NO_PLAN_NOTICES: Delivery["planNotices"] = { parts: [], decisions: [], reviews: [] };
 
 function addedTo(before: FeatureArea, after: FeatureArea): { scopes: string[]; paths: string[] } {
   const scopes = new Set(before.scopes);

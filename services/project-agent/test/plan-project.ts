@@ -11,7 +11,7 @@ import { IdentityStore } from "../src/identity-store.ts";
 import { OverlapStore } from "../src/overlap-lock.ts";
 import { PlanFactsStore } from "../src/plan-facts.ts";
 import { PlanStore } from "../src/plan-store.ts";
-import { proposePlan, type ProposePlanOutcome } from "../src/propose-plan.ts";
+import { proposePlan, type ProposePlanDeps, type ProposePlanOutcome } from "../src/propose-plan.ts";
 import type { Session, SessionOutcome } from "../src/session-store.ts";
 import { gitReader } from "./git-reader.ts";
 import { sqlite } from "./issues-repo.ts";
@@ -29,6 +29,8 @@ export class PlanProject {
   /** Each repo the plan read, and every binding call through it. */
   readonly reads: { readonly repo: string; readonly calls: string[] }[] = [];
   breakLimit: number | undefined = 10;
+  /** Sends a stored plan to its authors, as the ProjectAgent does (plan-approval.ts); none when unset. */
+  announce: ProposePlanDeps["announce"];
   invariants: string | null = null;
   #key: Promise<CryptoKeyPair> = generateSigningKeyPair();
 
@@ -108,6 +110,7 @@ export class PlanProject {
           this.exceptions.push({ person, feature });
           this.inbox.planReturned(person, feature);
         },
+        ...(this.announce === undefined ? {} : { announce: this.announce }),
       },
       caller,
       sessionId,

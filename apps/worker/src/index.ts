@@ -103,6 +103,13 @@ export default {
               const approved = await agent.approveOverlap(owner, featureId, blockedFeatureId, repos);
               return approved.status === "ok" ? { status: "ok", lock: approved.lock } : approved;
             },
+            planParts: async (owner) => agent.planInbox(owner, repos),
+            // The decider is the session's person, named by the dashboard route, never by the body.
+            decidePlanPart: async (owner, { kind, ...decision }) => {
+              const decided =
+                kind === "approve" ? await agent.approvePlanPart(owner, decision, repos) : await agent.requestPlanChange(owner, decision, repos);
+              return decided.status === "ok" ? { status: "ok", part: decided.part, recordId: decided.recordId } : decided;
+            },
             connectLive: (liveRequest, owner) => {
               // The browser cannot name the owner: the header is replaced with the session's.
               const headers = new Headers(liveRequest.headers);

@@ -26,6 +26,15 @@
 // - "plan_returned": a merge plan of the person's feature touched more running features than the
 //   project's break limit, so Penguin returned it to its author (propose-plan.ts, PRD section 7). Its
 //   `issue_id` holds `plan:<feature>`. A later return marks it unread again.
+// - "plan_part": a part of a merge plan touches the person's code and waits for their approval
+//   (plan-approval.ts, PRD 4.3). Its `issue_id` holds `part:<part id>`. Each plan's parts reach every
+//   author at once; a revision marks the item unread again, and an approval or a requested change
+//   takes it away until the part next waits on the person.
+// - "protected_path": a part's fix touches a path the person protects in `penguin/scopes.json`, so
+//   they confirm its lines (PRD section 7). Its `issue_id` holds `part:<part id>`.
+// - "round_limit": the author of a part of the person's plan asked for one change more than the
+//   project's round limit, so the part waits on the person (PRD section 7). Its `issue_id` holds
+//   `part:<part id>`.
 //
 // The person who did the thing gets no "assigned", "mentioned" or "closed" item for it. An identity's
 // operation counts as its owner half's doing, as in IssueIndex.assigningOwner.
@@ -54,6 +63,9 @@ export const INBOX_REASONS = [
   "overlap",
   "review_exception",
   "plan_returned",
+  "plan_part",
+  "protected_path",
+  "round_limit",
 ] as const;
 export type InboxReason = (typeof INBOX_REASONS)[number];
 
@@ -194,6 +206,33 @@ export class InboxStore implements StartRequestListener {
     this.#raise(personId, planRef(featureId), "plan_returned");
   }
 
+  /** Asks `personId` to approve their part `partId` of a merge plan, or to look again at its revision. */
+  planPartAsked(personId: string, partId: string): void {
+    this.#raise(personId, partRef(partId), "plan_part");
+  }
+
+  /** The part no longer waits on `personId`: they decided it, or a newer plan replaced it. */
+  planPartSettled(personId: string, partId: string): void {
+    this.#db.exec(`DELETE FROM InboxItem WHERE person_id = ? AND issue_id = ? AND reason = 'plan_part'`, personId, partRef(partId));
+  }
+
+  /** Asks `personId` to confirm the lines part `partId` writes under a path they protect. */
+  protectedPathTouched(personId: string, partId: string): void {
+    this.#raise(personId, partRef(partId), "protected_path");
+  }
+
+  /** Tells `personId` that part `partId` of their plan went past the round limit. */
+  roundLimitReached(personId: string, partId: string): void {
+    this.#raise(personId, partRef(partId), "round_limit");
+  }
+
+  /** Every item about part `partId`, for every person: a newer plan of its feature replaced it. */
+  partWithdrawn(partId: string): string[] {
+    return this.#db
+      .exec(`DELETE FROM InboxItem WHERE issue_id = ? RETURNING person_id`, partRef(partId))
+      .map((row) => row["person_id"] as string);
+  }
+
   /** The lock was approved or withdrawn, so the request goes. */
   overlapSettled(personId: string, featureId: string, blockedFeatureId: string): void {
     this.#db.exec(
@@ -239,12 +278,22 @@ export class InboxStore implements StartRequestListener {
   }
 }
 
-/** An overlap item's reference: the covering feature and the blocked one. Feature ids hold no "/". */
+/** The reference of a plan part's items; no issue id can take this form. */
+export function partRef(partId: string): string {
+  return `part:${partId}`;
+}
+
+/** The part id of a plan part item's reference, or undefined for any other reference. */
+export function parsePartRef(ref: string): string | undefined {
+  return ref.startsWith("part:") && ref.length > "part:".length ? ref.slice("part:".length) : undefined;
+}
+
 /** The reference of a feature's returned-plan item; no issue id can take this form. */
 export function planRef(featureId: string): string {
   return `plan:${featureId}`;
 }
 
+/** An overlap item's reference: the covering feature and the blocked one. Feature ids hold no "/". */
 export function overlapRef(featureId: string, blockedFeatureId: string): string {
   return `${featureId}/${blockedFeatureId}`;
 }

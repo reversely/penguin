@@ -103,6 +103,23 @@ import type { PlanKeeper } from "./plan-store.ts";
 import type { GitObjectReader } from "./repo-diff.ts";
 import { parseBreakLimit, proposePlan, type ProposePlanInput, type ProposePlanOutcome } from "./propose-plan.ts";
 import { claimToolRuns, recordToolResult, type ToolReportOutcome, type ToolRunClaim } from "./agent-tool-runner.ts";
+import {
+  announcePlan,
+  approvePlanPart,
+  buildPlanInbox,
+  parseRoundLimit,
+  planNoticeSources,
+  PlanRouteStore,
+  planWork,
+  requestPlanChange,
+  revisePlanPart,
+  type ChangeRequestInput,
+  type PartDecisionInput,
+  type PartDecisionOutcome,
+  type PlanApprovalDeps,
+  type PlanWork,
+  type RevisionInput,
+} from "./plan-approval.ts";
 import { CloseOutStore, FixApprovalStore } from "./approval-store.ts";
 import type { HuddleReviewer, ReviewCollection } from "./huddle-reviews.ts";
 import type { HuddleThread, HuddleThreadKeeper } from "./huddle-threads.ts";
@@ -150,6 +167,7 @@ import {
   type IssuePage,
   type OverlapRequests,
   type Plan,
+  type PlanInbox,
   type PlanFactsRequest,
   type VerificationRunSpec,
 } from "@penguin/protocol";
@@ -276,7 +294,31 @@ export {
   type StoredFeatureRecord,
   type UnsignedFeatureRecord,
 } from "./feature-store.ts";
-export { PLAN_STORE_SCHEMA, PlanStore, type Plan, type PlanKeeper } from "./plan-store.ts";
+export { PLAN_STORE_SCHEMA, PlanStore, type PartVersion, type Plan, type PlanKeeper, type PlanPart } from "./plan-store.ts";
+export {
+  announcePlan,
+  approvePlanPart,
+  buildPlanInbox,
+  parseRoundLimit,
+  PLAN_ROUTE_SCHEMA,
+  planNoticeSources,
+  PlanRouteStore,
+  planWork,
+  requestPlanChange,
+  revisePlanPart,
+  type ChangeRequestInput,
+  type OwnPlanPart,
+  type PartDecisionInput,
+  type PartDecisionOutcome,
+  type PartRejection,
+  type PartRoute,
+  type PlanApprovalDeps,
+  type PlanInboxDeps,
+  type PlanWork,
+  type PlanWorkDeps,
+  type ReviseDeps,
+  type RevisionInput,
+} from "./plan-approval.ts";
 export {
   dependentScopes,
   factsRequest,
@@ -515,6 +557,8 @@ interface ProjectAgentEnv {
   readonly PENGUIN_SESSION_OFFLINE_SECONDS?: string;
   /** The most running features one merge plan may touch. Defaults to PLAN_BREAK_LIMIT_DEFAULT (PRD 4.2). */
   readonly PENGUIN_PLAN_BREAK_LIMIT?: string;
+  /** The changes an author may ask for on one plan part. Defaults to PLAN_ROUND_LIMIT_DEFAULT (PRD 7). */
+  readonly PENGUIN_PLAN_ROUND_LIMIT?: string;
 }
 export {
   BRIDGE_ROLES,
@@ -575,6 +619,7 @@ export class ProjectAgent extends Agent {
   #toolRows: AgentToolStore | undefined;
   #overlapRows: OverlapStore | undefined;
   #planFacts: PlanFactsStore | undefined;
+  #planRoutes: PlanRouteStore | undefined;
   /** Plan proposals run one at a time, so no two take the same plan version or record sequence number. */
   #planSteps: Promise<unknown> = Promise.resolve();
   /** Overlap checks and approvals run one at a time, so no two race for a record's sequence number. */
@@ -1658,6 +1703,8 @@ export class ProjectAgent extends Agent {
             this.#inboxStore().planReturned(personId, featureId);
             sendToOwner(this.getConnections<{ owner?: string }>(), personId, inboxChangedMessage());
           },
+          // Every author hears of their part at once (plan-approval.ts).
+          announce: (plan, scopeMap) => announcePlan(this.#planApprovalDeps(repos), plan, scopeMap),
         },
         owner,
         sessionId,
@@ -1666,6 +1713,98 @@ export class ProjectAgent extends Agent {
     );
     this.#planSteps = run.catch(() => undefined);
     return run;
+  }
+
+  /**
+   * The dashboard's plan parts for `caller`, the person the dashboard session names (plan-approval.ts):
+   * parts waiting on them as owner or delegate, parts that write a path they protect, parts of their
+   * plans past the round limit and the reviews of their scopes that raised an exception.
+   */
+  async planInbox(caller: string, repos: ProjectRepos): Promise<PlanInbox> {
+    const rules = await this.#reviewRules(repos);
+    return buildPlanInbox(
+      {
+        routes: this.#planRouteStore(),
+        reviews: this.#reviewStore(),
+        keeper: (featureId) => this.#planKeeper(featureId),
+        items: (person) => this.#inboxStore().items(person),
+        scopeMap: async () => rules.scopeMap,
+        delegates: async () => rules.delegates,
+        roundLimit: this.#roundLimit(),
+      },
+      caller,
+    );
+  }
+
+  /**
+   * `caller`, the person the dashboard session names, approves one revision of a plan part. Only the
+   * part's owner or their delegate may, once; the approval is a signed record. Runs after the plan
+   * steps before it.
+   */
+  approvePlanPart(caller: string, input: PartDecisionInput, repos: ProjectRepos): Promise<PartDecisionOutcome> {
+    return this.#planStep(() => approvePlanPart(this.#planApprovalDeps(repos), caller, input));
+  }
+
+  /** `caller` asks for a change to one revision of a plan part; see plan-approval.ts. */
+  requestPlanChange(caller: string, input: ChangeRequestInput, repos: ProjectRepos): Promise<PartDecisionOutcome> {
+    return this.#planStep(() => requestPlanChange(this.#planApprovalDeps(repos), caller, input));
+  }
+
+  /** `revise_plan_part`: the originating agent's revision of a part its author asked to change. */
+  revisePlanPart(owner: string, sessionId: string, input: RevisionInput, repos: ProjectRepos): Promise<PartDecisionOutcome> {
+    return this.#planStep(() =>
+      revisePlanPart(
+        {
+          ...this.#planApprovalDeps(repos),
+          facts: this.#planFactsStore(),
+          scopeMap: () => this.#scopeMap(repos),
+          readRepo: (repo, use) => withRepo(this.env.ARTIFACTS, repo, (opened) => use(opened as unknown as GitObjectReader)),
+          heartbeat: (caller, session) => this.sessionHeartbeat(caller, session),
+        },
+        owner,
+        sessionId,
+        input,
+      ),
+    );
+  }
+
+  /**
+   * Advance notice for `get_work`: the parts waiting on `caller`, the plan of the feature the session
+   * works on and the runner's verdicts on the session's reviews; undefined for another owner's session.
+   */
+  async planWork(caller: string, sessionId: string): Promise<PlanWork | undefined> {
+    if (this.sessionHeartbeat(caller, sessionId).status !== "ok") return undefined;
+    const deps = { features: this.#featureStore(), routes: this.#planRouteStore(), reviews: this.#reviewStore(), keeper: (id: string) => this.#planKeeper(id) };
+    return planWork(deps, caller, sessionId, this.#roundLimit());
+  }
+
+  #planApprovalDeps(repos: ProjectRepos): PlanApprovalDeps {
+    return {
+      features: this.#featureStore(),
+      routes: this.#planRouteStore(),
+      inbox: this.#inboxStore(),
+      keeper: (featureId) => this.#planKeeper(featureId),
+      delegates: async () => (await this.#reviewRules(repos)).delegates,
+      sign: async (record) => signFeatureRecord(record, (await this.#loadServiceKey()).privateKey),
+      roundLimit: this.#roundLimit(),
+      notify: (personId) => sendToOwner(this.getConnections<{ owner?: string }>(), personId, inboxChangedMessage()),
+    };
+  }
+
+  #roundLimit(): number | undefined {
+    return parseRoundLimit((this.env as unknown as ProjectAgentEnv).PENGUIN_PLAN_ROUND_LIMIT);
+  }
+
+  /** Runs one plan step (a proposal, a decision or a revision) after the ones before it. */
+  #planStep<T>(step: () => Promise<T>): Promise<T> {
+    const run = this.#planSteps.then(step);
+    this.#planSteps = run.catch(() => undefined);
+    return run;
+  }
+
+  #planRouteStore(): PlanRouteStore {
+    this.#planRoutes ??= new PlanRouteStore(this.#database());
+    return this.#planRoutes;
   }
 
   /** The facts runs waiting for the check runner; refused unless `caller` holds the runner role. */
@@ -1703,6 +1842,7 @@ export class ProjectAgent extends Agent {
       planVersion: async (id) => (await named).planVersion(id),
       keepPlan: async (plan) => (await named).keepPlan(plan),
       latestPlan: async (id) => (await named).latestPlan(id),
+      replacePart: async (id, part, expected) => (await named).replacePart(id, part, expected),
     };
   }
 
@@ -1947,6 +2087,8 @@ export class ProjectAgent extends Agent {
         settledFor: settledForSession(this.#featureStore(), this.#overlapStore()),
         // The check runner's result of a session's tool request reaches that session the same way.
         toolResultsFor: (sessionId) => this.#toolStore().deliver(sessionId),
+        // Plan parts, decisions on a session's plan and review verdicts reach sessions the same way.
+        planNotices: planNoticeSources(this.#planRouteStore(), this.#featureStore(), this.#reviewStore()),
         listener: {
           sessionChanged: (handle) => this.#liveFeed().sessionChanged(handle),
           routeChanged: (issueId) => this.#liveFeed().issueChanged(issueId),

@@ -341,3 +341,52 @@ test("markup in a held issue's title, a session's worktree and an operation rend
   assert.match(html, /9b2f10c/);
   assert.doesNotMatch(html, /<img|<script|<b>|<i>|<q>|<kbd>|<mark>|onerror="/);
 });
+
+test("markup in a plan part's changed lines, a requested change and a review exception renders as escaped text", async () => {
+  // The plan part list takes its data as props, so it renders on the server without a fetch.
+  const { render } = await load<{ render: (inbox: unknown) => string }>(`
+    import { renderToStaticMarkup } from "react-dom/server";
+    import { createElement } from "react";
+    import { PlanPartList } from "./src/plan-parts.tsx";
+    export function render(inbox) {
+      return renderToStaticMarkup(createElement(PlanPartList, { inbox, busy: undefined, onApprove() {}, onRequestChange() {} }));
+    }`);
+  const part = {
+    ask: "approve",
+    feature: "money-minor",
+    person: "ines",
+    partId: "money-minor/v1#2",
+    revision: 2,
+    place: { kind: "feature", feature: "tax-rounding" },
+    owner: "rahul",
+    kind: "behavioural",
+    state: "pending",
+    changeRequests: 1,
+    roundLimit: 3,
+    files: [{ path: "tax/rounding.py", status: "modified", lines: [`+total = ${MARKUP}`] }],
+    routing: { inPerson: true, reasons: [{ kind: "broken_invariant", scope: "tax", invariant: MARKUP, reviewId: 4 }] },
+    changeRequest: { by: "rahul", revision: 1, text: "<script>globalThis.pwned = 2</script>" },
+    read: false,
+    raisedAt: "2026-10-11T09:00:00.000Z",
+  };
+  const exception = {
+    feature: "money-minor",
+    scope: "tax",
+    reviewId: 4,
+    state: "accepted",
+    exceptions: [{ kind: "broken_invariant", invariant: MARKUP, scope: "tax" }],
+    read: false,
+    raisedAt: "2026-10-11T09:00:00.000Z",
+  };
+  const html = render({ parts: [part], reviewExceptions: [exception] });
+  assert.match(html, /Approve revision 2/);
+  assert.match(html, /Request change/);
+  assert.match(html, /\+total = &lt;img src=x onerror=&quot;globalThis\.pwned = 1&quot;&gt;/);
+  assert.match(html, /rahul asked on revision 1: &lt;script&gt;globalThis\.pwned = 2&lt;\/script&gt;/);
+  assert.match(html, /Review 4 of tax on money-minor, accepted/);
+  assert.doesNotMatch(html, /<img|<script|onerror="/);
+  // A part of the person's own plan past the round limit is shown without controls.
+  const limited = render({ parts: [{ ...part, ask: "round_limit", state: "round_limit" }], reviewExceptions: [] });
+  assert.match(limited, /Past the round limit/);
+  assert.doesNotMatch(limited, /<button/);
+});

@@ -27,8 +27,10 @@ import {
   type HuddleThreadKeeper,
   type HuddleVerifier,
   type HuddleVerifyDeps,
+  type PartVersion,
   type Plan,
   type PlanKeeper,
+  type PlanPart,
   type PendingVerification,
   type ReviewCollection,
   type VerificationOutcome,
@@ -182,6 +184,11 @@ export class HuddleAgent extends Agent implements HuddleVerifier, HuddleReviewer
   /** The feature's newest plan with its parts, or undefined. */
   latestPlan(featureId: string): Plan | undefined {
     return this.#planStore().latestPlan(featureId);
+  }
+
+  /** Replaces one part of the newest plan while it stands at `expected`; see plan-store.ts. */
+  replacePart(featureId: string, part: PlanPart, expected: PartVersion): boolean {
+    return this.#planStore().replacePart(featureId, part, expected);
   }
 
   #planStore(): PlanStore {

@@ -8,9 +8,9 @@
 // moves this module only. Nothing here signs or checks a plan: propose-plan.ts does both on the
 // ProjectAgent, which holds the service key.
 
-import type { Plan, PlanPart } from "@penguin/protocol";
+import type { Plan, PlanPart, PlanPartState } from "@penguin/protocol";
 
-export type { Plan };
+export type { Plan, PlanPart };
 
 import type { SqlDatabase, SqlValue } from "./issue-index.ts";
 
@@ -33,6 +33,18 @@ export interface PlanKeeper {
   keepPlan(plan: Plan): boolean | Promise<boolean>;
   /** The feature's newest plan, or undefined. */
   latestPlan(featureId: string): Plan | undefined | Promise<Plan | undefined>;
+  /**
+   * Replaces one part of the feature's newest plan while that part still stands at `expected`: an
+   * approval, a requested change or a revision. False, changing nothing, when the part is not in the
+   * newest plan or moved since it was read, so two decisions never both land.
+   */
+  replacePart(featureId: string, part: PlanPart, expected: PartVersion): boolean | Promise<boolean>;
+}
+
+/** The revision and approval state a part stood at when a decision on it was made. */
+export interface PartVersion {
+  readonly revision: number;
+  readonly state: PlanPartState;
 }
 
 export class PlanStore implements PlanKeeper {
@@ -79,7 +91,27 @@ export class PlanStore implements PlanKeeper {
   parts(planId: string): PlanPart[] {
     return this.#db
       .exec(`SELECT part FROM PlanPart WHERE plan_id = ? ORDER BY rowid`, planId)
-      .map((row: Record<string, SqlValue>) => JSON.parse(row["part"] as string) as PlanPart);
+      .map((row: Record<string, SqlValue>) => storedPart(row["part"] as string));
+  }
+
+  replacePart(featureId: string, part: PlanPart, expected: PartVersion): boolean {
+    return this.#db.transaction(() => {
+      const latest = this.latestPlan(featureId);
+      const current = latest?.parts.find((each) => each.partId === part.partId);
+      if (latest === undefined || current === undefined) return false;
+      if (current.revision !== expected.revision || current.approvalState !== expected.state) return false;
+      this.#db.exec(
+        `UPDATE PlanPart SET kind = ?, proposed_diff_ref = ?, approval_state = ?, approved_by = ?, part = ? WHERE part_id = ? AND plan_id = ?`,
+        part.kind,
+        part.diff.ref,
+        part.approvalState,
+        part.approvedBy,
+        JSON.stringify(part),
+        part.partId,
+        latest.planId,
+      );
+      return true;
+    });
   }
 
   #withParts(plan: Plan): Plan {
@@ -101,4 +133,13 @@ export class PlanStore implements PlanKeeper {
       JSON.stringify(part),
     );
   }
+}
+
+/**
+ * A part as its row holds it. A row kept before advance notice (#90) has no revision or round count:
+ * it is the proposed revision with no change asked for.
+ */
+function storedPart(json: string): PlanPart {
+  const part = JSON.parse(json) as Partial<PlanPart> & Omit<PlanPart, "revision" | "changeRequests" | "changeRequest">;
+  return { ...part, revision: part.revision ?? 1, changeRequests: part.changeRequests ?? 0, changeRequest: part.changeRequest ?? null };
 }

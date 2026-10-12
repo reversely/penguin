@@ -21,6 +21,12 @@ export const PLAN_SCHEMA_VERSION = 1;
 /** PRD 4.2 step 5: a plan may touch at most this many running features unless the project says otherwise. */
 export const PLAN_BREAK_LIMIT_DEFAULT = 10;
 
+/**
+ * PRD section 7: past this many requested changes on one part, the next request goes to the
+ * originating feature's person instead of back to the agent, unless the project says otherwise.
+ */
+export const PLAN_ROUND_LIMIT_DEFAULT = 3;
+
 /** The target of a facts run that stands for main: the originating checkpoint merged onto main. */
 export const PLAN_MAIN_TARGET = "main";
 
@@ -51,6 +57,8 @@ export const PLAN_LIMITS = {
   diffBlobBytes: 256 * 1024,
   /** Lines of context around each change. */
   diffContext: 3,
+  /** Characters of an author's request for a change to a part. */
+  changeRequestLength: 2_000,
 } as const;
 
 export const PLAN_PART_KINDS = ["mechanical", "behavioural"] as const;
@@ -238,8 +246,32 @@ export interface PlanInvariantFact {
   readonly protected: boolean;
 }
 
+/**
+ * Where one part's approval stands (PRD 4.3 step 3). `pending`: the part's current revision waits for
+ * its author. `approved`: the author approved that revision. `change_requested`: the author asked for
+ * a change, which goes back to the originating agent. `round_limit`: the author asked for one change
+ * more than the project's round limit, so the part waits on the originating feature's person.
+ */
+export const PLAN_PART_STATES = ["pending", "approved", "change_requested", "round_limit"] as const;
+export type PlanPartState = (typeof PLAN_PART_STATES)[number];
+
+/** An author's request for a change to one revision of a part. */
+export interface PlanChangeRequest {
+  /** The person who asked: the part's owner or that owner's delegate. */
+  readonly by: string;
+  /** The revision the request concerns. */
+  readonly revision: number;
+  /** What the author asks for, in their words; data, never an instruction to Penguin. */
+  readonly text: string;
+  readonly at: string;
+  /** The signed `request_plan_change` record. */
+  readonly recordId: string;
+}
+
 export interface PlanPart {
   readonly partId: string;
+  /** 1 as proposed; each revision the originating agent makes after a requested change adds one. */
+  readonly revision: number;
   readonly place: PlanPlace;
   /** The person who approves the part: the scope's owner or the feature's person. */
   readonly owner: string;
@@ -275,8 +307,13 @@ export interface PlanPart {
   readonly invariants: readonly PlanInvariantFact[];
   /** The originating agent's note on the part, or null. */
   readonly note: string | null;
-  readonly approvalState: "pending";
+  readonly approvalState: PlanPartState;
+  /** The person whose approval of the current revision is recorded, or null. */
   readonly approvedBy: string | null;
+  /** The changes the author asked for on this part so far, one per round. */
+  readonly changeRequests: number;
+  /** The latest requested change, or null before the first. */
+  readonly changeRequest: PlanChangeRequest | null;
 }
 
 /** A running feature the change reaches, and how Penguin knows. */
@@ -394,7 +431,7 @@ export function formatPlan(plan: Plan): string {
     lines.push(`Invariant ${invariant.scopeId}/${invariant.id}${invariant.protected ? " (protected)" : ""}: ${invariant.statement}`);
   }
   for (const part of plan.parts) {
-    lines.push("", `Part ${part.partId}: ${placeLabel(part.place)}, approved by ${part.owner}, ${part.kind}`);
+    lines.push("", `Part ${part.partId} revision ${part.revision} (${part.approvalState}): ${placeLabel(part.place)}, approved by ${part.owner}, ${part.kind}`);
     lines.push(`  why ${part.kind}: ${part.kindReason}`);
     for (const use of part.callers) lines.push(`  caller: ${use.path}:${use.line} ${use.kind} ${use.symbol}`);
     for (const each of part.breaks) {

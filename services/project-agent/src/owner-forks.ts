@@ -47,6 +47,7 @@ export type SessionCheckpointOutcome =
       readonly overlaps: readonly OverlapRef[];
       readonly settled: Delivery["settled"];
       readonly toolResults: Delivery["toolResults"];
+      readonly planNotices: Delivery["planNotices"];
     }
   | SessionRejection;
 
@@ -117,9 +118,11 @@ export async function reportCheckpoint(
   if (recorded.status === "rejected") return recorded;
   // The session can have gone offline while the commit was looked up; it then receives nothing.
   const delivery = deps.sessions.checkpoint(caller, sessionId);
-  if (delivery.status !== "ok") return { ...recorded, delivered: [], threads: [], overlaps: [], settled: [], toolResults: [] };
-  const { delivered, threads, overlaps, settled, toolResults } = delivery;
-  return { ...recorded, delivered, threads, overlaps, settled, toolResults };
+  if (delivery.status !== "ok") {
+    return { ...recorded, delivered: [], threads: [], overlaps: [], settled: [], toolResults: [], planNotices: { parts: [], decisions: [], reviews: [] } };
+  }
+  const { delivered, threads, overlaps, settled, toolResults, planNotices } = delivery;
+  return { ...recorded, delivered, threads, overlaps, settled, toolResults, planNotices };
 }
 
 /**

@@ -34,9 +34,15 @@
 //
 // The results the check runner reports for a session's `impact`, `check` and `apply_fix` requests
 // reach that session the same way, once each (AgentToolStore.deliver records the delivery).
+//
+// Advance notice of a merge plan (plan-approval.ts, PRD 4.3) reaches sessions the same way, and
+// PlanNotice records that each session was told: each revision of a part waiting on the owner who
+// reported the checkpoint, each decision on a part of the session's own feature's plan (approved,
+// change requested, past the round limit), and the check runner's verdict on each review the session
+// submitted (review-record.ts).
 
 import type { Assignment } from "@penguin/issues";
-import { IDENTITY_HANDLE_MAX_LENGTH, SEGMENT_PATTERN } from "@penguin/protocol";
+import { IDENTITY_HANDLE_MAX_LENGTH, SEGMENT_PATTERN, type ReviewException, type ReviewRefusal } from "@penguin/protocol";
 
 import type { ToolResultRef } from "./agent-tools.ts";
 import type { Identity, IdentityStore } from "./identity-store.ts";
@@ -115,6 +121,53 @@ export interface SettledRef extends OverlapRef {
   readonly outcome: "approved" | "withdrawn";
 }
 
+/** A revision of a merge plan's part that waits on the session's developer, its author. */
+export interface PlanPartNotice {
+  readonly featureId: string;
+  readonly partId: string;
+  readonly revision: number;
+  /** The scopes the part touches: the ones the developer's agent reviews with submit_review. */
+  readonly scopes: readonly string[];
+}
+
+/** A decision on a part of the plan of the session's own feature. */
+export interface PlanDecisionNotice {
+  readonly featureId: string;
+  readonly partId: string;
+  readonly revision: number;
+  readonly state: "approved" | "change_requested" | "round_limit";
+}
+
+/** The check runner's verdict on a review the session submitted. */
+export interface ReviewResultNotice {
+  readonly reviewId: number;
+  readonly featureId: string;
+  readonly scopeId: string;
+  readonly state: "accepted" | "refused";
+  readonly refusals: readonly ReviewRefusal[];
+  /** What went to the scope's owner in person; empty when the review stands. */
+  readonly exceptions: readonly ReviewException[];
+}
+
+/** The advance notice a session hears of for the first time at one checkpoint. */
+export interface PlanNotices {
+  readonly parts: PlanPartNotice[];
+  readonly decisions: PlanDecisionNotice[];
+  readonly reviews: ReviewResultNotice[];
+}
+
+/** Where a checkpoint reads advance notice from (plan-approval.ts and review-submit.ts). */
+export interface PlanNoticeSources {
+  /** The parts whose current revision waits on `person`. */
+  partsWaitingOn(person: string): readonly PlanPartNotice[];
+  /** The decided parts of the plan of the feature session `sessionId` works on. */
+  decisionsFor(sessionId: string): readonly PlanDecisionNotice[];
+  /** The runner's verdicts on the reviews session `sessionId` submitted. */
+  reviewsFor(sessionId: string): readonly ReviewResultNotice[];
+}
+
+const NO_PLAN_NOTICES: PlanNoticeSources = { partsWaitingOn: () => [], decisionsFor: () => [], reviewsFor: () => [] };
+
 /**
  * One session's safe checkpoint: the fix tasks it delivered, in the order they routed, and the
  * threads and overlapping starts needing its owner that the session hears of for the first time.
@@ -129,6 +182,8 @@ export interface Delivery {
   readonly settled: Omit<SettledRef, "id">[];
   /** The check runner's results of the session's tool requests, reported since it last heard. */
   readonly toolResults: ToolResultRef[];
+  /** Plan parts, decisions on the session's plan and review verdicts heard of for the first time. */
+  readonly planNotices: PlanNotices;
 }
 
 export type CheckpointDelivery = ({ readonly status: "ok" } & Delivery) | SessionRejection;
@@ -210,6 +265,8 @@ export interface SessionStoreOptions {
    * call (AgentToolStore.deliver). None when absent.
    */
   readonly toolResultsFor?: (sessionId: string) => readonly ToolResultRef[];
+  /** Advance notice of merge plans and review verdicts. None when absent. */
+  readonly planNotices?: PlanNoticeSources;
 }
 
 /** The routing tables. They hold live state only: a rebuild from the issues repo never routes. */
@@ -241,6 +298,10 @@ export const SESSION_SCHEMA: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS SettledNotice (
     session_id TEXT NOT NULL, settled_id INTEGER NOT NULL, told_at INTEGER NOT NULL,
     PRIMARY KEY (session_id, settled_id))`,
+  // A plan part revision, a decision on a part or a review verdict a checkpoint of the session named.
+  `CREATE TABLE IF NOT EXISTS PlanNotice (
+    session_id TEXT NOT NULL, notice_key TEXT NOT NULL, told_at INTEGER NOT NULL,
+    PRIMARY KEY (session_id, notice_key))`,
   `CREATE TABLE IF NOT EXISTS ThreadNotice (
     session_id TEXT NOT NULL, thread_id TEXT NOT NULL, issue_id TEXT NOT NULL, told_at INTEGER NOT NULL,
     PRIMARY KEY (session_id, thread_id))`,
@@ -268,6 +329,7 @@ export class SessionStore implements AssignmentListener {
   readonly #overlapsNeeding: (person: string) => readonly OverlapRef[];
   readonly #settledFor: (sessionId: string) => readonly SettledRef[];
   readonly #toolResultsFor: (sessionId: string) => readonly ToolResultRef[];
+  readonly #planNotices: PlanNoticeSources;
 
   /** Create after the IssueIndex on the same handle: routing reads and writes its Assignment table. */
   constructor(db: SqlDatabase, identities: IdentityStore, options: SessionStoreOptions = {}) {
@@ -284,6 +346,7 @@ export class SessionStore implements AssignmentListener {
     this.#overlapsNeeding = options.overlapsNeeding ?? (() => []);
     this.#settledFor = options.settledFor ?? (() => []);
     this.#toolResultsFor = options.toolResultsFor ?? (() => []);
+    this.#planNotices = options.planNotices ?? NO_PLAN_NOTICES;
     for (const statement of SESSION_SCHEMA) db.exec(statement);
   }
 
@@ -599,6 +662,21 @@ export class SessionStore implements AssignmentListener {
           now,
         ).length > 0,
     );
+    // A key names what was told, so a new revision or a new decision on the same part is told again.
+    const untold = (key: string): boolean =>
+      this.#db.exec(
+        `INSERT OR IGNORE INTO PlanNotice (session_id, notice_key, told_at) VALUES (?, ?, ?) RETURNING notice_key`,
+        session.id,
+        key,
+        now,
+      ).length > 0;
+    const planNotices: PlanNotices = {
+      parts: this.#planNotices.partsWaitingOn(owner).filter(({ partId, revision }) => untold(`part:${partId}@${revision}`)),
+      decisions: this.#planNotices
+        .decisionsFor(session.id)
+        .filter(({ partId, revision, state }) => untold(`decision:${partId}@${revision}:${state}`)),
+      reviews: this.#planNotices.reviewsFor(session.id).filter(({ reviewId }) => untold(`review:${reviewId}`)),
+    };
     return {
       sessionId: session.id,
       handle: session.handle,
@@ -607,6 +685,7 @@ export class SessionStore implements AssignmentListener {
       overlaps: overlaps.map(({ featureId, blockedFeatureId }) => ({ featureId, blockedFeatureId })),
       settled: settled.map(({ featureId, blockedFeatureId, outcome }) => ({ featureId, blockedFeatureId, outcome })),
       toolResults: this.#toolResultsFor(session.id).map((ref) => ({ ...ref })),
+      planNotices,
     };
   }
 
@@ -674,6 +753,7 @@ export class SessionStore implements AssignmentListener {
       this.#db.exec(`DELETE FROM ThreadNotice WHERE session_id = ?`, row["id"] as string);
       this.#db.exec(`DELETE FROM OverlapNotice WHERE session_id = ?`, row["id"] as string);
       this.#db.exec(`DELETE FROM SettledNotice WHERE session_id = ?`, row["id"] as string);
+      this.#db.exec(`DELETE FROM PlanNotice WHERE session_id = ?`, row["id"] as string);
       const unrouted = this.#db.exec(
         `UPDATE Assignment SET session_id = NULL WHERE session_id = ? RETURNING issue_id`,
         row["id"] as string,

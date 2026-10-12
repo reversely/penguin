@@ -26,17 +26,19 @@ import type {
   FeatureOpenOutcome,
   FeatureOutcome,
   OverlapStatus,
+  PartDecisionOutcome,
   ProjectRepos,
   ProposePlanInput,
   ProposePlanOutcome,
   ReviewInput,
   ReviewOutcome,
+  RevisionInput,
   TokenGrant,
   ToolRequestOutcome,
   WhatsNearOutcome,
 } from "@penguin/project-agent";
 
-import type { FeatureCallResult, McpFeatures } from "@penguin/mcp";
+import { planNoticeFields, type FeatureCallResult, type McpFeatures } from "@penguin/mcp";
 import { REVIEW_SCHEMA_VERSION, SEGMENT_PATTERN, type Plan, type PlanFacts, type PlanPart } from "@penguin/protocol";
 
 import { artifactsErrorCode, type FeatureForkOptions } from "./repos.ts";
@@ -77,6 +79,7 @@ export interface FeatureDirectory {
     repos: ProjectRepos,
   ): Promise<ToolRequestOutcome>;
   proposePlan(owner: string, sessionId: string, input: ProposePlanInput, repos: ProjectRepos): Promise<ProposePlanOutcome>;
+  revisePlanPart(owner: string, sessionId: string, input: RevisionInput, repos: ProjectRepos): Promise<PartDecisionOutcome>;
 }
 
 export interface FeatureConfig {
@@ -298,6 +301,12 @@ export function mcpFeatures(ports: FeaturePorts, owner: string): McpFeatures {
         const outcome = await (await ports.directory()).proposePlan(owner, sessionId, { feature, parts }, ports.repos);
         return outcome.status === "rejected" ? outcome : { status: "ok", value: planAnswer(outcome) };
       }),
+    revise: (sessionId, input) =>
+      guarded(async () => {
+        const outcome = await (await ports.directory()).revisePlanPart(owner, sessionId, input, ports.repos);
+        if (outcome.status === "rejected") return outcome;
+        return { status: "ok", value: { status: "revised", recordId: outcome.recordId, part: partFields(outcome.part) } };
+      }),
     checkpoint: (sessionId, feature, sha) =>
       guarded(async () => {
         const reported = await (await ports.directory()).reportFeatureCheckpoint(owner, sessionId, feature, sha, ports.repos);
@@ -360,6 +369,7 @@ export function checkpointFields(reported: Extract<FeatureCheckpointOutcome, { s
     newOverlaps: reported.overlaps.map(({ featureId, blockedFeatureId }) => ({ feature: featureId, blockedFeature: blockedFeatureId })),
     locksSettled: settledFields(reported.settled),
     toolResults: toolResultFields(reported.toolResults ?? []),
+    ...planNoticeFields(reported.planNotices),
   };
 }
 
@@ -463,9 +473,10 @@ function factsFields(facts: PlanFacts): Record<string, unknown> {
 }
 
 function partFields(part: PlanPart): Record<string, unknown> {
-  const { partId, place, owner, scopes, kind, diff, approvalState, approvedBy } = part;
+  const { partId, revision, place, owner, scopes, kind, diff, approvalState, approvedBy, changeRequests } = part;
   return {
     partId,
+    revision,
     place,
     owner,
     scopes: [...scopes],
@@ -473,8 +484,10 @@ function partFields(part: PlanPart): Record<string, unknown> {
     diff: { source: diff.source, repo: diff.repo, ref: diff.ref, commit: diff.commit, base: diff.base, truncated: diff.truncated, files: diff.files.length },
     approvalState,
     approvedBy,
+    changeRequests,
     personWritten: {
       note: part.note,
+      changeRequest: part.changeRequest,
       kindReason: part.kindReason,
       callers: part.callers,
       breaks: part.breaks,

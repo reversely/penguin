@@ -146,6 +146,16 @@ waiting feature, its person, the person's own feature and the scopes, contracts 
 two areas meet. Approve start posts `POST /api/overlaps/approve`; the row goes once the approval is
 recorded ([design.md](design.md#step-3-in-the-build)). The section shows only while a start waits.
 
+Below it, Merge plan parts lists each plan part that waits on the person as its owner or the owner's
+delegate (`plan-parts.tsx`, read from `GET /api/plan-parts`). A row names the part, its revision, the
+originating feature and person, the place it changes and its round count against the limit. It
+shows each reason the part needs the person in person, the latest requested change and each changed
+file's diff lines. Approve revision posts `POST /api/plan-parts/approve`. Request change opens a field
+whose text posts `POST /api/plan-parts/request-change`
+([design.md](design.md#advance-notice-in-the-build)). The same list shows, without controls, the
+parts that write a path the person protects and the parts of the person's own plans past the round
+limit. Review exceptions lists each review of the person's scopes whose record raised an exception.
+
 ## Issue page
 
 The centre holds the issue's activity in apply order (`issue-thread.tsx`):

@@ -220,6 +220,60 @@ The procedure moves conflict handling to the start of the work. Each step below 
    a broken invariant, the side-by-side run shows a difference on a protected invariant, or the plan
    touches a path the author protects.
 
+#### Advance notice in the build
+
+- **Delivery.** A stored plan reaches every author at once
+  (`services/project-agent/src/plan-approval.ts`). Each part's owner gets a `plan_part` inbox item.
+  That owner's running sessions hear of the part at their next safe checkpoint: the bridge hook's
+  answer names it, `report_checkpoint` lists it under `newPlanParts` and `get_work` lists it under
+  `planPartsNeedingYou` with the scopes to review. A newer plan of the same feature withdraws the
+  older plan's items. Every item and record names the part it concerns as `<feature>/v<version>#<n>`.
+- **Review.** The author's agent reviews the part with `submit_review` for each scope the part
+  touches ([Review harness](#review-harness)). An agent never approves: no MCP tool approves a part.
+- **Decision.** The author approves the part or asks for a change on the dashboard inbox, which
+  posts `POST /api/plan-parts/approve` with `{ feature, part, revision }` or
+  `POST /api/plan-parts/request-change` with the same fields plus `text`. The Worker takes the
+  decider from the dashboard session and refuses a body with any other field. The ProjectAgent
+  accepts a decision from the part's owner or the delegate that owner names in
+  `penguin/owners.json`. It refuses anyone else, a part outside the feature's newest plan, a
+  revision other than the part's current one and a second decision on the same revision. A request
+  holds at most 2,000 characters, kept as data. Each approval is a signed `approve_plan_part` record
+  and each request a signed `request_plan_change` record on the originating feature, authored by
+  the deciding person.
+- **Revision.** A requested change moves the part to `change_requested`. The originating feature's
+  sessions hear of it at their next safe checkpoint under `planDecisions`. `get_work` shows the
+  feature's plan with each part's state and the author's words inside `personWritten`. The
+  originating agent answers with `revise_plan_part`, naming the part, the revision and a new fix in
+  the form `propose_plan` takes. Penguin reads and checks the fix as it checks a proposed one,
+  classifies it again and keeps it as the part's next revision in a signed `revise_plan_part`
+  record. The part then waits on its author again, whose item turns unread.
+- **Round limit.** Each requested change counts as one round. `PENGUIN_PLAN_ROUND_LIMIT`, a Worker
+  setting, sets the limit, 3 when unset. Any value other than a positive whole number refuses every
+  request as misconfigured. The request after the limit, the fourth by default, moves the part to
+  `round_limit`. The originating person gets a `round_limit` inbox item and Penguin signs a
+  `plan_round_limit` record. The originating agent may no longer revise the part. Its author may
+  still approve the revision they have.
+- **Routing.** `partRouting` (`packages/protocol`) takes the recorded review results of the
+  originating feature and the scope map's protected paths. It counts the newest review of each scope
+  the part touches. A broken invariant in an accepted form, a side-by-side difference on a protected
+  invariant or a changed file under a protected path makes the part need its author in person. The
+  dashboard lists each reason beside the part. With no reason, the agent's review stands and the
+  author approves once.
+- **Protected paths.** A scope in `penguin/scopes.json` may list `protected_paths`, each inside the
+  scope's own paths. A path protects itself and everything under it. A part whose fix writes such a
+  path gives the scope's owner a `protected_path` item to confirm its lines.
+- **Review verdicts.** The session that submitted a review hears the check runner's verdict at its
+  next safe checkpoint under `reviewResults`: accepted or refused, the refusal codes and the
+  exceptions raised. `get_work` repeats each verdict with its reasons.
+- **Dashboard.** `GET /api/plan-parts` lists the parts waiting on the signed-in person as owner or
+  delegate with their changed lines and routing reasons. It also lists the parts that write a path
+  the person protects, the parts of their plans past the round limit and the reviews of their
+  scopes that raised an exception.
+- **Storage.** The parts with their revisions and states live in the feature's own Durable Object,
+  which takes a change only while the part still stands where the decision read it.
+  `PlanPartRoute` on the ProjectAgent keeps which revision of which part waits on whom, for
+  checkpoints and the inbox.
+
 ### Build
 
 1. As soon as an author approves their part, Penguin issues the originating agent a short-lived write
@@ -609,6 +663,12 @@ People see only the exceptions in this table. Everything else proceeds without t
 | A check fails in an area with no tests and no type coverage | That scope's owner |
 | Agents pass a fix back and forth past the project's round limit (default 3) | The originating feature's person |
 | A plan exceeds the break limit | The originating feature's person, to split it |
+
+A plan part goes to its owner as a `plan_part` item, a protected path to that path's scope owner
+as a `protected_path` item and a part past the round limit to the originating person as a
+`round_limit` item ([Advance notice in the build](#advance-notice-in-the-build)). A review exception
+goes to the scope's owner as a `review_exception` item. The dashboard inbox lists all four under
+Merge plan parts and Review exceptions.
 
 The overlapping start is built for features of two different people. The ProjectAgent puts it in
 the covering person's inbox and tells that person's running sessions at their next safe checkpoint

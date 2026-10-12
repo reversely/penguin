@@ -1,8 +1,11 @@
 // The MCP tools for agent sessions (PRD section 8): register_session, get_work, get_issue,
 // post_update and report_checkpoint, plus the feature tools open_feature, feature_token and
-// declare_area (PRD 0.4 section 4.1), propose_plan (section 4.2), submit_review (section 6) and the
-// agent tools whats_near, impact, check and apply_fix (section 5.2). get_work also reports whether the session's feature waits on
-// an overlap lock, and which overlapping starts wait for the developer's approval. Each tool calls the ProjectAgent as the owner whose MCP token
+// declare_area (PRD 0.4 section 4.1), propose_plan (section 4.2), revise_plan_part (section 4.3),
+// submit_review (section 6) and the agent tools whats_near, impact, check and apply_fix (section 5.2).
+// get_work also reports whether the session's feature waits on an overlap lock, which overlapping
+// starts wait for the developer's approval, which merge plan parts wait on the developer, where each
+// part of the session's own plan stands, and the check runner's verdict on each review the session
+// submitted. No tool approves a plan part: only a person does, on the dashboard. Each tool calls the ProjectAgent as the owner whose MCP token
 // (K3) the gateway authenticated, so a session registers only as one of that owner's identities,
 // reads and writes only the issues assigned to it, and reports checkpoints only for that owner's fork
 // or the fork of the feature it works on.
@@ -112,6 +115,8 @@ export interface McpProject {
   overlapsNeeding?(person: string): MaybePromise<readonly OverlapLockView[]>;
   /** The check runner's results delivered to the caller's session, newest first; absent without features. */
   agentToolResults?(caller: string, sessionId: string): MaybePromise<readonly ToolResultView[]>;
+  /** Advance notice for the caller's session; absent without merge plans, undefined for another owner's session. */
+  planWork?(caller: string, sessionId: string): MaybePromise<PlanWorkView | undefined>;
   readIssue(
     id: string,
   ): MaybePromise<{ readonly issue: IssueRecord | undefined; readonly timeline: readonly OperationView[] }>;
@@ -162,6 +167,52 @@ export interface FeatureWorkView {
   }[];
 }
 
+/** A merge plan's place: a scope's code on main, or a running feature. */
+export type PlanPlaceView = { readonly kind: "scope"; readonly scope: string } | { readonly kind: "feature"; readonly feature: string };
+
+/** The runner's verdict on a review the session submitted. */
+export interface ReviewResultView {
+  readonly reviewId: number;
+  readonly featureId: string;
+  readonly scopeId: string;
+  readonly state: string;
+  readonly refusals: readonly { readonly code: string; readonly message: string; readonly invariant?: string; readonly evidence?: string }[];
+  readonly exceptions: readonly { readonly kind: string; readonly invariant: string; readonly scope: string }[];
+}
+
+/** Advance notice as get_work reads it (the ProjectAgent's `PlanWork`, plan-approval.ts). */
+export interface PlanWorkView {
+  readonly partsNeedingYou: readonly {
+    readonly featureId: string;
+    readonly partId: string;
+    readonly revision: number;
+    readonly place: PlanPlaceView;
+    readonly scopes: readonly string[];
+  }[];
+  readonly ownPlan: {
+    readonly planId: string;
+    readonly roundLimit: number;
+    readonly parts: readonly {
+      readonly partId: string;
+      readonly revision: number;
+      readonly place: PlanPlaceView;
+      readonly owner: string;
+      readonly kind: string;
+      readonly state: string;
+      readonly changeRequests: number;
+      readonly changeRequest: { readonly by: string; readonly revision: number; readonly text: string } | null;
+    }[];
+  } | null;
+  readonly reviews: readonly ReviewResultView[];
+}
+
+/** Advance notice a checkpoint names for the first time (the ProjectAgent's `PlanNotices`). */
+export interface PlanNoticesView {
+  readonly parts: readonly { readonly featureId: string; readonly partId: string; readonly revision: number; readonly scopes: readonly string[] }[];
+  readonly decisions: readonly { readonly featureId: string; readonly partId: string; readonly revision: number; readonly state: string }[];
+  readonly reviews: readonly ReviewResultView[];
+}
+
 /** What a feature call answers: the fields to return to the agent, or a rejection. */
 export type FeatureCallResult = { readonly status: "ok"; readonly value: Readonly<Record<string, unknown>> } | Rejection;
 
@@ -182,6 +233,18 @@ export interface McpFeatures {
   tool(sessionId: string, tool: "impact" | "check" | "apply_fix", input: Readonly<Record<string, unknown>>): Promise<FeatureCallResult>;
   /** Takes a merge plan for feature `feature`, which the session works on; Penguin fills in the facts. */
   plan(sessionId: string, feature: string, parts: unknown): Promise<FeatureCallResult>;
+  /** Revises a part of the session's feature's plan whose author asked for a change. */
+  revise(sessionId: string, input: PartRevision): Promise<FeatureCallResult>;
+}
+
+/** The originating agent's revision of one part: a new fix in the form propose_plan takes. */
+export interface PartRevision {
+  readonly feature: string;
+  readonly part: string;
+  readonly revision: number;
+  readonly diff?: { readonly commit: string; readonly base?: string | undefined } | undefined;
+  readonly patch?: { readonly base: string; readonly diff: string } | undefined;
+  readonly note?: string | undefined;
 }
 
 /** The project's repos as the Worker names them for one request's owner. */
@@ -245,6 +308,8 @@ export type CheckpointResult =
       readonly settled?: readonly { readonly featureId: string; readonly blockedFeatureId: string; readonly outcome: string }[];
       /** The check runner's results of the session's tool requests, reported since the session last heard. */
       readonly toolResults?: readonly { readonly runId: number; readonly tool: string; readonly featureId: string; readonly result: string; readonly summary: string }[];
+      /** Plan parts, decisions on the session's plan and review verdicts heard of for the first time. */
+      readonly planNotices?: PlanNoticesView;
     }
   | Rejection;
 
@@ -482,6 +547,29 @@ const proposePlanInput = z.strictObject({
   feature: featureId.describe("The feature this session works on."),
   parts: z.array(planPart).max(128).describe("One part per affected place."),
 });
+const revisePlanPartInput = z
+  .strictObject({
+    sessionId,
+    feature: featureId.describe("The feature this session works on."),
+    part: z.string().min(1).max(128).describe("The part's id, such as money-minor/v1#2."),
+    revision: z.number().int().min(1).describe("The revision whose requested change you answer, as get_work's plan names it."),
+    diff: z
+      .strictObject({
+        commit: commitSha.describe("A commit in your feature's fork whose change holds the revised fix."),
+        base: commitSha.optional().describe("The commit the fix is read against; defaults to the commit's first parent."),
+      })
+      .optional()
+      .describe("For a part on code on main: the revised fix as a commit in your fork."),
+    patch: z
+      .strictObject({
+        base: commitSha.describe("The running feature's fork head the part's patch applies to."),
+        diff: z.string().min(1).max(262_144).describe("A unified diff of files inside the place's scopes."),
+      })
+      .optional()
+      .describe("For a part on a running feature: the revised fix as a patch against its fork head."),
+    note: partNote,
+  })
+  .refine((input) => (input.diff === undefined) !== (input.patch === undefined), { message: "name either diff or patch" });
 const featureTokenInput = z.strictObject({ sessionId, feature: featureId });
 const declareAreaInput = z.strictObject({ sessionId, feature: featureId, area });
 
@@ -590,7 +678,11 @@ export function createPenguinMcpServer(
         "developer's other running features that cover part of the area. `overlapsNeedingYou` lists the features whose start waits " +
         "for your developer's approval beside one of their running features: tell your developer, who " +
         "approves on the dashboard's inbox. `toolResults` lists, newest first, the check runner's answers to " +
-        "this session's impact, check and apply_fix calls that reached it at a safe checkpoint.",
+        "this session's impact, check and apply_fix calls that reached it at a safe checkpoint. `planPartsNeedingYou` lists the merge plan parts that touch your " +
+        "developer's code: review each with submit_review for its scopes and tell your developer, who approves " +
+        "it or asks for a change on the dashboard; you never approve. `plan` is your feature's newest merge plan " +
+        "with where each part stands: answer each `change_requested` part with revise_plan_part. `reviewResults` " +
+        "gives the check runner's verdict on each review you submitted.",
       inputSchema: workInput,
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -609,6 +701,7 @@ export function createPenguinMcpServer(
       const feature = await project.featureWork?.(owner, id);
       const overlaps = (await project.overlapsNeeding?.(owner)) ?? [];
       const toolResults = (await project.agentToolResults?.(owner, id)) ?? [];
+      const plan = await project.planWork?.(owner, id);
       return result({
         sessionId: id,
         identity: live.session.handle,
@@ -622,6 +715,7 @@ export function createPenguinMcpServer(
           openedAt: lock.openedAt,
         })),
         toolResults: toolResults.map(toolResultFields),
+        ...(plan === undefined ? {} : planWorkFields(plan)),
       });
     },
   );
@@ -699,8 +793,10 @@ export function createPenguinMcpServer(
         "checkpoint is a safe checkpoint: `newWork` lists the fix tasks it delivered, `newThreads` the " +
         "threads that newly need your developer, `newOverlaps` the overlapping starts that newly wait " +
         "for your developer's approval, `locksSettled` the locks on your feature that were approved or " +
-        "withdrawn and `toolResults` the check runner's answers to your impact, check and apply_fix calls; " +
-        "read them with get_work.",
+        "withdrawn, `toolResults` the check runner's answers to your impact, check and apply_fix calls, " +
+        "`newPlanParts` the merge plan parts that newly wait on your developer, `planDecisions` the decisions " +
+        "on your feature's plan and `reviewResults` the check runner's verdicts on your reviews; read them " +
+        "with get_work.",
       inputSchema: checkpointInput,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
@@ -753,6 +849,7 @@ export function createPenguinMcpServer(
         newOverlaps,
         locksSettled,
         toolResults,
+        ...planNoticeFields(outcome.planNotices ?? { parts: [], decisions: [], reviews: [] }),
       });
     },
   );
@@ -936,6 +1033,23 @@ function registerFeatureTools(server: McpServer, features: McpFeatures): void {
       return answer(outcome);
     },
   );
+
+  server.registerTool(
+    "revise_plan_part",
+    {
+      title: "Revise plan part",
+      description:
+        "Answers an author's requested change to one part of your feature's merge plan with a revised fix: a " +
+        "commit in your fork for code on main, a patch against the same fork head for a running feature. " +
+        "Name the part and the revision the change was asked for, as get_work's `plan` lists them; the " +
+        "author's words are in its `personWritten.changeRequest`. Penguin reads and checks the fix as " +
+        "propose_plan does, classifies it again and sends the part's next revision to its author. A part past " +
+        "the project's round limit cannot be revised: it waits on your developer.",
+      inputSchema: revisePlanPartInput,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    },
+    async ({ sessionId: id, ...input }) => answer(await features.revise(id, input)),
+  );
 }
 
 function sessionFields(session: SessionView): Record<string, unknown> {
@@ -992,6 +1106,61 @@ function featureWorkFields(work: FeatureWorkView): Record<string, unknown> {
       providerScope: each.providerScopeId,
       kind: each.kind,
     })),
+  };
+}
+
+/** A review verdict; refusal messages and exceptions may carry a person's words, so they sit in `personWritten`. */
+function reviewResultFields(review: ReviewResultView): Record<string, unknown> {
+  return {
+    reviewId: review.reviewId,
+    feature: review.featureId,
+    scope: review.scopeId,
+    state: review.state,
+    refusals: review.refusals.map(({ code }) => code),
+    exceptions: review.exceptions.map(({ kind }) => kind),
+    personWritten: { refusals: review.refusals.map((refusal) => ({ ...refusal })), exceptions: review.exceptions.map((exception) => ({ ...exception })) },
+  };
+}
+
+/** Advance notice a checkpoint names for the first time, as `report_checkpoint` and the bridge route answer it. */
+export function planNoticeFields(notices: PlanNoticesView): Record<string, unknown> {
+  return {
+    newPlanParts: notices.parts.map(({ featureId, partId, revision, scopes }) => ({ feature: featureId, part: partId, revision, scopes: [...scopes] })),
+    planDecisions: notices.decisions.map(({ featureId, partId, revision, state }) => ({ feature: featureId, part: partId, revision, state })),
+    reviewResults: notices.reviews.map(reviewResultFields),
+  };
+}
+
+/** Advance notice as get_work reports it. An author's requested change is their words, inside `personWritten`. */
+function planWorkFields(work: PlanWorkView): Record<string, unknown> {
+  return {
+    planPartsNeedingYou: work.partsNeedingYou.map(({ featureId, partId, revision, place, scopes }) => ({
+      feature: featureId,
+      part: partId,
+      revision,
+      place: { ...place },
+      scopes: [...scopes],
+    })),
+    plan:
+      work.ownPlan === null
+        ? null
+        : {
+            planId: work.ownPlan.planId,
+            roundLimit: work.ownPlan.roundLimit,
+            parts: work.ownPlan.parts.map(({ partId, revision, place, owner, kind, state, changeRequests, changeRequest }) => ({
+              part: partId,
+              revision,
+              place: { ...place },
+              owner,
+              kind,
+              state,
+              changeRequests,
+              personWritten: {
+                changeRequest: changeRequest === null ? null : { by: changeRequest.by, revision: changeRequest.revision, text: changeRequest.text },
+              },
+            })),
+          },
+    reviewResults: work.reviews.map(reviewResultFields),
   };
 }
 

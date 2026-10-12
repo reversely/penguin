@@ -200,6 +200,17 @@ lock is approved or withdrawn, the waiting feature's sessions hear of it at thei
 checkpoint: the hook answer names it and `report_checkpoint` lists it under `locksSettled`. A
 feature of the same person makes no lock; `ownOverlaps` lists it.
 
+## Merge plan parts
+
+A merge plan part that touches the developer's code reaches each of the developer's running sessions
+once, at their next safe checkpoint ([design.md](design.md#advance-notice-in-the-build)). The hook
+answer names it. `report_checkpoint` lists it under `newPlanParts`. `get_work` lists it under
+`planPartsNeedingYou` with the scopes the agent reviews through `submit_review`. The developer
+approves the part or asks for a change on the dashboard inbox; no tool approves it. A session of the
+originating feature hears each decision under `planDecisions`. It answers a `change_requested` part
+with `revise_plan_part`. A session that submitted a review hears the check runner's verdict under
+`reviewResults`.
+
 ## Agent tools for a feature
 
 A session that works on a feature calls four tools for facts and deterministic fixes

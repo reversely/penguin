@@ -3,7 +3,7 @@
 // Durable Object RPC.
 
 import type { IssueRecord } from "@penguin/issues";
-import type { Inbox } from "@penguin/protocol";
+import type { Inbox, InboxReason as IssueReason } from "@penguin/protocol";
 
 import type { InboxItem } from "./inbox-store.ts";
 
@@ -13,13 +13,20 @@ export interface InboxPageSources {
   issue(id: string): IssueRecord | undefined;
 }
 
+const ISSUE_REASONS: ReadonlySet<string> = new Set<IssueReason>(["assigned", "mentioned", "closed", "start_session", "review_requested", "thread"]);
+
+/** True for a reason whose item names an issue. */
+function isIssueReason(reason: string): reason is IssueReason {
+  return ISSUE_REASONS.has(reason);
+}
+
 /** The person's inbox. An item whose issue the index no longer holds is left out. */
 export function buildInbox(sources: InboxPageSources, person: string): Inbox {
   return {
     items: sources.items(person).flatMap(({ issueId, reason, read, raisedAt }) => {
-      // An overlapping start and a returned plan name no issue; GET /api/overlaps lists the first.
-      // A review exception names a feature's scope, not an issue; the feature's reviews hold it.
-      if (reason === "overlap" || reason === "review_exception" || reason === "plan_returned") return [];
+      // These name no issue. GET /api/overlaps lists overlapping starts; GET /api/plan-parts lists plan
+      // parts, protected paths, parts past the round limit and review exceptions.
+      if (!isIssueReason(reason)) return [];
       const issue = sources.issue(issueId);
       if (issue === undefined) return [];
       return [{ issueId, reason, read, raisedAt, title: issue.title, state: issue.state, assigneeHandles: assigneeHandles(issue) }];

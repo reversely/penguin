@@ -37,6 +37,15 @@
  *     signed-in person. The approver is the session's person: a body with any other field, such as
  *     `approved_by`, is refused. The ProjectAgent refuses a lock on another person's feature and a
  *     second approval of the same lock.
+ *   - GET /api/plan-parts: the merge plan parts waiting on the signed-in person as owner or
+ *     delegate, the parts that write a path they protect, the parts of their plans past the round
+ *     limit and the reviews of their scopes that raised an exception, checked against
+ *     PLAN_INBOX_SCHEMA; an answer that breaks it answers 500.
+ *   - POST /api/plan-parts/approve: approves one revision of a part, `{ feature, part, revision }`,
+ *     as the signed-in person. POST /api/plan-parts/request-change asks for a change to it,
+ *     `{ feature, part, revision, text }`. The decider is the session's person: a body with any other
+ *     field is refused. The ProjectAgent refuses anyone but the part's owner or their delegate, a
+ *     part outside the feature's newest plan, a stale revision and a part already decided.
  *   - POST /api/operations: one issue operation, applied with the signed-in person as author. An
  *     operation that carries `author` is refused: only the session names the author.
  *   - GET /api/live: the WebSocket to the ProjectAgent, which sends a message on each index change.
@@ -46,7 +55,7 @@
  * `Origin` header, on top of the SameSite=Lax session cookie.
  */
 
-import { checkInbox, checkOverlapRequests, SEGMENT_PATTERN } from "@penguin/protocol";
+import { checkInbox, checkOverlapRequests, checkPlanInbox, SEGMENT_PATTERN } from "@penguin/protocol";
 
 import type { FeatureOpenResult, FeatureView } from "./features.ts";
 import {
@@ -117,7 +126,20 @@ export interface DashboardBackend {
   overlapRequests(owner: string): Promise<unknown>;
   /** Approves the start of `blockedFeatureId` beside `featureId` as `owner`; the ProjectAgent checks ownership. */
   approveOverlap(owner: string, featureId: string, blockedFeatureId: string): Promise<OverlapApproveResult>;
+  /** The plan parts and review exceptions for `owner` as plain JSON (PlanInbox in @penguin/protocol). */
+  planParts(owner: string): Promise<unknown>;
+  /** Decides one revision of a plan part as `owner`; the ProjectAgent checks who may. */
+  decidePlanPart(owner: string, decision: PlanPartDecision): Promise<PlanPartDecisionResult>;
 }
+
+/** A person's decision on one revision of a plan part, as the dashboard posts it. */
+export type PlanPartDecision =
+  | { readonly kind: "approve"; readonly feature: string; readonly part: string; readonly revision: number }
+  | { readonly kind: "request_change"; readonly feature: string; readonly part: string; readonly revision: number; readonly text: string };
+
+export type PlanPartDecisionResult =
+  | { readonly status: "ok"; readonly part: unknown; readonly recordId: string }
+  | { readonly status: "rejected"; readonly reason: string; readonly message: string };
 
 export type OverlapApproveResult =
   | { readonly status: "ok"; readonly lock: unknown }
@@ -393,6 +415,8 @@ const FEATURE_REJECTION_STATUS: Readonly<Record<string, number>> = {
   not_found: 404,
   conflict: 409,
   offline: 409,
+  round_limit: 409,
+  misconfigured: 500,
 };
 
 /**
@@ -480,6 +504,44 @@ async function overlapRoute(request: Request, url: URL, session: DashboardSessio
   return json(approved, approved.status === "ok" ? 200 : (FEATURE_REJECTION_STATUS[approved.reason] ?? 422));
 }
 
+/** The longest change request the route reads; the ProjectAgent applies the exact limit. */
+const MAX_PLAN_DECISION_BYTES = 16 * 1024;
+
+/**
+ * The plan part routes. GET /api/plan-parts lists what waits on the session's person; the POST routes
+ * approve one revision of a part or ask for a change to it as that person. The decider comes from the
+ * session only.
+ */
+async function planPartRoute(request: Request, url: URL, session: DashboardSession, handlers: DashboardHandlers): Promise<Response> {
+  if (url.pathname === "/api/plan-parts") {
+    if (request.method !== "GET") return methodNotAllowed("GET");
+    const parts = await (await handlers.dashboard()).planParts(session.owner);
+    return checkPlanInbox(parts).length === 0 ? json(parts) : json({ error: "invalid plan parts" }, 500);
+  }
+  const kind = url.pathname === "/api/plan-parts/approve" ? "approve" : url.pathname === "/api/plan-parts/request-change" ? "request_change" : undefined;
+  if (kind === undefined) return json({ error: "not found" }, 404);
+  if (request.method !== "POST") return methodNotAllowed("POST");
+  if (!isSameOrigin(request, url)) return json({ error: "cross-origin request" }, 403);
+  if (Number(request.headers.get("Content-Length") ?? 0) > MAX_PLAN_DECISION_BYTES) {
+    return json({ error: "invalid request", message: "the request is too large" }, 413);
+  }
+  const body = await readJsonObject(request);
+  if (body === undefined) return json({ error: "invalid request", message: "the body must be a JSON object" }, 400);
+  const { feature, part, revision, text, ...rest } = body;
+  const fields = kind === "approve" ? "feature, part and revision" : "feature, part, revision and text";
+  if (Object.keys(rest).length > 0 || (kind === "approve" && text !== undefined)) {
+    return json({ error: "invalid", message: `the body takes only ${fields}; the decider is the signed-in person` }, 400);
+  }
+  if (!isFeatureId(feature) || typeof part !== "string" || typeof revision !== "number") {
+    return json({ error: "invalid", message: "feature must be a feature id, part a part id and revision a number" }, 400);
+  }
+  if (kind === "request_change" && typeof text !== "string") return json({ error: "invalid", message: "text must say what to change" }, 400);
+  const decision: PlanPartDecision =
+    kind === "approve" ? { kind, feature, part, revision } : { kind, feature, part, revision, text: text as string };
+  const decided = await (await handlers.dashboard()).decidePlanPart(session.owner, decision);
+  return json(decided, decided.status === "ok" ? 200 : (FEATURE_REJECTION_STATUS[decided.reason] ?? 422));
+}
+
 async function handleApi(
   request: Request,
   url: URL,
@@ -510,6 +572,9 @@ async function handleApi(
   }
   if (url.pathname === "/api/overlaps" || url.pathname.startsWith("/api/overlaps/")) {
     return overlapRoute(request, url, session, handlers);
+  }
+  if (url.pathname === "/api/plan-parts" || url.pathname.startsWith("/api/plan-parts/")) {
+    return planPartRoute(request, url, session, handlers);
   }
   if (url.pathname === "/api/board") {
     if (request.method !== "GET") return methodNotAllowed("GET");

@@ -24,8 +24,10 @@
  * - POST /sessions/checkpoint, bridge token: a safe checkpoint in one of the owner's worktrees, sent
  *   by the bridge's hook before an agent's next tool action or as an explicit bridge checkpoint. The
  *   owner's running sessions in that worktree receive their waiting fix tasks, and hear of the
- *   threads and overlapping starts that newly wait for the owner, and of each lock on their feature
- *   that was approved or withdrawn. The body carries only the worktree id.
+ *   threads and overlapping starts that newly wait for the owner, of each lock on their feature
+ *   that was approved or withdrawn, of each merge plan part revision that waits on the owner, of
+ *   each decision on a part of their feature's plan and of the runner's verdict on each review they
+ *   submitted. The body carries only the worktree id.
  * - GET /verifications, bridge token of a runner bridge: lists the verification runs waiting for the
  *   runner: the checkpoints to merge onto a Huddle repo's `integration` branch and the commands to run.
  * - POST /verifications/<run id>, bridge token of a runner bridge: reports a verification run. Penguin
@@ -79,6 +81,7 @@ import type {
   VerificationOutcome,
 } from "@penguin/project-agent";
 
+import { planNoticeFields } from "@penguin/mcp";
 import { REVIEW_LIMITS, TOOL_RESULT_LIMITS } from "@penguin/protocol";
 import type { PlanFactsRequest } from "@penguin/protocol";
 
@@ -361,6 +364,9 @@ async function reportFeatureCheckpoint(
     newOverlaps: _overlaps,
     locksSettled: _settled,
     toolResults: _results,
+    newPlanParts: _parts,
+    planDecisions: _decisions,
+    reviewResults: _reviews,
     ...fields
   } = checkpointFields(outcome);
   return json(fields, 200);
@@ -387,7 +393,7 @@ async function sessionCheckpoint(request: Request, handlers: BridgeHandlers): Pr
   return json(
     {
       worktreeId,
-      sessions: deliveries.map(({ sessionId, handle, delivered, threads, overlaps, settled, toolResults }) => ({
+      sessions: deliveries.map(({ sessionId, handle, delivered, threads, overlaps, settled, toolResults, planNotices }) => ({
         sessionId,
         identity: handle,
         delivered,
@@ -395,6 +401,7 @@ async function sessionCheckpoint(request: Request, handlers: BridgeHandlers): Pr
         overlaps: overlaps.map(({ featureId, blockedFeatureId }) => ({ feature: featureId, blockedFeature: blockedFeatureId })),
         locksSettled: settledFields(settled),
         toolResults: toolResultFields(toolResults ?? []),
+        ...planNoticeFields(planNotices),
       })),
     },
     200,

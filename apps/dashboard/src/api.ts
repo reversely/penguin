@@ -9,6 +9,7 @@ import type {
   IssuePage,
   OverlapRequest,
   OverlapRequests,
+  PlanInbox,
 } from "@penguin/protocol";
 
 export interface Session {
@@ -91,6 +92,32 @@ export async function approveOverlap(request: Pick<OverlapRequest, "feature" | "
   if (response.status === 401) throw new SignedOut();
   if (response.status === 404 || response.status === 409) return false;
   if (!response.ok) throw new Error(`/api/overlaps/approve answered ${response.status}`);
+  return true;
+}
+
+/** The merge plan parts and review exceptions waiting on the signed-in person. */
+export async function fetchPlanInbox(): Promise<PlanInbox> {
+  return getJson<PlanInbox>("/api/plan-parts");
+}
+
+/** One decision on one revision of a plan part; the server names the decider from the session. */
+export type PlanPartDecision =
+  | { readonly kind: "approve"; readonly feature: string; readonly part: string; readonly revision: number }
+  | { readonly kind: "request_change"; readonly feature: string; readonly part: string; readonly revision: number; readonly text: string };
+
+/** Approves a part's revision or asks for a change to it. Resolves false when the part moved on since it was read. */
+export async function decidePlanPart({ kind, ...decision }: PlanPartDecision): Promise<boolean> {
+  const path = kind === "approve" ? "/api/plan-parts/approve" : "/api/plan-parts/request-change";
+  const response = await fetch(path, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(decision),
+  });
+  await response.arrayBuffer();
+  if (response.status === 401) throw new SignedOut();
+  if (response.status === 404 || response.status === 409) return false;
+  if (!response.ok) throw new Error(`${path} answered ${response.status}`);
   return true;
 }
 

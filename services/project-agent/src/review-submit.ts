@@ -53,6 +53,8 @@ const RUNNER_COLUMNS: readonly (readonly [string, string])[] = [
   ["completed_at", "completed_at INTEGER"],
   ["record", "record TEXT"],
   ["exceptions", "exceptions TEXT"],
+  // The submitting session, told the runner's verdict at its next safe checkpoint (#90).
+  ["session_id", "session_id TEXT"],
 ];
 
 /** The most bytes of one evidence file read from the fork; a larger file counts as missing. */
@@ -78,6 +80,8 @@ export interface StoredReview {
   readonly ownerId: string | null;
   /** The reviewing session's identity handle. */
   readonly reviewer: string;
+  /** The session that submitted the form; null on a row from before #90. */
+  readonly sessionId: string | null;
   /** The fork commit the evidence was checked against. */
   readonly forkSha: string;
   /** The checkpoint's baseline on main, the runner's base; null for a form refused at submission. */
@@ -111,6 +115,7 @@ function review(row: Row): StoredReview {
     scopeId: String(row.scope_id),
     ownerId: text(row.owner_id),
     reviewer: String(row.reviewer),
+    sessionId: text(row.session_id),
     forkSha: String(row.fork_sha),
     baseSha: text(row.base_sha),
     form: JSON.parse(String(row.form)) as ReviewForm,
@@ -159,16 +164,20 @@ export class ReviewStore {
   }
 
   insert(
-    entry: Pick<StoredReview, "featureId" | "scopeId" | "ownerId" | "reviewer" | "forkSha" | "baseSha" | "form" | "invariants" | "state" | "refusals">,
+    entry: Pick<
+      StoredReview,
+      "featureId" | "scopeId" | "ownerId" | "reviewer" | "sessionId" | "forkSha" | "baseSha" | "form" | "invariants" | "state" | "refusals"
+    >,
   ): StoredReview {
     const [row] = this.#db.exec(
-      `INSERT INTO FeatureReview (feature_id, scope_id, owner_id, reviewer, fork_sha, base_sha, form, invariants,
+      `INSERT INTO FeatureReview (feature_id, scope_id, owner_id, reviewer, session_id, fork_sha, base_sha, form, invariants,
          validation_state, refusals, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
       entry.featureId,
       entry.scopeId,
       entry.ownerId,
       entry.reviewer,
+      entry.sessionId,
       entry.forkSha,
       entry.baseSha,
       JSON.stringify(entry.form),
@@ -188,6 +197,13 @@ export class ReviewStore {
   /** The reviews of one feature, oldest first. */
   list(featureId: string): StoredReview[] {
     return this.#db.exec(`SELECT * FROM FeatureReview WHERE feature_id = ? ORDER BY id`, featureId).map(review);
+  }
+
+  /** The reviews session `sessionId` submitted that the check runner has recorded, oldest first. */
+  recordedFor(sessionId: string): StoredReview[] {
+    return this.#db
+      .exec(`SELECT * FROM FeatureReview WHERE session_id = ? AND completed_at IS NOT NULL ORDER BY id`, sessionId)
+      .map(review);
   }
 
   /**
@@ -332,6 +348,7 @@ export async function submitReview(deps: ReviewDeps, caller: string, sessionId: 
     scopeId: scope.id,
     ownerId: caller,
     reviewer: live.session.handle,
+    sessionId,
     forkSha: feature.latestCheckpointSha,
     baseSha,
     form: parsed.form,

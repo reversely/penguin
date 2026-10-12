@@ -8,6 +8,7 @@ import {
   InvalidPathError,
   normalizeRepoPath,
   parseScopeMap,
+  protectedPathFor,
   ScopeMapError,
   scopeForPath,
 } from "@penguin/scope-map";
@@ -190,6 +191,29 @@ test("a contract outside its scope's paths, malformed or repeated is refused", (
   assertRejected(file(["money/core.py::<script>"]), "scopes[0].contracts[0]");
   assertRejected(file(["money/core.py::f", "money//core.py::f"]), "scopes[0].contracts[1]");
   assertRejected(file("money/core.py::f"), "scopes[0].contracts");
+});
+
+test("a scope lists the paths its owner protects, each inside the scope", () => {
+  const withProtected = parseScopeMap(
+    scopeFile([
+      { ...scope("analytics", "jun", ["analytics/"]), protected_paths: ["./analytics/revenue_report.py", "analytics/exports/"] },
+      scope("tax", "rahul", ["tax/"]),
+    ]),
+  );
+  assert.deepEqual(withProtected.scopes.get("analytics")?.protectedPaths, ["analytics/revenue_report.py", "analytics/exports"]);
+  assert.deepEqual(withProtected.scopes.get("tax")?.protectedPaths, []);
+  assert.deepEqual(protectedPathFor(withProtected, "analytics/revenue_report.py"), { scopeId: "analytics", path: "analytics/revenue_report.py" });
+  assert.deepEqual(protectedPathFor(withProtected, "analytics/exports/daily.py"), { scopeId: "analytics", path: "analytics/exports" });
+  assert.equal(protectedPathFor(withProtected, "analytics/revenue_report_v2.py"), undefined);
+  assert.equal(protectedPathFor(withProtected, "tax/rounding.py"), undefined);
+  assert.equal(protectedPathFor(withProtected, "docs/readme.md"), undefined);
+
+  const file = (protectedPaths: unknown) => scopeFile([{ ...scope("analytics", "jun", ["analytics/"]), protected_paths: protectedPaths }, scope("tax", "rahul", ["tax/"])]);
+  assertRejected(file(["tax/rounding.py"]), "scopes[0].protected_paths[0]");
+  assertRejected(file(["../analytics/x.py"]), "scopes[0].protected_paths[0]");
+  assertRejected(file(["analytics/x.py", "analytics//x.py"]), "scopes[0].protected_paths[1]");
+  assertRejected(file([7]), "scopes[0].protected_paths[0]");
+  assertRejected(file("analytics/x.py"), "scopes[0].protected_paths");
 });
 
 test("lookup time for one thousand changed paths", (t) => {

@@ -3665,3 +3665,28 @@ label.button:has(input:focus-visible) {
 .assign-form .button {
   margin-left: auto;
 }
+
+/* A merge plan part: its facts in one column, then the decision controls under them (#97 restyles). */
+.inbox-row.plan-part {
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+}
+
+.plan-part .inbox-row-preview {
+  white-space: normal;
+}
+
+.plan-part pre {
+  margin: var(--space-1) 0 0;
+  overflow-x: auto;
+  font: var(--text-ui);
+  white-space: pre;
+}
+
+.plan-part-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-2);
+}

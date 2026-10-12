@@ -21,8 +21,8 @@
 // another as a codemod edit the contract diff gives (codemodPlan in @penguin/protocol, the edits the
 // resolution ladder's step 3 applies), and behavioural otherwise. A plan whose behavioural parts
 // outnumber the project's break limit is returned to its author and the originating person gets the
-// exception (PRD section 7). A complete plan is signed and kept with
-// every part (plan-store.ts). Nothing here calls a model or runs code.
+// exception (PRD section 7). A complete plan is signed and kept with every part (plan-store.ts),
+// then sent to every author at once (plan-approval.ts). Nothing here calls a model or runs code.
 
 import {
   codemodPlan,
@@ -81,6 +81,11 @@ export interface ProposePlanDeps {
   readonly breakLimit: number | undefined;
   /** Tells the originating person that a plan went over the break limit. */
   readonly exception: (personId: string, featureId: string) => void;
+  /**
+   * Sends a stored plan's parts to their authors at once (plan-approval.ts announcePlan): an inbox
+   * item each, and their running sessions at the next safe checkpoint. Absent, the plan is only kept.
+   */
+  readonly announce?: (plan: Plan, scopeMap: ScopeMap) => void;
   readonly now?: () => number;
 }
 
@@ -179,15 +184,26 @@ export function parseParts(value: unknown): SubmittedPart[] | string {
     if (Object.keys(fields).some((key) => !["place", "diff", "patch", "note"].includes(key))) return `${at} takes only place, diff, patch and note`;
     const place = parsePlace(fields["place"]);
     if (place === undefined) return `${at}.place must be { scope: <scope id> } or { feature: <feature id> }`;
-    const fix = place.kind === "scope" ? parseCommitFix(fields, at) : parsePatchFix(fields, at);
+    const fix = parseFixFields(place, fields, at);
     if (typeof fix === "string") return fix;
-    const note = fields["note"];
-    if (note !== undefined && (typeof note !== "string" || note.length > PLAN_LIMITS.noteLength)) {
-      return `${at}.note must be text of at most ${PLAN_LIMITS.noteLength} characters`;
-    }
-    parts.push({ place, fix, note: typeof note === "string" ? note : null });
+    parts.push({ place, ...fix });
   }
   return parts;
+}
+
+/**
+ * A part's fix and note for `place`, as `propose_plan` and `revise_plan_part` take them: `diff` for
+ * code on main, `patch` for a running feature, and an optional note. A message naming the first field
+ * that breaks the form otherwise.
+ */
+export function parseFixFields(place: PlanPlace, fields: Record<string, unknown>, at: string): { fix: SubmittedFix; note: string | null } | string {
+  const fix = place.kind === "scope" ? parseCommitFix(fields, at) : parsePatchFix(fields, at);
+  if (typeof fix === "string") return fix;
+  const note = fields["note"];
+  if (note !== undefined && (typeof note !== "string" || note.length > PLAN_LIMITS.noteLength)) {
+    return `${at}.note must be text of at most ${PLAN_LIMITS.noteLength} characters`;
+  }
+  return { fix, note: typeof note === "string" ? note : null };
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -250,7 +266,7 @@ function clip(text: string, max: number): string {
 }
 
 /** A place the facts show the change reaches, with its scopes, callers and breaks. */
-interface AffectedPlace {
+export interface AffectedPlace {
   readonly place: PlanPlace;
   readonly owner: string;
   /** A running feature's fork head the facts run tested, or null for code on main. */
@@ -362,6 +378,11 @@ function allowedSwaps(impact: ImpactReport, target: string | null): Map<string, 
   return swaps;
 }
 
+/** The fork id a place's codemod edits apply in: the running feature's id, or null for code on main. */
+export function classifyFixPlace(place: PlanPlace): string | null {
+  return place.kind === "feature" ? place.feature : null;
+}
+
 const TOKEN = /[A-Za-z_][A-Za-z0-9_]*|\s+|./gu;
 
 /**
@@ -432,7 +453,7 @@ function inScopes(scopeMap: ScopeMap, scopes: ReadonlySet<string>): (path: strin
 }
 
 /** Counts each read made through a reader, for the facts' sources. */
-function counted(reader: GitObjectReader, calls: Record<string, number>): GitObjectReader {
+export function counted(reader: GitObjectReader, calls: Record<string, number>): GitObjectReader {
   const count = (method: string) => (calls[method] = (calls[method] ?? 0) + 1);
   return {
     readCommit: (hash) => (count("readCommit"), reader.readCommit(hash)),
@@ -538,7 +559,7 @@ export async function proposePlan(deps: ProposePlanDeps, caller: string, session
       continue;
     }
     const diff = read;
-    const kind = classifyFix(diff.files, impact, place.place.kind === "feature" ? place.place.feature : null);
+    const kind = classifyFix(diff.files, impact, classifyFixPlace(place.place));
     built.push({
       partId: `${id}#${index + 1}`,
       place: place.place,
@@ -551,8 +572,11 @@ export async function proposePlan(deps: ProposePlanDeps, caller: string, session
       breaks: place.breaks,
       invariants: invariantsOf(place.scopes),
       note: part.note,
+      revision: 1,
       approvalState: "pending",
       approvedBy: null,
+      changeRequests: 0,
+      changeRequest: null,
     });
   }
   const facts = planFacts(factsBase, report, deps.dependents(featureId), calls);
@@ -603,6 +627,7 @@ export async function proposePlan(deps: ProposePlanDeps, caller: string, session
     return rejected("conflict", `plan version ${version} of feature ${featureId} was kept by another proposal; propose again`);
   }
   deps.features.addRecord(record);
+  deps.announce?.(plan, scopeMap);
   return { status: "stored", plan };
 }
 
@@ -613,11 +638,11 @@ async function fixRef(repo: string, fix: SubmittedFix): Promise<string> {
   return `${repo}@${fix.base}+patch:sha256:${[...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
-type FixRead = PlanPart["diff"] | { readonly code: MissingItem["code"]; readonly message: string };
+export type FixRead = PlanPart["diff"] | { readonly code: MissingItem["code"]; readonly message: string };
 
 /** Reads and checks one part's fix through the binding, only inside the place's scopes. */
-async function readFix(
-  deps: ProposePlanDeps,
+export async function readFix(
+  deps: Pick<ProposePlanDeps, "readRepo" | "features">,
   part: SubmittedPart,
   place: AffectedPlace,
   originRepo: string,

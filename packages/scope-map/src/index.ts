@@ -25,6 +25,12 @@ export interface Scope {
    * and inside the scope. Empty when the scope file lists none.
    */
   readonly contracts: readonly string[];
+  /**
+   * Paths inside the scope whose owner confirms the final lines of any merge plan that touches them
+   * (PRD 0.4 sections 7 and 9), each normalized; a path protects itself and everything under it.
+   * Empty when the scope file lists none.
+   */
+  readonly protectedPaths: readonly string[];
 }
 
 /** A validated scope map with lookup indexes. Build one with `parseScopeMap`. */
@@ -157,6 +163,7 @@ export function parseScopeMap(json: unknown, options: ParseScopeMapOptions = {})
   const pathField = new Map<string, string>();
   const enclosedBy = new Map<string, string>();
   const declaredContracts: { contract: string; path: string; scopeId: string; field: string }[] = [];
+  const declaredProtected: { path: string; scopeId: string; field: string }[] = [];
 
   rawScopes.forEach((raw, index) => {
     const at = `scopes[${index}]`;
@@ -164,7 +171,7 @@ export function parseScopeMap(json: unknown, options: ParseScopeMapOptions = {})
       report(at, "must be an object");
       return;
     }
-    const { id, name, owner, paths, test_command, depends_on, contracts } = raw;
+    const { id, name, owner, paths, test_command, depends_on, contracts, protected_paths } = raw;
     if (!isNonEmptyString(id)) report(`${at}.id`, "is missing or empty");
     if (!isNonEmptyString(name)) report(`${at}.name`, "is missing or empty");
     if (!isNonEmptyString(owner)) {
@@ -250,6 +257,33 @@ export function parseScopeMap(json: unknown, options: ParseScopeMapOptions = {})
       });
     }
 
+    // Whether each protected path falls inside this scope is checked once every path is claimed.
+    const scopeProtected: string[] = [];
+    if (protected_paths !== undefined && !Array.isArray(protected_paths)) {
+      report(`${at}.protected_paths`, "must be an array of paths inside the scope when present");
+    } else {
+      (protected_paths ?? []).forEach((rawPath: unknown, protectedIndex: number) => {
+        const field = `${at}.protected_paths[${protectedIndex}]`;
+        if (typeof rawPath !== "string") {
+          report(field, "must be a string");
+          return;
+        }
+        let path: string;
+        try {
+          path = normalizeRepoPath(rawPath);
+        } catch (error) {
+          if (!(error instanceof InvalidPathError)) throw error;
+          report(field, error.message);
+          return;
+        }
+        if (scopeProtected.includes(path)) report(field, `repeats "${path}"`);
+        else {
+          scopeProtected.push(path);
+          if (isNonEmptyString(id)) declaredProtected.push({ path, scopeId: id, field });
+        }
+      });
+    }
+
     // Any issue reported above makes the whole file fail, so only complete scopes are kept.
     const isComplete =
       isNonEmptyString(id) &&
@@ -265,6 +299,7 @@ export function parseScopeMap(json: unknown, options: ParseScopeMapOptions = {})
         testCommand: test_command,
         dependsOn,
         contracts: scopeContracts,
+        protectedPaths: scopeProtected,
       });
     }
   });
@@ -288,13 +323,21 @@ export function parseScopeMap(json: unknown, options: ParseScopeMapOptions = {})
     }
   }
 
-  const contractIndex = new Map<string, string>();
-  for (const { contract, path, scopeId, field } of declaredContracts) {
-    const owning = enclosingPaths(path)
+  function owningScope(path: string): string | undefined {
+    return enclosingPaths(path)
       .map((enclosing) => pathIndex.get(enclosing))
       .find((found) => found !== undefined);
+  }
+
+  const contractIndex = new Map<string, string>();
+  for (const { contract, path, scopeId, field } of declaredContracts) {
+    const owning = owningScope(path);
     if (owning !== scopeId) report(field, `"${path}" is not inside the paths of scope "${scopeId}"`);
     else contractIndex.set(contract, scopeId);
+  }
+
+  for (const { path, scopeId, field } of declaredProtected) {
+    if (owningScope(path) !== scopeId) report(field, `"${path}" is not inside the paths of scope "${scopeId}"`);
   }
 
   if (issues.length > 0) throw new ScopeMapError(issues);
@@ -322,6 +365,21 @@ export function scopeForPath(map: ScopeMap, path: string): string | undefined {
     if (scopeId !== undefined) return scopeId;
   }
   return undefined;
+}
+
+/**
+ * The protected path of `map` that covers repository path `path`, with the scope that protects it,
+ * or undefined. A protected path covers itself and everything under it.
+ *
+ * Raises:
+ *   InvalidPathError: when the path is absolute, empty or contains `..`.
+ */
+export function protectedPathFor(map: ScopeMap, path: string): { readonly scopeId: string; readonly path: string } | undefined {
+  const scopeId = scopeForPath(map, path);
+  if (scopeId === undefined) return undefined;
+  const protectedPaths = new Set(map.scopes.get(scopeId)?.protectedPaths ?? []);
+  const covering = enclosingPaths(normalizeRepoPath(path)).find((enclosing) => protectedPaths.has(enclosing));
+  return covering === undefined ? undefined : { scopeId, path: covering };
 }
 
 /** Return the ids of the scopes that declare a direct dependency on a scope. */

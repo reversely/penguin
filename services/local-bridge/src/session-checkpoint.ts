@@ -63,10 +63,37 @@ export interface ToolResultNotice {
   readonly summary: string;
 }
 
+/** A revision of a merge plan part that waits on the session's developer. */
+export interface PlanPartNotice {
+  readonly feature: string;
+  readonly part: string;
+  readonly revision: number;
+  readonly scopes: readonly string[];
+}
+
+/** A decision on a part of the plan of the session's own feature. */
+export interface PlanDecisionNotice {
+  readonly feature: string;
+  readonly part: string;
+  readonly revision: number;
+  readonly state: string;
+}
+
+/** The check runner's verdict on a review the session submitted. */
+export interface ReviewResultNotice {
+  readonly reviewId: number;
+  readonly feature: string;
+  readonly scope: string;
+  readonly state: string;
+  /** Refusal codes and exception kinds; their texts stay with Penguin's answer, never in the hook. */
+  readonly refusals: readonly string[];
+  readonly exceptions: readonly string[];
+}
+
 /**
  * One session's part of a safe checkpoint: the fix tasks Penguin delivered to it, the threads and
- * overlapping starts needing the session's developer, and the settled locks on its own feature, each
- * heard of for the first time.
+ * overlapping starts needing the session's developer, the settled locks on its own feature, and the
+ * merge plan parts, decisions and review verdicts of advance notice, each heard of for the first time.
  */
 export interface SessionDelivery {
   readonly sessionId: string;
@@ -76,6 +103,9 @@ export interface SessionDelivery {
   readonly overlaps: readonly OverlapNotice[];
   readonly locksSettled: readonly SettledNotice[];
   readonly toolResults?: readonly ToolResultNotice[];
+  readonly newPlanParts: readonly PlanPartNotice[];
+  readonly planDecisions: readonly PlanDecisionNotice[];
+  readonly reviewResults: readonly ReviewResultNotice[];
 }
 
 /** The worktree that holds `path`, and the id sessions in it register with. */
@@ -120,7 +150,18 @@ export async function sendSessionCheckpoint(
  */
 function asDelivery(value: unknown): SessionDelivery | undefined {
   if (typeof value !== "object" || value === null) return undefined;
-  const { sessionId, identity, delivered, threads = [], overlaps = [], locksSettled = [], toolResults = [] } = value as Record<string, unknown>;
+  const {
+    sessionId,
+    identity,
+    delivered,
+    threads = [],
+    overlaps = [],
+    locksSettled = [],
+    toolResults = [],
+    newPlanParts = [],
+    planDecisions = [],
+    reviewResults = [],
+  } = value as Record<string, unknown>;
   const wellFormed =
     typeof sessionId === "string" &&
     typeof identity === "string" &&
@@ -133,16 +174,60 @@ function asDelivery(value: unknown): SessionDelivery | undefined {
     Array.isArray(locksSettled) &&
     locksSettled.every((notice) => isOverlapNotice(notice) && typeof (notice as { outcome?: unknown }).outcome === "string") &&
     Array.isArray(toolResults) &&
-    toolResults.every(isToolResultNotice);
-  return wellFormed
-    ? { sessionId, identity, delivered, threads, overlaps, locksSettled: locksSettled as SettledNotice[], toolResults: toolResults as ToolResultNotice[] }
-    : undefined;
+    toolResults.every(isToolResultNotice) &&
+    Array.isArray(newPlanParts) &&
+    newPlanParts.every((notice) => isPartNotice(notice) && isStrings((notice as { scopes?: unknown }).scopes)) &&
+    Array.isArray(planDecisions) &&
+    planDecisions.every((notice) => isPartNotice(notice) && typeof (notice as { state?: unknown }).state === "string") &&
+    Array.isArray(reviewResults) &&
+    reviewResults.every(isReviewResult);
+  if (!wellFormed) return undefined;
+  return {
+    sessionId,
+    identity,
+    delivered,
+    threads,
+    overlaps,
+    locksSettled: locksSettled as SettledNotice[],
+    toolResults: toolResults as ToolResultNotice[],
+    newPlanParts: (newPlanParts as PlanPartNotice[]).map(({ feature, part, revision, scopes }) => ({ feature, part, revision, scopes })),
+    planDecisions: (planDecisions as PlanDecisionNotice[]).map(({ feature, part, revision, state }) => ({ feature, part, revision, state })),
+    reviewResults: (reviewResults as ReviewResultNotice[]).map(({ reviewId, feature, scope, state, refusals, exceptions }) => ({
+      reviewId,
+      feature,
+      scope,
+      state,
+      refusals,
+      exceptions,
+    })),
+  };
 }
 
 function isToolResultNotice(value: unknown): value is ToolResultNotice {
   if (typeof value !== "object" || value === null) return false;
   const { recordedAs, tool, feature, result, summary } = value as Record<string, unknown>;
   return Number.isSafeInteger(recordedAs) && [tool, feature, result, summary].every((field) => typeof field === "string");
+}
+
+const isStrings = (value: unknown): value is string[] => Array.isArray(value) && value.every((each) => typeof each === "string");
+
+function isPartNotice(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  const { feature, part, revision } = value as Record<string, unknown>;
+  return typeof feature === "string" && typeof part === "string" && Number.isSafeInteger(revision);
+}
+
+function isReviewResult(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  const { reviewId, feature, scope, state, refusals, exceptions } = value as Record<string, unknown>;
+  return (
+    Number.isSafeInteger(reviewId) &&
+    typeof feature === "string" &&
+    typeof scope === "string" &&
+    typeof state === "string" &&
+    isStrings(refusals) &&
+    isStrings(exceptions)
+  );
 }
 
 function isOverlapNotice(value: unknown): value is OverlapNotice {
@@ -185,6 +270,19 @@ export function formatDeliveries(deliveries: readonly SessionDelivery[]): string
       for (const { recordedAs, tool, feature, result, summary } of delivery.toolResults ?? []) {
         lines.push(`Penguin: the check runner answered ${tool} ${recordedAs} on feature ${feature} for ${session}: ${result}, ${summary}.\n`);
       }
+      for (const { feature, part, revision, scopes } of delivery.newPlanParts) {
+        lines.push(
+          `Penguin: revision ${revision} of part ${part} of feature ${feature}'s merge plan touches ${scopes.join(", ")} and waits on the developer of ${session}.\n`,
+        );
+      }
+      for (const { part, revision, state } of delivery.planDecisions) {
+        lines.push(`Penguin: revision ${revision} of part ${part} of the merge plan of ${session} is ${state.replaceAll("_", " ")}.\n`);
+      }
+      for (const { reviewId, feature, scope, state, refusals, exceptions } of delivery.reviewResults) {
+        const why = refusals.length > 0 ? ` (${refusals.join(", ")})` : "";
+        const raised = exceptions.length > 0 ? `; it raised ${exceptions.join(", ")} for the scope's owner` : "";
+        lines.push(`Penguin: review ${reviewId} of ${scope} on feature ${feature} by ${session} was ${state}${why}${raised}.\n`);
+      }
       return lines;
     })
     .join("");
@@ -210,9 +308,18 @@ export function hookAnswer(deliveries: readonly SessionDelivery[]): string | und
   const results = deliveries.some((delivery) => (delivery.toolResults ?? []).length > 0)
     ? " Read each tool result in get_work's toolResults under the id its call was recorded as."
     : "";
+  const parts = deliveries.some((delivery) => delivery.newPlanParts.length > 0)
+    ? " Review each part in get_work's planPartsNeedingYou with submit_review for its scopes and tell your developer, who approves it or asks for a change on the dashboard's inbox; you never approve it."
+    : "";
+  const decisions = deliveries.some((delivery) => delivery.planDecisions.some((decision) => decision.state === "change_requested"))
+    ? " Answer each change_requested part in get_work's plan with revise_plan_part."
+    : "";
+  const reviews = deliveries.some((delivery) => delivery.reviewResults.length > 0)
+    ? " get_work's reviewResults gives each verdict's reasons; fix a refused form and submit it again."
+    : "";
   const additionalContext =
     `${delivered.trim().replaceAll("\n", " ")} Finish the step you are on, then call the penguin get_work tool with ` +
-    `your sessionId to read each task's pinned base, allowed paths, failing tests and acceptance criteria.${threads}${overlaps}${settled}${results}`;
+    `your sessionId to read each task's pinned base, allowed paths, failing tests and acceptance criteria.${threads}${overlaps}${settled}${results}${parts}${decisions}${reviews}`;
   return `${JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext } })}\n`;
 }
 

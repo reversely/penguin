@@ -27,6 +27,7 @@ function pending(reviews: ReviewStore, verdict: "holds" | "breaks" = "holds"): S
     scopeId: "analytics",
     ownerId: "jun",
     reviewer: "@jun/agent",
+    sessionId: "ses_jun",
     forkSha: FORK,
     baseSha: BASE,
     form: { rows: [{ invariant: TABLET, verdict, evidence: ["analytics/tests/test_dau.py::test_x"], storedData: "None" }], riskyInputs: [], storedDataMarker: null },

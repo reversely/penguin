@@ -10,6 +10,8 @@ import {
   type IdentityWriteOutcome,
   type InboxReadOutcome,
   type OverlapApproveResult,
+  type PlanPartDecision,
+  type PlanPartDecisionResult,
 } from "../src/dashboard.ts";
 import type { FeatureOpenResult } from "../src/features.ts";
 import { type GatewayHandlers, handleRequest } from "../src/gateway.ts";
@@ -32,7 +34,7 @@ function options(overrides: Partial<DashboardOptions> = {}): DashboardOptions {
   return {
     githubClientId: DOUBLE_CLIENT.clientId,
     githubClientSecret: DOUBLE_CLIENT.clientSecret,
-    owners: parseOwnerMap("Priya-GH:priya, jun-gh:jun"),
+    owners: parseOwnerMap("Priya-GH:priya, jun-gh:jun, rahul-gh:rahul"),
     githubBaseUrl: double.url,
     ...overrides,
   };
@@ -149,6 +151,18 @@ class Backend implements DashboardBackend {
       return { status: "rejected", reason: "conflict", message: "already approved" };
     }
     return { status: "ok", lock: { featureId, blockedFeatureId, approvedBy: owner } };
+  }
+  /** What GET /api/plan-parts answers; a test may break it to see the schema check. */
+  planInbox: unknown = { parts: [], reviewExceptions: [] };
+  readonly decisions: { owner: string; decision: PlanPartDecision }[] = [];
+  async planParts() {
+    return this.planInbox;
+  }
+  async decidePlanPart(owner: string, decision: PlanPartDecision): Promise<PlanPartDecisionResult> {
+    this.decisions.push({ owner, decision });
+    if (owner !== "rahul") return { status: "rejected", reason: "forbidden", message: "not your part" };
+    if (this.decisions.filter((each) => each.owner === "rahul").length > 1) return { status: "rejected", reason: "conflict", message: "already decided" };
+    return { status: "ok", part: { partId: decision.part }, recordId: "rahul-web-0001" };
   }
   private view(id: string, person: string) {
     return { id, person, fork: `feature-${id}`, state: "building", area: { scopes: [], paths: [], contracts: [] }, openedAt: "2026-10-11T00:00:00.000Z", latestCheckpointSha: null };
@@ -669,6 +683,53 @@ describe("a signed-in person's overlapping starts", () => {
     assert.equal((await browser.request("/api/overlaps")).status, 401);
     assert.equal((await browser.post("/api/overlaps/approve", { feature: "a", blockedFeature: "b" })).status, 401);
     assert.deepEqual(browser.backend.approvals, []);
+  });
+});
+
+describe("a signed-in person's merge plan parts", () => {
+  test("lists the parts waiting on them, checked against the schema", async () => {
+    const browser = new Browser();
+    await browser.signIn("rahul-gh");
+    assert.deepEqual(await (await browser.request("/api/plan-parts")).json(), { parts: [], reviewExceptions: [] });
+    browser.backend.planInbox = { parts: [{ feature: "../main" }], reviewExceptions: [] };
+    assert.equal((await browser.request("/api/plan-parts")).status, 500);
+    assert.equal((await browser.post("/api/plan-parts", {})).status, 405);
+  });
+
+  test("decides as the session's person; a forged decider, another person and a replay are refused", async () => {
+    const rahul = new Browser();
+    await rahul.signIn("rahul-gh");
+    const part = { feature: "money-minor", part: "money-minor/v1#2", revision: 1 };
+    // The decider comes from the session only: a body naming one is refused before the ProjectAgent.
+    for (const forged of [{ ...part, approved_by: "rahul" }, { ...part, owner: "rahul" }, { ...part, text: "approve" }]) {
+      assert.equal((await rahul.post("/api/plan-parts/approve", forged)).status, 400);
+    }
+    for (const bad of [{ ...part, feature: "../main" }, { ...part, revision: "1" }, { feature: "money-minor", revision: 1 }]) {
+      assert.equal((await rahul.post("/api/plan-parts/approve", bad)).status, 400);
+    }
+    assert.equal((await rahul.post("/api/plan-parts/request-change", part)).status, 400);
+    assert.equal((await rahul.post("/api/plan-parts/approve", part, "https://evil.test")).status, 403);
+    assert.equal((await rahul.post("/api/plan-parts/merge", part)).status, 404);
+    assert.deepEqual(rahul.backend.decisions, []);
+
+    const jun = new Browser(rahul.backend);
+    await jun.signIn("jun-gh");
+    assert.equal((await jun.post("/api/plan-parts/approve", part)).status, 403);
+    const text = '<img src=x onerror="alert(1)"> round per line';
+    assert.equal((await rahul.post("/api/plan-parts/request-change", { ...part, text })).status, 200);
+    assert.equal((await rahul.post("/api/plan-parts/approve", part)).status, 409);
+    assert.deepEqual(
+      rahul.backend.decisions.map(({ owner, decision }) => [owner, decision.kind]),
+      [["jun", "approve"], ["rahul", "request_change"], ["rahul", "approve"]],
+    );
+    assert.deepEqual(rahul.backend.decisions[1]?.decision, { kind: "request_change", ...part, text });
+  });
+
+  test("without a session the plan part routes answer 401", async () => {
+    const browser = new Browser();
+    assert.equal((await browser.request("/api/plan-parts")).status, 401);
+    assert.equal((await browser.post("/api/plan-parts/approve", { feature: "a", part: "a/v1#1", revision: 1 })).status, 401);
+    assert.deepEqual(browser.backend.decisions, []);
   });
 });
 

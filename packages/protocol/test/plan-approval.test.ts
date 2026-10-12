@@ -1,0 +1,148 @@
+// The routing of PRD 0.4 section 4.3 step 4 (#90), fed with recorded review results: the tax review
+// of docs/case-study-money.md, whose side-by-side run differs on the protected per-line invariant, and
+// Jun's protected `analytics/revenue_report.py`.
+
+import assert from "node:assert/strict";
+import { test } from "node:test";
+
+import {
+  checkPlanInbox,
+  partRouting,
+  reviewExceptions,
+  SIDE_BY_SIDE_COMMAND_ID,
+  SIDE_BY_SIDE_TOOL,
+  REVIEW_SCHEMA_VERSION,
+  type InvariantView,
+  type PartReviewResult,
+  type PlanPart,
+  type ReviewForm,
+  type SideBySideRecord,
+} from "@penguin/protocol";
+
+const PER_LINE: InvariantView = { id: "tax-per-line", scopeId: "tax", statement: "Tax is rounded per line item", protected: true };
+const BASE = "a".repeat(40);
+const FORK = "b".repeat(40);
+
+function sideBySide(differing: number): SideBySideRecord {
+  return {
+    schemaVersion: REVIEW_SCHEMA_VERSION,
+    tool: SIDE_BY_SIDE_TOOL,
+    commandId: SIDE_BY_SIDE_COMMAND_ID,
+    base: BASE,
+    fork: FORK,
+    scope: "tax",
+    sets: [
+      {
+        source: "examples",
+        file: "tax/examples/orders.json",
+        contract: "tax/invoice.py::invoice_tax",
+        invariants: [PER_LINE.id],
+        inputs: Array.from({ length: Math.max(differing, 1) }, (_, index) => `order ${index}`),
+        differing: Array.from({ length: differing }, (_, index) => ({
+          name: `order ${index}`,
+          args: {},
+          main: { status: "returned" as const, value: 3 },
+          fork: { status: "returned" as const, value: 4 },
+        })),
+        invalid: [],
+        mainMs: 1,
+        forkMs: 1,
+      },
+    ],
+    totals: { inputs: Math.max(differing, 1), differing, invalid: 0 },
+    timings: { mainMs: 1, forkMs: 1, totalMs: 2 },
+  };
+}
+
+const form = (verdict: "holds" | "breaks"): ReviewForm => ({
+  rows: [{ invariant: PER_LINE.id, verdict, evidence: ["tax/tests/test_invoice.py::test_per_line"], storedData: "None" }],
+  riskyInputs: [],
+  storedDataMarker: null,
+});
+
+/** A recorded review result as the ProjectAgent keeps it: the exceptions derived from the form and the run. */
+const recorded = (reviewId: number, scope: string, accepted: ReviewForm | null, differing: number): PartReviewResult => ({
+  reviewId,
+  scope,
+  state: accepted === null ? "refused" : "accepted",
+  exceptions: reviewExceptions(accepted, [PER_LINE], sideBySide(differing)),
+});
+
+const part = (paths: string[], scopes = ["tax"]): Pick<PlanPart, "scopes" | "diff"> => ({
+  scopes,
+  diff: {
+    source: "commit",
+    repo: "feature-money",
+    ref: `feature-money@${FORK}`,
+    commit: FORK,
+    base: BASE,
+    patch: null,
+    files: paths.map((path) => ({ path, scopeId: null, status: "modified" as const, hunks: [], omitted: null })),
+    truncated: false,
+  },
+});
+
+const PROTECTED = new Map([["analytics/revenue_report.py", { scope: "analytics", owner: "jun", path: "analytics/revenue_report.py" }]]);
+const protectedFor = (path: string) => PROTECTED.get(path);
+
+test("a part with no routing condition needs nobody in person", () => {
+  const routing = partRouting(part(["tax/invoice.py"]), [recorded(1, "tax", form("holds"), 0)], protectedFor);
+  assert.deepEqual(routing, { inPerson: false, reasons: [] });
+  // A pending review raises nothing yet, and neither does a review of a scope outside the part.
+  const pending: PartReviewResult = { reviewId: 2, scope: "tax", state: "pending", exceptions: [] };
+  assert.deepEqual(partRouting(part(["tax/invoice.py"]), [pending, recorded(3, "orders", form("breaks"), 9)], protectedFor).inPerson, false);
+});
+
+test("a difference on a protected invariant routes to the author whatever the form says", () => {
+  // Rahul's tax review: 1,633 of 5,000 sample orders differ on the per-line invariant.
+  for (const accepted of [form("holds"), null]) {
+    const routing = partRouting(part(["tax/invoice.py"]), [recorded(4, "tax", accepted, 1_633)], protectedFor);
+    assert.deepEqual(routing.reasons, [
+      { kind: "protected_difference", scope: "tax", invariant: "tax-per-line", contract: "tax/invoice.py::invoice_tax", differing: 1_633, reviewId: 4 },
+    ]);
+    assert.equal(routing.inPerson, true);
+  }
+});
+
+test("a broken invariant routes to the author; only the newest review of each scope counts", () => {
+  const broken = recorded(5, "tax", form("breaks"), 0);
+  assert.deepEqual(partRouting(part(["tax/invoice.py"]), [broken], protectedFor).reasons, [
+    { kind: "broken_invariant", scope: "tax", invariant: "tax-per-line", reviewId: 5 },
+  ]);
+  // The revision's review holds and matches main: the older review no longer routes.
+  const revised = recorded(6, "tax", form("holds"), 0);
+  assert.deepEqual(partRouting(part(["tax/invoice.py"]), [revised, broken], protectedFor), { inPerson: false, reasons: [] });
+});
+
+test("a part that writes a protected path routes to the path's owner", () => {
+  const routing = partRouting(part(["analytics/revenue_report.py", "analytics/weekly.py"], ["analytics"]), [], protectedFor);
+  assert.deepEqual(routing, {
+    inPerson: true,
+    reasons: [{ kind: "protected_path", scope: "analytics", owner: "jun", path: "analytics/revenue_report.py", file: "analytics/revenue_report.py" }],
+  });
+});
+
+test("the dashboard answer schema takes a part with its routing and refuses markup in a person id", () => {
+  const routing = partRouting(part(["analytics/revenue_report.py"], ["analytics"]), [], protectedFor);
+  const item = {
+    ask: "approve",
+    feature: "money-minor",
+    person: "ines",
+    partId: "money-minor/v1#3",
+    revision: 1,
+    place: { kind: "scope", scope: "analytics" },
+    owner: "jun",
+    kind: "behavioural",
+    state: "pending",
+    changeRequests: 0,
+    roundLimit: 3,
+    files: [{ path: "analytics/revenue_report.py", status: "modified", lines: ["-a", "+b"] }],
+    routing,
+    changeRequest: null,
+    read: false,
+    raisedAt: "2026-10-11T09:00:00.000Z",
+  };
+  assert.deepEqual(checkPlanInbox({ parts: [item], reviewExceptions: [] }), []);
+  assert.notDeepEqual(checkPlanInbox({ parts: [{ ...item, owner: "<b>jun</b>" }], reviewExceptions: [] }), []);
+  assert.notDeepEqual(checkPlanInbox({ parts: [{ ...item, state: "merged" }], reviewExceptions: [] }), []);
+});

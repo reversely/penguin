@@ -436,6 +436,27 @@ describe("safe checkpoints for agent sessions", () => {
     assert.match(context, /call feature_token for the write token on your feature's fork\.$/u);
   });
 
+  test("as a PreToolUse hook it tells the agent about plan parts, decisions and review verdicts", async () => {
+    await registered();
+    penguin.deliveries = () => [
+      {
+        sessionId: "ses_5",
+        identity: "@rahul/work",
+        delivered: [],
+        newPlanParts: [{ feature: "money-minor", part: "money-minor/v1#2", revision: 1, scopes: ["tax"] }],
+        planDecisions: [{ feature: "tax-rounding", part: "tax-rounding/v1#1", revision: 2, state: "change_requested" }],
+        // Refusal codes and exception kinds only; the words behind them stay in get_work.
+        reviewResults: [{ reviewId: 7, feature: "money-minor", scope: "tax", state: "accepted", refusals: [], exceptions: ["protected_difference"] }],
+      },
+    ];
+    assert.equal(await cli(["session-checkpoint", "--hook", "--worktree", repo.worktreeA]), 0);
+    const context = JSON.parse(output.join("")).hookSpecificOutput.additionalContext;
+    assert.match(context, /^Penguin: revision 1 of part money-minor\/v1#2 of feature money-minor's merge plan touches tax and waits on the developer of @rahul\/work \(session ses_5\)\. /u);
+    assert.match(context, /revision 2 of part tax-rounding\/v1#1 of the merge plan of @rahul\/work \(session ses_5\) is change requested\./u);
+    assert.match(context, /review 7 of tax on feature money-minor by @rahul\/work \(session ses_5\) was accepted; it raised protected_difference for the scope's owner\./u);
+    assert.match(context, /you never approve it\. Answer each change_requested part in get_work's plan with revise_plan_part\. get_work's reviewResults/u);
+  });
+
   test("an unreachable Penguin never stops the agent's tool call, and the command says why", async () => {
     await registered();
     offline = "all";

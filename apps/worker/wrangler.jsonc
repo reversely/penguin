@@ -23,12 +23,17 @@
   // A merge plan that touches more running features than PENGUIN_PLAN_BREAK_LIMIT is returned to its
   // author (PRD 0.4 section 4.2 step 5). Unset means the PRD's default of 10; any value other than a
   // positive whole number refuses every plan as misconfigured.
+  //
+  // An author may ask for PENGUIN_PLAN_ROUND_LIMIT changes to one plan part; the next request sends
+  // the part to the originating feature's person (PRD 0.4 section 7). Unset means the PRD's default
+  // of 3; any value other than a positive whole number refuses every requested change as misconfigured.
   "vars": {
     "GITHUB_OAUTH_CLIENT_ID": "Ov23liQdtDavAZ3IhIVQ",
     "PENGUIN_DASHBOARD_OWNERS": "reversely:priya",
     "PENGUIN_FEATURE_FORK_DEFAULT_BRANCH_ONLY": "true",
     "PENGUIN_FEATURE_TOKEN_TTL_MINUTES": "30",
-    "PENGUIN_PLAN_BREAK_LIMIT": "10"
+    "PENGUIN_PLAN_BREAK_LIMIT": "10",
+    "PENGUIN_PLAN_ROUND_LIMIT": "3"
   },
   "build": {
     "command": "npm run build -w @penguin/dashboard",

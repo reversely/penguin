@@ -182,8 +182,10 @@ penguin-bridge worktree-id
 ```
 
 `worktree-id` prints the id an agent session in this worktree registers with. `session-checkpoint`
-tells Penguin the sessions in this worktree are between steps, so waiting fix tasks and thread
-notices reach them (`session-checkpoint.ts`). With `--hook` it is a PreToolUse hook for Claude Code
+tells Penguin the sessions in this worktree are between steps, so waiting fix tasks, thread
+notices, merge plan parts, decisions on the session's plan and review verdicts reach them
+(`session-checkpoint.ts`). The hook answer carries refusal codes and exception kinds only; the
+agent reads the words behind them with `get_work`. With `--hook` it is a PreToolUse hook for Claude Code
 and Codex: it prints a hook answer only when something arrived and always exits 0, so an unreachable
 Penguin never stops the agent. [mcp-setup.md](mcp-setup.md#fix-tasks-and-safe-checkpoints) has the
 hook settings.

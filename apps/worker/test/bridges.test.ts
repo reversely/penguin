@@ -135,7 +135,7 @@ function gateway(artifacts = fakeArtifacts(PROJECT_REPOS)) {
         }
         const area = { scopes: ["analytics"], paths: ["analytics/report.py"], contracts: [] };
         const feature = { id: featureId, personId: owner, repo: "test-feature-tax-rounding", area, state: "building" as const, openedAt: "", latestCheckpointSha: sha, updatedAt: "" };
-        return { status: "ok", feature, baselineSha: "b".repeat(40), changedPaths: 1, omittedPaths: 0, delivered: [], threads: [], overlaps: [], settled: [], durationMs: 3 };
+        return { status: "ok", feature, baselineSha: "b".repeat(40), changedPaths: 1, omittedPaths: 0, delivered: [], threads: [], overlaps: [], settled: [], planNotices: { parts: [], decisions: [], reviews: [] }, durationMs: 3 };
       },
     }),
     ownerForkRepo: (owner) => names.owner(owner),
@@ -515,7 +515,7 @@ test("a bridge's session checkpoint reaches only its owner's running sessions in
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), {
     worktreeId: "wt_0123456789abcdef",
-    sessions: [{ sessionId: junHere, identity: "@jun/reports", delivered: [], threads: [], overlaps: [], locksSettled: [], toolResults: [] }],
+    sessions: [{ sessionId: junHere, identity: "@jun/reports", delivered: [], threads: [], overlaps: [], locksSettled: [], toolResults: [], newPlanParts: [], planDecisions: [], reviewResults: [] }],
   });
   // The checkpoint counts as that session's heartbeat; the other sessions were not touched.
   const seen = sessions.running().map((session) => [session.id === junHere, Date.parse(session.lastSeen) === clock.now]);
