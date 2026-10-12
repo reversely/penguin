@@ -96,8 +96,8 @@ export const OVERLAP_LIMITS = {
   paths: 100,
 } as const;
 
-/** Every feature state counts as running until features can land (PRD 4.5). */
-export const RUNNING_STATES: ReadonlySet<Feature["state"]> = new Set(["opening", "building"]);
+/** A feature runs until it lands (PRD 4.5): a landed feature covers no area and is no target. */
+export const RUNNING_STATES: ReadonlySet<Feature["state"]> = new Set(["opening", "building", "landing"]);
 
 export const OVERLAP_SCHEMA: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS OverlapLock (
@@ -267,6 +267,13 @@ export class OverlapStore {
     return this.#db
       .exec(`SELECT * FROM OverlapLock WHERE blocked_feature_id = ? ORDER BY opened_at, rowid`, blockedFeatureId)
       .map(lock);
+  }
+
+  /** The features whose start an open lock of `featureId` holds, oldest lock first. */
+  heldBy(featureId: string): string[] {
+    return this.#db
+      .exec(`SELECT blocked_feature_id FROM OverlapLock WHERE feature_id = ? AND state = 'open' ORDER BY opened_at, rowid`, featureId)
+      .map((row) => row["blocked_feature_id"] as string);
   }
 
   /** The open locks `personId` is asked to approve, oldest first. */

@@ -1,0 +1,12 @@
+{
+  "name": "@penguin/feature-agent",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Agents SDK class, one per feature: the merge plan, approvals, fix writes, block checks and promotion; also the owner-fork Huddle loop",
+  "type": "module",
+  "exports": "./src/index.ts",
+  "dependencies": {
+    "@penguin/project-agent": "0.0.0",
+    "agents": "0.28.0"
+  }
+}

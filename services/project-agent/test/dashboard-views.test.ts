@@ -36,6 +36,9 @@ test("a feature's state is the latest step its facts show", () => {
   assert.equal(featureState(facts({ parts: [{ state: "round_limit" }] })), "waiting on approvals");
   // Every part approved: the block goes to its checks.
   assert.equal(featureState(facts({ parts: [{ state: "approved" }, { state: "approved" }] })), "promoting");
+  // Its block run is checked or moving main, then main holds it.
+  assert.equal(featureState(facts({ feature: { state: "landing" }, locks: [{ state: "open" }] })), "promoting");
+  assert.equal(featureState(facts({ feature: { state: "landed" }, parts: [{ state: "approved" }] })), "promoted");
 });
 
 test("a feature highlights a part past the round limit, a returned plan and its newest reviews' exceptions", () => {

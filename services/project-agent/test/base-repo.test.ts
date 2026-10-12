@@ -58,7 +58,7 @@ describe("the base repo through the Artifacts binding", () => {
   });
 
   test("no Worker or agent source passes HEAD or a refs/heads/ ref to an Artifacts read", () => {
-    const sources = ["apps/worker/src", ...["huddle-agent", "issues", "mcp", "project-agent"].map((s) => `services/${s}/src`)];
+    const sources = ["apps/worker/src", ...["feature-agent", "issues", "mcp", "project-agent"].map((s) => `services/${s}/src`)];
     const literal = /\bref:\s*["'`](HEAD\b|refs\/heads\/)/;
     const hits = sources
       .flatMap((dir) => tsFiles(join(REPO_ROOT, dir)))

@@ -137,7 +137,7 @@ test("the page carries the issue, its sub-issues with sessions and reviews, and 
     child?.checks.map((check) => check.result),
     ["pass"],
   );
-  // No HuddleAgent reported an approval for this sub-issue.
+  // No FeatureAgent reported an approval for this sub-issue.
   assert.equal(child?.approval, null);
   assert.deepEqual(
     read.timeline.map((entry) => [entry.type, entry.status, entry.waitingForGitLog]),
@@ -233,7 +233,7 @@ test("each unpushed operation carries how long it has waited for the runner", as
   assert.equal(page("40")?.runnerInterval, RUNNER_INTERVAL_MS);
 });
 
-test("a sub-issue carries the approval its HuddleAgent recorded", async () => {
+test("a sub-issue carries the approval its FeatureAgent recorded", async () => {
   const { page, submit, approvals } = project();
   await submit(penguin, 31, "create", { title: "Identity map change breaks analytics" });
   await submit(penguin, 32, "create", { title: "Shared-device merge" });

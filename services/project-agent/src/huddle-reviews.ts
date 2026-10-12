@@ -10,11 +10,11 @@
 //
 // Whose review counts, and how a delegate's counts, is decided when the review is applied
 // (packages/policies/src/review-rights.ts); where each owner stands on the head is derived from the
-// fix's reviews (packages/policies/src/fix-approval.ts). Each Huddle's HuddleAgent keeps that standing
+// fix's reviews (packages/policies/src/fix-approval.ts). Each Huddle's FeatureAgent keeps that standing
 // per fix and owner in its own SQLite (FixReview), and hands each fix's approval to the ProjectAgent,
 // whose issue page shows it (approval-store.ts).
 //
-// A counting review that requests changes opens a thread on the fix, and the HuddleAgent keeps every
+// A counting review that requests changes opens a thread on the fix, and the FeatureAgent keeps every
 // thread of the Huddle in its own SQLite (huddle-threads.ts).
 
 import { fixApproval, fixHead, type FixApproval, type IssueRecord, type OwnerApprovalState } from "@penguin/issues";
@@ -30,7 +30,7 @@ import type { VerificationStore } from "./verification-store.ts";
 
 type Row = Record<string, SqlValue>;
 
-/** What a HuddleAgent's review steps read and write through the ProjectAgent, beyond verification's port. */
+/** What a FeatureAgent's review steps read and write through the ProjectAgent, beyond verification's port. */
 export interface HuddleReviewPort extends HuddleProjectPort {
   /** The scope map review rights are judged by. */
   scopeMap(): ScopeMap | Promise<ScopeMap>;
@@ -40,14 +40,14 @@ export interface HuddleReviewPort extends HuddleProjectPort {
   recordApproval(issueId: string, approval: FixApproval): void | Promise<void>;
 }
 
-/** One Huddle's review state and runs, kept by its HuddleAgent, and the ProjectAgent's side. */
+/** One Huddle's review state and runs, kept by its FeatureAgent, and the ProjectAgent's side. */
 export interface HuddleReviewDeps extends HuddleReviewPort {
   readonly reviews: FixReviewStore;
   readonly threads: HuddleThreadStore;
   readonly runs: Pick<VerificationStore, "latest">;
 }
 
-/** The review step a HuddleAgent answers over RPC for its one Huddle; it goes on to evaluate the close. */
+/** The review step a FeatureAgent answers over RPC for its one Huddle; it goes on to evaluate the close. */
 export interface HuddleReviewer {
   collectReviews(huddle: Huddle, project: HuddleClosePort): Promise<ReviewCollection | undefined>;
 }
@@ -68,7 +68,7 @@ export const FIX_REVIEW_SCHEMA: readonly string[] = [
     review_op_id TEXT, requested_head TEXT, requested_at INTEGER, PRIMARY KEY (issue_id, owner_id))`,
 ];
 
-/** Where one owner stands on one fix, as the HuddleAgent keeps it. */
+/** Where one owner stands on one fix, as the FeatureAgent keeps it. */
 export interface FixReview {
   readonly issueId: string;
   readonly ownerId: string;
@@ -85,7 +85,7 @@ export interface FixReview {
 const WRITE_ATTEMPTS = 5;
 
 /**
- * Each fix sub-issue's review standing per owner (PRD section 7, HuddleAgent storage). It is live
+ * Each fix sub-issue's review standing per owner (PRD section 7, FeatureAgent storage). It is live
  * coordination state: the reviews themselves are operations in the issues repo.
  */
 export class FixReviewStore {

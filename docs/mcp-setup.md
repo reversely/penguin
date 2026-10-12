@@ -291,6 +291,28 @@ a tool error. Text from the repository and the run, such as the commit subject, 
 lines, diff lines and the agent's own note, arrives only inside `personWritten`
 ([design.md](design.md#steps-1-to-5-in-the-build)).
 
+## Landing a feature
+
+A session of a feature asks Penguin to move main to the feature's latest checkpoint with
+`land_feature` ([design.md](design.md#block-promotion-in-the-build)).
+
+| Tool | Input | Answer |
+|---|---|---|
+| `land_feature` | `feature`; optionally `checkpoint`, which must be the feature's latest | `checking` with the run's id, the checkpoint, main's head it is checked against, the branch, the plan and every target fork with its head; or the reason the feature is not ready |
+
+The answer carries no token: Penguin moves main itself. A refusal names what is missing:
+`behind_main` (merge main into your fork, report the merge with `report_checkpoint` and land again),
+`plan_not_approved`, `fix_not_written`, `fix_not_in_block`, `fix_not_in_place`, `not_ready` (no
+checkpoint, or nothing past main) or `busy` (a land of the feature is already being checked).
+
+`get_work` reports `landing`: the feature's state (`building`, `landing` or `landed`), its newest block
+runs and its promotion. Each run names its purpose (`land` or `plan_check`), its state, the failing
+checks and one next step per failure under `nextSteps`. A `raced` run met a main that moved; Penguin
+checks the block again, or returns the feature to `building` to take main. Check summaries and the
+evidence behind each next step come from the repos and the tools' runs, so they arrive only inside
+`personWritten`. `report_checkpoint` on a feature fork lists under `planChecks` each announced plan
+whose block the checkpoint asked to check again.
+
 ## Sending a fix upstream
 
 A session can find that its fix task belongs in the scope the trigger changed, outside its identity's

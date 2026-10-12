@@ -39,6 +39,9 @@ export type { ToolPassOptions, ToolPassResult, ToolRunResult } from "./tool-run.
 export { fixWritePass, formatFixWritePass, writeFix } from "./fix-write.ts";
 export type { ClaimedFixWrite, FixWritePassOptions, FixWritePassResult, FixWriteReply, FixWriteResult, FixWriterOptions } from "./fix-write.ts";
 export { runFixWriteCommand } from "./fix-write-cli.ts";
+export { runPreviewCommand } from "./preview-cli.ts";
+export { blockPass, formatBlockPass } from "./block-run.ts";
+export type { BlockPassOptions, BlockPassResult, BlockRunResult } from "./block-run.ts";
 
 export {
   AGENT_TRAILER_KEY,
@@ -72,6 +75,9 @@ export {
 export type { GitRemote, RemoteResolver, RepoToken, TokenSource } from "./git-remote.ts";
 export {
   APPROVAL_ROUTE,
+  BLOCK_ROUTE,
+  claimBlockRuns,
+  reportBlockRun,
   bridgeRemotes,
   bridgeTokenAccount,
   checkedOrigin,
@@ -106,6 +112,7 @@ export {
 } from "./penguin-client.ts";
 export type {
   ApprovalReply,
+  BlockRunReply,
   BridgeRegistration,
   ClaimedCombinedRun,
   ClaimedFork,

@@ -12,7 +12,7 @@
 // revision, with its fingerprint. The issue moves to IN_REVIEW when every command passes and back to
 // FIXING otherwise: a clean Git merge whose tests fail keeps the issue out of review.
 //
-// The ProjectAgent keeps the Huddle record and the issue index; each Huddle's HuddleAgent runs these
+// The ProjectAgent keeps the Huddle record and the issue index; each Huddle's FeatureAgent runs these
 // steps over its own runs and writes its operations back through the ProjectAgent, which signs and
 // validates them (PRD section 5). The steps below take one Huddle; `huddlesOf` picks the Huddles a
 // checkpoint concerns.
@@ -36,7 +36,7 @@ import type { OwnerFork } from "./owner-forks.ts";
 import { sameCheckpoints, type VerificationRun, type VerificationStore } from "./verification-store.ts";
 
 /**
- * What a HuddleAgent reads and writes through the ProjectAgent, which holds the issue index, the
+ * What a FeatureAgent reads and writes through the ProjectAgent, which holds the issue index, the
  * owner forks and the service key. Over Durable Object RPC each call answers with a promise.
  */
 export interface HuddleProjectPort {
@@ -46,13 +46,13 @@ export interface HuddleProjectPort {
   ownerFork(ownerId: string): OwnerFork | undefined | Promise<OwnerFork | undefined>;
 }
 
-/** One Huddle's runs, kept by its HuddleAgent, and the ProjectAgent's side. */
+/** One Huddle's runs, kept by its FeatureAgent, and the ProjectAgent's side. */
 export interface HuddleVerifyDeps extends HuddleProjectPort {
   readonly runs: VerificationStore;
 }
 
 /**
- * The verification steps a HuddleAgent answers over RPC for its one Huddle. The ProjectAgent passes
+ * The verification steps a FeatureAgent answers over RPC for its one Huddle. The ProjectAgent passes
  * the Huddle record and, for steps that write, the port back to itself. A step goes on to collect
  * reviews (huddle-reviews.ts) or evaluate the close (huddle-close.ts), so its port is the close port.
  */

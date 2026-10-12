@@ -70,7 +70,8 @@ const FINDING = object({
 });
 const FINDINGS = list(FINDING, BLOCK_CHECK_LIMITS.findingsPerCheck);
 
-const DECISION = object({
+/** JSON Schema of one ladder decision, as a `check` result or a block run report carries it. */
+export const LADDER_DECISION_SCHEMA = object({
   target: text(64, 1),
   check: { type: "string", enum: [...BLOCK_CHECK_NAMES] },
   failure: { type: "string", enum: [...FAILURE_KINDS] },
@@ -108,7 +109,7 @@ export const TOOL_RESULT_SCHEMA: JsonSchema = {
     summary: text(TOOL_RESULT_LIMITS.summaryLength),
     impact: nullable(IMPACT_REPORT_SCHEMA),
     checks: list(BLOCK_CHECK_SCHEMA, BLOCK_CHECK_LIMITS.checks),
-    decisions: list(DECISION, BLOCK_CHECK_LIMITS.checks),
+    decisions: list(LADDER_DECISION_SCHEMA, BLOCK_CHECK_LIMITS.checks),
     fix: nullable(TOOL_RUN),
     fixRef: nullable({ type: "string", pattern: "^refs/penguin/fixes/[0-9a-f]{40}(?:[0-9a-f]{24})?$" }),
     pushed: { const: false },

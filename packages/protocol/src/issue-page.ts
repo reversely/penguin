@@ -74,7 +74,7 @@ export interface IssuePageOwnerApproval {
 }
 
 /**
- * Where approval of a Huddle fix stands, as its HuddleAgent last reported it. Only a review of the
+ * Where approval of a Huddle fix stands, as its FeatureAgent last reported it. Only a review of the
  * head counts; one of an older commit was superseded.
  */
 export interface IssuePageApproval {
@@ -90,7 +90,7 @@ export interface IssuePageApproval {
 export interface IssuePageCloseOut {
   /**
    * What the Huddle issue waits on before Penguin records its approved branch and closes it, one
-   * sentence each, as its HuddleAgent last evaluated it; empty once nothing does or the issue is closed.
+   * sentence each, as its FeatureAgent last evaluated it; empty once nothing does or the issue is closed.
    */
   readonly waitingOn: readonly string[];
   /** The Huddle repo's approved branch commit, `<repo>@<sha>`, once Penguin recorded it; null before. */

@@ -19,8 +19,9 @@ Everything is declared in `apps/worker/wrangler.jsonc`, except the queue itself 
 | Worker | `penguin` | `wrangler.jsonc` | Entry `apps/worker/src/index.ts`, `nodejs_compat` |
 | Static assets | binding `ASSETS` | `wrangler.jsonc` | The built dashboard in `apps/dashboard/dist`. The Worker runs first on every request, so it decides which paths are dashboard files and adds the security headers |
 | Durable Object | `ProjectAgent` | `wrangler.jsonc` | One instance per deployment, named `<repo prefix>project` |
-| Durable Object | `HuddleAgent` | `wrangler.jsonc` | One instance per Huddle issue |
-| Migration | `v1` | `wrangler.jsonc` | Declares both classes with SQLite storage |
+| Durable Object | `FeatureAgent` | `wrangler.jsonc` | One instance per feature, named `<repo prefix>project-feature-<id>`. One instance per owner-fork Huddle issue, named `<repo prefix>project-huddle-<issue>` |
+| Migration | `v1` | `wrangler.jsonc` | Declares `ProjectAgent` and `HuddleAgent` with SQLite storage |
+| Migration | `v2` | `wrangler.jsonc` | Renames `HuddleAgent` to `FeatureAgent`. Every instance keeps its storage, so each feature's plan and fix writes survive. `wrangler deploy` applies it once |
 | Artifacts namespace | `penguin`, binding `ARTIFACTS` | `wrangler.jsonc` | Artifacts creates the namespace on the first repo create. `remote: true` points `wrangler dev` at the real service, since Artifacts has no local simulator |
 | Queue | `penguin-issues-events` | `npx wrangler queues create penguin-issues-events` | The Worker is its consumer |
 | Event subscription | `issues` repo, event `pushed` | The Cloudflare dashboard | See below |
@@ -70,6 +71,7 @@ node -e 'crypto.subtle.generateKey("Ed25519", true, ["sign", "verify"])
 | `PENGUIN_REPO_PREFIX` | Optional | empty | Leads every repo name and the ProjectAgent's name, so a test run's repos stay apart from production's |
 | `PENGUIN_TOKEN_TTL_SECONDS` | Optional | 3600 | Lifetime of the Artifacts tokens the Worker mints, 60 to 31,536,000. A value outside the range makes `/tokens` refuse to mint |
 | `PENGUIN_FIX_TOKEN_TTL_MINUTES` | `vars` in `wrangler.jsonc` | 10 | Lifetime of a write token on an affected feature's fork for one approved plan part, 1 to 60 minutes. Any other value refuses every fix token |
+| `PENGUIN_PROMOTION_TOKEN_TTL_MINUTES` | `vars` in `wrangler.jsonc` | 5 | Lifetime of the write token on main a FeatureAgent mints for one promotion and revokes after the push, 1 to 15 minutes. Any other value refuses every promotion |
 | `PENGUIN_SESSION_OFFLINE_SECONDS` | Optional | 90 | Seconds without an MCP call before an agent session goes offline |
 | `PENGUIN_LOCAL_DEV_UNAUTHENTICATED` | `wrangler dev --var` only | unset | `true` opens the raw agent routes on a loopback hostname; ignored on any other host |
 | `PENGUIN_GITHUB_BASE_URL` | Local testing only | unset | A local GitHub OAuth test double's address; honoured on a loopback hostname only |

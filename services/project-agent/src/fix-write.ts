@@ -275,6 +275,10 @@ async function approvedPart(deps: FixWriteDeps, input: FixPartInput): Promise<Ap
   }
   const target = deps.features.get(part.place.feature);
   if (target?.repo == null) return rejected("not_found", `feature ${part.place.feature} has no fork`);
+  // A landed fork is read-only (PRD 4.5 step 5): no fix goes into it, and a landed plan writes none.
+  for (const feature of [target, deps.features.get(featureId)]) {
+    if (feature?.state === "landed") return rejected("conflict", `feature ${feature.id} has landed; its fork is read-only`);
+  }
   return {
     featureId,
     plan,

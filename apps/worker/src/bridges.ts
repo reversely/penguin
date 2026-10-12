@@ -60,6 +60,16 @@
  * - POST /fix-writes/<write id>, bridge token of the runner that claimed it: reports the pushed commit.
  *   Penguin reads it from the fork and keeps it as a signed `fix_write` record only when it is the
  *   approved patch applied to the granted head; anything else answers 400.
+ * - POST /blocks/claim, bridge token of a runner bridge: claims the waiting block runs (PRD 0.4
+ *   section 4.5): for each, the feature's checkpoint, main's head, main's branch and every other
+ *   running feature's fork head, with the originating agent's charter. No token comes with a claim.
+ * - POST /blocks/<feature>/<n>, bridge token of the runner that claimed it: reports the run's checks
+ *   and ladder decisions. The report goes to the feature's FeatureAgent directly, which keeps it as a
+ *   signed `block_checked` record and, for a passing land run, moves main itself. The answer names
+ *   the promotion's commits and record, never a token.
+ *
+ * No route here, in mcp.ts or in dashboard.ts mints a write token on the base repo: `/tokens` holds
+ * every bridge to `read` on it, and only the FeatureAgent mints one, for one promotion.
  *
  * Responses that carry a code or token are marked `Cache-Control: no-store`.
  */
@@ -90,8 +100,8 @@ import type {
 } from "@penguin/project-agent";
 
 import { planNoticeFields } from "@penguin/mcp";
-import { REVIEW_LIMITS, TOOL_RESULT_LIMITS } from "@penguin/protocol";
-import type { FixWriteSpec, PlanFactsRequest } from "@penguin/protocol";
+import { BLOCK_LIMITS, REVIEW_LIMITS, SEGMENT_PATTERN, TOOL_RESULT_LIMITS } from "@penguin/protocol";
+import type { BlockRunRequest, FixWriteSpec, PlanFactsRequest } from "@penguin/protocol";
 
 import { bearerToken, isDeployer } from "./auth.ts";
 import { checkpointFields, FEATURE_FORK, fixWriteFields, settledFields, toolResultFields } from "./features.ts";
@@ -106,6 +116,9 @@ import {
 } from "./tokens.ts";
 
 type MaybePromise<T> = T | Promise<T>;
+
+/** `/blocks/<feature>/<n>`: a block run's id is its feature and its number in that feature's FeatureAgent. */
+const BLOCK_ROUTE = new RegExp(`^/blocks/(${SEGMENT_PATTERN})/([1-9][0-9]{0,8})$`, "u");
 
 /** How long a registration code stays usable. */
 export const REGISTRATION_CODE_TTL_SECONDS = 900;
@@ -176,6 +189,33 @@ export interface HuddleDirectory {
   reportApproval(issueId: string, runnerId: string, report: unknown): Promise<ApprovalOutcome>;
 }
 
+/** A block run's report as the FeatureAgent answers it (block-land.ts `BlockReportResult`). */
+export type BlockReportAnswer =
+  | {
+      readonly status: "recorded";
+      readonly runId: string;
+      readonly state: string;
+      readonly passed: boolean;
+      readonly recordId: string;
+      readonly promotion: {
+        readonly mainBefore: string;
+        readonly mainAfter: string;
+        readonly branch: string;
+        readonly recordId: string;
+        readonly checkMs: number;
+        readonly promoteMs: number;
+      } | null;
+      readonly retried: { readonly status: string; readonly runId?: string; readonly reason?: string } | null;
+    }
+  | { readonly status: "rejected"; readonly reason: string; readonly message: string };
+
+/** Block runs: the claim across features on the ProjectAgent, each report to its FeatureAgent. */
+export interface BlockDirectory {
+  claim(caller: BridgeCaller): Promise<{ readonly status: "ok"; readonly runs: readonly BlockRunRequest[] } | { readonly status: "forbidden"; readonly message: string }>;
+  /** Hands the report of run `runId`, whose feature the route named, to that feature's FeatureAgent. */
+  report(caller: BridgeCaller, runId: string, body: unknown): Promise<BlockReportAnswer>;
+}
+
 /** Mints a token on a repo named without the deployment's prefix, such as `owner-jun`. */
 export type TokenMinter = (repo: string, scope: TokenScope, ttlSeconds: number) => Promise<MintedToken>;
 
@@ -185,6 +225,7 @@ export interface BridgeHandlers {
   /** The Artifacts repo name of an owner's fork, with the deployment's repo prefix. */
   readonly ownerForkRepo: (ownerId: string) => string;
   readonly huddles: () => HuddleDirectory | Promise<HuddleDirectory>;
+  readonly blocks: () => BlockDirectory | Promise<BlockDirectory>;
   /** The project's issues and base repos, with the deployment's repo prefix. */
   readonly projectRepos: ProjectRepos;
 }
@@ -719,6 +760,65 @@ async function reportFixWrite(request: Request, writeId: number, handlers: Bridg
   return json({ status: "written", writeId, part: write.partId, revision: write.revision, fork: write.targetRepo, commit: write.commitSha, recordId: write.recordId, durationMs }, 200);
 }
 
+/** Hands a runner bridge the waiting block runs, each marked claimed by that bridge. */
+async function claimBlocks(request: Request, handlers: BridgeHandlers): Promise<Response> {
+  const bridge = await runnerBridge(request, handlers);
+  if (bridge instanceof Response) return bridge;
+  if (request.method !== "POST") return methodNotAllowed("POST");
+  // The role comes from the registry record the token authenticated, never from the request.
+  const listing = await (await handlers.blocks()).claim({ bridgeId: bridge.bridgeId, role: bridge.role });
+  if (listing.status === "forbidden") return json({ error: "forbidden", message: listing.message }, 403);
+  const runs = listing.runs.map(({ runId, feature, planId, purpose, fork, checkpoint, main, branch, targets, charter }) => ({
+    runId,
+    feature,
+    planId,
+    purpose,
+    fork,
+    checkpoint,
+    main,
+    branch,
+    targets: targets.map(({ feature: id, person, fork: targetFork, sha }) => ({ feature: id, person, fork: targetFork, sha })),
+    charter: { handle: charter.handle, person: charter.person, scopes: [...charter.scopes], paths: [...charter.paths] },
+  }));
+  return json({ runs }, 200, NO_STORE);
+}
+
+/** A block report body over twice the report cap is refused before it is parsed. */
+const MAX_BLOCK_REPORT_BODY_BYTES = 2 * BLOCK_LIMITS.reportBytes;
+
+const BLOCK_REJECTION_STATUS: Readonly<Record<string, number>> = { invalid: 400, forbidden: 403, not_found: 404, superseded: 409, conflict: 409 };
+
+async function reportBlock(request: Request, runId: string, handlers: BridgeHandlers): Promise<Response> {
+  const bridge = await runnerBridge(request, handlers);
+  if (bridge instanceof Response) return bridge;
+  if (request.method !== "POST") return methodNotAllowed("POST");
+  if (Number(request.headers.get("Content-Length") ?? 0) > MAX_BLOCK_REPORT_BODY_BYTES) {
+    return json({ error: "too large", message: `the report is over ${BLOCK_LIMITS.reportBytes} bytes` }, 413);
+  }
+  const body = await readObject(request);
+  if (body === undefined) return invalid("", "must be a JSON object");
+  let outcome: BlockReportAnswer;
+  try {
+    outcome = await (await handlers.blocks()).report({ bridgeId: bridge.bridgeId, role: bridge.role }, runId, body);
+  } catch (error) {
+    return json({ error: "artifacts", code: artifactsErrorCode(error) ?? null }, 502);
+  }
+  if (outcome.status === "rejected") return json({ error: outcome.reason, message: outcome.message }, BLOCK_REJECTION_STATUS[outcome.reason] ?? 409);
+  const { state, passed, recordId, promotion, retried } = outcome;
+  const promoted =
+    promotion === null
+      ? null
+      : {
+          mainBefore: promotion.mainBefore,
+          mainAfter: promotion.mainAfter,
+          branch: promotion.branch,
+          recordId: promotion.recordId,
+          checkMs: promotion.checkMs,
+          promoteMs: promotion.promoteMs,
+        };
+  return json({ status: "recorded", runId, state, passed, recordId, promotion: promoted, retried }, 200);
+}
+
 function huddleBody(status: "opened" | "existing", huddle: Huddle): Record<string, unknown> {
   const { issueId, triggerCommit, baselineSha, huddleRepo, openedAt } = huddle;
   return { status, issueId, triggerCommit, baselineSha, huddleRepo, openedAt };
@@ -755,6 +855,9 @@ export async function handleBridgeRoute(
   if (url.pathname === "/fix-writes/claim") return claimFixWrites(request, options, handlers);
   const fixWriteId = /^\/fix-writes\/([1-9][0-9]{0,14})$/.exec(url.pathname)?.[1];
   if (fixWriteId !== undefined) return reportFixWrite(request, Number(fixWriteId), handlers);
+  if (url.pathname === "/blocks/claim") return claimBlocks(request, handlers);
+  const blockRun = BLOCK_ROUTE.exec(url.pathname);
+  if (blockRun !== null) return reportBlock(request, `${blockRun[1]}/${blockRun[2]}`, handlers);
   if (url.pathname === "/bridges/codes") return issueCode(request, options, handlers);
   if (url.pathname === "/bridges") return register(request, handlers);
   const bridgeId = /^\/bridges\/([A-Za-z0-9_-]+)$/.exec(url.pathname)?.[1];

@@ -169,6 +169,11 @@ export class PlanCoverageStore {
     });
   }
 
+  /** Retires the announced plan of a feature that landed: no later feature receives or joins it. */
+  retire(featureId: string): void {
+    this.#db.exec(`DELETE FROM AnnouncedPlan WHERE feature_id = ?`, featureId);
+  }
+
   /** Every announced plan, oldest first. */
   plans(): AnnouncedPlan[] {
     return this.#db.exec(`SELECT * FROM AnnouncedPlan ORDER BY announced_at, feature_id`).map(announced);

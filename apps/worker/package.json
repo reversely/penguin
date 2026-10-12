@@ -14,7 +14,7 @@
     "@modelcontextprotocol/client": "2.0.0",
     "@modelcontextprotocol/sdk": "1.30.0",
     "@modelcontextprotocol/server": "2.0.0",
-    "@penguin/huddle-agent": "0.0.0",
+    "@penguin/feature-agent": "0.0.0",
     "@penguin/mcp": "0.0.0",
     "@penguin/project-agent": "0.0.0",
     "@penguin/protocol": "0.0.0",

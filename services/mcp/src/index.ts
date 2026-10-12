@@ -3,11 +3,15 @@ export const packageName: string = "@penguin/mcp";
 export { MCP_ROUTE, serveMcp } from "./handler.ts";
 export {
   createPenguinMcpServer,
+  landingFields,
   planNoticeFields,
   type CharterView,
   type CheckpointResult,
   type FeatureCallResult,
+  type FailingCheckView,
   type FeatureWorkView,
+  type LadderDecisionView,
+  type LandingWorkView,
   type McpFeatures,
   type OverlapFieldsView,
   type OverlapLockView,

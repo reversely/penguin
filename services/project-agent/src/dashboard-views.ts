@@ -76,10 +76,12 @@ export interface FeatureStateFacts {
  * The feature's one-word state (FEATURE_STATES). The latest step in the procedure wins: a plan whose
  * every part is approved is promoting, a part or a start waiting on a person is waiting on approvals,
  * and a plan still being made or revised is planning: its facts run waits for the check runner, or
- * Penguin answered it with what it lacks and no plan is stored yet. No state reads `promoted` until block
- * promotion records a promotion.
+ * Penguin answered it with what it lacks and no plan is stored yet. A feature whose block run is being
+ * checked or moving main is promoting; one whose block reached main is promoted (block-land.ts).
  */
 export function featureState(facts: FeatureStateFacts): FeatureStateWord {
+  if (facts.feature.state === "landed") return "promoted";
+  if (facts.feature.state === "landing") return "promoting";
   const { parts } = facts;
   if (parts.length > 0 && parts.every((part) => part.state === "approved")) return "promoting";
   if (facts.locks.some((lock) => lock.state === "open") || parts.some((part) => part.state === "pending" || part.state === "round_limit")) {

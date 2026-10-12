@@ -68,11 +68,11 @@ A feature's state comes from facts Penguin holds, the latest step first:
 
 | State | When |
 |---|---|
-| promoting | Every part of the feature's merge plan is approved |
+| promoting | Every part of the feature's merge plan is approved, or its block run is being checked or moving main (`land_feature`) |
 | waiting on approvals | The feature's start waits for an overlap approval, or a plan part waits for its author |
 | planning | Its agent proposed a plan and the check runner's facts run waits, or Penguin answered with what the plan lacks and no plan is stored, or the plan was returned over the break limit, or a part waits on the agent's revision |
 | building | Anything else |
-| promoted | Shown once block promotion records a promotion |
+| promoted | Main moved to the feature's checkpoint; its fork is read-only |
 
 States take a neutral tag. Only exceptions are highlighted: a feature carries each exception PRD
 section 7 routes to a person as a line in the attention colour, with an attention edge on its row.

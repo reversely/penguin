@@ -16,7 +16,7 @@ import {
   type SubmitOutcome,
   type TimelineEntry,
 } from "./issue-index.ts";
-import { readBaseFile } from "./base-repo.ts";
+import { BASE_BRANCH, readBaseFile } from "./base-repo.ts";
 import { buildBoard } from "./board.ts";
 import { buildIssuePage } from "./issue-page.ts";
 import { LiveFeed, liveOwner, sendToOwner } from "./live-feed.ts";
@@ -115,7 +115,22 @@ import {
   type FixWriteOutcome,
   type ForkReader,
 } from "./fix-write.ts";
-import { coverMidway, handOver, PlanCoverageStore } from "./plan-coverage.ts";
+import { coverMidway, handOver, meeting, PlanCoverageStore } from "./plan-coverage.ts";
+import type { BlockRun } from "./block-store.ts";
+import {
+  BlockQueueStore,
+  claimBlockRuns,
+  featureLanded,
+  landFailed,
+  requestLand,
+  requestPlanCheck,
+  retryLand,
+  signBlockRecord,
+  type FeatureBlocks,
+  type LandDeps,
+  type LandInput,
+  type LandOutcome,
+} from "./block-land.ts";
 import { parseBreakLimit, proposePlan, type ProposePlanInput, type ProposePlanOutcome } from "./propose-plan.ts";
 import { claimToolRuns, recordToolResult, type ToolReportOutcome, type ToolRunClaim } from "./agent-tool-runner.ts";
 import {
@@ -175,7 +190,9 @@ import {
   type ApprovalSpec,
   type Author,
   type BlockCheck,
+  type BlockRunRequest,
   type Board,
+  type CharterView,
   type IdentitiesPage,
   type IdentityWriteOutcome,
   type Inbox,
@@ -185,6 +202,7 @@ import {
   type PlanInbox,
   type PlanFactsRequest,
   type TeamView,
+  type Promotion,
   type VerificationRunSpec,
   type ViewerPlan,
 } from "@penguin/protocol";
@@ -312,6 +330,48 @@ export {
   type UnsignedFeatureRecord,
 } from "./feature-store.ts";
 export { PLAN_STORE_SCHEMA, PlanStore, type FixWrite, type PartVersion, type Plan, type PlanKeeper, type PlanPart } from "./plan-store.ts";
+export {
+  BLOCK_RUN_LEASE_MS,
+  BLOCK_STORE_SCHEMA,
+  BlockStore,
+  PROMOTION_STALE_MS,
+  type BlockOpenOutcome,
+  type BlockReportOutcome,
+  type BlockRun,
+  type BlockRunInput,
+  type BlockRunState,
+  type FailingCheck,
+} from "./block-store.ts";
+export {
+  ancestorsFound,
+  BLOCK_QUEUE_SCHEMA,
+  BLOCK_RECORD_TYPES,
+  BlockQueueStore,
+  claimBlockRuns,
+  featureLanded,
+  landFailed,
+  parsePromotionTokenTtl,
+  PROMOTION_SLOT_MS,
+  PROMOTION_TOKEN_TTL_DEFAULT_MINUTES,
+  PROMOTION_TOKEN_TTL_MAX_MINUTES,
+  reportBlockRun,
+  requestLand,
+  requestPlanCheck,
+  retryLand,
+  signBlockRecord,
+  type BlockProjectPort,
+  type BlockRecordType,
+  type BlockReportDeps,
+  type BlockReportResult,
+  type FeatureBlocks,
+  type LandDeps,
+  type LandedDeps,
+  type LandInput,
+  type LandOutcome,
+  type LandRejectReason,
+  type LandRejection,
+} from "./block-land.ts";
+export { fastForwardMain, packEnd, parseAdvertisement, pktLine, readPktStream, type FastForward, type FastForwardOutcome, type GitEndpoint } from "./main-push.ts";
 export {
   agentFixGrant,
   agentFixReport,
@@ -609,6 +669,29 @@ interface ProjectAgentEnv {
   /** The changes an author may ask for on one plan part. Defaults to PLAN_ROUND_LIMIT_DEFAULT (PRD 7). */
   readonly PENGUIN_PLAN_ROUND_LIMIT?: string;
 }
+
+/** A land's answer as the ProjectAgent returns it across RPC: the run without its full request. */
+export type LandAnswer =
+  | {
+      readonly status: "checking";
+      readonly runId: string;
+      readonly recordId: string;
+      readonly checkpoint: string;
+      readonly mainBefore: string;
+      readonly branch: string;
+      readonly planId: string | null;
+      readonly targets: readonly { readonly feature: string; readonly sha: string }[];
+    }
+  | { readonly status: "rejected"; readonly reason: string; readonly message: string };
+
+/** Where a feature's landing stands, for `get_work` and the feature page. */
+export interface LandingView {
+  readonly feature: string;
+  readonly state: Feature["state"];
+  /** The feature's newest block runs, newest first. */
+  readonly runs: readonly BlockRun[];
+  readonly promotion: Promotion | null;
+}
 export {
   BRIDGE_ROLES,
   BridgeRegistry,
@@ -650,7 +733,9 @@ export type IngestResult = IngestReport & { readonly durationMs: number };
 
 /**
  * Holds the project-wide state: issue index, scope map, owners, identities, sessions and inboxes.
- * It opens Huddle issues and hands each Huddle's verification loop to that Huddle's HuddleAgent.
+ * It checks and signs every feature record; each feature's plan, block runs and promotion live in
+ * that feature's FeatureAgent. For owner forks it still opens Huddle issues and hands each Huddle's
+ * verification loop to a FeatureAgent named for the Huddle.
  * It keeps a counter in its SQL storage beside the issue index.
  */
 export class ProjectAgent extends Agent {
@@ -671,6 +756,7 @@ export class ProjectAgent extends Agent {
   #planRoutes: PlanRouteStore | undefined;
   #fixGrants: FixGrantStore | undefined;
   #planCoverage: PlanCoverageStore | undefined;
+  #blockQueue: BlockQueueStore | undefined;
   /** Plan proposals run one at a time, so no two take the same plan version or record sequence number. */
   #planSteps: Promise<unknown> = Promise.resolve();
   /** Overlap checks and approvals run one at a time, so no two race for a record's sequence number. */
@@ -695,7 +781,7 @@ export class ProjectAgent extends Agent {
   override onStart(): void {
     this.sql`CREATE TABLE IF NOT EXISTS counter (id INTEGER PRIMARY KEY CHECK (id = 1), value INTEGER NOT NULL)`;
     this.sql`INSERT OR IGNORE INTO counter (id, value) VALUES (1, 0)`;
-    // Verification runs are kept by each Huddle's HuddleAgent; an empty table left from before goes.
+    // Verification runs are kept by each Huddle's FeatureAgent; an empty table left from before goes.
     if (dropProjectVerificationTable(this.#database()) === "kept") {
       console.error(JSON.stringify({ event: "project_verification_runs_kept" }));
     }
@@ -782,7 +868,7 @@ export class ProjectAgent extends Agent {
 
   /**
    * The verification runs waiting for the runner, with what each merges and runs, oldest first. Each
-   * open Huddle's HuddleAgent lists its own. The Worker lists them only to a runner bridge.
+   * open Huddle's FeatureAgent lists its own. The Worker lists them only to a runner bridge.
    */
   async pendingVerifications(): Promise<VerificationRunSpec[]> {
     const huddles = this.#huddleStore().open().filter((huddle) => huddle.issueId !== null && huddle.huddleRepo !== null);
@@ -796,7 +882,7 @@ export class ProjectAgent extends Agent {
   }
 
   /**
-   * Records a runner's report of a verification run with the HuddleAgent of the Huddle the run ID
+   * Records a runner's report of a verification run with the FeatureAgent of the Huddle the run ID
    * belongs to (see huddle-verify.ts). `runnerId` is the reporting runner bridge, which the Worker
    * takes from its token.
    */
@@ -812,7 +898,7 @@ export class ProjectAgent extends Agent {
 
   /**
    * Schedules a verification run for each open Huddle `ownerId` takes part in, after a newer
-   * checkpoint of that owner was recorded. Each Huddle's HuddleAgent decides and keeps the run.
+   * checkpoint of that owner was recorded. Each Huddle's FeatureAgent decides and keeps the run.
    */
   scheduleVerifications(ownerId: string, repos: ProjectRepos): Promise<VerificationScheduleOutcome[]> {
     return this.#huddleStep(async () => {
@@ -829,7 +915,7 @@ export class ProjectAgent extends Agent {
   }
 
   /**
-   * The approved-branch requests waiting for the runner, one per open Huddle whose HuddleAgent found
+   * The approved-branch requests waiting for the runner, one per open Huddle whose FeatureAgent found
    * nothing standing in the way of its close. The Worker lists them only to a runner bridge.
    */
   async pendingApprovals(): Promise<ApprovalSpec[]> {
@@ -845,7 +931,7 @@ export class ProjectAgent extends Agent {
 
   /**
    * Records a runner's report that the Huddle repo of Huddle issue `issueId` has its `approved` branch
-   * at the requested commit, with that Huddle's HuddleAgent, which then closes the issue; see
+   * at the requested commit, with that Huddle's FeatureAgent, which then closes the issue; see
    * huddle-close.ts. `runnerId` is the reporting runner bridge, from its token.
    */
   reportApprovedBranch(issueId: string, runnerId: string, report: unknown, repos: ProjectRepos): Promise<ApprovalOutcome> {
@@ -859,16 +945,16 @@ export class ProjectAgent extends Agent {
     });
   }
 
-  /** The HuddleAgent of the Huddle whose issue has this number: one instance per Huddle in this project. */
+  /** The FeatureAgent of the Huddle whose issue has this number: one instance per Huddle in this project. */
   async #huddleAgent(issueId: string): Promise<HuddleVerifier & HuddleReviewer & HuddleThreadKeeper & HuddleCloser> {
     // The binding's generated stub type refers back to this package, so the stub is typed here by
-    // the interfaces HuddleAgent implements.
-    const agent = await getAgentByName(this.env.HuddleAgent, `${this.name}-huddle-${issueId}`);
+    // the interfaces FeatureAgent implements.
+    const agent = await getAgentByName(this.env.FeatureAgent, `${this.name}-huddle-${issueId}`);
     return agent as unknown as HuddleVerifier & HuddleReviewer & HuddleThreadKeeper & HuddleCloser;
   }
 
   /**
-   * What a HuddleAgent reads and writes here, passed to it over RPC: the issue index, the owner forks,
+   * What a FeatureAgent reads and writes here, passed to it over RPC: the issue index, the owner forks,
    * the scope map, operations signed with the service key, which never leaves this agent, review
    * requests in owners' inboxes, and each fix's approval and what the Huddle issue waits on before
    * it may close, for the issue page.
@@ -898,7 +984,7 @@ export class ProjectAgent extends Agent {
   }
 
   /**
-   * Has each Huddle's HuddleAgent collect the reviews of its fixes (huddle-reviews.ts) and evaluate
+   * Has each Huddle's FeatureAgent collect the reviews of its fixes (huddle-reviews.ts) and evaluate
    * its close (huddle-close.ts), for the Huddles of the issues `#reviewsChanged` names. A failure is
    * logged and never fails the operation that changed the issue: the next change collects again.
    */
@@ -926,7 +1012,7 @@ export class ProjectAgent extends Agent {
   }
 
   /**
-   * Has the HuddleAgent of the Huddle whose issue has this number collect its fixes' reviews; see
+   * Has the FeatureAgent of the Huddle whose issue has this number collect its fixes' reviews; see
    * huddle-reviews.ts. Undefined when no open Huddle has this issue.
    */
   collectReviews(issueId: string, repos: ProjectRepos): Promise<ReviewCollection | undefined> {
@@ -956,7 +1042,7 @@ export class ProjectAgent extends Agent {
 
   /**
    * Every thread on the Huddle issue with this number and on its fix sub-issues, open or resolved, as
-   * that Huddle's HuddleAgent keeps them; empty when no Huddle has this issue.
+   * that Huddle's FeatureAgent keeps them; empty when no Huddle has this issue.
    */
   async huddleThreads(issueId: string): Promise<HuddleThread[]> {
     const huddle = this.#huddleStore().byIssue(this.#index().resolve(issueId));
@@ -1481,7 +1567,40 @@ export class ProjectAgent extends Agent {
    * must be in the feature's fork. The declared area grows by what the checkpoint changed against its
    * baseline on main; `durationMs` is how long that update took.
    */
-  reportFeatureCheckpoint(
+  async reportFeatureCheckpoint(
+    owner: string,
+    sessionId: string | null,
+    featureId: string,
+    sha: string,
+    repos: ProjectRepos,
+  ): Promise<FeatureCheckpointOutcome & { readonly planChecks?: readonly { readonly feature: string; readonly runId: string }[] }> {
+    const outcome = await this.#recordFeatureCheckpoint(owner, sessionId, featureId, sha, repos);
+    if (outcome.status !== "ok") return outcome;
+    return { ...outcome, planChecks: await this.#checkPlansMet(outcome.feature, repos) };
+  }
+
+  /**
+   * PRD 4.4 step 3: a checkpoint of a running feature whose area meets another feature's announced
+   * plan asks for that plan's check, the plan's block checked again with this fork's new head. A
+   * failure here is logged and never fails the checkpoint.
+   */
+  async #checkPlansMet(feature: Feature, repos: ProjectRepos): Promise<{ feature: string; runId: string }[]> {
+    const checks: { feature: string; runId: string }[] = [];
+    try {
+      const scopeMap = await this.#scopeMap(repos);
+      for (const plan of this.#planCoverageStore().plans()) {
+        if (plan.featureId === feature.id || meeting(feature.area, plan, scopeMap) === undefined) continue;
+        const trigger = { feature: feature.id, checkpoint: feature.latestCheckpointSha as string };
+        const run = await this.#planStep(() => requestPlanCheck(this.#landDeps(repos), plan.featureId, trigger));
+        if (run !== undefined) checks.push({ feature: plan.featureId, runId: run.runId });
+      }
+    } catch (error) {
+      console.error(JSON.stringify({ event: "plan_check_failed", feature: feature.id, error: String(error).slice(0, 200) }));
+    }
+    return checks;
+  }
+
+  #recordFeatureCheckpoint(
     owner: string,
     sessionId: string | null,
     featureId: string,
@@ -1984,12 +2103,18 @@ export class ProjectAgent extends Agent {
     return this.#planFacts;
   }
 
-  /**
-   * The plan store of one feature: the per-feature Durable Object, the HuddleAgent class until the
-   * FeatureAgent replaces it (#96), named apart from every Huddle's instance.
-   */
+  /** The plan store of one feature: its FeatureAgent (plan-store.ts). */
   #planKeeper(featureId: string): PlanKeeper {
-    const named = getAgentByName(this.env.HuddleAgent, `${this.name}-feature-${featureId}`) as unknown as Promise<PlanKeeper>;
+    return this.#featureAgent(featureId);
+  }
+
+  /**
+   * One feature's FeatureAgent, named `<project>-feature-<id>` apart from every Huddle's instance. It
+   * keeps the feature's plan, fix writes, block runs and promotion.
+   */
+  #featureAgent(featureId: string): PlanKeeper & FeatureBlocks & { landing(featureId: string): Promise<{ runs: BlockRun[]; promotion: Promotion | null }> } {
+    type Stub = PlanKeeper & FeatureBlocks & { landing(featureId: string): Promise<{ runs: BlockRun[]; promotion: Promotion | null }> };
+    const named = getAgentByName(this.env.FeatureAgent, `${this.name}-feature-${featureId}`) as unknown as Promise<Stub>;
     return {
       planVersion: async (id) => (await named).planVersion(id),
       keepPlan: async (plan) => (await named).keepPlan(plan),
@@ -1998,7 +2123,112 @@ export class ProjectAgent extends Agent {
       addPart: async (id, planId, part) => (await named).addPart(id, planId, part),
       keepFixWrite: async (write) => (await named).keepFixWrite(write),
       fixWrites: async (id) => (await named).fixWrites(id),
+      openBlockRun: async (input) => (await named).openBlockRun(input),
+      claimBlockRuns: async (runnerId) => (await named).claimBlockRuns(runnerId),
+      landing: async (id) => (await named).landing(id),
     };
+  }
+
+  #blockQueueStore(): BlockQueueStore {
+    this.#blockQueue ??= new BlockQueueStore(this.#database());
+    return this.#blockQueue;
+  }
+
+  #landDeps(repos: ProjectRepos): LandDeps {
+    return {
+      features: this.#featureStore(),
+      heartbeat: (caller, session) => this.sessionHeartbeat(caller, session),
+      charter: (handle, person) => {
+        const identity = this.#identityStore().byHandle(handle);
+        if (identity === undefined) return undefined;
+        // A team identity has no one owner; the feature's person then receives its exceptions.
+        return { handle: identity.handle, person: identity.ownerId ?? person, scopes: [...identity.charterScopes], paths: [...identity.charterPaths] };
+      },
+      agent: (featureId) => this.#featureAgent(featureId),
+      readRepo: (repo, use) => withRepo(this.env.ARTIFACTS, repo, (opened) => use(opened as unknown as ForkReader)),
+      baseRepo: repos.base,
+      branch: BASE_BRANCH,
+      queue: this.#blockQueueStore(),
+      sign: async (record) => signFeatureRecord(record, (await this.#loadServiceKey()).privateKey),
+      notify: (personId) => sendToOwner(this.getConnections<{ owner?: string }>(), personId, inboxChangedMessage()),
+    };
+  }
+
+  /**
+   * `land_feature` (block-land.ts): `owner`'s session asks to land the feature it works on. A ready
+   * feature's block run waits for the check runner; anything else is refused with what is missing.
+   * Runs after the plan steps before it.
+   */
+  landFeature(owner: string, sessionId: string, input: LandInput, repos: ProjectRepos): Promise<LandAnswer> {
+    return this.#planStep(async () => landAnswer(await requestLand(this.#landDeps(repos), owner, sessionId, input)));
+  }
+
+  /** For the check runner only: the waiting block runs of every feature, each claimed by `caller`. */
+  claimBlockRuns(caller: BridgeCaller): Promise<{ readonly status: "ok"; readonly runs: readonly BlockRunRequest[] } | { readonly status: "forbidden"; readonly message: string }> {
+    return claimBlockRuns(this.#blockQueueStore(), (featureId) => this.#featureAgent(featureId), caller);
+  }
+
+  // The port a FeatureAgent calls while it records a block run and promotes (block-land.ts
+  // BlockProjectPort). The service key signs here and never leaves this agent.
+
+  /** Signs one block record on the feature; only the FeatureAgent's record types are signed. */
+  async signBlockRecord(featureId: string, type: string, payload: Record<string, unknown>): Promise<string> {
+    return signBlockRecord(this.#featureStore(), async (record) => signFeatureRecord(record, (await this.#loadServiceKey()).privateKey), featureId, type, payload);
+  }
+
+  /** Takes the project's one promotion slot for `runId`. */
+  acquirePromotion(featureId: string, runId: string): boolean {
+    return this.#blockQueueStore().acquire(featureId, runId);
+  }
+
+  releasePromotion(runId: string): void {
+    this.#blockQueueStore().release(runId);
+  }
+
+  /** Main moved to the feature's checkpoint: the feature is landed, its plan retired and the starts it held checked again. */
+  featureLanded(featureId: string, promotion: Promotion, repos: ProjectRepos): Promise<void> {
+    const notify = (personId: string) => sendToOwner(this.getConnections<{ owner?: string }>(), personId, inboxChangedMessage());
+    return featureLanded(
+      {
+        features: this.#featureStore(),
+        queue: this.#blockQueueStore(),
+        retirePlan: (id) => this.#planCoverageStore().retire(id),
+        recheckLocks: async (id) => {
+          for (const blocked of this.#overlapStore().heldBy(id)) {
+            const feature = this.#featureStore().get(blocked);
+            if (feature !== undefined) await this.#lockStep(() => checkOverlap(this.#overlapDeps(repos), feature));
+          }
+        },
+        notify,
+      },
+      featureId,
+      promotion,
+    );
+  }
+
+  /** A land run failed its checks or its push: the feature is building again. */
+  landFailed(featureId: string, _runId: string): void {
+    landFailed({ features: this.#featureStore(), notify: (personId) => sendToOwner(this.getConnections<{ owner?: string }>(), personId, inboxChangedMessage()) }, featureId);
+  }
+
+  /** Penguin lands the feature again after main refused its push (block-land.ts retryLand). */
+  retryLand(featureId: string, runId: string, charter: CharterView, repos: ProjectRepos): Promise<LandAnswer> {
+    return this.#planStep(async () => landAnswer(await retryLand(this.#landDeps(repos), featureId, { runId, charter })));
+  }
+
+  /** Where the feature's landing stands: its newest block runs and its promotion; undefined for no feature. */
+  async landing(featureId: string): Promise<LandingView | undefined> {
+    const feature = this.#featureStore().get(featureId);
+    if (feature === undefined) return undefined;
+    const { runs, promotion } = await this.#featureAgent(featureId).landing(featureId);
+    return { feature: featureId, state: feature.state, runs, promotion };
+  }
+
+  /** For `get_work`: the landing of the feature `caller`'s session works on, or undefined. */
+  async landWork(caller: string, sessionId: string): Promise<LandingView | undefined> {
+    if (this.sessionHeartbeat(caller, sessionId).status !== "ok") return undefined;
+    const featureId = this.#featureStore().featureOfSession(sessionId);
+    return featureId === undefined ? undefined : this.landing(featureId);
   }
 
   /** An owner's fork record with its latest reported checkpoint, or undefined before the first report. */
@@ -2268,7 +2498,7 @@ export class ProjectAgent extends Agent {
 
 /**
  * True when the operation changed what a Huddle's review collection reads: a fix's reviews, commits or
- * labels, which its approval is read from, or the threads the HuddleAgent tracks.
+ * labels, which its approval is read from, or the threads the FeatureAgent tracks.
  */
 function reviewsMayHaveMoved({ previous, next }: IssueChange): boolean {
   return (
@@ -2288,6 +2518,22 @@ async function withRepo<T>(artifacts: Artifacts, name: string, use: (repo: Artif
   } finally {
     repo[Symbol.dispose]();
   }
+}
+
+/** A land outcome as it crosses RPC: the run's id and facts, never its full request. */
+function landAnswer(outcome: LandOutcome): LandAnswer {
+  if (outcome.status === "rejected") return outcome;
+  const { run, recordId } = outcome;
+  return {
+    status: "checking",
+    runId: run.runId,
+    recordId,
+    checkpoint: run.checkpoint,
+    mainBefore: run.mainBefore,
+    branch: run.request.branch,
+    planId: run.planId,
+    targets: run.request.targets.map(({ feature, sha }) => ({ feature, sha })),
+  };
 }
 
 /** A Durable Object's SQLite storage as the stores' SqlDatabase. */

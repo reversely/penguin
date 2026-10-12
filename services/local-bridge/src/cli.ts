@@ -12,6 +12,7 @@ import { CONSENT_USAGE, runConsentCommand } from "./consent-cli.ts";
 import { bridgeConsent } from "./consent-store.ts";
 import { isPenguinRemote, penguinRemote } from "./git-remote.ts";
 import { FIX_WRITE_USAGE, runFixWriteCommand } from "./fix-write-cli.ts";
+import { PREVIEW_USAGE, runPreviewCommand } from "./preview-cli.ts";
 import { IMPACT_USAGE, runImpactCommand } from "./impact-cli.ts";
 import { ISSUE_USAGE, runIssueCommand, runKeyCommand } from "./issue-cli.ts";
 import { KeychainStore, type KeyStore } from "./key-store.ts";
@@ -78,6 +79,7 @@ export async function runCli(argv: readonly string[], io: CliIo, deps: CliDepend
   if (command === "resolve") return runResolveCommand(rest, io);
   if (command === "apply-fix") return runApplyFixCommand(rest, io);
   if (command === "fix-write") return runFixWriteCommand(rest, io, stateDir);
+  if (command === "preview") return runPreviewCommand(rest, io, stateDir, (dir) => bridgeRemotes(dir, keyStore, deps.fetch, "read"));
   if (command !== "checkpoint") {
     io.write(
       USAGE +
@@ -90,7 +92,8 @@ export async function runCli(argv: readonly string[], io: CliIo, deps: CliDepend
         REVIEW_USAGE +
         CHECK_USAGE +
         RESOLVE_USAGE +
-        FIX_WRITE_USAGE,
+        FIX_WRITE_USAGE +
+        PREVIEW_USAGE,
     );
     return 2;
   }

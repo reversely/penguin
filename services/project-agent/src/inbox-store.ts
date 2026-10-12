@@ -9,7 +9,7 @@
 // - "closed": the issue moved to the closed state; every person with an item for the issue gets one.
 // - "start_session": the session router (session-store.ts) asks the person to start a session of an
 //   identity for the issue. The item goes away once no such request remains.
-// - "review_requested": a Huddle's HuddleAgent asks the person to review a fix sub-issue whose
+// - "review_requested": a Huddle's FeatureAgent asks the person to review a fix sub-issue whose
 //   combined tests pass (huddle-reviews.ts). A request for a newer fix commit marks it unread again.
 // - "thread": a thread on the issue needs the person (PRD section 4, Layer 2: "When a thread needs a
 //   person, ... Add the thread to the person's inbox"). Opening a thread raises it for each person

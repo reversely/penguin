@@ -1,0 +1,654 @@
+// Landing a feature as a block (PRD 0.4 section 4.5).
+//
+// 1. The originating agent asks to land (`land_feature`). The ProjectAgent checks the feature is
+//    ready: its latest checkpoint is in its fork and already contains main's head (the agent took
+//    main), every part of its plan is approved, each fix for a running feature is written into that
+//    feature's fork (fix-write.ts) and still sits under the fork's head, and each fix for code on main
+//    is in the checkpoint. It then asks the feature's FeatureAgent to open a block run: the
+//    checkpoint merged onto main and onto every other running feature's fork head. The feature is
+//    `landing` and a signed `land_requested` record names the run.
+// 2. The check runner claims the run (POST /blocks/claim) and runs the checks of section 5.1 on every
+//    merged tree, with every scope's tests on main's (block-run.ts on the bridge). It reports to the
+//    FeatureAgent directly (POST /blocks/<run id>). Each failure carries its one next step from the
+//    resolution ladder (section 5.3); the feature goes back to `building` and the agent lands again.
+// 3. When every check passes, the FeatureAgent promotes: it takes the project's one promotion slot,
+//    and moves main from the commit the block was checked against to the checkpoint in one push
+//    (main-push.ts), with a write token on main that it mints for minutes and revokes after the push.
+//    Main that moved since the check refuses the push; the land is checked again on the new main, or
+//    returned to the agent to take main first. A promotion is a signed `promotion` record and a
+//    `Promotion` row; the originating fork's write tokens are revoked and no new one is minted.
+//
+// A checkpoint of a running feature that reaches an announced plan's area asks for a `plan_check` of
+// that plan's block (PRD 4.4 step 3): the same checks, with no promotion.
+//
+// Because main moves only by fast-forward to a commit the block was checked on, main's tree after a
+// promotion is exactly the tree whose tests passed: main is never red unless a check missed a break.
+
+import {
+  blockVerdict,
+  FIX_WRITE_BRANCH,
+  parseBlockRunReport,
+  type Author,
+  type BlockRunTarget,
+  type CharterView,
+  type Plan,
+  type Promotion,
+} from "@penguin/protocol";
+
+import type { BlockOpenOutcome, BlockRun, BlockRunInput, BlockRunState, BlockStore } from "./block-store.ts";
+import type { FeatureRejectReason } from "./feature-open.ts";
+import { parseFeatureId, type Feature, type FeatureRecord, type FeatureRecordType, type FeatureStore, type UnsignedFeatureRecord } from "./feature-store.ts";
+import type { ForkReader, ForkReading } from "./fix-write.ts";
+import type { BridgeCaller, SqlDatabase } from "./issue-index.ts";
+import type { FastForwardOutcome } from "./main-push.ts";
+import type { FixWrite } from "./plan-store.ts";
+import { RUNNING_STATES } from "./overlap-lock.ts";
+import type { SessionOutcome } from "./session-store.ts";
+
+/** Penguin's write token on main lasts this many minutes unless PENGUIN_PROMOTION_TOKEN_TTL_MINUTES says otherwise. */
+export const PROMOTION_TOKEN_TTL_DEFAULT_MINUTES = 5;
+/** PRD 0.4 section 8: Penguin holds write on main for minutes only. */
+export const PROMOTION_TOKEN_TTL_MAX_MINUTES = 15;
+
+/**
+ * Parses PENGUIN_PROMOTION_TOKEN_TTL_MINUTES into seconds. Unset is the default; a whole number of
+ * minutes from 1 to the maximum is taken; anything else is undefined, so no promotion runs.
+ */
+export function parsePromotionTokenTtl(minutes: string | undefined): number | undefined {
+  if (minutes === undefined || minutes === "") return PROMOTION_TOKEN_TTL_DEFAULT_MINUTES * 60;
+  if (!/^[1-9][0-9]?$/u.test(minutes)) return undefined;
+  const value = Number(minutes);
+  return value <= PROMOTION_TOKEN_TTL_MAX_MINUTES ? value * 60 : undefined;
+}
+
+/** Commits of main's first-parent history read to bound an ancestry search. */
+const MAIN_HISTORY_LIMIT = 1_000;
+/** Commits an ancestry search visits before it gives up. */
+const ANCESTRY_LIMIT = 2_000;
+/** A promotion holds the project's slot at most this long. */
+export const PROMOTION_SLOT_MS = 10 * 60_000;
+
+export const BLOCK_QUEUE_SCHEMA: readonly string[] = [
+  // The features whose FeatureAgent holds a run waiting for the check runner.
+  `CREATE TABLE IF NOT EXISTS BlockQueue (feature_id TEXT PRIMARY KEY, queued_at INTEGER NOT NULL)`,
+  // The project's one promotion in progress: only one push moves main at a time.
+  `CREATE TABLE IF NOT EXISTS PromotionSlot (slot INTEGER PRIMARY KEY CHECK (slot = 1), feature_id TEXT NOT NULL,
+    run_id TEXT NOT NULL, until INTEGER NOT NULL)`,
+];
+
+/** The ProjectAgent's side of landing: which FeatureAgents hold waiting runs, and the promotion slot. */
+export class BlockQueueStore {
+  readonly #db: SqlDatabase;
+  readonly #now: () => number;
+
+  constructor(db: SqlDatabase, now: () => number = Date.now) {
+    this.#db = db;
+    this.#now = now;
+    for (const statement of BLOCK_QUEUE_SCHEMA) db.exec(statement);
+  }
+
+  add(featureId: string): void {
+    this.#db.exec(`INSERT OR IGNORE INTO BlockQueue (feature_id, queued_at) VALUES (?, ?)`, featureId, this.#now());
+  }
+
+  remove(featureId: string): void {
+    this.#db.exec(`DELETE FROM BlockQueue WHERE feature_id = ?`, featureId);
+  }
+
+  queued(): string[] {
+    return this.#db.exec(`SELECT feature_id FROM BlockQueue ORDER BY queued_at, feature_id`).map((row) => row["feature_id"] as string);
+  }
+
+  /** Takes the promotion slot for `runId`; false while another run holds it and its time has not run out. */
+  acquire(featureId: string, runId: string, holdMs = PROMOTION_SLOT_MS): boolean {
+    const now = this.#now();
+    const taken = this.#db.exec(
+      `INSERT INTO PromotionSlot (slot, feature_id, run_id, until) VALUES (1, ?, ?, ?)
+       ON CONFLICT (slot) DO UPDATE SET feature_id = excluded.feature_id, run_id = excluded.run_id, until = excluded.until
+       WHERE PromotionSlot.until < ? OR PromotionSlot.run_id = excluded.run_id
+       RETURNING run_id`,
+      featureId,
+      runId,
+      now + holdMs,
+      now,
+    );
+    return taken.length > 0;
+  }
+
+  release(runId: string): void {
+    this.#db.exec(`DELETE FROM PromotionSlot WHERE run_id = ?`, runId);
+  }
+}
+
+/** What the ProjectAgent asks of a feature's FeatureAgent about its block, over Durable Object RPC. */
+export interface FeatureBlocks {
+  latestPlan(featureId: string): Plan | undefined | Promise<Plan | undefined>;
+  fixWrites(featureId: string): FixWrite[] | Promise<FixWrite[]>;
+  openBlockRun(input: BlockRunInput): BlockOpenOutcome | Promise<BlockOpenOutcome>;
+  /** Hands the runner the feature's waiting runs; `waiting` stays true while any run still waits. */
+  claimBlockRuns(runnerId: string): { readonly runs: readonly BlockRun["request"][]; readonly waiting: boolean } | Promise<{ readonly runs: readonly BlockRun["request"][]; readonly waiting: boolean }>;
+}
+
+export type LandRejectReason =
+  | FeatureRejectReason
+  | "not_ready"
+  | "behind_main"
+  | "plan_not_approved"
+  | "fix_not_written"
+  | "fix_not_in_block"
+  | "fix_not_in_place"
+  | "busy";
+
+export type LandRejection = { readonly status: "rejected"; readonly reason: LandRejectReason; readonly message: string };
+
+export type LandOutcome = { readonly status: "checking"; readonly run: BlockRun; readonly recordId: string } | LandRejection;
+
+export interface LandDeps {
+  readonly features: FeatureStore;
+  readonly heartbeat: (caller: string, sessionId: string) => SessionOutcome;
+  /** The charter of an identity, by its handle, which routes the block's failures (resolution.ts). */
+  readonly charter: (handle: string, featurePerson: string) => CharterView | undefined;
+  readonly agent: (featureId: string) => FeatureBlocks;
+  /** Reads an Artifacts repo, named with the deployment's prefix, through the binding. */
+  readonly readRepo: ForkReading;
+  /** The base repo's Artifacts name, with the prefix. */
+  readonly baseRepo: string;
+  /** Main's branch: BASE_BRANCH. */
+  readonly branch: string;
+  readonly queue: BlockQueueStore;
+  readonly sign: (record: UnsignedFeatureRecord) => Promise<FeatureRecord>;
+  readonly notify: (personId: string) => void;
+  readonly now?: () => number;
+}
+
+export interface LandInput {
+  readonly feature: unknown;
+  /** The checkpoint the agent means to land; when given, it must be the feature's latest. */
+  readonly checkpoint?: unknown;
+}
+
+const rejected = (reason: LandRejectReason, message: string): LandRejection => ({ status: "rejected", reason, message });
+const isRejection = (value: unknown): value is LandRejection =>
+  typeof value === "object" && value !== null && (value as { status?: unknown }).status === "rejected";
+const SHA = /^[0-9a-f]{40}$/u;
+const short = (sha: string): string => sha.slice(0, 12);
+
+/**
+ * Which of `wanted` are `from` or among its ancestors in `reader`'s repo. The search stops below any
+ * commit of main's history other than those wanted: everything under main's head is main's own, so a
+ * fork's search stays among the fork's commits since it last took main.
+ */
+export async function ancestorsFound(reader: ForkReader, from: string, wanted: ReadonlySet<string>, mainHistory: ReadonlySet<string>): Promise<Set<string>> {
+  const found = new Set<string>();
+  const seen = new Set<string>([from]);
+  const queue = [from];
+  while (queue.length > 0 && found.size < wanted.size && seen.size <= ANCESTRY_LIMIT) {
+    const hash = queue.shift() as string;
+    if (wanted.has(hash)) found.add(hash);
+    if (mainHistory.has(hash) && hash !== from) continue;
+    const commit = await reader.readCommit(hash);
+    for (const parent of commit?.parents ?? []) {
+      if (seen.has(parent)) continue;
+      seen.add(parent);
+      queue.push(parent);
+    }
+  }
+  return found;
+}
+
+/** Main's head and the first-parent history under it, read from the base repo. */
+async function mainState(deps: LandDeps): Promise<{ readonly head: string | null; readonly history: Set<string> }> {
+  const log = await deps.readRepo(deps.baseRepo, (reader) => reader.log({ ref: deps.branch, limit: MAIN_HISTORY_LIMIT }));
+  return { head: log[0]?.hash ?? null, history: new Set(log.map((entry) => entry.hash)) };
+}
+
+/** The head of a fork's main branch, where its feature's work and every fix written into it sit. */
+async function forkHead(deps: LandDeps, repo: string): Promise<string | null> {
+  const [head] = await deps.readRepo(repo, (reader) => reader.log({ ref: FIX_WRITE_BRANCH, limit: 1 }));
+  return head?.hash ?? null;
+}
+
+/** Every other running feature's fork head, in feature id order: the block's targets besides main. */
+async function blockTargets(deps: LandDeps, own: string): Promise<BlockRunTarget[]> {
+  const running = deps.features
+    .list()
+    .filter((feature) => feature.id !== own && RUNNING_STATES.has(feature.state) && feature.repo !== null)
+    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const heads = await Promise.all(running.map(async (feature) => (await forkHead(deps, feature.repo as string)) ?? feature.latestCheckpointSha));
+  return running.flatMap((feature, index) => {
+    const sha = heads[index];
+    return sha == null ? [] : [{ feature: feature.id, person: feature.personId, fork: `feature-${feature.id}`, sha }];
+  });
+}
+
+interface Prepared {
+  readonly feature: Feature & { readonly repo: string; readonly latestCheckpointSha: string };
+  readonly plan: Plan | undefined;
+  readonly mainBefore: string;
+  readonly targets: readonly BlockRunTarget[];
+}
+
+/**
+ * The facts a land needs, or why the feature may not land yet: main's head, which the checkpoint must
+ * contain; the plan, every part approved and every fix in place; and the targets.
+ */
+async function prepareLand(deps: LandDeps, feature: Feature, checkpoint: unknown): Promise<Prepared | LandRejection> {
+  if (feature.state === "landed") return rejected("conflict", `feature ${feature.id} has landed; its fork is read-only`);
+  if (feature.repo === null) return rejected("not_found", `feature ${feature.id} has no fork yet`);
+  const latest = feature.latestCheckpointSha;
+  if (latest === null) return rejected("not_ready", `feature ${feature.id} has no checkpoint; report one with report_checkpoint first`);
+  if (checkpoint !== undefined && checkpoint !== latest) {
+    return rejected("conflict", `the feature's latest checkpoint is ${latest}; report the commit you mean to land as a checkpoint first`);
+  }
+  const main = await mainState(deps);
+  if (main.head === null) return rejected("not_found", `main's ${deps.branch} branch has no commit`);
+  if (main.head === latest) return rejected("not_ready", `main is already at ${short(latest)}; nothing to land`);
+
+  const plan = await deps.agent(feature.id).latestPlan(feature.id);
+  const unapproved = plan?.parts.filter((part) => part.approvalState !== "approved") ?? [];
+  if (unapproved.length > 0) {
+    const list = unapproved.map((part) => `${part.partId} (${part.approvalState.replaceAll("_", " ")})`).join(", ");
+    return rejected("plan_not_approved", `every part of plan ${plan?.planId} must be approved before it lands: ${list}`);
+  }
+  const writes = plan === undefined ? [] : await deps.agent(feature.id).fixWrites(feature.id);
+  const written = new Map(writes.map((write) => [`${write.partId}@${write.revision}`, write]));
+  const featureParts = plan?.parts.filter((part) => part.place.kind === "feature") ?? [];
+  const unwritten = featureParts.filter((part) => !written.has(`${part.partId}@${part.revision}`));
+  if (unwritten.length > 0) {
+    return rejected("fix_not_written", `the fixes of ${unwritten.map((part) => part.partId).join(", ")} are approved but not yet written into their forks; write each with fix_token and report_fix_write`);
+  }
+
+  // The checkpoint must hold main's head and every fix for code on main.
+  const scopeFixes = new Set(plan?.parts.flatMap((part) => (part.place.kind === "scope" && part.diff.commit !== null ? [part.diff.commit] : [])) ?? []);
+  const inBlock = await deps.readRepo(feature.repo, (reader) => ancestorsFound(reader, latest, new Set([main.head as string, ...scopeFixes]), main.history));
+  if (!inBlock.has(main.head)) {
+    return rejected(
+      "behind_main",
+      `main moved to ${main.head} since checkpoint ${short(latest)} was built; merge main into your fork, report the merge as a checkpoint and land again`,
+    );
+  }
+  const missingFix = [...scopeFixes].filter((commit) => !inBlock.has(commit));
+  if (missingFix.length > 0) {
+    return rejected("fix_not_in_block", `the fixes for code on main ${missingFix.map(short).join(", ")} are not in checkpoint ${short(latest)}`);
+  }
+
+  const targets = await blockTargets(deps, feature.id);
+  for (const part of featureParts) {
+    if (part.place.kind !== "feature") continue;
+    const write = written.get(`${part.partId}@${part.revision}`) as FixWrite;
+    const target = targets.find((each) => each.feature === (part.place as { feature: string }).feature);
+    if (target === undefined) continue; // The affected feature landed or stopped: it takes main like anyone.
+    const repo = deps.features.get(target.feature)?.repo as string;
+    const found = await deps.readRepo(repo, (reader) => ancestorsFound(reader, target.sha, new Set([write.commitSha]), main.history));
+    if (!found.has(write.commitSha)) {
+      return rejected("fix_not_in_place", `fix ${short(write.commitSha)} of ${part.partId} is no longer under feature ${target.feature}'s fork head ${short(target.sha)}`);
+    }
+  }
+  return { feature: feature as Prepared["feature"], plan, mainBefore: main.head, targets };
+}
+
+function targetFields(targets: readonly BlockRunTarget[]): Record<string, unknown>[] {
+  return targets.map(({ feature, sha }) => ({ feature, sha }));
+}
+
+/** Opens the land run of a prepared feature and records the request; the feature is then `landing`. */
+async function openLand(deps: LandDeps, prepared: Prepared, charter: CharterView, author: Author, requestedBy: string): Promise<LandOutcome> {
+  const { feature, plan, mainBefore, targets } = prepared;
+  const opened = await deps.agent(feature.id).openBlockRun({
+    featureId: feature.id,
+    planId: plan?.planId ?? null,
+    purpose: "land",
+    fork: `feature-${feature.id}`,
+    checkpoint: feature.latestCheckpointSha,
+    mainBefore,
+    branch: deps.branch,
+    targets,
+    charter,
+    requestedBy,
+  });
+  if (opened.status === "busy") return rejected("busy", `feature ${feature.id} is already landing (run ${opened.run.runId}, ${opened.run.state})`);
+  const record = await deps.sign(
+    deps.features.draftRecord(feature.id, "land_requested", author, {
+      run_id: opened.run.runId,
+      plan_id: plan?.planId ?? null,
+      checkpoint: feature.latestCheckpointSha,
+      main_before: mainBefore,
+      branch: deps.branch,
+      targets: targetFields(targets),
+      superseded: [...opened.superseded],
+    }),
+  );
+  deps.features.addRecord(record);
+  deps.features.setState(feature.id, ["building", "landing"], "landing");
+  deps.queue.add(feature.id);
+  deps.notify(feature.personId);
+  return { status: "checking", run: opened.run, recordId: record.record_id };
+}
+
+/**
+ * `land_feature`: `caller`'s session asks to land the feature it works on. Refused unless the feature
+ * is ready (see the module comment); otherwise the block run waits for the check runner.
+ */
+export async function requestLand(deps: LandDeps, caller: string, sessionId: string, input: LandInput): Promise<LandOutcome> {
+  const id = parseFeatureId(input.feature);
+  if (id === undefined) return rejected("invalid", "the feature id is not a valid feature id");
+  if (input.checkpoint !== undefined && (typeof input.checkpoint !== "string" || !SHA.test(input.checkpoint))) {
+    return rejected("invalid", "the checkpoint must be a full 40-character lowercase SHA");
+  }
+  const live = deps.heartbeat(caller, sessionId);
+  if (live.status === "rejected") return live;
+  const feature = deps.features.get(id);
+  if (feature === undefined) return rejected("not_found", `no feature has id ${id}`);
+  if (feature.personId !== caller || deps.features.featureOfSession(sessionId) !== id) {
+    return rejected("forbidden", `only an agent session of feature ${id} lands it`);
+  }
+  const charter = deps.charter(live.session.handle, feature.personId);
+  if (charter === undefined) return rejected("not_found", `identity ${live.session.handle} has no charter`);
+  const prepared = await prepareLand(deps, feature, input.checkpoint);
+  if (isRejection(prepared)) return prepared;
+  return openLand(deps, prepared, charter, { identity: live.session.handle }, live.session.handle);
+}
+
+/**
+ * Penguin lands the feature again after a promotion main refused (a race): the same checks on main's
+ * new head. When the feature may no longer land as it is (most often because main moved past its
+ * checkpoint), the feature goes back to `building` with a signed `land_returned` record.
+ */
+export async function retryLand(deps: LandDeps, featureId: string, previous: { readonly runId: string; readonly charter: CharterView }): Promise<LandOutcome> {
+  const feature = deps.features.get(featureId);
+  if (feature === undefined) return rejected("not_found", `no feature has id ${featureId}`);
+  const prepared = await prepareLand(deps, feature, undefined);
+  if (!isRejection(prepared)) return openLand(deps, prepared, previous.charter, { penguin: true }, "penguin");
+  const record = await deps.sign(
+    deps.features.draftRecord(featureId, "land_returned", { penguin: true }, { run_id: previous.runId, reason: prepared.reason, message: prepared.message }),
+  );
+  deps.features.addRecord(record);
+  deps.features.setState(featureId, ["landing"], "building");
+  deps.notify(feature.personId);
+  return prepared;
+}
+
+/**
+ * A plan check (PRD 4.4 step 3): the block of `featureId`'s announced plan, checked at its latest
+ * checkpoint on main's head and every running feature's fork head. Never promotes. Undefined when the
+ * feature has no checkpoint, plan or charter, or a land run already holds it.
+ */
+export async function requestPlanCheck(deps: LandDeps, featureId: string, trigger: { readonly feature: string; readonly checkpoint: string }): Promise<BlockRun | undefined> {
+  const feature = deps.features.get(featureId);
+  if (feature === undefined || !RUNNING_STATES.has(feature.state) || feature.repo === null || feature.latestCheckpointSha === null) return undefined;
+  const plan = await deps.agent(featureId).latestPlan(featureId);
+  if (plan === undefined) return undefined;
+  const charter = deps.charter(plan.proposedBy, feature.personId);
+  const main = await mainState(deps);
+  if (charter === undefined || main.head === null) return undefined;
+  const targets = await blockTargets(deps, featureId);
+  const opened = await deps.agent(featureId).openBlockRun({
+    featureId,
+    planId: plan.planId,
+    purpose: "plan_check",
+    fork: `feature-${featureId}`,
+    checkpoint: feature.latestCheckpointSha,
+    mainBefore: main.head,
+    branch: deps.branch,
+    targets,
+    charter,
+    requestedBy: "penguin",
+  });
+  if (opened.status === "busy") return undefined;
+  const record = await deps.sign(
+    deps.features.draftRecord(featureId, "plan_check_requested", { penguin: true }, {
+      run_id: opened.run.runId,
+      plan_id: plan.planId,
+      checkpoint: feature.latestCheckpointSha,
+      main_before: main.head,
+      targets: targetFields(targets),
+      trigger: { feature: trigger.feature, checkpoint: trigger.checkpoint },
+    }),
+  );
+  deps.features.addRecord(record);
+  deps.queue.add(featureId);
+  return opened.run;
+}
+
+/** The runner's claim across every FeatureAgent that holds a waiting run. */
+export async function claimBlockRuns(
+  queue: BlockQueueStore,
+  agent: (featureId: string) => FeatureBlocks,
+  caller: BridgeCaller,
+): Promise<{ readonly status: "ok"; readonly runs: readonly BlockRun["request"][] } | { readonly status: "forbidden"; readonly message: string }> {
+  if (caller.role !== "runner") return { status: "forbidden", message: `bridge ${caller.bridgeId} does not hold the runner role` };
+  const runs: BlockRun["request"][] = [];
+  for (const featureId of queue.queued()) {
+    const claimed = await agent(featureId).claimBlockRuns(caller.bridgeId);
+    runs.push(...claimed.runs);
+    if (!claimed.waiting) queue.remove(featureId);
+  }
+  return { status: "ok", runs };
+}
+
+// The FeatureAgent's side: the runner's report, then the promotion.
+
+/** The record types a FeatureAgent may ask the ProjectAgent to sign for its feature. */
+export const BLOCK_RECORD_TYPES = ["block_checked", "promotion", "promotion_refused"] as const satisfies readonly FeatureRecordType[];
+export type BlockRecordType = (typeof BLOCK_RECORD_TYPES)[number];
+
+/** What a FeatureAgent asks of the ProjectAgent while it records a run and promotes, over RPC. */
+export interface BlockProjectPort {
+  /** Signs one record on the feature with the service key and keeps it; returns its id. */
+  signBlockRecord(featureId: string, type: BlockRecordType, payload: Record<string, unknown>): Promise<string>;
+  /** Takes the project's one promotion slot for `runId`; false while another promotion holds it. */
+  acquirePromotion(featureId: string, runId: string): Promise<boolean>;
+  releasePromotion(runId: string): Promise<void>;
+  /** Main moved to the feature's checkpoint: the feature is `landed`. */
+  featureLanded(featureId: string, promotion: Promotion): Promise<void>;
+  /** A land run failed its checks or its push: the feature goes back to `building`. */
+  landFailed(featureId: string, runId: string): Promise<void>;
+  /** Checks the block again on main's new head after a refused push; see retryLand. */
+  retryLand(featureId: string, runId: string, charter: CharterView): Promise<{ readonly status: string; readonly runId?: string; readonly reason?: string; readonly message?: string }>;
+}
+
+export interface BlockReportDeps {
+  readonly store: BlockStore;
+  /** The feature's fix writes, to name in the promotion. */
+  readonly fixWrites: (featureId: string) => FixWrite[];
+  readonly port: BlockProjectPort;
+  /** Mints Penguin's tokens, moves main and revokes them (main-push.ts). */
+  readonly push: (run: BlockRun) => Promise<FastForwardOutcome>;
+  /** Revokes every write token on the originating fork; returns how many. */
+  readonly seal: (run: BlockRun) => Promise<number>;
+  readonly now?: () => number;
+}
+
+export type BlockReportResult =
+  | {
+      readonly status: "recorded";
+      readonly runId: string;
+      readonly state: BlockRunState;
+      readonly passed: boolean;
+      readonly recordId: string;
+      readonly promotion: Promotion | null;
+      /** After a refused push: the run that checks the block again, or why the land went back. */
+      readonly retried: { readonly status: string; readonly runId?: string; readonly reason?: string } | null;
+    }
+  | { readonly status: "rejected"; readonly reason: "forbidden" | "not_found" | "invalid" | "superseded" | "conflict"; readonly message: string };
+
+/**
+ * Records the runner's report of run `runId` with its signed `block_checked` record. A land run that
+ * passed is promoted at once; one that failed returns the feature to `building`.
+ */
+export async function reportBlockRun(deps: BlockReportDeps, caller: BridgeCaller, runId: string, body: unknown): Promise<BlockReportResult> {
+  if (caller.role !== "runner") return { status: "rejected", reason: "forbidden", message: `bridge ${caller.bridgeId} does not hold the runner role` };
+  const run = deps.store.get(runId);
+  if (run === undefined) return { status: "rejected", reason: "not_found", message: `no block run ${runId}` };
+  const parsed = parseBlockRunReport(body, run.request);
+  if (!parsed.ok) return { status: "rejected", reason: "invalid", message: parsed.problems.join("; ") };
+  const verdict = blockVerdict(run.request, parsed.report.checks);
+  const recorded = deps.store.report(runId, caller.bridgeId, parsed.report, verdict.passed);
+  if (recorded.status === "rejected") return recorded;
+  const reported = recorded.run;
+  const checkMs = Date.parse(reported.reportedAt as string) - Date.parse(reported.requestedAt);
+  const recordId = await deps.port.signBlockRecord(run.featureId, "block_checked", {
+    run_id: runId,
+    purpose: run.purpose,
+    plan_id: run.planId,
+    checkpoint: run.checkpoint,
+    main_before: run.mainBefore,
+    branch: run.request.branch,
+    targets: targetFields(run.request.targets),
+    passed: verdict.passed,
+    unmerged: [...verdict.unmerged],
+    main_tested: verdict.mainTested,
+    checks: parsed.report.checks.map((check) => ({
+      target: check.target,
+      check: check.check,
+      result: check.result,
+      fingerprint: check.fingerprint?.id ?? null,
+      log_ref: check.logRef,
+    })),
+    decisions: parsed.report.decisions.map((decision) => ({ target: decision.target, check: decision.check, step: decision.step, actor: decision.actor })),
+    runner_ms: parsed.report.durationMs,
+    check_ms: checkMs,
+  });
+  deps.store.setRecord(runId, recordId);
+  const result = { status: "recorded" as const, runId, passed: verdict.passed, recordId, promotion: null, retried: null };
+  if (run.purpose !== "land") return { ...result, state: reported.state };
+  if (!verdict.passed) {
+    await deps.port.landFailed(run.featureId, runId);
+    return { ...result, state: reported.state };
+  }
+  return { ...result, ...(await promote(deps, { ...reported, recordId }, checkMs)) };
+}
+
+/** Moves main to a passing land run's checkpoint, or says why not. */
+async function promote(
+  deps: BlockReportDeps,
+  run: BlockRun,
+  checkMs: number,
+): Promise<{ readonly state: BlockRunState; readonly promotion: Promotion | null; readonly retried: { readonly status: string; readonly runId?: string; readonly reason?: string } | null }> {
+  const now = deps.now ?? Date.now;
+  const started = now();
+  const refuse = async (state: "raced" | "refused", reason: string, head: string | null) => {
+    deps.store.transition(run.runId, ["passed", "promoting"], state, reason);
+    await deps.port.signBlockRecord(run.featureId, "promotion_refused", {
+      run_id: run.runId,
+      main_before: run.mainBefore,
+      checkpoint: run.checkpoint,
+      main_head: head,
+      reason,
+      retried: state === "raced",
+    });
+  };
+  if (!(await deps.port.acquirePromotion(run.featureId, run.runId))) {
+    await refuse("raced", "another promotion was moving main", null);
+    const retried = await deps.port.retryLand(run.featureId, run.runId, run.request.charter);
+    return { state: "raced", promotion: null, retried };
+  }
+  try {
+    if (!deps.store.transition(run.runId, ["passed"], "promoting")) return { state: deps.store.get(run.runId)?.state ?? "passed", promotion: null, retried: null };
+    const pushed = await deps.push(run);
+    if (pushed.status === "moved") {
+      await refuse("raced", `main moved to ${pushed.head ?? "nothing"} after the block was checked`, pushed.head);
+      const retried = await deps.port.retryLand(run.featureId, run.runId, run.request.charter);
+      return { state: "raced", promotion: null, retried };
+    }
+    if (pushed.status === "failed") {
+      await refuse("refused", pushed.reason, pushed.head);
+      await deps.port.landFailed(run.featureId, run.runId);
+      return { state: "refused", promotion: null, retried: null };
+    }
+    const fixes = run.planId === null ? [] : deps.fixWrites(run.featureId).filter((write) => write.partId.startsWith(`${run.planId}#`));
+    const promotedAt = now();
+    const fields = {
+      planId: run.planId,
+      featureId: run.featureId,
+      runId: run.runId,
+      branch: run.request.branch,
+      mainBefore: run.mainBefore,
+      mainAfter: run.checkpoint,
+      targets: targetFields(run.request.targets) as { feature: string; sha: string }[],
+      fixes: fixes.map(({ partId, revision, targetRepo, commitSha }) => ({ partId, revision, targetRepo, commitSha })),
+      checkRecordId: run.recordId as string,
+      requestedAt: run.requestedAt,
+      promotedAt: new Date(promotedAt).toISOString(),
+      checkMs,
+      promoteMs: promotedAt - started,
+    };
+    const recordId = await deps.port.signBlockRecord(run.featureId, "promotion", {
+      run_id: run.runId,
+      plan_id: run.planId,
+      branch: fields.branch,
+      main_before: fields.mainBefore,
+      main_after: fields.mainAfter,
+      targets: fields.targets,
+      fixes: fields.fixes.map(({ partId, revision, targetRepo, commitSha }) => ({ part_id: partId, revision, target_repo: targetRepo, commit_sha: commitSha })),
+      check_record: fields.checkRecordId,
+      pack_bytes: pushed.packBytes,
+      check_ms: checkMs,
+      promote_ms: fields.promoteMs,
+    });
+    const promotion: Promotion = { schemaVersion: 1, ...fields, recordId };
+    deps.store.keepPromotion(promotion);
+    try {
+      await deps.seal(run);
+    } catch (error) {
+      // Main moved; the fork is still refused every new write token. The next land attempt reports it.
+      console.error(JSON.stringify({ event: "fork_seal_failed", feature: run.featureId, error: String(error).slice(0, 200) }));
+    }
+    await deps.port.featureLanded(run.featureId, promotion);
+    return { state: "promoted", promotion, retried: null };
+  } finally {
+    await deps.port.releasePromotion(run.runId);
+  }
+}
+
+export interface LandedDeps {
+  readonly features: FeatureStore;
+  readonly queue: BlockQueueStore;
+  /** Retires the feature's announced plan (plan-coverage.ts). */
+  readonly retirePlan: (featureId: string) => void;
+  /** Checks again each start an open lock of the feature held; a landed feature covers nothing, so each lock is withdrawn. */
+  readonly recheckLocks: (featureId: string) => Promise<void>;
+  readonly notify: (personId: string) => void;
+}
+
+/**
+ * Main moved to the feature's checkpoint: the feature is `landed`. Its plan is retired, the starts it
+ * held are checked again, and its person and every person whose fork carries one of its fixes hear.
+ */
+export async function featureLanded(deps: LandedDeps, featureId: string, promotion: Promotion): Promise<void> {
+  const feature = deps.features.get(featureId);
+  if (feature === undefined) return;
+  deps.features.setState(featureId, ["landing", "building"], "landed");
+  deps.queue.remove(featureId);
+  deps.retirePlan(featureId);
+  await deps.recheckLocks(featureId);
+  const people = new Set([feature.personId]);
+  for (const fix of promotion.fixes) {
+    const target = deps.features.get(fix.targetRepo.replace(/^feature-/u, ""));
+    if (target !== undefined) people.add(target.personId);
+  }
+  for (const person of people) deps.notify(person);
+}
+
+/** A land run failed its checks or main refused its push: the feature goes back to `building`. */
+export function landFailed(deps: Pick<LandedDeps, "features" | "notify">, featureId: string): void {
+  const feature = deps.features.get(featureId);
+  if (feature === undefined) return;
+  deps.features.setState(featureId, ["landing"], "building");
+  deps.notify(feature.personId);
+}
+
+/** The signed record a FeatureAgent asks for, drafted and signed on the ProjectAgent. */
+export async function signBlockRecord(
+  features: FeatureStore,
+  sign: (record: UnsignedFeatureRecord) => Promise<FeatureRecord>,
+  featureId: string,
+  type: string,
+  payload: Record<string, unknown>,
+): Promise<string> {
+  if (!(BLOCK_RECORD_TYPES as readonly string[]).includes(type)) throw new Error(`a FeatureAgent does not sign ${type} records`);
+  if (features.get(featureId) === undefined) throw new Error(`no feature ${featureId}`);
+  const record = await sign(features.draftRecord(featureId, type as BlockRecordType, { penguin: true }, payload));
+  features.addRecord(record);
+  return record.record_id;
+}

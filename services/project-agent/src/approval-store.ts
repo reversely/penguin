@@ -1,7 +1,7 @@
-// Where approval of each Huddle fix sub-issue stands, as its Huddle's HuddleAgent last reported it
-// (huddle-reviews.ts), so the issue page can show it beside the fix's reviews. The HuddleAgent
+// Where approval of each Huddle fix sub-issue stands, as its Huddle's FeatureAgent last reported it
+// (huddle-reviews.ts), so the issue page can show it beside the fix's reviews. The FeatureAgent
 // derives it from the issue index and the scope map; this table keeps the last copy. Beside it, what
-// each Huddle issue waits on before it may close, as its HuddleAgent last evaluated it
+// each Huddle issue waits on before it may close, as its FeatureAgent last evaluated it
 // (huddle-close.ts). Both are live coordination state with no counterpart in the issues repo.
 
 import type { FixApproval } from "@penguin/issues";

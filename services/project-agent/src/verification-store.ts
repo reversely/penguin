@@ -1,5 +1,5 @@
-// The verification runs of one Huddle (PRD section 7, HuddleAgent storage: `Candidate` and `Check`),
-// kept in the SQLite of that Huddle's HuddleAgent (PRD section 5). A run is one set of owners'
+// The verification runs of one Huddle (PRD section 7, FeatureAgent storage: `Candidate` and `Check`),
+// kept in the SQLite of that Huddle's FeatureAgent (PRD section 5). A run is one set of owners'
 // checkpoints to merge onto the Huddle repo's `integration` branch and the commands to run there.
 //
 // A run is `pending` until the runner reports it, then `done`. A newer checkpoint schedules a new run
@@ -7,7 +7,7 @@
 // The table is live coordination state with no counterpart in the issues repo.
 //
 // The runner names a run by its ID alone (`POST /verifications/<run id>`), so run IDs are unique
-// across the project: the HuddleAgent of Huddle issue N numbers its runs from N * RUNS_PER_HUDDLE + 1,
+// across the project: the FeatureAgent of Huddle issue N numbers its runs from N * RUNS_PER_HUDDLE + 1,
 // and the ProjectAgent finds a run's Huddle from its ID (`huddleIssueOfRun`).
 
 import type { VerificationCheckpoint, VerificationCommand, VerificationReport } from "@penguin/protocol";
@@ -34,7 +34,7 @@ export function runIdBaseOf(issueId: string): number {
   return Number(issueId) * RUNS_PER_HUDDLE;
 }
 
-/** The Huddle issue whose HuddleAgent numbered run `runId`, or undefined for an ID in no Huddle's range. */
+/** The Huddle issue whose FeatureAgent numbered run `runId`, or undefined for an ID in no Huddle's range. */
 export function huddleIssueOfRun(runId: string): string | undefined {
   if (!/^[0-9]{1,15}$/u.test(runId)) return undefined;
   const issue = Math.floor(Number(runId) / RUNS_PER_HUDDLE);
@@ -142,7 +142,7 @@ export class VerificationStore {
 }
 
 /**
- * Drops the VerificationRun table a ProjectAgent kept before the runs moved to the HuddleAgents, when
+ * Drops the VerificationRun table a ProjectAgent kept before the runs moved to the FeatureAgents, when
  * it holds no run. A table that still holds runs is kept, so no run is lost, and reported as `kept`.
  */
 export function dropProjectVerificationTable(db: SqlDatabase): "dropped" | "absent" | "kept" {

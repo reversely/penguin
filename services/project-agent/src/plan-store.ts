@@ -6,10 +6,9 @@
 // touching the plan's area (plan-coverage.ts); a fix written into an affected fork is kept once per
 // part revision (fix-write.ts).
 //
-// The store runs on one SQL database. The per-feature Durable Object (the HuddleAgent class until
-// #96 renames it FeatureAgent) owns one instance per feature, so moving plans to the FeatureAgent
-// moves this module only. Nothing here signs or checks a plan: propose-plan.ts does both on the
-// ProjectAgent, which holds the service key.
+// The store runs on one SQL database. The feature's FeatureAgent owns one instance per feature,
+// beside its block runs (block-store.ts). Nothing here signs or checks a plan: propose-plan.ts does
+// both on the ProjectAgent, which holds the service key.
 
 import type { Plan, PlanPart, PlanPartState } from "@penguin/protocol";
 

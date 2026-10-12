@@ -201,10 +201,9 @@ The procedure moves conflict handling to the start of the work. Each step below 
   plan as misconfigured. A plan over the limit gets a signed `plan_returned` record naming its
   behavioural places. The originating person gets a `plan_returned` inbox item.
 - **Storing.** A complete plan is a signed `propose_plan` record listing each part. Its `Plan` and
-  `PlanPart` rows live in the per-feature Durable Object, an instance of the HuddleAgent class named
-  for the feature, until the FeatureAgent replaces it. `plan-store.ts` is the one module that holds
-  them. `GET /api/features/<id>/plan` answers the newest plan as JSON for the dashboard. A part's
-  patch and changed lines (`diff.patch`, `diff.files`) go to the feature's person, the part's owner
+  `PlanPart` rows live in the feature's FeatureAgent, the per-feature Durable Object.
+  `plan-store.ts` is the one module that holds them. `GET /api/features/<id>/plan` answers the
+  newest plan as JSON for the dashboard. A part's patch and changed lines (`diff.patch`, `diff.files`) go to the feature's person, the part's owner
   and that owner's delegate, the same rule the feature page applies (`mayReadPartLines` in
   `dashboard-views.ts`). For any other signed-in person both fields are null.
 - **Limits.** A commit subject is cut at 300 characters, a docstring at 500 and an assertion or error
@@ -348,6 +347,60 @@ The procedure moves conflict handling to the start of the work. Each step below 
    push uses a write token on main that only Penguin holds, for minutes. Every affected fork already
    carries its fix, so none of them breaks when it next takes main.
 5. The originating fork turns read-only. It records exactly what reached main.
+
+#### Block promotion in the build
+
+- **Who owns it.** The feature's FeatureAgent (`services/feature-agent`) keeps every block run, its
+  checks and the promotion (`services/project-agent/src/block-store.ts`). The ProjectAgent checks each
+  request and signs each record (`block-land.ts`). The same FeatureAgent keeps the feature's plan and
+  fix writes. A feature with no plan goes through the same steps with no fix to check.
+- **Ready to land.** The feature's agent calls `land_feature`. Penguin refuses the land with a reason
+  and opens no run in five cases. The latest checkpoint does not yet hold main's head (`behind_main`):
+  the agent merges main into its fork and reports the merge as a checkpoint. A part of the plan is not
+  approved (`plan_not_approved`). A part for a running feature has no fix written at its current
+  revision (`fix_not_written`). A fix for code on main is not in the checkpoint (`fix_not_in_block`).
+  A written fix is no longer under its fork's head (`fix_not_in_place`). Ancestry is read through the
+  binding's `log` and `readCommit`; the search stops at main's own history.
+- **The block run.** One run checks the checkpoint merged onto main's head and onto the head of the
+  `main` branch of every other running feature's fork. That head carries each fix written into the
+  fork. The check runner claims the run at `POST /blocks/claim` and runs the [checks](#checks) on each
+  merged tree. It runs every scope's tests on main's merged tree. Main moves to exactly that tree, so
+  each scope's tests must pass there. The runner reports to `POST /blocks/<feature>/<n>`, which the
+  Worker hands to the feature's FeatureAgent. Penguin keeps the report only when it answers the claimed
+  run: the same checkpoint, main and targets at the commits the run named.
+- **The verdict.** A block passes when no check failed or erred, every target has a passed merge
+  check and main's merged tree ran tests that all passed. A failing block leaves main where it is and
+  sends the feature back to `building`. Each failure carries one next step from the
+  [resolution ladder](#routing-and-the-resolution-ladder), routed by the originating identity's
+  charter. The agent reads them in `get_work`'s `landing`, applies them, reports a checkpoint and calls
+  `land_feature` again.
+- **The promotion.** A passing land run takes the project's one promotion slot. The FeatureAgent
+  mints a write token on the base repo and a read token on the feature's fork, each for
+  `PENGUIN_PROMOTION_TOKEN_TTL_MINUTES` (default 5, at most 15). It reads main's ref, fetches the
+  commits main lacks from the fork's `git-upload-pack` and sends one `git-receive-pack` command
+  `<main before> <checkpoint> refs/heads/<BASE_BRANCH>` with that pack (`main-push.ts`). Git applies
+  the command only while main still names the checked commit. Both tokens are revoked after the push.
+  No bridge, MCP tool or dashboard route can ask for a token on main.
+- **A race.** Main that moved after the check refuses the push. Penguin signs a `promotion_refused`
+  record and checks the block again on main's new head. A checkpoint that no longer holds main goes
+  back to the agent with a signed `land_returned` record naming `behind_main`.
+- **Read-only.** After the push the FeatureAgent revokes every write token on the originating fork.
+  The ProjectAgent marks the feature `landed`: it mints no feature token for it, writes no fix into it
+  or for its plan, takes no checkpoint for it and retires its announced plan. Each start its overlap
+  locks held is checked again.
+- **The record.** Every step is a signed record on the feature: `land_requested`,
+  `plan_check_requested`, `block_checked` with each check's result, fingerprint and log reference,
+  `promotion` with `main_before`, `main_after`, the fixes written into other forks and the targets
+  checked, `promotion_refused` and `land_returned`. Each `block_checked` record states the time from
+  the request to the report. Each `promotion` record states that time and the time from the report to
+  main moved.
+- **Plan checks.** A checkpoint of a running feature whose area meets another feature's announced plan
+  asks for a `plan_check` run of that plan's block (Build step 3). It runs the same checks, keeps its
+  record and never moves main. A land run supersedes a waiting plan check; a plan check waits while a
+  land run holds the feature.
+- **Preview.** An owner fetches the originating fork with an expiring read token through
+  `penguin-bridge preview --feature <id>` ([bridge-and-runner.md](bridge-and-runner.md#preview)).
+  Artifacts makes no new repo.
 
 ### Late starters
 
@@ -515,9 +568,9 @@ hook names it. `report_checkpoint` lists it under `toolResults`. `get_work` list
 10 delivered results with each full outcome.
 
 PRD section 8 gives Penguin a write token on another feature's fork only for an approved merge plan
-part. Merge plans grant no token yet, so no bridge holds write on any `feature-<id>` repo. The
-runner keeps each fix commit at `refs/penguin/fixes/<commit>` in its own repository. The result
-reports the commit with `pushed: false`. The feature's fork keeps its commits.
+part (#91, [Steps 1 and 3 in the build](#steps-1-and-3-in-the-build)). An `apply_fix` request is not
+part of a plan, so the runner keeps its commit at `refs/penguin/fixes/<commit>` in its own repository
+and reports it with `pushed: false`. Plan-part fixes are written into the affected fork.
 
 On the helpful-fix fixture, Priya's agent calls `check` on Priya's checkpoint with Jun's and Sam's
 features running. With no manual run, the session's next safe checkpoint brings the block checks

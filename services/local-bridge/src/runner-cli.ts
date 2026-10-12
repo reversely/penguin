@@ -4,8 +4,9 @@
 // Huddle verification runs it lists (verification-run.ts), the approved branches it records in Huddle
 // repos (approval-run.ts), the submitted reviews it claims and runs the review harness on
 // (review-run.ts), the agents' `impact`, `check` and `apply_fix` requests it claims and runs on
-// feature forks (tool-run.ts) and the approved mechanical plan parts it writes into affected features'
-// forks (fix-write.ts).
+// feature forks (tool-run.ts), the approved mechanical plan parts it writes into affected features'
+// forks (fix-write.ts) and the block runs that check a feature merged onto main and every running
+// fork before Penguin promotes it (block-run.ts).
 
 import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
@@ -18,6 +19,7 @@ import { RUNNER_INTERVAL_MS } from "@penguin/protocol";
 import { FixApplier } from "./apply-fix.ts";
 import { approvalPass, ApprovedBranchWriter, formatApprovalPass, type ApprovalPassResult } from "./approval-run.ts";
 import { BlockChecker, pythonDependencyAnalyzer } from "./block-checks.ts";
+import { blockPass, formatBlockPass, type BlockPassResult } from "./block-run.ts";
 import { checkTools } from "./check-tools.ts";
 import type { CliIo } from "./cli.ts";
 import { combinedRunPass, forkFetcher, formatCombinedPass, type CombinedPassResult } from "./combined-run-pass.ts";
@@ -31,6 +33,7 @@ import { IssuesClone } from "./issues-clone.ts";
 import type { KeyStore } from "./key-store.ts";
 import {
   bridgeRemotes,
+  claimBlockRuns,
   claimCombinedRuns,
   claimFixWrites,
   claimReviews,
@@ -41,6 +44,7 @@ import {
   fetchVerificationRuns,
   openBridge,
   reportApproval,
+  reportBlockRun,
   reportCombinedRun,
   reportFixWrite,
   reportPlanFacts,
@@ -86,6 +90,10 @@ export const RUNNER_USAGE = `       penguin-bridge runner [--once] [--interval <
          Each approved mechanical part of a merge plan is claimed too, with a write token minted for
          that part on the affected feature's fork: its patch becomes one commit on the fork head,
          pushed as a fast-forward of the fork's main. The runner reports the commit to Penguin.
+         Each block run Penguin asks for is claimed too: the base repo and every feature fork it
+         names are fetched with read tokens, the feature's checkpoint is merged onto main and onto
+         each fork, and the checks and every scope's tests on main run. Penguin moves main itself
+         when a land run passes; the runner holds no token on main.
 `;
 
 /** One pass of the test jobs: each job's result, or why it did not run. */
@@ -97,6 +105,7 @@ interface TestJobsResult {
   readonly review: ReviewPassResult | Error;
   readonly tools: ToolPassResult | Error;
   readonly fixWrites: FixWritePassResult | Error;
+  readonly blocks: BlockPassResult | Error;
 }
 
 /**
@@ -307,12 +316,22 @@ async function testJobsPass(
         report: (writeId, commit) => reportFixWrite(server, bridgeToken, writeId, commit, fetchImpl),
       }),
     ),
+    blocks: await settle(() =>
+      blockPass({
+        claim: () => claimBlockRuns(server, bridgeToken, fetchImpl),
+        report: (report) => reportBlockRun(server, bridgeToken, report, fetchImpl),
+        fetchRepo: (name) => fetchRepoBranches(repo, readRemotes, name),
+        combined,
+        repoPath: repo,
+      }),
+    ),
   });
 }
 
 /** True when every job ran and nothing in them was refused or stopped. */
-function testJobsClean({ combined, planFacts, verification, approval, review, tools, fixWrites }: TestJobsResult): boolean {
+function testJobsClean({ combined, planFacts, verification, approval, review, tools, fixWrites, blocks }: TestJobsResult): boolean {
   if (
+    blocks instanceof Error ||
     fixWrites instanceof Error ||
     combined instanceof Error ||
     planFacts instanceof Error ||
@@ -327,11 +346,12 @@ function testJobsClean({ combined, planFacts, verification, approval, review, to
   const reviewClean = review.reviews.every((entry) => entry.error === null);
   const toolsClean = tools.runs.every((entry) => entry.error === null);
   const fixWritesClean = fixWrites.writes.every((entry) => entry.error === null);
-  return fixWritesClean && combinedClean && reviewClean && toolsClean && planFacts.failed.length === 0 && verification.failed.length === 0 && approval.failed.length === 0;
+  const blocksClean = blocks.runs.every((entry) => entry.error === null);
+  return blocksClean && fixWritesClean && combinedClean && reviewClean && toolsClean && planFacts.failed.length === 0 && verification.failed.length === 0 && approval.failed.length === 0;
 }
 
 /** The pass's lines; `always` writes a job's summary even when it found no work. */
-function formatTestJobs({ combined, planFacts, verification, approval, review, tools, fixWrites }: TestJobsResult, always: boolean): string {
+function formatTestJobs({ combined, planFacts, verification, approval, review, tools, fixWrites, blocks }: TestJobsResult, always: boolean): string {
   let text = "";
   if (combined instanceof Error) text += `No combined runs were claimed: ${combined.message}\n`;
   else if (always || combined.claimed > 0) text += formatCombinedPass(combined);
@@ -347,5 +367,7 @@ function formatTestJobs({ combined, planFacts, verification, approval, review, t
   else if (always || tools.claimed > 0) text += formatToolPass(tools);
   if (fixWrites instanceof Error) text += `No fix writes were claimed: ${fixWrites.message}\n`;
   else if (always || fixWrites.claimed > 0) text += formatFixWritePass(fixWrites);
+  if (blocks instanceof Error) text += `No block runs were claimed: ${blocks.message}\n`;
+  else if (always || blocks.claimed > 0) text += formatBlockPass(blocks);
   return text;
 }

@@ -18,7 +18,10 @@
  *   ProjectAgent (`fix_token`, services/project-agent/src/fix-write.ts): for the originating agent named
  *   in the plan, on the one fork of an approved part, for PENGUIN_FIX_TOKEN_TTL_MINUTES.
  * - A feature opened after a merge plan was announced receives every announced plan its area meets
- *   (`announcedPlans`). A checkpoint names each plan that gained a part for it (`plansJoined`).
+ *   (`announcedPlans`). A checkpoint names each plan that gained a part for it (`plansJoined`) and each
+ *   announced plan whose block it asked to check again (`planChecks`).
+ * - `land_feature` asks the ProjectAgent to land the session's feature (block-land.ts). The answer
+ *   names the block run and its targets; no token on main is ever minted here or returned.
  *
  * The fork options and the token lifetime come from the Worker's configuration
  * (PENGUIN_FEATURE_FORK_DEFAULT_BRANCH_ONLY, PENGUIN_FEATURE_TOKEN_TTL_MINUTES); the repo prefix from
@@ -36,6 +39,7 @@ import type {
   FixWriteOutcome,
   HandedPlan,
   JoinedPlan,
+  LandAnswer,
   OverlapStatus,
   PartDecisionOutcome,
   ProjectRepos,
@@ -95,6 +99,8 @@ export interface FeatureDirectory {
   fixWriteGrant(owner: string, sessionId: string, input: FixPartInput, repos: ProjectRepos): Promise<FixGrantOutcome>;
   /** Checks and keeps the commit the originating agent pushed for a granted write. */
   reportFixWrite(owner: string, sessionId: string, input: FixPartInput & { readonly commit: unknown }, repos: ProjectRepos): Promise<FixWriteOutcome>;
+  /** `land_feature`: checks the feature is ready and opens its block run (block-land.ts). */
+  landFeature(owner: string, sessionId: string, input: { readonly feature: unknown; readonly checkpoint?: unknown }, repos: ProjectRepos): Promise<LandAnswer>;
 }
 
 export interface FeatureConfig {
@@ -401,6 +407,19 @@ export function mcpFeatures(ports: FeaturePorts, owner: string): McpFeatures {
           },
         };
       }),
+    land: (sessionId, input) =>
+      guarded(async () => {
+        const landed = await (await ports.directory()).landFeature(owner, sessionId, input, ports.repos);
+        if (landed.status === "rejected") return landed;
+        return {
+          status: "ok",
+          value: {
+            ...landed,
+            targets: landed.targets.map(({ feature, sha }) => ({ feature, sha })),
+            message: "waiting for the check runner; read the result in get_work's landing",
+          },
+        };
+      }),
     checkpoint: (sessionId, feature, sha) =>
       guarded(async () => {
         const reported = await (await ports.directory()).reportFeatureCheckpoint(owner, sessionId, feature, sha, ports.repos);
@@ -448,7 +467,9 @@ function nearFields(near: Extract<WhatsNearOutcome, { status: "ok" }>["features"
 }
 
 /** A recorded feature checkpoint as the MCP tool and the bridge route answer it. */
-export function checkpointFields(reported: Extract<FeatureCheckpointOutcome, { status: "ok" }>): Record<string, unknown> {
+export function checkpointFields(
+  reported: Extract<FeatureCheckpointOutcome, { status: "ok" }> & { readonly planChecks?: readonly { readonly feature: string; readonly runId: string }[] },
+): Record<string, unknown> {
   const view = featureView(reported.feature);
   return {
     fork: view.fork,
@@ -465,6 +486,7 @@ export function checkpointFields(reported: Extract<FeatureCheckpointOutcome, { s
     toolResults: toolResultFields(reported.toolResults ?? []),
     ...planNoticeFields(reported.planNotices),
     plansJoined: joinedPlanFields(reported.plansJoined ?? []),
+    planChecks: (reported.planChecks ?? []).map(({ feature, runId }) => ({ feature, runId })),
   };
 }
 

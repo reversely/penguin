@@ -6,9 +6,16 @@ import { mkdir, open, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import {
+  BLOCK_RUN_PURPOSES,
   checkFixWriteSpec,
+  featureOfBlockRun,
+  isBranchName,
+  OBJECT_ID,
   RUNNER_TOOLS,
   type AgentToolResult,
+  type BlockRunReport,
+  type BlockRunRequest,
+  type BlockRunTarget,
   type FixWriteSpec,
   type ApprovalReport,
   type ApprovalSpec,
@@ -802,6 +809,83 @@ export async function reportFixWrite(server: string, bridgeToken: string, writeI
   const message = typeof body["message"] === "string" ? `: ${body["message"]}` : "";
   if ([400, 404, 409].includes(status)) throw new RemoteRefusedError(`Penguin refused fix write ${writeId} (HTTP ${status})${message}`);
   throw new RemoteUnavailableError(`Penguin could not take fix write ${writeId} (HTTP ${status})${message}`);
+}
+
+export const BLOCK_ROUTE = "/blocks";
+
+/** Penguin's answer to a block run's report: the run's new state and, for a land, the promotion. */
+export interface BlockRunReply {
+  readonly status: "recorded";
+  readonly runId: string;
+  readonly state: string;
+  readonly passed: boolean;
+  readonly recordId: string;
+  readonly promotion: { readonly mainBefore: string; readonly mainAfter: string; readonly branch: string; readonly recordId: string; readonly checkMs: number; readonly promoteMs: number } | null;
+  readonly retried: { readonly status: string; readonly runId?: string; readonly reason?: string } | null;
+}
+
+function blockTarget(value: unknown): BlockRunTarget | undefined {
+  const { feature, person, fork, sha } = (value ?? {}) as Record<string, unknown>;
+  if (typeof feature !== "string" || typeof person !== "string" || fork !== `feature-${feature}` || !FEATURE_FORK.test(fork)) return undefined;
+  if (typeof sha !== "string" || !OBJECT_ID.test(sha)) return undefined;
+  return { feature, person, fork, sha };
+}
+
+/**
+ * Claims the block runs Penguin keeps waiting (PRD 0.4 section 4.5), which marks them as this runner's
+ * until they are reported or their lease runs out. Every field is checked before a run is returned:
+ * the run id, the forks, the commits and main's branch name. Penguin answers only a runner bridge.
+ */
+export async function claimBlockRuns(server: string, bridgeToken: string, fetchImpl: Fetch = fetch): Promise<BlockRunRequest[]> {
+  const { status, body } = await runnerRequest(server, bridgeToken, `${BLOCK_ROUTE}/claim`, {}, fetchImpl);
+  if (status !== 200 || !Array.isArray(body["runs"])) throw new RemoteUnavailableError(`Penguin could not hand out block runs (HTTP ${status})`);
+  return body["runs"].map((entry: unknown): BlockRunRequest => {
+    const { runId, feature, planId, purpose, fork, checkpoint, main, branch, targets, charter } = (entry ?? {}) as Record<string, unknown>;
+    const { handle, person, scopes, paths } = (charter ?? {}) as Record<string, unknown>;
+    const parsedTargets = Array.isArray(targets) ? targets.map(blockTarget) : [undefined];
+    if (
+      typeof runId !== "string" ||
+      featureOfBlockRun(runId) !== feature ||
+      typeof feature !== "string" ||
+      fork !== `feature-${feature}` ||
+      !FEATURE_FORK.test(fork) ||
+      !(planId === null || (typeof planId === "string" && planId.length <= 128)) ||
+      !(BLOCK_RUN_PURPOSES as readonly unknown[]).includes(purpose) ||
+      typeof checkpoint !== "string" ||
+      !OBJECT_ID.test(checkpoint) ||
+      typeof main !== "string" ||
+      !OBJECT_ID.test(main) ||
+      !isBranchName(branch) ||
+      parsedTargets.some((target) => target === undefined) ||
+      typeof handle !== "string" ||
+      typeof person !== "string" ||
+      !strings(scopes) ||
+      !strings(paths)
+    ) {
+      throw new RemoteUnavailableError("Penguin listed a block run without its forks, commits, branch and charter");
+    }
+    return {
+      runId,
+      feature,
+      planId: planId as string | null,
+      purpose: purpose as BlockRunRequest["purpose"],
+      fork,
+      checkpoint,
+      main,
+      branch,
+      targets: parsedTargets as BlockRunTarget[],
+      charter: { handle, person, scopes: scopes as string[], paths: paths as string[] },
+    };
+  });
+}
+
+/** Reports a block run's checks; Penguin promotes main itself when a land run passed. */
+export async function reportBlockRun(server: string, bridgeToken: string, report: BlockRunReport, fetchImpl: Fetch = fetch): Promise<BlockRunReply> {
+  const { status, body } = await runnerRequest(server, bridgeToken, `${BLOCK_ROUTE}/${report.runId}`, report, fetchImpl);
+  if (status === 200) return body as unknown as BlockRunReply;
+  const message = typeof body["message"] === "string" ? `: ${body["message"]}` : "";
+  if ([400, 404, 409, 413].includes(status)) throw new RemoteRefusedError(`Penguin refused the report of block run ${report.runId} (HTTP ${status})${message}`);
+  throw new RemoteUnavailableError(`Penguin could not take the report of block run ${report.runId} (HTTP ${status})${message}`);
 }
 
 /** One runner request: GET without a body, else POST of `body` as JSON. Answers 401 and 403 throw. */

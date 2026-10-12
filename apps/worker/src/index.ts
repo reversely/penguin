@@ -1,6 +1,9 @@
 import { getAgentByName, routeAgentRequest } from "agents";
 import { serveMcp } from "@penguin/mcp";
-import { LIVE_OWNER_HEADER, type InboxReason } from "@penguin/project-agent";
+import { LIVE_OWNER_HEADER, type BlockProjectPort, type InboxReason } from "@penguin/project-agent";
+import { featureOfBlockRun } from "@penguin/protocol";
+
+import type { BlockReportAnswer } from "./bridges.ts";
 
 import { handleRequest } from "./gateway.ts";
 import { parseOwnerMap } from "./github-oauth.ts";
@@ -9,7 +12,7 @@ import { featureView, mcpFeatures, openFeatureWithFork, type FeaturePorts } from
 import { forkFeatureRepo, forkHuddleRepo, parseFeatureForkOptions, RepoNames, setUpProject } from "./repos.ts";
 import { artifactsRepoName, mintRepoToken, parseFeatureTokenTtl, parseFixTokenTtl, parseProjectRepo, parseTokenTtl } from "./tokens.ts";
 
-export { HuddleAgent } from "@penguin/huddle-agent";
+export { FeatureAgent } from "@penguin/feature-agent";
 export { ProjectAgent } from "@penguin/project-agent";
 
 /** The `namespace` of the `artifacts` binding in wrangler.jsonc, which push events name as their source. */
@@ -142,6 +145,27 @@ export default {
             reportVerification: (runId, runnerId, report) => agent.reportVerification(runId, runnerId, report, repos),
             pendingApprovals: async () => agent.pendingApprovals(),
             reportApproval: (issueId, runnerId, report) => agent.reportApprovedBranch(issueId, runnerId, report, repos),
+          };
+        },
+        blocks: async () => {
+          const project = await getAgentByName(env.ProjectAgent, projectAgentName(names));
+          return {
+            claim: (caller) => project.claimBlockRuns(caller),
+            // The runner's report reaches the feature's FeatureAgent directly, with a port back to the
+            // ProjectAgent for signing, the promotion slot and the feature's state.
+            report: async (caller, runId, body) => {
+              const featureId = featureOfBlockRun(runId) as string;
+              const agent = await getAgentByName(env.FeatureAgent, `${projectAgentName(names)}-feature-${featureId}`);
+              const port: BlockProjectPort = {
+                signBlockRecord: (feature, type, payload) => project.signBlockRecord(feature, type, payload),
+                acquirePromotion: async (feature, run) => project.acquirePromotion(feature, run),
+                releasePromotion: async (run) => project.releasePromotion(run),
+                featureLanded: (feature, promotion) => project.featureLanded(feature, promotion, repos),
+                landFailed: async (feature, run) => project.landFailed(feature, run),
+                retryLand: (feature, run, charter) => project.retryLand(feature, run, charter, repos),
+              };
+              return (await agent.reportBlockRun(caller, runId, body, port, { base: names.base, prefix: names.prefix })) as BlockReportAnswer;
+            },
           };
         },
         mcpTokens: () => getAgentByName(env.ProjectAgent, projectAgentName(names)),

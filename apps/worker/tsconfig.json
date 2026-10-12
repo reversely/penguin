@@ -14,7 +14,7 @@
   "include": [
     "src",
     "../../services/project-agent/src",
-    "../../services/huddle-agent/src",
+    "../../services/feature-agent/src",
     "../../services/mcp/src",
     "worker-configuration.d.ts"
   ]

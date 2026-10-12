@@ -14,8 +14,13 @@
 > authors and the authors' running sessions at once. Each author approves a part or asks for a
 > change on the dashboard. The originating agent answers a requested change with
 > `revise_plan_part` ([design.md](design.md#advance-notice-in-the-build)). Each approved fix is then
-> written into the affected feature's fork ([design.md](design.md#steps-1-and-3-in-the-build)). A
-> combined run on owner forks still opens a Huddle as described below.
+> written into the affected feature's fork ([design.md](design.md#steps-1-and-3-in-the-build)).
+> The feature then reaches main as a block. The check runner checks it merged onto main and onto
+> every running fork. Its FeatureAgent then moves main in one push
+> ([design.md](design.md#block-promotion-in-the-build)). The block replaces the Huddle for features:
+> a feature's failing check stays with its block run and opens no Huddle. A combined run on owner
+> forks still opens a Huddle as described below. The FeatureAgent class runs that Huddle too, under a
+> Huddle's instance name.
 
 A Huddle is the issue Penguin opens when one owner's checkpoint breaks another owner's tests before
 either change reaches the main branch. It brings in only the owners whose work is involved, hands
@@ -208,7 +213,7 @@ reassigns it to `@priya/merge-rules`.
 ## 7. Verification on the integration branch
 
 Each newer checkpoint of an owner in an open Huddle schedules verification in that Huddle's
-HuddleAgent (`services/project-agent/src/huddle-verify.ts`). On the Huddle issue, Penguin:
+FeatureAgent (`services/project-agent/src/huddle-verify.ts`). On the Huddle issue, Penguin:
 
 1. Links the new checkpoint as a `fix` commit and, in the same operation, marks every current check
    superseded. A superseded check no longer counts toward the close.
@@ -228,7 +233,7 @@ merge whose tests fail keeps the issue out of review.
 
 ## 8. Reviews and review rights
 
-When the combined tests pass, the HuddleAgent collects reviews (`huddle-reviews.ts`). On each fix
+When the combined tests pass, the Huddle's FeatureAgent collects reviews (`huddle-reviews.ts`). On each fix
 sub-issue, Penguin links the fixing owner's checkpoint that the passing run merged as the fix's head,
 a `fix` commit. It then asks each owner whose review counts to review that head, through a "review
 requested" inbox item. A newer head asks again, because a review of an older commit no longer counts.
@@ -272,7 +277,7 @@ resolves the thread.
 
 ## 10. Close as approved
 
-After each review, check or thread change, the HuddleAgent evaluates the close (`huddle-close.ts`).
+After each review, check or thread change, the Huddle's FeatureAgent evaluates the close (`huddle-close.ts`).
 Nothing may stand in the way (`closeBlockers` in `packages/policies/src/huddle-close.ts`):
 
 - the Huddle issue is in `in_review`;
@@ -282,12 +287,12 @@ Nothing may stand in the way (`closeBlockers` in `packages/policies/src/huddle-c
 
 The issue page's Close-out panel lists whatever still blocks the close. When nothing does:
 
-1. The HuddleAgent asks the runner to point the Huddle repo's `approved` branch at the verified
+1. The Huddle's FeatureAgent asks the runner to point the Huddle repo's `approved` branch at the verified
    integration commit. The Worker cannot write a Git ref through the Artifacts binding, so the runner
    does it.
 2. The runner lists the request on `GET /approvals`, pushes `approved` and reports on
    `POST /approvals/<issue>`. A report of a commit no longer requested answers 409.
-3. The HuddleAgent evaluates again. If nothing changed, Penguin links the commit as `approved` and
+3. The Huddle's FeatureAgent evaluates again. If nothing changed, Penguin links the commit as `approved` and
    closes the Huddle with resolution `approved`.
 
 The index applies the same rule to the close operation itself, so a close that slips past a change is

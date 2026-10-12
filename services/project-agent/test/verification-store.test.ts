@@ -13,7 +13,7 @@ import { sqlite } from "./issues-repo.ts";
 const CHECKPOINTS = [{ ownerId: "priya", repo: "owner-priya", sha: "1".repeat(40) }];
 const COMMANDS = [{ scopeId: "analytics", commandId: "test:analytics" }];
 
-describe("run IDs of each Huddle's HuddleAgent", () => {
+describe("run IDs of each Huddle's FeatureAgent", () => {
   test("a Huddle numbers its runs in its issue's range, and the run ID names the Huddle", () => {
     const runs = new VerificationStore(sqlite().sql, { runIdBase: runIdBaseOf("31") });
     const first = runs.schedule("owner-priya@a", CHECKPOINTS, COMMANDS);

@@ -38,8 +38,12 @@ const SCOPE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/u;
  */
 const PATH_SEGMENT = /^[A-Za-z0-9_.][A-Za-z0-9_.-]*$/u;
 
-/** `building` once the fork exists; `opening` while the record exists and the fork does not yet. */
-export type FeatureState = "opening" | "building";
+/**
+ * `opening` while the record exists and the fork does not yet; `building` once the fork exists;
+ * `landing` while its block is checked and promoted (block-land.ts); `landed` once main moved to its
+ * checkpoint, after which its fork is read-only.
+ */
+export type FeatureState = "opening" | "building" | "landing" | "landed";
 
 export interface FeatureArea {
   readonly scopes: readonly string[];
@@ -68,7 +72,9 @@ export interface Feature {
  * requested change, the originating agent's revision and a part past the round limit, written by
  * plan-approval.ts. A fix written into an affected fork, a pushed fix Penguin refused and a part sent
  * back because its fork head moved are written by fix-write.ts. A part added for a feature that started
- * touching the plan's area is written by plan-coverage.ts.
+ * touching the plan's area is written by plan-coverage.ts. A land request, a plan check request, a
+ * block run's checks, a promotion, a promotion main refused and a land Penguin returned are written
+ * by block-land.ts.
  */
 export type FeatureRecordType =
   | "open_feature"
@@ -85,7 +91,13 @@ export type FeatureRecordType =
   | "fix_write"
   | "fix_write_refused"
   | "plan_part_rebase"
-  | "plan_part_added";
+  | "plan_part_added"
+  | "land_requested"
+  | "plan_check_requested"
+  | "block_checked"
+  | "promotion"
+  | "promotion_refused"
+  | "land_returned";
 
 export interface FeatureRecord {
   readonly schema_version: 1;
@@ -292,6 +304,19 @@ export class FeatureStore {
       id,
     );
     return this.get(id);
+  }
+
+  /** Moves a feature between `building`, `landing` and `landed`; false when it stood elsewhere. */
+  setState(id: string, from: readonly FeatureState[], to: FeatureState): boolean {
+    const placeholders = from.map(() => "?").join(", ");
+    const changed = this.#db.exec(
+      `UPDATE Feature SET state = ?, updated_at = ? WHERE id = ? AND state IN (${placeholders}) RETURNING id`,
+      to,
+      this.#now(),
+      id,
+      ...from,
+    );
+    return changed.length > 0;
   }
 
   /** Replaces the feature's area with its record; `checkpoint` is the checkpoint that changed it, if any. */

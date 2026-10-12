@@ -32,6 +32,10 @@
   // An author may ask for PENGUIN_PLAN_ROUND_LIMIT changes to one plan part; the next request sends
   // the part to the originating feature's person (PRD 0.4 section 7). Unset means the PRD's default
   // of 3; any value other than a positive whole number refuses every requested change as misconfigured.
+  // Promotion (PRD 0.4 section 4.5 step 4) moves main with a write token on the base repo that
+  // Penguin mints for PENGUIN_PROMOTION_TOKEN_TTL_MINUTES, uses for one push and revokes. Unset
+  // means 5; a value other than a whole number from 1 to 15 refuses every promotion as misconfigured.
+  // No bridge, MCP tool or dashboard route can ask for that token.
   "vars": {
     "GITHUB_OAUTH_CLIENT_ID": "Ov23liQdtDavAZ3IhIVQ",
     "PENGUIN_DASHBOARD_OWNERS": "reversely:priya",
@@ -39,7 +43,8 @@
     "PENGUIN_FEATURE_TOKEN_TTL_MINUTES": "30",
     "PENGUIN_FIX_TOKEN_TTL_MINUTES": "10",
     "PENGUIN_PLAN_BREAK_LIMIT": "10",
-    "PENGUIN_PLAN_ROUND_LIMIT": "3"
+    "PENGUIN_PLAN_ROUND_LIMIT": "3",
+    "PENGUIN_PROMOTION_TOKEN_TTL_MINUTES": "5"
   },
   "build": {
     "command": "npm run build -w @penguin/dashboard",
@@ -57,11 +62,15 @@
   "durable_objects": {
     "bindings": [
       { "name": "ProjectAgent", "class_name": "ProjectAgent" },
-      { "name": "HuddleAgent", "class_name": "HuddleAgent" }
+      { "name": "FeatureAgent", "class_name": "FeatureAgent" }
     ]
   },
+  // v2 renames the per-unit class HuddleAgent to FeatureAgent (PRD 0.4 section 8). A rename keeps
+  // every existing instance and its SQLite storage: each feature's plans and fix writes, and each
+  // owner-fork Huddle's runs. Applied migrations are never edited.
   "migrations": [
-    { "tag": "v1", "new_sqlite_classes": ["ProjectAgent", "HuddleAgent"] }
+    { "tag": "v1", "new_sqlite_classes": ["ProjectAgent", "HuddleAgent"] },
+    { "tag": "v2", "renamed_classes": [{ "from": "HuddleAgent", "to": "FeatureAgent" }] }
   ],
 
   // One Artifacts namespace holds the base repo, the owner forks, the issues repo and the Huddle

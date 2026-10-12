@@ -80,6 +80,11 @@ export interface CombinedRunRequest {
    * as a use of the change, yet the fix must go back through the checks.
    */
   readonly recheck?: readonly string[];
+  /**
+   * Runs every scope's tests on the checkpoint merged onto main, as `main` results. A block run asks
+   * for it: main moves to the checked tree, so every scope's tests must pass there (PRD 0.4 4.5).
+   */
+  readonly mainTests?: boolean;
 }
 
 /** One failed test from the runner's log. */
@@ -353,6 +358,7 @@ export class CombinedRunner {
       }
       results.push(await this.#test(target, ownerCheckpoint, merge));
     }
+    if (request.mainTests === true) results.push(...(await this.#mainTests(checkpointSha, request.mainSha ?? baselineSha, scopeMap)));
     const report = {
       checkpointSha,
       baselineSha,
@@ -395,6 +401,23 @@ export class CombinedRunner {
       dependencies: block.dependencies,
       durationMs: Math.round(performance.now() - started),
     };
+  }
+
+  /** Every scope's allowlisted tests on the checkpoint merged onto main, in scope id order. */
+  async #mainTests(checkpointSha: string, mainSha: string, scopeMap: Awaited<ReturnType<typeof loadScopeMap>>): Promise<CombinedResult[]> {
+    if (!isObjectId(mainSha)) throw new Error(`main must be a full object ID, got ${JSON.stringify(mainSha)}`);
+    const merge = await this.#merge(checkpointSha, mainSha);
+    const scopes = [...scopeMap.scopes.values()].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    const results: CombinedResult[] = [];
+    for (const scope of scopes) {
+      const target = { target: MAIN_TARGET, ownerId: scope.ownerId, scopeId: scope.id, commandId: testCommandId(scope.id) };
+      results.push(
+        merge.kind === "conflict"
+          ? { ...target, status: "conflict", ownerCheckpoint: mainSha, conflictedPaths: merge.conflictedPaths }
+          : await this.#test(target, mainSha, merge),
+      );
+    }
+    return results;
   }
 
   async #timedMerge(checkpointSha: string, other: string): Promise<Pick<BlockTarget, "merge" | "mergeMs">> {

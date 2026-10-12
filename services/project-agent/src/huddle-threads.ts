@@ -9,7 +9,7 @@
 // inbox (inbox-store.ts) and reaches that person's running sessions at their next safe checkpoint
 // and through get_work (session-store.ts).
 //
-// The thread itself is an operation in the issues repo. The Huddle's HuddleAgent keeps a copy of
+// The thread itself is an operation in the issues repo. The Huddle's FeatureAgent keeps a copy of
 // every thread on the Huddle issue and its fix sub-issues in HuddleThread, refreshed each time it
 // collects reviews, so it can answer which threads are still open without reading every issue.
 // Opening a thread leaves the Huddle issue's state alone: disagreeing reviews keep it IN_REVIEW until
@@ -29,7 +29,7 @@ export const HUDDLE_THREAD_SCHEMA: readonly string[] = [
     status TEXT NOT NULL, resolved_by TEXT)`,
 ];
 
-/** One thread on a Huddle issue or one of its fix sub-issues, as the HuddleAgent keeps it. */
+/** One thread on a Huddle issue or one of its fix sub-issues, as the FeatureAgent keeps it. */
 export interface HuddleThread {
   /** The op_id of the open_thread operation. */
   readonly threadId: string;
@@ -93,7 +93,7 @@ function huddleThread(row: Row): HuddleThread {
 }
 
 /**
- * The thread step a HuddleAgent answers over RPC for its one Huddle: every thread on the Huddle issue
+ * The thread step a FeatureAgent answers over RPC for its one Huddle: every thread on the Huddle issue
  * and its fix sub-issues as of the Huddle's last review collection. Closing the Huddle issue as
  * approved needs every one resolved (PRD section 6).
  */

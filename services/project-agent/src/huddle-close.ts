@@ -1,7 +1,7 @@
 // Close-out of a Huddle issue (PRD sections 5, 6 and 11 Phase 4). Every operation comes from a
 // template; nothing here calls a model.
 //
-// The Huddle's HuddleAgent evaluates the close after each review, check and thread change it hears
+// The Huddle's FeatureAgent evaluates the close after each review, check and thread change it hears
 // of (`closeOut`): the issue may close as approved when every fix is approved, the combined tests
 // pass and every thread is resolved (packages/policies/src/huddle-close.ts). It then asks the
 // integration runner to point the Huddle repo's `approved` branch at the verified `integration`
@@ -12,7 +12,7 @@
 //
 // Approving the candidate and merging it stay separate: nothing here touches the team's main branch.
 //
-// Each HuddleAgent keeps its approved-branch request in its own SQLite (ApprovedBranch). The
+// Each FeatureAgent keeps its approved-branch request in its own SQLite (ApprovedBranch). The
 // ProjectAgent keeps the last evaluation's blockers for the issue page (CloseOutStore).
 
 import {
@@ -30,7 +30,7 @@ import type { Huddle } from "./huddle-store.ts";
 import type { HuddleThreadStore } from "./huddle-threads.ts";
 import type { SqlDatabase, SqlValue } from "./issue-index.ts";
 
-/** What a HuddleAgent's close-out steps read and write through the ProjectAgent, beyond reviews'. */
+/** What a FeatureAgent's close-out steps read and write through the ProjectAgent, beyond reviews'. */
 export interface HuddleClosePort extends HuddleReviewPort {
   /** Hands the ProjectAgent what the Huddle issue waits on before it may close, for the issue page. */
   recordCloseOut(issueId: string, waitingOn: readonly string[]): void | Promise<void>;
@@ -41,7 +41,7 @@ export interface HuddleCloseDeps extends HuddleClosePort, HuddleReviewDeps {
   readonly approvals: ApprovedBranchStore;
 }
 
-/** The close-out steps a HuddleAgent answers over RPC for its one Huddle. */
+/** The close-out steps a FeatureAgent answers over RPC for its one Huddle. */
 export interface HuddleCloser {
   closeOut(huddle: Huddle, project: HuddleClosePort): Promise<CloseOutcome | undefined>;
   pendingApprovals(huddle: Huddle): ApprovalSpec[] | Promise<ApprovalSpec[]>;
@@ -85,7 +85,7 @@ const WRITE_ATTEMPTS = 5;
 const REASON_MAX = 2_000;
 
 /**
- * The Huddle's request for its approved branch (PRD section 7, HuddleAgent storage: `Candidate` and
+ * The Huddle's request for its approved branch (PRD section 7, FeatureAgent storage: `Candidate` and
  * its approval state). It is live coordination state: the evidence is the `approved` link on the issue.
  */
 export class ApprovedBranchStore {
@@ -140,7 +140,7 @@ function request(row: Record<string, SqlValue>): ApprovedBranchRequest {
 }
 
 /**
- * The open threads on the Huddle issue and its fixes, from the HuddleAgent's thread state
+ * The open threads on the Huddle issue and its fixes, from the FeatureAgent's thread state
  * (huddle-threads.ts). The state is first brought up to the threads the issue index records on the
  * issue and each fix, those opened on the dashboard included, since a close evaluation can follow a
  * step that collected no reviews.

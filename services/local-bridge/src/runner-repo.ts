@@ -6,8 +6,8 @@ import { isObjectId, runGit } from "@penguin/git-analysis";
 
 import { penguinRemote, type RemoteResolver } from "./git-remote.ts";
 
-/** A project repo name a runner may fetch from or push to: an owner fork, a Huddle repo or a feature's fork. */
-const RUNNER_REPO = /^(?:owner|huddle|feature)-[A-Za-z0-9][A-Za-z0-9._-]*$/u;
+/** A project repo name a runner may fetch from or push to: the base repo (read only), an owner fork, a Huddle repo or a feature's fork. */
+const RUNNER_REPO = /^(?:base|(?:owner|huddle|feature)-[A-Za-z0-9][A-Za-z0-9._-]*)$/u;
 
 export function isRunnerRepo(repo: string): boolean {
   return RUNNER_REPO.test(repo);
@@ -23,7 +23,7 @@ export function fetchedRefs(repo: string): string {
  * `refs/penguin/<repo>/heads/*` of `repoPath`, replacing what an earlier fetch left there.
  */
 export async function fetchRepoBranches(repoPath: string, remotes: RemoteResolver, repo: string): Promise<void> {
-  if (!isRunnerRepo(repo)) throw new Error(`${JSON.stringify(repo)} is not an owner fork, a Huddle repo or a feature's fork`);
+  if (!isRunnerRepo(repo)) throw new Error(`${JSON.stringify(repo)} is not the base repo, an owner fork, a Huddle repo or a feature's fork`);
   await remotes(penguinRemote(repo)).git(repoPath, (url) => [
     "fetch",
     "--quiet",

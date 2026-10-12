@@ -225,7 +225,9 @@ penguin-bridge runner --combined
      fork and the other running features' forks, runs the tool on the checkpoint and reports the
      result (`tool-run.ts`, [Agent tools on the runner](#agent-tools-on-the-runner));
    - claims the writes of approved mechanical plan parts and writes each into the affected
-     feature's fork ([Fix writes](#fix-writes)).
+     feature's fork ([Fix writes](#fix-writes));
+   - claims the block runs of features that land or whose plan needs checking again, runs the
+     checks and reports each one ([Block runs](#block-runs)).
 
 Passing `--combined` or `--repo` is the runner operator's consent to those runs and pushes. The test
 jobs loop on their own, so a long test run never holds up the operation pushes. `--once` runs a
@@ -234,7 +236,56 @@ single pass of each and exits 1 when anything was refused or failed.
 The runner fetches owner forks and feature forks with read tokens. It pushes Huddle repos with write
 tokens. The Worker grants a runner bridge `write` on `huddle-<id>` repos and an owner bridge only
 `read`. The runner gets `write` on a `feature-<id>` repo only with a claimed fix write, for that one
-part, so it pushes no `apply_fix` commit.
+part, so it pushes no `apply_fix` commit. It reads the `base` repo and never holds `write` on it.
+
+### Block runs
+
+A feature reaches main as a block ([design.md](design.md#block-promotion-in-the-build)). Each pass
+claims the waiting block runs from `POST /blocks/claim` under a 30-minute lease (`block-run.ts`). A
+claim names the run, its purpose (`land` or `plan_check`), the feature's fork and checkpoint, main's
+head and branch, every other running feature's fork with its head and the originating identity's
+charter. The bridge checks each commit is a full object ID and the branch a plain branch name before
+it uses them.
+
+For each run the runner fetches `base`, the feature's fork and every target's fork with read tokens.
+It runs a combined run with the [block checks](#block-checks): the checkpoint merged onto main and
+onto each target, keyed by the target's feature id. The change is the checkpoint against its merge
+base with main. Every scope's test command also runs on main's merged tree, because main moves to
+exactly that tree. Each failed or erred check gets one decision from the
+[resolution ladder](#resolution-ladder), routed by the claim's charter. No fix runs.
+
+The runner reports to `POST /blocks/<feature>/<n>`. The Worker hands the report to the feature's
+FeatureAgent, which moves main itself when a land run passed. The answer names the run's new state
+and, for a promotion, main's commit before and after. A run whose repos cannot be fetched stays
+claimed and runs again after its lease. A run that cannot be checked reports an `error` check on
+main, which never passes.
+
+On the helpful-fix fixture, the block of `owner-priya` with the switch to `start_of_local_day` written
+into Jun's and Sam's forks passes every check. All three scopes' tests pass on main's merged tree.
+Without the switch, Jun's and Sam's tests fail on their merged trees and each failure carries one next
+step (`services/local-bridge/test/block-run.test.ts`).
+
+### Preview
+
+`penguin-bridge preview --feature <id> [--commit <sha>] [--dir <path>]` fetches a feature's fork with
+the bridge's expiring read token into `<path>`, default `<state-dir>/previews/<id>`. It checks out
+`<sha>` or the fork's `main`. An owner uses it to see a block before it reaches main. Artifacts makes
+no new repo. Nothing is pushed.
+
+### Block exit check
+
+`tests/e2e/block-landing.test.ts` runs the Phase E exit check against real Artifacts through local
+`wrangler dev` under a repo prefix unique to the run. It deletes every repo it made. It needs a
+Wrangler login and this repository's `.venv`:
+
+```sh
+PENGUIN_BLOCK_E2E=1 node --test tests/e2e/block-landing.test.ts
+```
+
+It writes `worker.log`, `runner.log` and `evidence.json` to `PENGUIN_BLOCK_E2E_OUT`, default a
+temporary folder. On the helpful-fix fixture, three features open and Priya's plan is approved and
+written. Priya's block reaches main, then Jun's and Sam's after a failing land and a race. Every
+scope's tests run on main after each promotion.
 
 ### Fix writes
 

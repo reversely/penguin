@@ -23,7 +23,7 @@ function setCookieValue(response: Response, name: string): string | undefined {
  * Signs in through the GitHub OAuth test double, following the three redirects a browser follows,
  * and returns the session cookie's value.
  */
-async function signInThroughDouble(origin: string, login: string): Promise<string> {
+export async function signInThroughDouble(origin: string, login: string): Promise<string> {
   const start = await fetch(`${origin}/auth/github?login=${encodeURIComponent(login)}`, { redirect: "manual" });
   const oauth = start.headers.getSetCookie().map((header) => header.split(";")[0]).join("; ");
   const authorize = await fetch(start.headers.get("Location")!, { redirect: "manual" });

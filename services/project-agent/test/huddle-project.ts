@@ -1,7 +1,7 @@
 // Test support for opening Huddle issues: one ProjectAgent's stores over one in-memory database,
 // wired the way the agent wires them, with `openHuddle` called through the same dependencies. Each
 // Huddle's verification runs, review standing and approved-branch request are kept apart, as each
-// Huddle's HuddleAgent keeps them in its own SQLite.
+// Huddle's FeatureAgent keeps them in its own SQLite.
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -109,17 +109,17 @@ export class HuddleProject {
   readonly runs: CombinedRunStore;
   /**
    * Each Huddle's verification runs, by trigger commit, each over its own database as each Huddle's
-   * HuddleAgent keeps them. Run IDs start at 1 in every Huddle here; the agent gives each Huddle its
+   * FeatureAgent keeps them. Run IDs start at 1 in every Huddle here; the agent gives each Huddle its
    * own range (`runIdBaseOf`).
    */
   readonly huddleRuns = new Map<string, VerificationStore>();
-  /** Each Huddle's review standing, by trigger commit, each over its own database as its HuddleAgent keeps it. */
+  /** Each Huddle's review standing, by trigger commit, each over its own database as its FeatureAgent keeps it. */
   readonly huddleReviews = new Map<string, FixReviewStore>();
-  /** Each Huddle's threads, by trigger commit, each over its own database as its HuddleAgent keeps them. */
+  /** Each Huddle's threads, by trigger commit, each over its own database as its FeatureAgent keeps them. */
   readonly huddleThreads = new Map<string, HuddleThreadStore>();
   /** Each fix's approval as the ProjectAgent keeps it for the issue page. */
   readonly approvals: FixApprovalStore;
-  /** Each Huddle's approved-branch request, by trigger commit, each over its own database as its HuddleAgent keeps it. */
+  /** Each Huddle's approved-branch request, by trigger commit, each over its own database as its FeatureAgent keeps it. */
   readonly huddleApprovals = new Map<string, ApprovedBranchStore>();
   /** What each Huddle issue waits on before it closes, as the ProjectAgent keeps it for the issue page. */
   readonly closeOuts: CloseOutStore;
@@ -246,7 +246,7 @@ export class HuddleProject {
     };
   }
 
-  /** The runs of the Huddle opened by `triggerCommit`, kept as its HuddleAgent keeps them. */
+  /** The runs of the Huddle opened by `triggerCommit`, kept as its FeatureAgent keeps them. */
   runsOf(triggerCommit: string): VerificationStore {
     let runs = this.huddleRuns.get(triggerCommit);
     if (runs === undefined) {
@@ -263,7 +263,7 @@ export class HuddleProject {
     return this.runsOf(huddle.triggerCommit);
   }
 
-  /** The dependencies a HuddleAgent's verification steps have: its runs and the ProjectAgent's side. */
+  /** The dependencies a FeatureAgent's verification steps have: its runs and the ProjectAgent's side. */
   async verifyDeps(huddle: Huddle): Promise<HuddleVerifyDeps> {
     const { issue, submit, ownerFork } = await this.deps();
     return { runs: this.runsOf(huddle.triggerCommit), issue, submit, ownerFork };
@@ -290,8 +290,8 @@ export class HuddleProject {
   }
 
   /**
-   * Records a report with the Huddle whose HuddleAgent holds run `runId`, then collects the Huddle's
-   * reviews when the report moved it to IN_REVIEW and evaluates its close, as the HuddleAgent does.
+   * Records a report with the Huddle whose FeatureAgent holds run `runId`, then collects the Huddle's
+   * reviews when the report moved it to IN_REVIEW and evaluates its close, as the FeatureAgent does.
    */
   async reportVerification(runId: string, report: unknown, runnerId = "runner-1"): Promise<VerificationOutcome> {
     const huddle = this.huddles.open().find((open) => this.runsOf(open.triggerCommit).get(runId) !== undefined);
@@ -302,7 +302,7 @@ export class HuddleProject {
     return outcome;
   }
 
-  /** The review standing of the Huddle opened by `triggerCommit`, kept as its HuddleAgent keeps it. */
+  /** The review standing of the Huddle opened by `triggerCommit`, kept as its FeatureAgent keeps it. */
   reviewsOf(triggerCommit: string): FixReviewStore {
     let reviews = this.huddleReviews.get(triggerCommit);
     if (reviews === undefined) {
@@ -312,7 +312,7 @@ export class HuddleProject {
     return reviews;
   }
 
-  /** The threads of the Huddle opened by `triggerCommit`, kept as its HuddleAgent keeps them. */
+  /** The threads of the Huddle opened by `triggerCommit`, kept as its FeatureAgent keeps them. */
   threadsOf(triggerCommit: string): HuddleThreadStore {
     let threads = this.huddleThreads.get(triggerCommit);
     if (threads === undefined) {
@@ -322,7 +322,7 @@ export class HuddleProject {
     return threads;
   }
 
-  /** The dependencies a HuddleAgent's review steps have: its runs and reviews, and the ProjectAgent's side. */
+  /** The dependencies a FeatureAgent's review steps have: its runs and reviews, and the ProjectAgent's side. */
   async reviewDeps(huddle: Huddle): Promise<HuddleReviewDeps> {
     return {
       ...(await this.verifyDeps(huddle)),
@@ -338,7 +338,7 @@ export class HuddleProject {
 
   /**
    * Collects the reviews of a Huddle's fixes, by default the one open Huddle's, then evaluates its
-   * close, as its HuddleAgent does.
+   * close, as its FeatureAgent does.
    */
   async collectReviews(huddle?: Huddle): Promise<ReviewCollection | undefined> {
     const target = huddle ?? this.huddles.open()[0];
@@ -348,7 +348,7 @@ export class HuddleProject {
     return collection;
   }
 
-  /** The approved-branch request of the Huddle opened by `triggerCommit`, kept as its HuddleAgent keeps it. */
+  /** The approved-branch request of the Huddle opened by `triggerCommit`, kept as its FeatureAgent keeps it. */
   approvalsOf(triggerCommit: string): ApprovedBranchStore {
     let approvals = this.huddleApprovals.get(triggerCommit);
     if (approvals === undefined) {
@@ -358,7 +358,7 @@ export class HuddleProject {
     return approvals;
   }
 
-  /** The dependencies a HuddleAgent's close-out steps have: its review deps and approved-branch request. */
+  /** The dependencies a FeatureAgent's close-out steps have: its review deps and approved-branch request. */
   async closeDeps(huddle: Huddle): Promise<HuddleCloseDeps> {
     return {
       ...(await this.reviewDeps(huddle)),
@@ -369,7 +369,7 @@ export class HuddleProject {
     };
   }
 
-  /** Evaluates the close of a Huddle, by default the one open Huddle's, as its HuddleAgent does. */
+  /** Evaluates the close of a Huddle, by default the one open Huddle's, as its FeatureAgent does. */
   async closeOut(huddle?: Huddle): Promise<CloseOutcome | undefined> {
     const target = huddle ?? this.huddles.open()[0];
     assert.ok(target !== undefined, "an open Huddle");
@@ -384,7 +384,7 @@ export class HuddleProject {
       .flatMap((huddle) => pendingApprovals(this.approvalsOf(huddle.triggerCommit), huddle));
   }
 
-  /** Records the runner's report of a Huddle issue's approved branch with its HuddleAgent, as the ProjectAgent does. */
+  /** Records the runner's report of a Huddle issue's approved branch with its FeatureAgent, as the ProjectAgent does. */
   async reportApprovedBranch(issueId: string, report: unknown, runnerId = "runner-1"): Promise<ApprovalOutcome> {
     const huddle = this.huddles.byIssue(issueId);
     if (huddle === undefined) return { status: "rejected", reason: "not_found", message: `no Huddle has issue ${issueId}` };

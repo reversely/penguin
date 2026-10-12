@@ -1,11 +1,11 @@
 # Architecture
 
 > **Design change.** This page describes the current build. The design in
-> [design.md](design.md#pieces) changes the repos and the per-unit Durable Object. Each feature gets
-> its own fork `feature-*` in place of the per-owner forks `owner-<id>`. The build opens feature forks
-> already ([Opening a feature](#opening-a-feature)); the owner forks still carry the Huddle flow. A FeatureAgent per merge plan
-> takes over from the HuddleAgent. The `record` repo takes over from `issues`. Penguin promotes each
-> approved block to `main`.
+> [design.md](design.md#pieces) changes the repos. Each feature gets its own fork `feature-*` in
+> place of the per-owner forks `owner-<id>`. The build opens feature forks
+> ([Opening a feature](#opening-a-feature)) and promotes each feature's block to `main`
+> ([Landing a feature](#landing-a-feature)). The owner forks still carry the Huddle flow. The
+> `record` repo takes over from `issues`.
 
 Penguin gives a team whose members each run their own coding agents one shared place to coordinate:
 issues that people and agents both read and write, plus a check that runs one owner's unfinished
@@ -16,18 +16,19 @@ depth; [README.md](README.md) lists them.
 ## Pieces
 
 Penguin keeps its state in two kinds of Durable Object on Cloudflare. The team record (`ProjectAgent`, one per
-project) knows who owns what, every agent, every issue and each person's inbox; it checks every
-action before accepting it and opens a Huddle when a change breaks someone's work. The conflict
-tracker (`HuddleAgent`, one per Huddle) follows one conflict to the end: it runs everyone's tests
-together, collects each owner's review, keeps the conversation and decides when the Huddle can close.
-Each conflict has its own tracker, so several run at once.
+project) knows who owns what, every agent, every feature, every issue and each person's inbox. It
+checks every action before accepting it and signs every record with the service key.
 
-The conflict tracker takes in the runner's test results for its Huddle and every review and reply
-about it. It sends out requests to the runner (test these fixes together, record the approved branch,
-both landing in the Huddle's repo in Artifacts) and facts for the team record to validate, sign and
-write to the `issues` repo. Today the runner's results reach it through the team record. In the design
-the runner's results go straight to the per-feature Durable Object ([design.md](design.md#pieces)).
-Issue #86 tracks that change in the code.
+The feature record (`FeatureAgent`, one per feature) follows one feature from its merge plan to main:
+the plan and each part's approval, the fixes written into other features' forks, the block runs that
+check the feature against main and every running fork and the promotion that moves main. The check
+runner's block reports reach it directly through the Worker. It asks the team record to sign each
+record and to change the feature's state. Each feature has its own instance, so several features
+move toward main at once.
+
+The same class, under a Huddle's name, still runs the PRD 0.3 Huddle of an owner fork: it runs the
+owners' tests together, collects each owner's review and decides when the Huddle can close. A
+feature's results never open a Huddle.
 
 ```mermaid
 flowchart TB
@@ -42,7 +43,7 @@ flowchart TB
   subgraph CF["Cloudflare"]
     Worker["Front door (Worker)<br/>dashboard, agent tools, bridge calls"]
     PA["Team record (ProjectAgent)<br/>owners, agents, issues, inboxes;<br/>checks every action; opens Huddles"]
-    HA["Conflict tracker (HuddleAgent)<br/>one per Huddle: runs tests together,<br/>collects reviews, decides close"]
+    HA["Feature record (FeatureAgent)<br/>one per feature: plan, fix writes,<br/>block runs, promotion of main"]
     Queue["Queue<br/>penguin-issues-events"]
     subgraph Art["Artifacts namespace penguin"]
       Base["base"]
@@ -56,17 +57,17 @@ flowchart TB
   Bridge -- "git push checkpoints" --> Forks
   Bridge -- "git push signed operations" --> Issues
   Browser -- "/api/*, /api/live" --> Worker
-  Runner -- "HTTPS: pending operations,<br/>combined runs, plan facts, verifications, approvals" --> Worker
+  Runner -- "HTTPS: pending operations,<br/>combined runs, plan facts, block runs, verifications" --> Worker
   Runner -- "git fetch" --> Forks
   Runner -- "git push operations" --> Issues
   Runner -- "git push integration, approved" --> Huddle
   Issues -- "pushed event" --> Queue
   Queue --> Worker
   Worker --> PA
-  PA -- "opens a Huddle: the breaks, the fixes, who is in it" --> HA
-  Worker -- "test results from the runner;<br/>reviews and replies from people and agents" --> HA
-  HA -- "asks the runner: test these fixes together;<br/>record the approved branch" --> Worker
-  HA -- "facts to record: tests passed, changes requested,<br/>closed as approved" --> PA
+  PA -- "plans, approvals, fix writes,<br/>land requests" --> HA
+  Worker -- "block reports from the runner" --> HA
+  HA -- "records to sign; feature landed" --> PA
+  HA -- "one push of main,<br/>with a token only it holds" --> Base
   PA -- "Artifacts binding: read" --> Art
   Worker -- "create, import, fork" --> Art
 ```
@@ -75,12 +76,12 @@ flowchart TB
 |---|---|---|---|
 | Worker gateway | `apps/worker/src/` | Every caller: bridges, the runner, agent sessions, browsers | Authentication of each caller, request routing, the Queue consumer, repo setup, Artifacts token minting |
 | ProjectAgent | `services/project-agent/src/` | The whole project | The issue index, operation validation, identities, sessions and routing, inboxes, bridge and MCP token registries, owner forks' latest checkpoints, combined-run scheduling, the Huddle records, features with their overlap locks and dependents |
-| HuddleAgent | `services/huddle-agent/src/index.ts` | One Huddle issue | That Huddle's verification runs, fix review standing, threads and approved-branch request |
+| FeatureAgent | `services/feature-agent/src/index.ts` | One feature, or one owner-fork Huddle under a Huddle's name | The feature's plan, fix writes, block runs and promotion; a Huddle's verification runs, fix review standing, threads and approved-branch request |
 | Artifacts repos | One namespace, `penguin` | Every Git client and the Worker | Versioned source and the issue operation log |
 | `penguin-bridge` | `services/local-bridge/src/` | One owner on one machine | Checkpoint publishing with consent, the issue command line, the safe-checkpoint hook, the outbound spool |
-| Integration runner | `penguin-bridge runner` on a designated machine | The project | Pushing queued operations, combined runs, verification runs, the `approved` branch |
+| Integration runner | `penguin-bridge runner` on a designated machine | The project | Pushing queued operations, combined runs, plan facts runs, block runs, verification runs, the `approved` branch |
 | Dashboard | `apps/dashboard/src/` | People in a browser | The team map, the inbox with its overlapping starts to approve, the issue page, the identities page |
-| MCP tools | `services/mcp/src/tools.ts` | Agent sessions | `register_session`, `get_work`, `get_issue`, `post_update`, `report_checkpoint`, `open_feature`, `feature_token`, `declare_area`, `submit_review`, `propose_plan`, `revise_plan_part`, `fix_token`, `report_fix_write` |
+| MCP tools | `services/mcp/src/tools.ts` | Agent sessions | `register_session`, `get_work`, `get_issue`, `post_update`, `report_checkpoint`, `open_feature`, `feature_token`, `declare_area`, `submit_review`, `propose_plan`, `revise_plan_part`, `fix_token`, `report_fix_write`, `land_feature` |
 
 Shared rules live in packages that both the Worker and the bridge import: the operation schema and
 wire formats in `packages/protocol`, the scope map in `packages/scope-map`, charters, review rights,
@@ -94,7 +95,7 @@ run's repos apart from production's; the prefix leads every name.
 
 | Repo | Made by | Written by | Holds |
 |---|---|---|---|
-| `base` | `POST /setup`, imported from the team's Git remote or created empty | The deployer, once, when setup created it empty | The team's main branch, with `penguin/scopes.json`, `penguin/owners.json` and `penguin/identities.json` |
+| `base` | `POST /setup`, imported from the team's Git remote or created empty | The deployer, once, when setup created it empty. Then only a FeatureAgent, to promote a block | The team's main branch, with `penguin/scopes.json`, `penguin/owners.json` and `penguin/identities.json` |
 | `owner-<id>` | `POST /setup`, one fork of `base` per owner | That owner's bridge only | The owner's published checkpoints, one branch per worktree branch |
 | `issues` | `POST /setup` | Every bridge and the runner | One signed file per issue operation, `issues/<issue>/ops/<op_id>.json` |
 | `huddle-<id>` | The Worker, when a Huddle issue opens; `<id>` is the issue number padded to three digits, as in `huddle-031` | The runner only | The `integration` branch of each verification run and the `approved` branch at close |
@@ -108,8 +109,12 @@ The Worker mints it only after the ProjectAgent confirms that the session is run
 that feature. A `write` token on another person's feature fork comes only with an approved merge plan
 part, for `PENGUIN_FIX_TOKEN_TTL_MINUTES`: to the plan's originating agent through `fix_token`, or to
 the runner's claim of a mechanical part ([Writing an approved fix](#writing-an-approved-fix)).
-Artifacts tokens separate only read from write per repo, so the repo
-boundary is the push boundary. The validator then decides what each operation in `issues` may do.
+Write on `base` is minted only by a FeatureAgent, for one promotion, for
+`PENGUIN_PROMOTION_TOKEN_TTL_MINUTES`. It never leaves the FeatureAgent: `/tokens` holds every bridge
+to `read` on `base`. No MCP tool or dashboard route mints a token on it. Once a feature's block
+reaches main, every write token on its fork is revoked and none is minted again.
+Artifacts tokens separate only read from write per repo, so the repo boundary is the push boundary.
+The validator then decides what each operation in `issues` may do.
 
 ## Who keeps which state
 
@@ -141,12 +146,17 @@ the fork head it must fast-forward and the commit once kept. `AnnouncedPlan` and
 (`plan-coverage.ts`) hold each feature's newest plan with its area and the running features the plan
 accounts for.
 
-Each HuddleAgent keeps the state of one Huddle in its own SQLite store: `VerificationRun`,
-`FixReview`, `HuddleThread` and `ApprovedBranch`. An instance named for a feature keeps that feature's
-`Plan`, `PlanPart` and `FixWrite` rows (`plan-store.ts`). The ProjectAgent names the instance
-`<project>-huddle-<issue number>` and passes it the Huddle record with each call, together with a port
-back to itself. The HuddleAgent writes every issue operation through that port, so the service key
-stays in the ProjectAgent: a `CryptoKey` cannot cross Durable Object RPC.
+Each FeatureAgent named `<project>-feature-<id>` keeps one feature's `Plan`, `PlanPart` and
+`FixWrite` rows (`plan-store.ts`) and its `BlockRun`, `BlockCheck` and `Promotion` rows
+(`block-store.ts`). The ProjectAgent keeps `BlockQueue`, the features whose FeatureAgent holds a run
+waiting for the runner. It also keeps `PromotionSlot`, the one promotion moving main at a time
+(`block-land.ts`).
+
+A FeatureAgent named `<project>-huddle-<issue number>` keeps the state of one owner-fork Huddle:
+`VerificationRun`, `FixReview`, `HuddleThread` and `ApprovedBranch`. The ProjectAgent passes it the
+Huddle record with each call, together with a port back to itself. Both kinds of instance sign every
+record through the ProjectAgent, so the service key stays there: a `CryptoKey` cannot cross Durable
+Object RPC.
 
 ## How data flows
 
@@ -206,6 +216,28 @@ matches a pending operation clears its `PendingOp` row.
 
 [design.md](design.md#steps-1-and-3-in-the-build) has the rules.
 
+### Landing a feature
+
+1. The feature's agent calls `land_feature`. The ProjectAgent checks that the feature's latest
+   checkpoint already holds main's head and that every part of its plan is approved. Each fix for a
+   running feature must be written and still under that fork's head. Each fix for code on main must be
+   in the checkpoint. It then asks the FeatureAgent to open a block run: the checkpoint merged onto
+   main and onto every other running feature's fork head. The feature is `landing`.
+2. The runner claims the run at `POST /blocks/claim`, runs the checks with every scope's tests on
+   main's merged tree and reports to `POST /blocks/<feature>/<n>`. The Worker hands the report to the
+   FeatureAgent, which keeps it as a signed `block_checked` record.
+3. A failing check sends the feature back to `building` with one next step per failure, which the
+   agent reads in `get_work`. When every check passes, the FeatureAgent takes the project's promotion
+   slot. It mints a write token on `base` and a read token on the fork, moves main from the checked
+   head to the checkpoint in one push and revokes both tokens. Main that moved in the meantime refuses
+   the push: Penguin checks the block again on the new main, or returns it to the agent to take main.
+4. The promotion is a signed `promotion` record. The fork's write tokens are revoked and the feature is
+   `landed`.
+
+A checkpoint of a running feature whose area meets another feature's announced plan asks for a
+`plan_check` run of that plan's block. It runs the same checks and never moves main.
+[design.md](design.md#block-promotion-in-the-build) has the rules.
+
 ### Checkpoints to Huddles
 
 1. An owner's bridge pushes a checkpoint to `owner-<id>` after the owner consents, then reports it
@@ -218,7 +250,7 @@ matches a pending operation clears its `PendingOp` row.
    results. A failure opens a Huddle issue with one fix sub-issue per failing test.
 4. Fix tasks reach agent sessions at safe checkpoints. Each newer checkpoint of an owner in the Huddle
    schedules a verification run on the Huddle repo's `integration` branch.
-5. When the tests pass, the HuddleAgent asks the owners whose review counts to review each fix. Once
+5. When the tests pass, the Huddle's FeatureAgent asks the owners whose review counts to review each fix. Once
    every fix is approved and every thread resolved, the runner records the `approved` branch and
    Penguin closes the issue.
 

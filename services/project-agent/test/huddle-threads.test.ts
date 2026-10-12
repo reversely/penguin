@@ -44,7 +44,7 @@ async function opened(): Promise<HuddleProject> {
   return project;
 }
 
-/** The threads the one open Huddle's HuddleAgent tracks. */
+/** The threads the one open Huddle's FeatureAgent tracks. */
 function tracked(project: HuddleProject): HuddleThreadStore {
   const [huddle] = project.huddles.open();
   assert.ok(huddle !== undefined, "an open Huddle");
