@@ -26,6 +26,8 @@ import {
   type PlanFactsRequest,
   type ReviewException,
   type ReviewRecord,
+  type RunFailureOutcome,
+  type RunFailureReport,
   type RunnerToolName,
   type VerificationReport,
   type VerificationRunSpec,
@@ -926,6 +928,26 @@ export async function reportBlockRun(server: string, bridgeToken: string, report
   const message = typeof body["message"] === "string" ? `: ${body["message"]}` : "";
   if ([400, 404, 409, 413].includes(status)) throw new RemoteRefusedError(`Penguin refused the report of block run ${report.runId} (HTTP ${status})${message}`);
   throw new RemoteUnavailableError(`Penguin could not take the report of block run ${report.runId} (HTTP ${status})${message}`);
+}
+
+export const RUN_FAILURE_ROUTE = "/runs/failures";
+
+/**
+ * Reports that the runner failed run `runId` of `kind`, which it claimed or listed, with the reason.
+ * Penguin releases the run for the next claim of any runner, or stops it at the failure limit.
+ */
+export async function reportRunFailure(
+  server: string,
+  bridgeToken: string,
+  failure: RunFailureReport,
+  fetchImpl: Fetch = fetch,
+): Promise<Exclude<RunFailureOutcome, { readonly status: "rejected" }>> {
+  const { status, body } = await runnerRequest(server, bridgeToken, RUN_FAILURE_ROUTE, failure, fetchImpl);
+  if (status === 200) return body as unknown as Exclude<RunFailureOutcome, { readonly status: "rejected" }>;
+  const message = typeof body["message"] === "string" ? `: ${body["message"]}` : "";
+  const name = `${failure.kind} run ${failure.runId}`;
+  if ([400, 404, 409, 413].includes(status)) throw new RemoteRefusedError(`Penguin refused the failure of ${name} (HTTP ${status})${message}`);
+  throw new RemoteUnavailableError(`Penguin could not take the failure of ${name} (HTTP ${status})${message}`);
 }
 
 /** One runner request: GET without a body, else POST of `body` as JSON. Answers 401 and 403 throw. */

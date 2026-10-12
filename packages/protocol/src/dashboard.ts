@@ -13,6 +13,7 @@ import type { ContractWorkView } from "./contract-sort.ts";
 import type { ImpactUse } from "./impact.ts";
 import type { Plan, PlanFactSource, PlanFileDiff, PlanInvariantFact, PlanPart, PlanPartKind, PlanPartState, PlanPlace } from "./plan.ts";
 import type { PlanPartFile } from "./plan-approval.ts";
+import type { RunKind } from "./run-failure.ts";
 import { REVIEW_REFUSAL_CODES, REVIEW_VERDICTS, type ReviewException, type ReviewRefusalCode, type ReviewVerdict } from "./review.ts";
 import { checkSchema, type JsonSchema, type SchemaError } from "./schema-check.ts";
 
@@ -32,7 +33,9 @@ export type FeatureException =
   /** `inPerson`: the returned plan's parts that needed a person. */
   | { readonly kind: "plan_returned"; readonly inPerson: number; readonly breakLimit: number }
   | { readonly kind: "broken_invariant"; readonly scope: string; readonly invariant: string }
-  | { readonly kind: "protected_difference"; readonly scope: string; readonly invariant: string; readonly differing: number };
+  | { readonly kind: "protected_difference"; readonly scope: string; readonly invariant: string; readonly differing: number }
+  /** The check runner failed one of the feature's runs as often as the failure limit (run-failure.ts). */
+  | { readonly kind: "run_failed"; readonly run: RunKind; readonly runId: string; readonly failures: number; readonly reason: string };
 
 /** A scope as the dashboard names it: its name and the person who owns it. */
 export interface DashboardScope {

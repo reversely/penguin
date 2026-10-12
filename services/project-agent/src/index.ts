@@ -113,6 +113,7 @@ import {
   type WhatsNearOutcome,
 } from "./agent-tools.ts";
 import { PlanFactsStore, type PlanFactsReportOutcome } from "./plan-facts.ts";
+import { releaseRun, reportRunFailure, RunFailureStore, type RunFailure, type RunStores } from "./run-failures.ts";
 import type { PlanKeeper } from "./plan-store.ts";
 import { fileDiffs, type GitObjectReader } from "./repo-diff.ts";
 import {
@@ -240,6 +241,8 @@ import {
   type Promotion,
   type VerificationRunSpec,
   type ViewerPlan,
+  parseRunFailureLimit,
+  type RunFailureOutcome,
 } from "@penguin/protocol";
 import { INVARIANTS_PATH, type ScopeMap } from "@penguin/scope-map";
 
@@ -502,6 +505,18 @@ export {
   type PlanFactsRun,
   type PlanFactsState,
 } from "./plan-facts.ts";
+export {
+  notStopped,
+  releaseRun,
+  reportRunFailure,
+  RUN_FAILURE_SCHEMA,
+  RunFailureStore,
+  type ReleaseOutcome,
+  type RunFailure,
+  type RunFailureDeps,
+  type RunStores,
+  type StoreRelease,
+} from "./run-failures.ts";
 export {
   classifyFix,
   parseBreakLimit,
@@ -770,6 +785,8 @@ interface ProjectAgentEnv {
   readonly PENGUIN_PLAN_ADMIN_MODE?: string;
   /** The changes an author may ask for on one plan part. Defaults to PLAN_ROUND_LIMIT_DEFAULT (PRD 7). */
   readonly PENGUIN_PLAN_ROUND_LIMIT?: string;
+  /** Failures of one claimed run before Penguin stops handing it out. Defaults to RUN_FAILURE_LIMIT_DEFAULT. */
+  readonly PENGUIN_RUN_FAILURE_LIMIT?: string;
 }
 
 /** A land's answer as the ProjectAgent returns it across RPC: the run without its full request. */
@@ -878,6 +895,7 @@ export class ProjectAgent extends Agent {
   #ingests: Promise<unknown> = Promise.resolve();
   #huddles: HuddleStore | undefined;
   #combinedRuns: CombinedRunStore | undefined;
+  #runFailures: RunFailureStore | undefined;
   /** Huddle openings and verification steps run one at a time, so no two interleave their writes. */
   #huddleSteps: Promise<unknown> = Promise.resolve();
   #approvals: FixApprovalStore | undefined;
@@ -2257,6 +2275,7 @@ export class ProjectAgent extends Agent {
       roundLimit: this.#roundLimit(),
       fixWrite: (partId, revision) => this.#fixGrantStore().get(partId, revision),
       contract: (feature) => contractWork(this.#splitDeps(), feature, rules.scopeMap),
+      stoppedRuns: (featureId) => this.#runFailureStore().stopped(featureId),
     };
   }
 
@@ -2550,8 +2569,56 @@ export class ProjectAgent extends Agent {
       fixWrites: async (id) => (await named).fixWrites(id),
       openBlockRun: async (input) => (await named).openBlockRun(input),
       claimBlockRuns: async (runnerId) => (await named).claimBlockRuns(runnerId),
+      releaseBlockRun: async (runnerId, runId) => (await named).releaseBlockRun?.(runnerId, runId) ?? { status: "rejected", reason: "not_found", message: `no block run ${runId}` },
+      stopBlockRun: async (runId, reason) => (await named).stopBlockRun?.(runId, reason),
       landing: async (id) => (await named).landing(id),
     };
+  }
+
+  /**
+   * For the check runner only: a runner reports that it failed run `runId` of `kind`, which it claimed
+   * (run-failures.ts). Penguin releases the run at once for any runner. At PENGUIN_RUN_FAILURE_LIMIT
+   * failures the run is stopped and its feature's person gets the exception with the reason.
+   */
+  reportRunFailure(caller: BridgeCaller, body: unknown): Promise<RunFailureOutcome> {
+    const features = this.#featureStore();
+    const stores: RunStores = {
+      combined: this.#combinedRunStore(),
+      reviews: this.#reviewStore(),
+      tools: this.#toolStore(),
+      planFacts: this.#planFactsStore(),
+      fixGrants: this.#fixGrantStore(),
+      trials: this.#partTrialStore(),
+      block: async (featureId, runId, runnerId) => this.#featureAgent(featureId).releaseBlockRun!(runnerId, runId),
+      personOf: (featureId) => features.get(featureId)?.personId,
+    };
+    return reportRunFailure(
+      {
+        failures: this.#runFailureStore(),
+        limit: parseRunFailureLimit((this.env as unknown as ProjectAgentEnv).PENGUIN_RUN_FAILURE_LIMIT),
+        release: (kind, runId, runnerId) => releaseRun(stores, kind, runId, runnerId),
+        stopped: async (failure) => this.#runStopped(failure),
+      },
+      caller,
+      body,
+    );
+  }
+
+  /** A run reached the failure limit: a block run fails, and the person hears of it in the inbox. */
+  async #runStopped(failure: RunFailure): Promise<void> {
+    if (failure.kind === "block" && failure.featureId !== null) {
+      const purpose = await this.#featureAgent(failure.featureId).stopBlockRun!(failure.runId, failure.reason);
+      // As a failed report does: a land or expand run returns its feature to building.
+      if (purpose !== undefined && purpose !== "plan_check") this.landFailed(failure.featureId, failure.runId);
+    }
+    this.#inboxStore().runFailed(failure.personId, failure.kind, failure.runId);
+    this.#liveFeed().featuresChanged();
+    sendToOwner(this.getConnections<{ owner?: string }>(), failure.personId, inboxChangedMessage());
+  }
+
+  #runFailureStore(): RunFailureStore {
+    this.#runFailures ??= new RunFailureStore(this.#database());
+    return this.#runFailures;
   }
 
   #blockQueueStore(): BlockQueueStore {

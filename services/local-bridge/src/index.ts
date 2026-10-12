@@ -41,6 +41,7 @@ export type { ClaimedFixWrite, FixWritePassOptions, FixWritePassResult, FixWrite
 export { runFixWriteCommand } from "./fix-write-cli.ts";
 export { runPreviewCommand } from "./preview-cli.ts";
 export { blockPass, formatBlockPass } from "./block-run.ts";
+export { failureText, noteFailure, type FailRun, type FailureNote, type RunFailureReply } from "./run-failure.ts";
 export { checkTrialRequest, formatPartTrialPass, partTrialPass, PartTrialRunner, trialFetcher, trialRepos } from "./part-trial-run.ts";
 export type { PartTrialPassOptions, PartTrialPassResult, PartTrialRunnerOptions } from "./part-trial-run.ts";
 export { buildTrialTree, type TrialTree } from "./trial-tree.ts";
@@ -83,6 +84,8 @@ export {
   BLOCK_ROUTE,
   claimBlockRuns,
   reportBlockRun,
+  reportRunFailure,
+  RUN_FAILURE_ROUTE,
   bridgeRemotes,
   bridgeTokenAccount,
   checkedOrigin,

@@ -32,6 +32,7 @@ import type { ScopeMap } from "@penguin/scope-map";
 import type { Feature } from "./feature-store.ts";
 import type { SqlDatabase, SqlValue } from "./issue-index.ts";
 import { footprint, RUNNING_STATES, type FeatureDependent } from "./overlap-lock.ts";
+import { notStopped, RUN_FAILURE_SCHEMA, type StoreRelease } from "./run-failures.ts";
 
 type Row = Record<string, SqlValue>;
 
@@ -84,7 +85,7 @@ export class PlanFactsStore {
   constructor(db: SqlDatabase, now: () => number = Date.now) {
     this.#db = db;
     this.#now = now;
-    for (const statement of PLAN_FACTS_SCHEMA) db.exec(statement);
+    for (const statement of [...PLAN_FACTS_SCHEMA, ...RUN_FAILURE_SCHEMA]) db.exec(statement);
   }
 
   /**
@@ -132,9 +133,20 @@ export class PlanFactsStore {
     return row === undefined ? undefined : run(row);
   }
 
-  /** The runs waiting for the runner, oldest first. */
+  /** The runs waiting for the runner, oldest first, without the stopped ones (run-failures.ts). */
   pending(): PlanFactsRequest[] {
-    return this.#db.exec(`SELECT * FROM PlanFactsRun WHERE state = 'pending' ORDER BY id`).map((row) => run(row).request);
+    return this.#db.exec(`SELECT * FROM PlanFactsRun WHERE state = 'pending' AND ${notStopped("plan-facts", "id")} ORDER BY id`).map((row) => run(row).request);
+  }
+
+  /**
+   * A facts run is listed to every runner and never claimed, so a failure has no claim to free: it
+   * names the run's feature while the run still waits.
+   */
+  release(runId: string): StoreRelease {
+    const found = this.get(runId);
+    if (found === undefined) return { status: "rejected", reason: "not_found", message: `no plan facts run ${runId}` };
+    if (found.state !== "pending") return { status: "rejected", reason: "conflict", message: `plan facts run ${runId} is ${found.state}` };
+    return { status: "released", featureId: found.featureId };
   }
 
   /** Records a runner's report of run `runId`. A report is checked against the schema and taken once. */

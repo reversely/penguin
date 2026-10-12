@@ -41,6 +41,9 @@
 // - "round_limit": the author of a part of the person's plan asked for one change more than the
 //   project's round limit, so the part waits on the person (PRD section 7). Its `issue_id` holds
 //   `part:<part id>`.
+// - "run_failed": the check runner failed one of the person's runs as many times as the project's
+//   failure limit, so Penguin stopped handing it out (run-failures.ts, PRD section 7). Its `issue_id`
+//   holds `run:<kind>/<run id>`; the stopped run on the feature names the last reason.
 //
 // The person who did the thing gets no "assigned", "mentioned" or "closed" item for it. An identity's
 // operation counts as its owner half's doing, as in IssueIndex.assigningOwner.
@@ -73,6 +76,7 @@ export const INBOX_REASONS = [
   "penguin_approved",
   "protected_path",
   "round_limit",
+  "run_failed",
 ] as const;
 export type InboxReason = (typeof INBOX_REASONS)[number];
 
@@ -273,6 +277,11 @@ export class InboxStore implements StartRequestListener {
   /** Tells `personId` that part `partId` of their plan went past the round limit. */
   roundLimitReached(personId: string, partId: string): void {
     this.#raise(personId, partRef(partId), "round_limit");
+  }
+
+  /** Tells `personId` that the runner stopped retrying their run `runId` of `kind` at the failure limit. */
+  runFailed(personId: string, kind: string, runId: string): void {
+    this.#raise(personId, `run:${kind}/${runId}`, "run_failed");
   }
 
   /** Every item about part `partId`, for every person: a newer plan of its feature replaced it. */

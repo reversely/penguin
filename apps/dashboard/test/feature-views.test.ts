@@ -22,6 +22,10 @@ test("a feature's state takes a neutral tag and only the attention edge marks an
   assert.equal(placeText({ kind: "feature", feature: "tax-exempt" }), "feature tax-exempt");
   assert.equal(exceptionText({ kind: "plan_returned", inPerson: 31, breakLimit: 10 }), "Plan returned: 31 parts needing a person over the limit of 10");
   assert.equal(exceptionText({ kind: "protected_difference", scope: "analytics", invariant: "tablet", differing: 2 }), "2 inputs differ on protected tablet");
+  assert.equal(
+    exceptionText({ kind: "run_failed", run: "block", runId: "money/4", failures: 3, reason: "commit 0e252bbf is not in the fetched repos" }),
+    "The check runner stopped the block run after 3 failures: commit 0e252bbf is not in the fetched repos",
+  );
   assert.equal(recordLabel("approve_plan_part"), "Part approved");
   assert.equal(recordLabel("some_later_type"), "some_later_type");
 });

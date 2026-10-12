@@ -16,6 +16,7 @@ import type { RemoteResolver } from "./git-remote.ts";
 import type { ImpactAnalyzer } from "./impact-analysis.ts";
 import type { ClaimedCombinedRun, CombinedRunReply } from "./penguin-client.ts";
 import { fetchRepoBranches } from "./runner-repo.ts";
+import { failureText, noteFailure, type FailRun, type FailureNote } from "./run-failure.ts";
 import type { TestRunner } from "./test-runner.ts";
 
 export interface CombinedPassOptions {
@@ -32,6 +33,8 @@ export interface CombinedPassOptions {
   readonly impact?: ImpactAnalyzer;
   /** Runs the section 5.1 checks on each merged tree; their results go out with the report. */
   readonly checks?: BlockChecker;
+  /** Reports a run the pass stopped on, such as `reportRunFailure` bound to the bridge token; absent, it waits out its lease. */
+  readonly fail?: FailRun;
 }
 
 export interface RefusedCommand {
@@ -56,8 +59,10 @@ export interface CombinedBatchResult {
   }[];
   /** Penguin's answer to the report, or null when nothing was reported. */
   readonly reply: CombinedRunReply | null;
-  /** Why the batch stopped; its runs stay claimed until their lease runs out and are then run again. */
+  /** Why the batch stopped; each of its runs is then reported as failed. */
   readonly error: string | null;
+  /** What Penguin did with each run of a stopped batch, by run id; empty when the batch did not stop. */
+  readonly failures: readonly { readonly runId: string; readonly note: FailureNote | null }[];
 }
 
 export interface CombinedPassResult {
@@ -93,11 +98,16 @@ export async function combinedRunPass(options: CombinedPassOptions): Promise<Com
   const started = performance.now();
   const claimed = await options.claim();
   const batches: CombinedBatchResult[] = [];
-  for (const batch of batchRuns(claimed)) batches.push(await runBatch(options, batch));
+  for (const batch of batchRuns(claimed)) {
+    const result = await runBatch(options, batch);
+    const failures = [];
+    if (result.error !== null) for (const runId of result.runIds) failures.push({ runId, note: await noteFailure(options.fail, "combined", runId, result.error) });
+    batches.push({ ...result, failures });
+  }
   return { claimed: claimed.length, batches, durationMs: Math.round(performance.now() - started) };
 }
 
-async function runBatch(options: CombinedPassOptions, runs: readonly ClaimedCombinedRun[]): Promise<CombinedBatchResult> {
+async function runBatch(options: CombinedPassOptions, runs: readonly ClaimedCombinedRun[]): Promise<Omit<CombinedBatchResult, "failures">> {
   const { trigger } = runs[0] as ClaimedCombinedRun;
   const base = { trigger, runIds: runs.map((run) => run.runId) };
   const refused: RefusedCommand[] = [];
@@ -160,7 +170,8 @@ export function formatCombinedPass(result: CombinedPassResult): string {
     const trigger = `${batch.trigger.ownerId}@${batch.trigger.sha.slice(0, 12)}`;
     for (const { commandId, reason } of batch.refused) lines.push(`Refused ${commandId} for ${trigger}: ${reason}`);
     if (batch.error !== null) {
-      lines.push(`Combined run of ${trigger} stopped; it runs again after its lease: ${batch.error}`);
+      lines.push(`Combined run of ${trigger} stopped: ${batch.error}`);
+      for (const { runId, note } of batch.failures) lines.push(`  ${runId}: ${failureText(note)}`);
       continue;
     }
     const results = batch.results.map(({ target, scopeId, status }) => `${scopeId} on ${target} ${status}`).join(", ");

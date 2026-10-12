@@ -72,6 +72,7 @@ node -e 'crypto.subtle.generateKey("Ed25519", true, ["sign", "verify"])
 | `PENGUIN_TOKEN_TTL_SECONDS` | Optional | 3600 | Lifetime of the Artifacts tokens the Worker mints, 60 to 31,536,000. A value outside the range makes `/tokens` refuse to mint |
 | `PENGUIN_FIX_TOKEN_TTL_MINUTES` | `vars` in `wrangler.jsonc` | 10 | Lifetime of a write token on an affected feature's fork for one approved plan part, 1 to 60 minutes. Any other value refuses every fix token |
 | `PENGUIN_PROMOTION_TOKEN_TTL_MINUTES` | `vars` in `wrangler.jsonc` | 5 | Lifetime of the write token on main a FeatureAgent mints for one promotion and revokes after the push, 1 to 15 minutes. Any other value refuses every promotion |
+| `PENGUIN_RUN_FAILURE_LIMIT` | `vars` in `wrangler.jsonc` | 3 | Failures of one claimed run the check runner may report before Penguin stops handing it out and routes it to the feature's person, 1 to 20. Any other value refuses every failure report, so each failed run waits out its lease |
 | `PENGUIN_SESSION_OFFLINE_SECONDS` | Optional | 90 | Seconds without an MCP call before an agent session goes offline |
 | `PENGUIN_LOCAL_DEV_UNAUTHENTICATED` | `wrangler dev --var` only | unset | `true` opens the raw agent routes on a loopback hostname; ignored on any other host |
 | `PENGUIN_GITHUB_BASE_URL` | Local testing only | unset | A local GitHub OAuth test double's address; honoured on a loopback hostname only |

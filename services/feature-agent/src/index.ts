@@ -160,6 +160,19 @@ export class FeatureAgent extends Agent implements HuddleVerifier, HuddleReviewe
     return { runs, waiting: this.#blockStore().hasWaiting() };
   }
 
+  /** Frees a run `runnerId` claimed and failed, for the next claim of any runner (run-failures.ts). */
+  releaseBlockRun(runnerId: string, runId: string): ReturnType<BlockStore["release"]> {
+    return this.#blockStore().release(runId, runnerId);
+  }
+
+  /**
+   * Fails a pending run that reached the failure limit, with the last reason as its outcome, so no
+   * claim hands it out again. Returns its purpose, or undefined when it no longer waits.
+   */
+  stopBlockRun(runId: string, reason: string): BlockRun["purpose"] | undefined {
+    return this.#blockStore().stop(runId, reason);
+  }
+
   /**
    * Records the runner's report of a block run, and promotes main when a land or expand run passed. `port`
    * reaches the ProjectAgent; `repos` names the base repo and the deployment's prefix.

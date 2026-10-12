@@ -9,6 +9,7 @@ import { parseScopeMap } from "@penguin/scope-map";
 import type { Plan } from "@penguin/protocol";
 
 import { buildFeaturePlan, featureExceptions, featureState, personRole, type FeatureStateFacts } from "../src/dashboard-views.ts";
+import type { RunFailure } from "../src/run-failures.ts";
 import type { Feature, FeatureRecord, FeatureStore } from "../src/feature-store.ts";
 import type { StoredReview } from "../src/review-submit.ts";
 
@@ -57,6 +58,9 @@ test("a feature highlights a part past the round limit, a returned plan and its 
       broken,
     ],
   );
+  // A run the check runner stopped at the failure limit is an exception with its last reason.
+  const stopped = { kind: "block", runId: "money/4", failures: 3, reason: "fetch-pack: protocol error: bad band #78" } as RunFailure;
+  assert.deepEqual(featureExceptions([], [], [], [stopped]), [{ kind: "run_failed", run: "block", runId: "money/4", failures: 3, reason: "fetch-pack: protocol error: bad band #78" }]);
   // A plan proposed after the return replaces it, and a newer review of a scope replaces its older one.
   assert.deepEqual(featureExceptions([], [review(1, "tax", [broken]), review(3, "tax", [])], [record("plan_returned", { break_limit: 10, behavioural: [] }), record("propose_plan")]), []);
 });

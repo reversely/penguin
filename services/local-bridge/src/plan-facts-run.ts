@@ -44,6 +44,7 @@ import { fingerprint } from "./fingerprint.ts";
 import type { ImpactAnalyzer } from "./impact-analysis.ts";
 import { fetchRepoBranches, hasCommit } from "./runner-repo.ts";
 import type { RemoteResolver } from "./git-remote.ts";
+import { failureText, noteFailure, type FailRun, type FailureNote } from "./run-failure.ts";
 import { readCommittedFile } from "./side-by-side.ts";
 import { failureLines, testDocstring, testFunctionName } from "./test-evidence.ts";
 import type { TestRunner } from "./test-runner.ts";
@@ -276,12 +277,14 @@ export interface PlanFactsPassOptions {
   readonly fetch: (request: PlanFactsRequest) => Promise<void>;
   readonly run: (request: PlanFactsRequest) => Promise<PlanFactsReport>;
   readonly report: (runId: string, report: PlanFactsReport) => Promise<{ readonly status: string }>;
+  /** Reports a run the pass stopped on, such as `reportRunFailure` bound to the bridge token; absent, it waits out its lease. */
+  readonly fail?: FailRun;
 }
 
 export interface PlanFactsPassResult {
   readonly listed: number;
   readonly reported: readonly { readonly runId: string; readonly feature: string; readonly status: string }[];
-  readonly failed: readonly { readonly runId: string; readonly error: string }[];
+  readonly failed: readonly { readonly runId: string; readonly error: string; readonly failure: FailureNote | null }[];
   readonly durationMs: number;
 }
 
@@ -297,7 +300,8 @@ export async function planFactsPass(options: PlanFactsPassOptions): Promise<Plan
       const reply = await options.report(request.runId, await options.run(request));
       reported.push({ runId: request.runId, feature: request.feature, status: reply.status });
     } catch (error) {
-      failed.push({ runId: request.runId, error: (error as Error).message });
+      const reason = (error as Error).message;
+      failed.push({ runId: request.runId, error: reason, failure: await noteFailure(options.fail, "plan-facts", request.runId, reason) });
     }
   }
   return { listed: listed.length, reported, failed, durationMs: Math.round(performance.now() - started) };
@@ -305,7 +309,9 @@ export async function planFactsPass(options: PlanFactsPassOptions): Promise<Plan
 
 export function formatPlanFactsPass(result: PlanFactsPassResult): string {
   const lines = result.reported.map(({ runId, feature, status }) => `Plan facts ${runId} for ${feature}: ${status}.`);
-  for (const { runId, error } of result.failed) lines.push(`Plan facts ${runId} did not run; it stays listed: ${error}`);
+  for (const { runId, error, failure } of result.failed) {
+    lines.push(`Plan facts ${runId} did not run; ${failure === null ? "it stays listed" : failureText(failure)}: ${error}`);
+  }
   lines.push(`${result.listed} plan facts run${result.listed === 1 ? "" : "s"} listed (${result.durationMs} ms).`);
   return `${lines.join("\n")}\n`;
 }

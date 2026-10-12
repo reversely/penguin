@@ -18,6 +18,7 @@ import { resolveCommand } from "./command-allowlist.ts";
 import type { RemoteResolver } from "./git-remote.ts";
 import type { ReviewRequest } from "./review-harness.ts";
 import { fetchRepoBranches, hasCommit } from "./runner-repo.ts";
+import { failureText, noteFailure, type FailRun, type FailureNote } from "./run-failure.ts";
 import type { TestRunner } from "./test-runner.ts";
 import { buildTrialTree } from "./trial-tree.ts";
 
@@ -129,12 +130,14 @@ export interface PartTrialPassOptions {
   readonly fetch: (request: PartTrialRequest) => Promise<void>;
   readonly run: (request: PartTrialRequest) => Promise<PartTrialReport>;
   readonly report: (trialId: number, report: PartTrialReport) => Promise<{ readonly status: string }>;
+  /** Reports a run the pass stopped on, such as `reportRunFailure` bound to the bridge token; absent, it waits out its lease. */
+  readonly fail?: FailRun;
 }
 
 export interface PartTrialPassResult {
   readonly claimed: number;
   readonly reported: readonly { readonly trialId: number; readonly partId: string; readonly revision: number; readonly summary: string; readonly status: string }[];
-  readonly failed: readonly { readonly trialId: number; readonly error: string }[];
+  readonly failed: readonly { readonly trialId: number; readonly error: string; readonly failure: FailureNote | null }[];
   readonly durationMs: number;
 }
 
@@ -151,7 +154,8 @@ export async function partTrialPass(options: PartTrialPassOptions): Promise<Part
       const reply = await options.report(request.trialId, report);
       reported.push({ trialId: request.trialId, partId: request.partId, revision: request.revision, summary: summary(report), status: reply.status });
     } catch (error) {
-      failed.push({ trialId: request.trialId, error: (error as Error).message });
+      const reason = (error as Error).message;
+      failed.push({ trialId: request.trialId, error: reason, failure: await noteFailure(options.fail, "part-trial", String(request.trialId), reason) });
     }
   }
   return { claimed: claimed.length, reported, failed, durationMs: elapsed(started) };
@@ -167,7 +171,7 @@ function summary(report: PartTrialReport): string {
 
 export function formatPartTrialPass(result: PartTrialPassResult): string {
   const lines = result.reported.map(({ trialId, partId, revision, summary: text, status }) => `Trial ${trialId} of ${partId} revision ${revision}: ${text} (${status}).`);
-  for (const { trialId, error } of result.failed) lines.push(`Trial ${trialId} stopped; it runs again after its lease: ${error}`);
+  for (const { trialId, error, failure } of result.failed) lines.push(`Trial ${trialId} stopped; ${failureText(failure)}: ${error}`);
   lines.push(`${result.claimed} part trial${result.claimed === 1 ? "" : "s"} claimed (${result.durationMs} ms).`);
   return `${lines.join("\n")}\n`;
 }

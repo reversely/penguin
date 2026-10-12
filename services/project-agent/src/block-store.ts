@@ -255,6 +255,27 @@ export class BlockStore {
   }
 
   /**
+   * Moves claimed run `runId` back to `pending` when `runnerId` holds its claim, so the next claim of
+   * any runner takes it (run-failures.ts).
+   */
+  release(runId: string, runnerId: string): { readonly status: "released"; readonly featureId: string } | { readonly status: "rejected"; readonly reason: "not_found" | "forbidden" | "conflict"; readonly message: string } {
+    const run = this.get(runId);
+    if (run === undefined) return { status: "rejected", reason: "not_found", message: `no block run ${runId}` };
+    if (run.state !== "claimed") return { status: "rejected", reason: "conflict", message: `block run ${runId} is ${run.state}, not claimed` };
+    if (run.claimedBy !== runnerId) return { status: "rejected", reason: "forbidden", message: `block run ${runId} is claimed by another runner` };
+    this.#db.exec(`UPDATE BlockRun SET state = 'pending', claimed_by = NULL, lease_until = NULL WHERE run_id = ? AND state = 'claimed'`, runId);
+    return { status: "released", featureId: run.featureId };
+  }
+
+  /**
+   * Fails a waiting run that reached the failure limit, with the last reason as its outcome, so no
+   * claim hands it out again. Returns its purpose, or undefined when it no longer waits.
+   */
+  stop(runId: string, reason: string): BlockRunPurpose | undefined {
+    return this.transition(runId, ["pending", "claimed"], "failed", reason) ? this.get(runId)?.purpose : undefined;
+  }
+
+  /**
    * Keeps the report of a run `runnerId` claimed, with each check, and moves it to `passed` or
    * `failed`. A run claimed by another runner, superseded, or already reported is refused.
    */

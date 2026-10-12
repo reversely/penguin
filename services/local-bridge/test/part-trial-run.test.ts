@@ -88,5 +88,5 @@ test("a pass reports each trial it could run and lists the ones it could not", a
     result.reported.map(({ trialId, status, summary }) => [trialId, status, summary]),
     [[5, "recorded", "no trial tree: the checkpoint's merge conflicts in a.py"]],
   );
-  assert.deepEqual(result.failed, [{ trialId: 4, error: "the fork could not be fetched" }]);
+  assert.deepEqual(result.failed, [{ trialId: 4, error: "the fork could not be fetched", failure: null }]);
 });

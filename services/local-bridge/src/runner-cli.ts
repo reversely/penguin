@@ -48,6 +48,7 @@ import {
   openBridge,
   reportApproval,
   reportBlockRun,
+  reportRunFailure,
   reportCombinedRun,
   reportFixWrite,
   reportPartTrial,
@@ -60,6 +61,7 @@ import {
 } from "./penguin-client.ts";
 import { runReview } from "./review-harness.ts";
 import { formatReviewPass, reviewPass, type ReviewPassResult } from "./review-run.ts";
+import type { FailRun } from "./run-failure.ts";
 import { fetchRepoBranches } from "./runner-repo.ts";
 import { formatPass, runnerPass, RunnerLoop } from "./runner.ts";
 import { bridgeSpool } from "./spool-cli.ts";
@@ -263,6 +265,8 @@ async function testJobsPass(
   const combined = new CombinedRunner({ repoPath: repo, runner, impact, checks });
   const trials = new PartTrialRunner({ repoPath: repo, runner, review: (request) => runReview({ repoPath: repo, python: programs.python, analyzer: impact }, request) });
   const settle = <T>(job: () => Promise<T>): Promise<T | Error> => job().catch((error: unknown) => error as Error);
+  // A run a pass stops on goes back to Penguin with its reason, which frees it for any runner at once.
+  const fail: FailRun = (failure) => reportRunFailure(server, bridgeToken, failure, fetchImpl);
   return async () => ({
     combined: await settle(() =>
       combinedRunPass({
@@ -273,6 +277,7 @@ async function testJobsPass(
         runner,
         impact,
         checks,
+        fail,
       }),
     ),
     planFacts: await settle(() =>
@@ -281,6 +286,7 @@ async function testJobsPass(
         fetch: factsFetcher(readRemotes, repo),
         run: (request) => facts.run(request),
         report: (runId, report) => reportPlanFacts(server, bridgeToken, runId, report, fetchImpl),
+        fail,
       }),
     ),
     verification: await settle(() =>
@@ -304,6 +310,7 @@ async function testJobsPass(
         fetchFork: (fork) => fetchRepoBranches(repo, readRemotes, fork),
         review: (request) => runReview({ repoPath: repo, python: programs.python, analyzer: impact }, request),
         repoPath: repo,
+        fail,
       }),
     ),
     trials: await settle(() =>
@@ -312,6 +319,7 @@ async function testJobsPass(
         fetch: trialFetcher(readRemotes, repo),
         run: (request) => trials.run(request),
         report: (trialId, report) => reportPartTrial(server, bridgeToken, trialId, report, fetchImpl),
+        fail,
       }),
     ),
     tools: await settle(() =>
@@ -323,6 +331,7 @@ async function testJobsPass(
         combined,
         fixes,
         repoPath: repo,
+        fail,
       }),
     ),
     fixWrites: await settle(() =>
@@ -331,6 +340,7 @@ async function testJobsPass(
         // The token Penguin minted for this part reaches Git only through the push's environment.
         write: ({ spec, token }) => writeFix({ repoPath: repo, remote: tokenRemote(penguinRemote(spec.fork), token) }, spec),
         report: (writeId, commit) => reportFixWrite(server, bridgeToken, writeId, commit, fetchImpl),
+        fail,
       }),
     ),
     blocks: await settle(() =>
@@ -340,6 +350,7 @@ async function testJobsPass(
         fetchRepo: (name) => fetchRepoBranches(repo, readRemotes, name),
         combined,
         repoPath: repo,
+        fail,
       }),
     ),
   });

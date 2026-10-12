@@ -36,6 +36,11 @@
   // An author may ask for PENGUIN_PLAN_ROUND_LIMIT changes to one plan part; the next request sends
   // the part to the originating feature's person (PRD 0.4 section 7). Unset means the PRD's default
   // of 3; any value other than a positive whole number refuses every requested change as misconfigured.
+  //
+  // A check runner that fails a run it claimed reports it, and Penguin hands the run to the next claim
+  // at once. At PENGUIN_RUN_FAILURE_LIMIT failures of one run Penguin stops handing it out and routes
+  // it to the feature's person. Unset means 3; a value other than a whole number from 1 to 20 refuses
+  // every failure report as misconfigured, so each run waits out its lease instead.
   // Promotion (PRD 0.4 section 4.5 step 4) moves main with a write token on the base repo that
   // Penguin mints for PENGUIN_PROMOTION_TOKEN_TTL_MINUTES, uses for one push and revokes. Unset
   // means 5; a value other than a whole number from 1 to 15 refuses every promotion as misconfigured.
@@ -49,6 +54,7 @@
     "PENGUIN_PLAN_ADMIN_MODE": "off",
     "PENGUIN_PLAN_BREAK_LIMIT": "10",
     "PENGUIN_PLAN_ROUND_LIMIT": "3",
+    "PENGUIN_RUN_FAILURE_LIMIT": "3",
     "PENGUIN_PROMOTION_TOKEN_TTL_MINUTES": "5"
   },
   "build": {

@@ -15,6 +15,7 @@ import { boundReviewRecord, type ReviewRecord } from "@penguin/protocol";
 import type { ClaimedReview, ReviewReply } from "./penguin-client.ts";
 import type { ReviewRequest } from "./review-harness.ts";
 import { hasCommit } from "./runner-repo.ts";
+import { failureText, noteFailure, type FailRun, type FailureNote } from "./run-failure.ts";
 
 export interface ReviewPassOptions {
   /** Claims the pending reviews, such as `claimReviews` bound to the bridge token. */
@@ -27,6 +28,8 @@ export interface ReviewPassOptions {
   readonly review: (request: ReviewRequest) => Promise<ReviewRecord>;
   /** The runner's repository. */
   readonly repoPath: string;
+  /** Reports a run the pass stopped on, such as `reportRunFailure` bound to the bridge token; absent, it waits out its lease. */
+  readonly fail?: FailRun;
 }
 
 export interface ReviewRunResult {
@@ -39,8 +42,10 @@ export interface ReviewRunResult {
   readonly differing: number;
   /** Penguin's answer, or null when nothing was reported. */
   readonly reply: ReviewReply | null;
-  /** Why the review stopped; it stays claimed until its lease runs out and is then run again. */
+  /** Why the review stopped; the pass then reports it as failed. */
   readonly error: string | null;
+  /** What Penguin did with the stopped review; null when it did not stop or could not be reported. */
+  readonly failure: FailureNote | null;
 }
 
 export interface ReviewPassResult {
@@ -72,9 +77,10 @@ async function runOne(options: ReviewPassOptions, claim: ClaimedReview, fetchFor
     }
     const record = await options.review({ base: claim.base, fork: claim.forkSha, scope: claim.scope, form: claim.form });
     const reply = await options.report(claim.reviewId, boundReviewRecord(record));
-    return { ...base, state: record.state, differing: record.sideBySide.totals.differing, reply, error: null };
+    return { ...base, state: record.state, differing: record.sideBySide.totals.differing, reply, error: null, failure: null };
   } catch (error) {
-    return { ...base, state: null, differing: 0, reply: null, error: (error as Error).message };
+    const reason = (error as Error).message;
+    return { ...base, state: null, differing: 0, reply: null, error: reason, failure: await noteFailure(options.fail, "review", String(claim.reviewId), reason) };
   }
 }
 
@@ -83,7 +89,7 @@ export function formatReviewPass(result: ReviewPassResult): string {
   for (const review of result.reviews) {
     const name = `Review ${review.reviewId} of ${review.scope} on feature ${review.feature}`;
     if (review.error !== null) {
-      lines.push(`${name} stopped; it runs again after its lease: ${review.error}`);
+      lines.push(`${name} stopped; ${failureText(review.failure)}: ${review.error}`);
       continue;
     }
     const routed = review.reply?.routedTo == null ? "" : `, to ${review.reply.routedTo} in person`;

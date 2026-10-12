@@ -132,6 +132,10 @@ export interface FeatureBlocks {
   openBlockRun(input: BlockRunInput): BlockOpenOutcome | Promise<BlockOpenOutcome>;
   /** Hands the runner the feature's waiting runs; `waiting` stays true while any run still waits. */
   claimBlockRuns(runnerId: string): { readonly runs: readonly BlockRun["request"][]; readonly waiting: boolean } | Promise<{ readonly runs: readonly BlockRun["request"][]; readonly waiting: boolean }>;
+  /** Frees a run `runnerId` claimed and failed (run-failures.ts); see BlockStore.release. */
+  releaseBlockRun?(runnerId: string, runId: string): ReturnType<BlockStore["release"]> | Promise<ReturnType<BlockStore["release"]>>;
+  /** Fails a run past the failure limit; its purpose, or undefined when it no longer waits. */
+  stopBlockRun?(runId: string, reason: string): BlockRun["purpose"] | undefined | Promise<BlockRun["purpose"] | undefined>;
 }
 
 export type LandRejectReason =

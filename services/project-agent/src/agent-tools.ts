@@ -42,6 +42,7 @@ import { parseAreaPath, parseFeatureId, type Feature, type FeatureStore } from "
 import type { FeatureRejection } from "./feature-open.ts";
 import type { BridgeCaller, SqlDatabase, SqlValue } from "./issue-index.ts";
 import { findOverlaps, RUNNING_STATES, type Overlap } from "./overlap-lock.ts";
+import { notStopped, RUN_FAILURE_SCHEMA, type StoreRelease } from "./run-failures.ts";
 import type { Session, SessionOutcome } from "./session-store.ts";
 
 type Row = Record<string, SqlValue>;
@@ -159,7 +160,7 @@ export class AgentToolStore {
     this.#db = db;
     this.#now = now;
     this.#leaseMs = leaseMs;
-    for (const statement of AGENT_TOOL_SCHEMA) db.exec(statement);
+    for (const statement of [...AGENT_TOOL_SCHEMA, ...RUN_FAILURE_SCHEMA]) db.exec(statement);
     // Column names and definitions come from the constant above, never from input.
     const present = new Set(db.exec(`PRAGMA table_info(AgentToolRun)`).map((row) => row["name"]));
     for (const [name, definition] of RUNNER_COLUMNS) {
@@ -212,7 +213,7 @@ export class AgentToolStore {
     return this.#db.transaction((): ToolRunClaimListing => {
       const rows = this.#db.exec(
         `SELECT id FROM AgentToolRun WHERE result = 'waiting' AND base_sha IS NOT NULL
-           AND (claimed_at IS NULL OR claimed_at <= ?) ORDER BY id LIMIT ?`,
+           AND (claimed_at IS NULL OR claimed_at <= ?) AND ${notStopped("tool", "id")} ORDER BY id LIMIT ?`,
         now - this.#leaseMs,
         TOOL_RUN_CLAIM_LIMIT,
       );
@@ -224,6 +225,16 @@ export class AgentToolStore {
       }
       return { status: "ok", runs };
     });
+  }
+
+  /** Frees waiting request `id` from the claim `runnerId` holds, for the next claim of any runner. */
+  release(id: number, runnerId: string): StoreRelease {
+    const found = this.get(id);
+    if (found === undefined || found.featureId === null) return { status: "rejected", reason: "not_found", message: `no tool request ${id}` };
+    if (found.result !== "waiting") return { status: "rejected", reason: "conflict", message: `tool request ${id} is already reported` };
+    if (found.claimedBy !== runnerId) return { status: "rejected", reason: "forbidden", message: `tool request ${id} is not claimed by this runner` };
+    this.#db.exec(`UPDATE AgentToolRun SET claimed_by = NULL, claimed_at = NULL WHERE id = ?`, id);
+    return { status: "released", featureId: found.featureId };
   }
 
   /**

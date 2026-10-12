@@ -62,7 +62,7 @@ not work yet), **rule needed** (the procedure does not yet say what should happe
 | Does the stored-data rule apply to every reviewing scope or only those that read the changed data | works | Only those that read it, per the impact graph of the reviewing scope (#126, #132's first rule) |
 | May a plan's patch use a symbol its checkpoint does not have | rule needed | #132 |
 | Two plans writing into the same fork at once | rule needed | #133 |
-| A failed runner pass holds its run 30 minutes | gap | #120 |
+| A failed runner pass holds its run 30 minutes | works | The pass reports the failure and Penguin frees the run at once for any runner; the third failure goes to the feature's person (`services/project-agent/test/run-failures.test.ts`, `services/local-bridge/test/run-failure.test.ts`). Not yet run in the walkthrough |
 | Signed records in a record repo | gap | #123 |
 | Reads derived from the code, readable at hundreds of scopes | gap | #134 |
 | Teams above people (an engineering manager's view) | gap | #135, #136 |

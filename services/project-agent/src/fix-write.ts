@@ -46,6 +46,7 @@ import type { BridgeCaller, SqlDatabase, SqlValue } from "./issue-index.ts";
 import type { PlanRouteStore } from "./plan-approval.ts";
 import type { FixWrite, PlanKeeper } from "./plan-store.ts";
 import { changedFiles, readFileText, type GitObjectReader } from "./repo-diff.ts";
+import { notStopped, RUN_FAILURE_SCHEMA, type StoreRelease } from "./run-failures.ts";
 import type { SessionOutcome } from "./session-store.ts";
 
 type Row = Record<string, SqlValue>;
@@ -124,7 +125,7 @@ export class FixGrantStore {
   constructor(db: SqlDatabase, now: () => number = Date.now) {
     this.#db = db;
     this.#now = now;
-    for (const statement of FIX_GRANT_SCHEMA) db.exec(statement);
+    for (const statement of [...FIX_GRANT_SCHEMA, ...RUN_FAILURE_SCHEMA]) db.exec(statement);
   }
 
   /** The write of one revision of a part, made `queued` for `writer` when there is none yet. */
@@ -174,11 +175,24 @@ export class FixGrantStore {
     this.#db.exec(`UPDATE FixWriteGrant SET state = 'withdrawn' WHERE id = ? AND state != 'written'`, id);
   }
 
+  /**
+   * Queues granted write `id` again when `runnerId` holds its claim, so the next claim of any runner
+   * prepares it afresh with a new token. The plan's feature is the one whose person hears of a stop.
+   */
+  release(id: number, runnerId: string): StoreRelease {
+    const found = this.byId(id);
+    if (found === undefined || found.writer !== "runner") return { status: "rejected", reason: "not_found", message: `no runner write ${id}` };
+    if (found.state !== "granted") return { status: "rejected", reason: "conflict", message: `write ${id} is ${found.state}, not granted` };
+    if (found.claimedBy !== runnerId) return { status: "rejected", reason: "forbidden", message: `write ${id} is claimed by another runner` };
+    this.#db.exec(`UPDATE FixWriteGrant SET state = 'queued', claimed_by = NULL, lease_until = NULL WHERE id = ? AND state = 'granted'`, id);
+    return { status: "released", featureId: found.featureId };
+  }
+
   /** The runner's writes to claim: queued ones and granted ones whose claim ran out. */
   claimable(): FixGrant[] {
     return this.#db
       .exec(
-        `SELECT * FROM FixWriteGrant WHERE writer = 'runner' AND (state = 'queued' OR (state = 'granted' AND lease_until < ?)) ORDER BY id`,
+        `SELECT * FROM FixWriteGrant WHERE writer = 'runner' AND (state = 'queued' OR (state = 'granted' AND lease_until < ?)) AND ${notStopped("fix-write", "id")} ORDER BY id`,
         this.#now(),
       )
       .map(grantOf);

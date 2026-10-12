@@ -78,8 +78,10 @@ A feature's state comes from facts Penguin holds, the latest step first:
 
 States take a neutral tag. Only exceptions are highlighted: a feature carries each exception PRD
 section 7 routes to a person as a line in the attention colour, with an attention edge on its row.
-The exceptions are a part past the round limit, a plan returned over the break limit and a broken
-invariant or a protected difference in the newest review of each scope.
+The exceptions are a part past the round limit, a plan returned over the break limit, a broken
+invariant or a protected difference in the newest review of each scope. A run the check runner
+stopped at the failure limit is the last kind. Its line reads "The check runner stopped the block run after 3
+failures:" followed by the last reason.
 
 ### Person view
 

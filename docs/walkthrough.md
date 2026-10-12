@@ -113,8 +113,9 @@ In case 4 the walkthrough plays the one-block attempt only. It reads the wave fe
 and each running feature's waves fix (a commit with `after`, beside the branch) but opens none of
 them.
 
-A check runner pass that stops a run partway keeps the run claimed until its 30-minute lease ends.
-The walkthrough stops the case at the first such report and names it in the case's notes.
+A check runner pass that stops a run partway reports it to Penguin, which frees it for the next
+pass ([bridge-and-runner.md](bridge-and-runner.md#failed-runs)). The walkthrough stops the case at
+the first such report and names it in the case's notes.
 
 ## Dashboard build per case
 

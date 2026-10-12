@@ -836,7 +836,7 @@ resolved failure is the agent calls metric of PRD section 11.
 
 Runner mode claims waiting requests with `POST /tool-runs/claim`, as it claims reviews. A claim hands
 out up to 8 requests and holds them for 30 minutes. An unreported request is handed out again after
-that. Each claimed request names the feature's fork `feature-<id>`, the checkpoint, its baseline, the
+that. A runner that fails a request reports it, which frees it at once ([Exceptions](#exceptions)). Each claimed request names the feature's fork `feature-<id>`, the checkpoint, its baseline, the
 caller's charter and the other running features' forks. Each of those forks comes with its person
 and its head: the commit at the top of its `main` branch, with every fix written into it, or its
 latest checkpoint while the fork has no head. A land merges onto the same heads
@@ -1028,7 +1028,7 @@ submission never reaches the runner.
 
 Runner mode claims pending reviews with `POST /reviews/claim`, as it claims combined runs. A claim
 hands out up to 8 reviews and holds them for 30 minutes. An unreported review is handed out again
-after that. A pending form that a part trial carries is left to that trial: the claim skips it
+after that. A runner that fails a review reports it, which frees it at once ([Exceptions](#exceptions)). A pending form that a part trial carries is left to that trial: the claim skips it
 while the trial runs. The trial's report completes it ([Part trials](#part-trials)). A trial
 whose tree does not build runs no review, so its forms go back to the claim. Each claimed review
 names the feature's fork `feature-<id>`, the checkpoint, its
@@ -1151,6 +1151,17 @@ People see only the exceptions in this table. Everything else proceeds without t
 | A check fails in an area with no tests and no type coverage | That scope's owner |
 | Agents pass a fix back and forth past the project's round limit (default 3) | The originating feature's person |
 | A plan has more parts needing a person than the break limit | The originating feature's person, to split it |
+| The check runner fails one run past the project's failure limit (default 3) | The feature's person, with the last reason |
+
+The check runner reports each run it claimed and could not finish, with the reason
+(`POST /runs/failures`, [bridge-and-runner.md](bridge-and-runner.md#failed-runs)). Penguin frees the
+run at once for any runner. Only the runner holding the claim may free it. A runner that dies
+without reporting loses the claim when the 30-minute lease ends. Penguin counts every failure of a
+run in `RunFailure` (`services/project-agent/src/run-failures.ts`). At `PENGUIN_RUN_FAILURE_LIMIT`
+failures it stops handing the run out. The person of the run's feature gets a `run_failed` inbox
+item. The team view shows the stopped run on the feature with its failure count and last reason. A
+combined run of an owner fork goes to the person whose checkpoint triggered it. A stopped block run
+fails, so a land returns the feature to building.
 
 A plan part that needs its owner goes to them as a `plan_part` item. A part Penguin approved goes
 to its owner as a `penguin_approved` item the owner may reverse. A protected path a part or the

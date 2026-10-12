@@ -71,6 +71,11 @@
  * - POST /blocks/claim, bridge token of a runner bridge: claims the waiting block runs (PRD 0.4
  *   section 4.5): for each, the feature's checkpoint, main's head, main's branch and every other
  *   running feature's fork head, with the originating agent's charter. No token comes with a claim.
+ * - POST /runs/failures, bridge token of a runner bridge: reports that the runner failed a run it
+ *   claimed or listed, with the run's kind, its id and the reason. Penguin releases the run at once
+ *   for any runner's next claim; only the runner holding the claim may release it. At
+ *   PENGUIN_RUN_FAILURE_LIMIT failures (3 by default) the run is stopped and goes to its feature's
+ *   person as an exception.
  * - POST /blocks/<feature>/<n>, bridge token of the runner that claimed it: reports the run's checks
  *   and ladder decisions. The report goes to the feature's FeatureAgent directly, which keeps it as a
  *   signed `block_checked` record and, for a passing land run, moves main itself. The answer names
@@ -111,7 +116,7 @@ import type {
 
 import { planNoticeFields } from "@penguin/mcp";
 import { BLOCK_LIMITS, PART_TRIAL_LIMITS, REVIEW_LIMITS, SEGMENT_PATTERN, TOOL_RESULT_LIMITS } from "@penguin/protocol";
-import type { BlockRunRequest, FixWriteSpec, PlanFactsRequest } from "@penguin/protocol";
+import type { BlockRunRequest, FixWriteSpec, PlanFactsRequest, RunFailureOutcome } from "@penguin/protocol";
 
 import { bearerToken, isDeployer } from "./auth.ts";
 import { checkpointFields, FEATURE_FORK, fixWriteFields, settledFields, toolResultFields } from "./features.ts";
@@ -192,6 +197,8 @@ export interface BridgeDirectory {
   ): Promise<{ readonly status: "ok"; readonly writes: readonly { readonly spec: FixWriteSpec }[] } | { readonly status: "forbidden"; readonly message: string }>;
   /** Checks and keeps the commit the runner pushed for write `writeId`, which it claimed. */
   reportRunnerFixWrite(caller: BridgeCaller, writeId: number, body: unknown, repos: ProjectRepos): Promise<FixWriteOutcome>;
+  /** Releases a run the runner failed and counts the failure; refused unless `caller` holds the run's claim. */
+  reportRunFailure(caller: BridgeCaller, body: unknown): Promise<RunFailureOutcome>;
 }
 
 /** Opening Huddle issues: the ProjectAgent's side over Durable Object RPC, and the Huddle repo fork. */
@@ -778,6 +785,25 @@ async function reportToolRun(request: Request, runId: number, handlers: BridgeHa
   return json({ status: outcome.status, runId: run.id, tool: run.tool, result: run.result, summary: run.summary }, 200);
 }
 
+const RUN_FAILURE_STATUS: Readonly<Record<Extract<RunFailureOutcome, { status: "rejected" }>["reason"], number>> = {
+  invalid: 400,
+  forbidden: 403,
+  not_found: 404,
+  conflict: 409,
+};
+
+async function reportRunFailure(request: Request, handlers: BridgeHandlers): Promise<Response> {
+  const bridge = await runnerBridge(request, handlers);
+  if (bridge instanceof Response) return bridge;
+  if (request.method !== "POST") return methodNotAllowed("POST");
+  if (Number(request.headers.get("Content-Length") ?? 0) > 4_096) return json({ error: "too large", message: "a failure report is at most 4 KiB" }, 413);
+  const body = await readObject(request);
+  if (body === undefined) return invalid("", "must be a JSON object");
+  const outcome = await (await handlers.bridges()).reportRunFailure({ bridgeId: bridge.bridgeId, role: bridge.role }, body);
+  if (outcome.status === "rejected") return json({ error: outcome.reason, message: outcome.message }, RUN_FAILURE_STATUS[outcome.reason]);
+  return json(outcome, 200);
+}
+
 async function claimFixWrites(request: Request, options: BridgeOptions, handlers: BridgeHandlers): Promise<Response> {
   const bridge = await runnerBridge(request, handlers);
   if (bridge instanceof Response) return bridge;
@@ -910,6 +936,7 @@ export async function handleBridgeRoute(
   const fixWriteId = /^\/fix-writes\/([1-9][0-9]{0,14})$/.exec(url.pathname)?.[1];
   if (fixWriteId !== undefined) return reportFixWrite(request, Number(fixWriteId), handlers);
   if (url.pathname === "/blocks/claim") return claimBlocks(request, handlers);
+  if (url.pathname === "/runs/failures") return reportRunFailure(request, handlers);
   const blockRun = BLOCK_ROUTE.exec(url.pathname);
   if (blockRun !== null) return reportBlock(request, `${blockRun[1]}/${blockRun[2]}`, handlers);
   if (url.pathname === "/bridges/codes") return issueCode(request, options, handlers);

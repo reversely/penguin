@@ -235,6 +235,29 @@ Passing `--combined` or `--repo` is the runner operator's consent to those runs 
 jobs loop on their own, so a long test run never holds up the operation pushes. `--once` runs a
 single pass of each and exits 1 when anything was refused or failed.
 
+### Failed runs
+
+A pass that stops a run on an error, such as a fetch that failed, reports the run to
+`POST /runs/failures` with its kind, its id and the reason (`run-failure.ts`). The kinds are
+`combined`, `review`, `tool`, `plan-facts`, `fix-write`, `block` and `part-trial`. Penguin releases
+the run at once, so the next claim of any runner takes it without waiting for the lease. A pass that
+succeeds sends no failure report, so a run that works costs no extra request.
+
+- Only the runner that holds a run's claim can release it. Penguin refuses a report from any other
+  bridge. A facts run is listed to every runner and never claimed, so its report releases nothing
+  and only counts the failure.
+- A runner that dies without reporting still loses its claim when the lease ends, as before.
+- Penguin counts the failures of each run. At `PENGUIN_RUN_FAILURE_LIMIT`, 3 by default, it stops
+  handing the run out and routes it to the feature's person with the last reason
+  ([design.md](design.md#exceptions)). A stopped block run fails, so a land goes back to building.
+- When the failure report itself cannot reach Penguin, the run keeps its claim until the lease ends.
+
+The pass prints what became of each stopped run:
+
+```text
+Block run utc-day/2 (land) stopped; Penguin released it for any runner (failure 1 of 3): fetch-pack: protocol error: bad band #78
+```
+
 The runner fetches owner forks and feature forks with read tokens. It pushes Huddle repos with write
 tokens. The Worker grants a runner bridge `write` on `huddle-<id>` repos and an owner bridge only
 `read`. The runner gets `write` on a `feature-<id>` repo only with a claimed fix write, for that one
@@ -268,9 +291,9 @@ exactly that tree. Each failed or erred check gets one decision from the
 
 The runner reports to `POST /blocks/<feature>/<n>`. The Worker hands the report to the feature's
 FeatureAgent, which moves main itself when a land run passed. The answer names the run's new state
-and, for a promotion, main's commit before and after. A run whose repos cannot be fetched stays
-claimed and runs again after its lease. A run that cannot be checked reports an `error` check on
-main, which never passes.
+and, for a promotion, main's commit before and after. A run whose repos cannot be fetched is
+reported as a [failed run](#failed-runs), which frees it for the next claim. A run that cannot be
+checked reports an `error` check on main, which never passes.
 
 On the helpful-fix fixture, the block of `owner-priya` with the switch to `start_of_local_day` written
 into Jun's and Sam's forks passes every check. All three scopes' tests pass on main's merged tree.
@@ -345,7 +368,9 @@ fork ([design.md](design.md#steps-1-and-3-in-the-build)). Two writers use the sa
   prints the commit as JSON for `report_fix_write`.
 - Runner mode claims the writes of approved mechanical parts at `POST /fix-writes/claim` under a
   10-minute lease. Each claim carries a `write` token minted for that part on that fork. The runner
-  writes each fix and reports the commit to `POST /fix-writes/<write id>`.
+  writes each fix and reports the commit to `POST /fix-writes/<write id>`. A write that stops is
+  reported as a [failed run](#failed-runs). Penguin queues it again. The next claim prepares it with
+  a new token.
 
 The writer fetches the fork's `main` and stops with `moved` when its head is not the granted parent.
 It reads each file the patch writes at the parent and applies the patch with `applyPatchFile`
@@ -424,8 +449,8 @@ and the forms to review. For each trial the runner (`part-trial-run.ts`):
 4. runs the [review harness](#side-by-side-runs) for each form with the target as base and the tree
    as fork.
 
-The runner reports to `POST /part-trials/<id>`. A trial whose repos cannot be fetched stays claimed
-and runs again after its lease. A report of a trial a newer one replaced answers `superseded`.
+The runner reports to `POST /part-trials/<id>`. A trial whose repos cannot be fetched is reported
+as a [failed run](#failed-runs). A report of a trial a newer one replaced answers `superseded`.
 
 ## Allowlisted commands
 
@@ -777,8 +802,8 @@ and every other running feature's fork with read tokens into the runner's reposi
   reason.
 
 The runner reports each result to `POST /tool-runs/<id>`. Penguin hands it to the requesting session
-at its next safe checkpoint. A request whose forks cannot be fetched stays claimed and runs again
-after its lease. A tool that runs and fails is reported with the result `error`.
+at its next safe checkpoint. A request whose forks cannot be fetched is reported as a
+[failed run](#failed-runs). A tool that runs and fails is reported with the result `error`.
 
 A write token on another feature's fork comes only with an approved merge plan part
 ([Fix writes](#fix-writes)). An `apply_fix` request carries no plan part, so the runner pushes no

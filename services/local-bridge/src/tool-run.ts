@@ -55,6 +55,7 @@ import type { ImpactAnalyzer } from "./impact-analysis.ts";
 import type { ClaimedToolRun, ToolRunReply } from "./penguin-client.ts";
 import { charterPaths, classifyCheck, DEFAULT_ROUND_LIMIT, loadIdentities, routingContext } from "./resolution.ts";
 import { hasCommit } from "./runner-repo.ts";
+import { failureText, noteFailure, type FailRun, type FailureNote } from "./run-failure.ts";
 
 export interface ToolPassOptions {
   /** Claims the waiting requests, such as `claimToolRuns` bound to the bridge token. */
@@ -69,6 +70,8 @@ export interface ToolPassOptions {
   readonly fixes: FixApplier;
   /** The runner's repository. */
   readonly repoPath: string;
+  /** Reports a run the pass stopped on, such as `reportRunFailure` bound to the bridge token; absent, it waits out its lease. */
+  readonly fail?: FailRun;
 }
 
 export interface ToolRunResult {
@@ -79,8 +82,10 @@ export interface ToolRunResult {
   readonly result: AgentToolResult | null;
   /** Penguin's answer, or null when nothing was reported. */
   readonly reply: ToolRunReply | null;
-  /** Why the request stopped; it stays claimed until its lease runs out and is then run again. */
+  /** Why the request stopped; the pass then reports it as failed. */
   readonly error: string | null;
+  /** What Penguin did with the stopped request; null when it did not stop or could not be reported. */
+  readonly failure: FailureNote | null;
 }
 
 export interface ToolPassResult {
@@ -112,7 +117,8 @@ async function runOne(options: ToolPassOptions, claim: ClaimedToolRun, fetchFork
       if (!(await hasCommit(options.repoPath, sha))) throw new Error(`commit ${sha} is not in the fetched forks`);
     }
   } catch (error) {
-    return { ...base, result: null, reply: null, error: (error as Error).message };
+    const reason = (error as Error).message;
+    return { ...base, result: null, reply: null, error: reason, failure: await noteFailure(options.fail, "tool", String(claim.runId), reason) };
   }
   const started = performance.now();
   try {
@@ -122,9 +128,10 @@ async function runOne(options: ToolPassOptions, claim: ClaimedToolRun, fetchFork
   }
   result = boundToolResult({ ...result, durationMs: Math.round(performance.now() - started) });
   try {
-    return { ...base, result, reply: await options.report(claim.runId, result), error: null };
+    return { ...base, result, reply: await options.report(claim.runId, result), error: null, failure: null };
   } catch (error) {
-    return { ...base, result, reply: null, error: (error as Error).message };
+    const reason = `the result was not reported: ${(error as Error).message}`;
+    return { ...base, result, reply: null, error: reason, failure: await noteFailure(options.fail, "tool", String(claim.runId), reason) };
   }
 }
 
@@ -344,9 +351,9 @@ export function formatToolPass(result: ToolPassResult): string {
   for (const run of result.runs) {
     const name = `Tool request ${run.runId} (${run.tool}) on feature ${run.feature}`;
     if (run.error !== null && run.result === null) {
-      lines.push(`${name} stopped; it runs again after its lease: ${run.error}`);
+      lines.push(`${name} stopped; ${failureText(run.failure)}: ${run.error}`);
     } else if (run.error !== null) {
-      lines.push(`${name}: ${run.result?.result}, not reported: ${run.error}`);
+      lines.push(`${name}: ${run.result?.result}, ${run.error}; ${failureText(run.failure)}`);
     } else {
       lines.push(`${name}: ${run.result?.result}, ${run.result?.summary}.`);
     }

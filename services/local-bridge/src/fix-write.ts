@@ -22,6 +22,7 @@ import { checkFixWriteSpec, parsePatch, type FixWriteSpec } from "@penguin/proto
 
 import type { GitRemote } from "./git-remote.ts";
 import { patchedTree } from "./patch-tree.ts";
+import { failureText, noteFailure, type FailRun, type FailureNote } from "./run-failure.ts";
 
 export type FixWriteResult =
   | { readonly status: "written"; readonly commit: string; readonly parent: string; readonly durationMs: number }
@@ -109,6 +110,8 @@ export interface FixWritePassOptions {
   readonly claim: () => Promise<readonly ClaimedFixWrite[]>;
   readonly write: (claimed: ClaimedFixWrite) => Promise<FixWriteResult>;
   readonly report: (writeId: number, commit: string) => Promise<FixWriteReply>;
+  /** Reports a run the pass stopped on, such as `reportRunFailure` bound to the bridge token; absent, it waits out its lease. */
+  readonly fail?: FailRun;
 }
 
 export interface FixWritePassEntry {
@@ -117,8 +120,10 @@ export interface FixWritePassEntry {
   readonly fork: string;
   readonly result: FixWriteResult | null;
   readonly reply: FixWriteReply | null;
-  /** Why the write stopped; its claim runs out and it is claimed again. */
+  /** Why the write stopped; the pass then reports it as failed. */
   readonly error: string | null;
+  /** What Penguin did with the stopped write; null when it did not stop or could not be reported. */
+  readonly failure: FailureNote | null;
 }
 
 export interface FixWritePassResult {
@@ -132,33 +137,35 @@ export async function fixWritePass(options: FixWritePassOptions): Promise<FixWri
   const started = performance.now();
   const claimed = await options.claim();
   const writes: FixWritePassEntry[] = [];
+  const stop = async (entry: Omit<FixWritePassEntry, "failure">) =>
+    writes.push({ ...entry, failure: await noteFailure(options.fail, "fix-write", String(entry.writeId), entry.error ?? "the write stopped") });
   for (const each of claimed) {
     const base = { writeId: each.spec.writeId, partId: each.spec.partId, fork: each.spec.fork };
     let result: FixWriteResult;
     try {
       result = await options.write(each);
     } catch (error) {
-      writes.push({ ...base, result: null, reply: null, error: (error as Error).message });
+      await stop({ ...base, result: null, reply: null, error: (error as Error).message });
       continue;
     }
     if (result.status !== "written") {
-      writes.push({ ...base, result, reply: null, error: result.status === "moved" ? `the fork moved to ${result.head}` : result.reason });
+      await stop({ ...base, result, reply: null, error: result.status === "moved" ? `the fork moved to ${result.head}` : result.reason });
       continue;
     }
     try {
-      writes.push({ ...base, result, reply: await options.report(each.spec.writeId, result.commit), error: null });
+      writes.push({ ...base, result, reply: await options.report(each.spec.writeId, result.commit), error: null, failure: null });
     } catch (error) {
-      writes.push({ ...base, result, reply: null, error: (error as Error).message });
+      await stop({ ...base, result, reply: null, error: (error as Error).message });
     }
   }
   return { claimed: claimed.length, writes, durationMs: Math.round(performance.now() - started) };
 }
 
 export function formatFixWritePass(result: FixWritePassResult): string {
-  const lines = result.writes.map(({ writeId, partId, fork, result: written, reply, error }) => {
+  const lines = result.writes.map(({ writeId, partId, fork, result: written, reply, error, failure }) => {
     const name = `Fix write ${writeId} (part ${partId}) on ${fork}`;
     if (written?.status === "written" && reply !== null) return `${name}: ${written.commit.slice(0, 12)} kept as ${reply.recordId} (${written.durationMs} ms).`;
-    return `${name} stopped: ${error ?? "unknown"}`;
+    return `${name} stopped; ${failureText(failure)}: ${error ?? "unknown"}`;
   });
   lines.push(`${result.claimed} fix write${result.claimed === 1 ? "" : "s"} claimed (${result.durationMs} ms).`);
   return `${lines.join("\n")}\n`;

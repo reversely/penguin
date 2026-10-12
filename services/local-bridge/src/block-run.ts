@@ -13,8 +13,9 @@
 // - Each failed or erred check gets its one next step from the resolution ladder (`classifyCheck`),
 //   routed by the originating agent's charter, which the claim carries.
 //
-// A run whose forks or commits cannot be fetched stays claimed until its lease runs out and is run
-// again. A run that cannot check reports an `error` check on main, which never passes.
+// A run whose forks or commits cannot be fetched is reported as failed with the reason, which
+// releases it for any runner's next claim. A run that cannot check reports an `error` check on main,
+// which never passes.
 
 import { runGit } from "@penguin/git-analysis";
 import {
@@ -33,6 +34,7 @@ import type { CombinedRunner } from "./combined-run.ts";
 import type { BlockRunReply } from "./penguin-client.ts";
 import { classifyCheck, DEFAULT_ROUND_LIMIT, loadIdentities, routingContext } from "./resolution.ts";
 import { hasCommit } from "./runner-repo.ts";
+import { failureText, noteFailure, type FailRun, type FailureNote } from "./run-failure.ts";
 
 export interface BlockPassOptions {
   /** Claims the waiting runs, such as `claimBlockRuns` bound to the bridge token. */
@@ -45,6 +47,8 @@ export interface BlockPassOptions {
   readonly combined: CombinedRunner;
   /** The runner's repository. */
   readonly repoPath: string;
+  /** Reports a run the pass stopped on, such as `reportRunFailure` bound to the bridge token; absent, it waits out its lease. */
+  readonly fail?: FailRun;
 }
 
 export interface BlockRunResult {
@@ -54,8 +58,10 @@ export interface BlockRunResult {
   readonly report: BlockRunReport | null;
   /** Penguin's answer, or null when nothing was reported. */
   readonly reply: BlockRunReply | null;
-  /** Why the run stopped; it stays claimed until its lease runs out and is then run again. */
+  /** Why the run stopped; a run that did not run is then reported as failed. */
   readonly error: string | null;
+  /** What Penguin did with the run that did not run; null otherwise or when it could not be reported. */
+  readonly failure: FailureNote | null;
 }
 
 export interface BlockPassResult {
@@ -87,7 +93,8 @@ async function runOne(options: BlockPassOptions, run: BlockRunRequest, fetchRepo
       if (!(await hasCommit(options.repoPath, sha))) throw new Error(`commit ${sha} is not in the fetched repos`);
     }
   } catch (error) {
-    return { ...base, report: null, reply: null, error: (error as Error).message };
+    const reason = (error as Error).message;
+    return { ...base, report: null, reply: null, error: reason, failure: await noteFailure(options.fail, "block", run.runId, reason) };
   }
   let report: BlockRunReport;
   try {
@@ -97,9 +104,9 @@ async function runOne(options: BlockPassOptions, run: BlockRunRequest, fetchRepo
   }
   report = { ...report, durationMs: Math.round(performance.now() - started) };
   try {
-    return { ...base, report, reply: await options.report(report), error: null };
+    return { ...base, report, reply: await options.report(report), error: null, failure: null };
   } catch (error) {
-    return { ...base, report, reply: null, error: (error as Error).message };
+    return { ...base, report, reply: null, error: (error as Error).message, failure: null };
   }
 }
 
@@ -150,7 +157,7 @@ export function formatBlockPass(result: BlockPassResult): string {
   const lines: string[] = [];
   for (const run of result.runs) {
     const name = `Block run ${run.runId} (${run.purpose})`;
-    if (run.error !== null && run.report === null) lines.push(`${name} stopped; it runs again after its lease: ${run.error}`);
+    if (run.error !== null && run.report === null) lines.push(`${name} stopped; ${failureText(run.failure)}: ${run.error}`);
     else if (run.error !== null) lines.push(`${name}: ${run.report?.summary}, not reported: ${run.error}`);
     else {
       const promotion = run.reply?.promotion;

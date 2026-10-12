@@ -39,6 +39,7 @@ import { RUNNING_STATES, type OverlapStore } from "./overlap-lock.ts";
 import { breakView, newestReviews, partFiles, returnedPayload, type PartRoute, type PlanRouteStore } from "./plan-approval.ts";
 import type { ReviewStore, StoredReview } from "./review-submit.ts";
 import { reviewView } from "./review-view.ts";
+import type { RunFailure } from "./run-failures.ts";
 import type { Session } from "./session-store.ts";
 
 export interface DashboardViewDeps {
@@ -61,6 +62,8 @@ export interface DashboardViewDeps {
   readonly fixWrite: (partId: string, revision: number) => Pick<FixGrant, "state" | "writer" | "commitSha" | "rebased"> | undefined;
   /** How Penguin sorted the feature's latest checkpoint (contract-split.ts contractWork); absent, the page shows none. */
   readonly contract?: (feature: Feature) => ContractWorkView;
+  /** The feature's runs the check runner failed up to the failure limit (RunFailureStore.stopped); absent, none. */
+  readonly stoppedRuns?: (featureId: string) => readonly RunFailure[];
 }
 
 /** What a feature's state is read from. */
@@ -99,7 +102,12 @@ const parsedRecords = (features: FeatureStore, featureId: string): FeatureRecord
   features.records(featureId).map((stored) => JSON.parse(stored.file) as FeatureRecord);
 
 /** The exceptions PRD section 7 routes to a person that the team view highlights on a feature. */
-export function featureExceptions(parts: readonly PartRoute[], reviews: readonly StoredReview[], records: readonly FeatureRecord[]): FeatureException[] {
+export function featureExceptions(
+  parts: readonly PartRoute[],
+  reviews: readonly StoredReview[],
+  records: readonly FeatureRecord[],
+  stopped: readonly RunFailure[] = [],
+): FeatureException[] {
   const exceptions: FeatureException[] = parts.filter((part) => part.state === "round_limit").map((part) => ({ kind: "round_limit", partId: part.partId }));
   const lastPlan = records.filter((record) => record.type === "propose_plan" || record.type === "plan_returned").at(-1);
   if (lastPlan?.type === "plan_returned") {
@@ -116,6 +124,7 @@ export function featureExceptions(parts: readonly PartRoute[], reviews: readonly
       );
     }
   }
+  for (const run of stopped) exceptions.push({ kind: "run_failed", run: run.kind, runId: run.runId, failures: run.failures, reason: run.reason });
   return exceptions;
 }
 
@@ -173,7 +182,7 @@ export async function buildTeamView(deps: DashboardViewDeps, viewer: string): Pr
         factsRun: feature.latestCheckpointSha === null ? undefined : deps.factsRun(feature.id, feature.latestCheckpointSha),
         lastPlanRecord: records.filter((record) => record.type === "propose_plan" || record.type === "plan_returned").at(-1)?.type,
       }),
-      exceptions: featureExceptions(parts, deps.reviews.list(feature.id), records),
+      exceptions: featureExceptions(parts, deps.reviews.list(feature.id), records, deps.stoppedRuns?.(feature.id)),
       agents,
       openedAt: feature.openedAt,
     };

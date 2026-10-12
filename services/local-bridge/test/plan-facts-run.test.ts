@@ -81,6 +81,6 @@ test("a pass reports each run it could make and lists the ones it could not", as
   });
   assert.equal(result.listed, 2);
   assert.deepEqual(result.reported, [{ runId: "5", feature: "money", status: "recorded" }]);
-  assert.deepEqual(result.failed, [{ runId: "4", error: "the fork could not be fetched" }]);
+  assert.deepEqual(result.failed, [{ runId: "4", error: "the fork could not be fetched", failure: null }]);
   assert.deepEqual(reported, ["5"]);
 });

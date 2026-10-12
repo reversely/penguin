@@ -32,6 +32,7 @@ import {
 import type { BridgeCaller, SqlDatabase, SqlValue } from "./issue-index.ts";
 import type { PartTrialStanding } from "./part-checks.ts";
 import type { ReviewStore, StoredReview } from "./review-submit.ts";
+import { notStopped, RUN_FAILURE_SCHEMA, type StoreRelease } from "./run-failures.ts";
 
 type Row = Record<string, SqlValue>;
 
@@ -96,7 +97,7 @@ export class PartTrialStore {
     this.#db = db;
     this.#now = now;
     this.#leaseMs = leaseMs;
-    for (const statement of PART_TRIAL_TABLE_SCHEMA) db.exec(statement);
+    for (const statement of [...PART_TRIAL_TABLE_SCHEMA, ...RUN_FAILURE_SCHEMA]) db.exec(statement);
   }
 
   /** Asks for a trial of `spec`'s part revision; every older trial of the part, and of another plan of the feature, stops counting. */
@@ -150,7 +151,7 @@ export class PartTrialStore {
     const now = this.#now();
     return this.#db.transaction(() => {
       const rows = this.#db.exec(
-        `SELECT id FROM PartTrial WHERE state = 'pending' AND (claimed_at IS NULL OR claimed_at <= ?) ORDER BY id LIMIT ?`,
+        `SELECT id FROM PartTrial WHERE state = 'pending' AND (claimed_at IS NULL OR claimed_at <= ?) AND ${notStopped("part-trial", "id")} ORDER BY id LIMIT ?`,
         now - this.#leaseMs,
         PART_TRIAL_CLAIM_LIMIT,
       );
@@ -162,6 +163,16 @@ export class PartTrialStore {
       }
       return { status: "ok" as const, trials };
     });
+  }
+
+  /** Frees pending trial `id` from the claim `runnerId` holds, for the next claim of any runner. */
+  release(id: number, runnerId: string): StoreRelease {
+    const found = this.get(id);
+    if (found === undefined) return { status: "rejected", reason: "not_found", message: `no part trial ${id}` };
+    if (found.state !== "pending") return { status: "rejected", reason: "conflict", message: `part trial ${id} is ${found.state}` };
+    if (found.claimedBy !== runnerId) return { status: "rejected", reason: "forbidden", message: `part trial ${id} is not claimed by this runner` };
+    this.#db.exec(`UPDATE PartTrial SET claimed_by = NULL, claimed_at = NULL WHERE id = ?`, id);
+    return { status: "released", featureId: found.featureId };
   }
 
   /** Keeps the report of pending trial `id`; undefined when it is no longer pending. */

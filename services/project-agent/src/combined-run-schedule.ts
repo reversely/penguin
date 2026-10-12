@@ -31,6 +31,7 @@ import type { Feature } from "./feature-store.ts";
 import type { BridgeCaller, SqlDatabase, SqlValue } from "./issue-index.ts";
 import { RUNNING_STATES } from "./overlap-lock.ts";
 import { touchedScopes } from "./plan-facts.ts";
+import { notStopped, RUN_FAILURE_SCHEMA, type ReleaseOutcome } from "./run-failures.ts";
 import type { IssuesRepoReader } from "./push-ingest.ts";
 
 type Row = Record<string, SqlValue>;
@@ -134,7 +135,7 @@ export class CombinedRunStore {
     this.#newId = options.newId ?? (() => `run_${crypto.randomUUID()}`);
     this.#leaseMs = options.leaseMs ?? COMBINED_RUN_LEASE_MS;
     migrateToTargets(db);
-    for (const statement of COMBINED_RUN_SCHEMA) db.exec(statement);
+    for (const statement of [...COMBINED_RUN_SCHEMA, ...RUN_FAILURE_SCHEMA]) db.exec(statement);
   }
 
   get(runId: string): CombinedRun | undefined {
@@ -187,7 +188,7 @@ export class CombinedRunStore {
     }
     const now = this.#now();
     const expired = now - this.#leaseMs;
-    const claimable = `(status = 'scheduled' OR (status = 'claimed' AND claimed_at <= ?))`;
+    const claimable = `(status = 'scheduled' OR (status = 'claimed' AND claimed_at <= ?)) AND ${notStopped("combined", "run_id")}`;
     return this.#db.transaction((): ClaimListing => {
       const triggers = this.#db.exec(
         `SELECT trigger_owner, trigger_sha FROM CombinedRun WHERE ${claimable}
@@ -216,6 +217,19 @@ export class CombinedRunStore {
       }
       return { status: "ok", runs };
     });
+  }
+
+  /**
+   * Hands claimed run `runId` back to the schedule when `runnerId` holds its claim, so the next claim
+   * of any runner takes it (run-failures.ts). The trigger's person is routed a stopped run.
+   */
+  release(runId: string, runnerId: string): ReleaseOutcome {
+    const run = this.get(runId);
+    if (run === undefined) return { status: "rejected", reason: "not_found", message: `no combined run ${runId}` };
+    if (run.status !== "claimed") return { status: "rejected", reason: "conflict", message: `combined run ${runId} is ${run.status}, not claimed` };
+    if (run.claimedBy !== runnerId) return { status: "rejected", reason: "forbidden", message: `combined run ${runId} is claimed by another runner` };
+    this.#db.exec(`UPDATE CombinedRun SET status = 'scheduled', claimed_by = NULL, claimed_at = NULL WHERE run_id = ?`, runId);
+    return { status: "released", featureId: null, personId: run.trigger.ownerId };
   }
 
   /**

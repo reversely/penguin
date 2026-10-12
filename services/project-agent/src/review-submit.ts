@@ -31,6 +31,7 @@ import { InvariantsFileError, parseInvariantsBytes, type ScopeMap } from "@pengu
 import { parseFeatureId, type FeatureStore } from "./feature-store.ts";
 import type { FeatureRejection } from "./feature-open.ts";
 import type { BridgeCaller, SqlDatabase, SqlValue } from "./issue-index.ts";
+import { notStopped, RUN_FAILURE_SCHEMA, type StoreRelease } from "./run-failures.ts";
 import type { SessionOutcome } from "./session-store.ts";
 
 type Row = Record<string, SqlValue>;
@@ -161,7 +162,7 @@ export class ReviewStore {
     this.#db = db;
     this.#now = now;
     this.#leaseMs = leaseMs;
-    for (const statement of REVIEW_TABLE_SCHEMA) db.exec(statement);
+    for (const statement of [...REVIEW_TABLE_SCHEMA, ...RUN_FAILURE_SCHEMA]) db.exec(statement);
     // Column names and definitions come from the constant above, never from input.
     const present = new Set(db.exec(`PRAGMA table_info(FeatureReview)`).map((row) => row["name"]));
     for (const [name, definition] of RUNNER_COLUMNS) {
@@ -212,6 +213,16 @@ export class ReviewStore {
       .map(review);
   }
 
+  /** Frees pending review `id` from the claim `runnerId` holds, for the next claim of any runner. */
+  release(id: number, runnerId: string): StoreRelease {
+    const found = this.get(id);
+    if (found === undefined) return { status: "rejected", reason: "not_found", message: `no review ${id}` };
+    if (found.state !== "pending") return { status: "rejected", reason: "conflict", message: `review ${id} is already ${found.state}` };
+    if (found.claimedBy !== runnerId) return { status: "rejected", reason: "forbidden", message: `review ${id} is not claimed by this runner` };
+    this.#db.exec(`UPDATE FeatureReview SET claimed_by = NULL, claimed_at = NULL WHERE id = ?`, id);
+    return { status: "released", featureId: found.featureId };
+  }
+
   /**
    * Hands the runner up to REVIEW_CLAIM_LIMIT pending reviews, oldest first, and marks them claimed
    * by `caller`. A review is claimable while pending and unclaimed, or when its claim's lease ran out
@@ -226,7 +237,7 @@ export class ReviewStore {
     return this.#db.transaction((): ReviewClaimListing => {
       const rows = this.#db.exec(
         `SELECT * FROM FeatureReview WHERE validation_state = 'pending' AND base_sha IS NOT NULL
-           AND (claimed_at IS NULL OR claimed_at <= ?) ORDER BY id`,
+           AND (claimed_at IS NULL OR claimed_at <= ?) AND ${notStopped("review", "id")} ORDER BY id`,
         now - this.#leaseMs,
       );
       const reviews: StoredReview[] = [];
