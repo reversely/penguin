@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { AccountMenu } from "./account-menu.tsx";
 import { fetchSession, type Session } from "./api.ts";
 import { DetailsPane, DetailsProvider, useDetails } from "./details-pane.tsx";
+import { FeaturePageView } from "./feature-page.tsx";
 import { IdentitiesPageView } from "./identities-page.tsx";
 import { InboxPage, InboxSidebar, useInbox, type InboxState } from "./inbox-page.tsx";
 import { unreadCount } from "./inbox-view.ts";
@@ -127,7 +128,7 @@ function Shell({ session, onSignedOut }: { session: Session; onSignedOut: () => 
               <AccountMenu session={session} status={live.status} />
             </header>
             <main className="centre" inert={covered}>
-              <div className={route?.page === "team" ? "page page-wide" : "page"} data-audit-center>
+              <div className={route?.page === "team" && route.person === null ? "page page-wide" : "page"} data-audit-center>
                 <Page route={route} session={session} live={live} inbox={inbox} team={team} navigate={navigate} onSignedOut={onSignedOut} />
               </div>
             </main>
@@ -154,7 +155,10 @@ function Page({ route, session, live, inbox, team, navigate, onSignedOut }: Page
     return <IssuePageView key={route.issueId} issueId={route.issueId} viewer={session.owner} live={live} navigate={navigate} onSignedOut={onSignedOut} />;
   }
   if (route?.page === "team") {
-    return <TeamPage team={team} viewer={session.owner} person={route.person} navigate={navigate} />;
+    return <TeamPage team={team} person={route.person} navigate={navigate} />;
+  }
+  if (route?.page === "feature") {
+    return <FeaturePageView key={route.featureId} featureId={route.featureId} live={live} navigate={navigate} onSignedOut={onSignedOut} />;
   }
   if (route?.page === "inbox") {
     return <InboxPage inbox={inbox} viewer={session.owner} live={live} showAll={route.showAll} navigate={navigate} onSignedOut={onSignedOut} />;

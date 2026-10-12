@@ -152,8 +152,20 @@ class Backend implements DashboardBackend {
     }
     return { status: "ok", lock: { featureId, blockedFeatureId, approvedBy: owner } };
   }
+  /** Each person the team view and the feature page were read for, in order. */
+  readonly viewReads: { owner: string; featureId: string | null }[] = [];
+  async team(owner: string) {
+    this.viewReads.push({ owner, featureId: null });
+    return { people: [{ id: owner, role: { scopes: [], dependents: [], dependencies: [] }, features: [], idleAgents: [] }] };
+  }
+  /** The feature pages the ProjectAgent holds, by id. */
+  readonly pages = new Map<string, unknown>();
+  async featurePage(owner: string, featureId: string) {
+    this.viewReads.push({ owner, featureId });
+    return this.pages.get(featureId);
+  }
   /** What GET /api/plan-parts answers; a test may break it to see the schema check. */
-  planInbox: unknown = { parts: [], reviewExceptions: [] };
+  planInbox: unknown = { parts: [], reviewExceptions: [], returnedPlans: [] };
   readonly decisions: { owner: string; decision: PlanPartDecision }[] = [];
   async planParts() {
     return this.planInbox;
@@ -686,12 +698,44 @@ describe("a signed-in person's overlapping starts", () => {
   });
 });
 
+describe("the team view and a feature page", () => {
+  test("are read as the session's person; an unknown feature answers 404 and a bad id never reaches the ProjectAgent", async () => {
+    const browser = new Browser();
+    await browser.signIn("jun-gh");
+    const team = await browser.request("/api/team");
+    assert.equal(team.status, 200);
+    assert.deepEqual((await team.json()).people.map((person: { id: string }) => person.id), ["jun"]);
+    browser.backend.pages.set("retention-dashboard", { feature: { id: "retention-dashboard" } });
+    assert.equal((await browser.request("/api/features/retention-dashboard/page")).status, 200);
+    assert.equal((await browser.request("/api/features/merge-ids/page")).status, 404);
+    assert.equal((await browser.request("/api/features/..%2Fmain/page")).status, 404);
+    assert.equal((await browser.post("/api/team", {})).status, 405);
+    assert.equal((await browser.post("/api/features/retention-dashboard/page", {})).status, 405);
+    assert.deepEqual(browser.backend.viewReads, [
+      { owner: "jun", featureId: null },
+      { owner: "jun", featureId: "retention-dashboard" },
+      { owner: "jun", featureId: "merge-ids" },
+    ]);
+  });
+
+  test("without a session both answer 401, while the feature page's HTML carries no data and loads", async () => {
+    const browser = new Browser();
+    assert.equal((await browser.request("/api/team")).status, 401);
+    assert.equal((await browser.request("/api/features/retention-dashboard/page")).status, 401);
+    assert.deepEqual(browser.backend.viewReads, []);
+    const page = await browser.request("/features/retention-dashboard");
+    assert.equal(page.status, 200);
+    assert.equal(await page.text(), INDEX_HTML);
+    assert.notEqual((await browser.request("/features/Not_A_Feature")).status, 200, "a path that is no feature id is not a page");
+  });
+});
+
 describe("a signed-in person's merge plan parts", () => {
   test("lists the parts waiting on them, checked against the schema", async () => {
     const browser = new Browser();
     await browser.signIn("rahul-gh");
-    assert.deepEqual(await (await browser.request("/api/plan-parts")).json(), { parts: [], reviewExceptions: [] });
-    browser.backend.planInbox = { parts: [{ feature: "../main" }], reviewExceptions: [] };
+    assert.deepEqual(await (await browser.request("/api/plan-parts")).json(), { parts: [], reviewExceptions: [], returnedPlans: [] });
+    browser.backend.planInbox = { parts: [{ feature: "../main" }], reviewExceptions: [], returnedPlans: [] };
     assert.equal((await browser.request("/api/plan-parts")).status, 500);
     assert.equal((await browser.post("/api/plan-parts", {})).status, 405);
   });

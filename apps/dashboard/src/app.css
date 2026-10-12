@@ -2220,162 +2220,8 @@ a.row-title {
   }
 }
 
-.person-needs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-1) var(--space-4);
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-/* Counts read as text in the attention colour; a pill would look like a control. */
-.person-need {
-  color: var(--attention);
-  font: var(--text-meta);
-  font-weight: 500;
-  font-variant-numeric: tabular-nums;
-}
-
 .person-empty {
   font: var(--text-ui);
-}
-
-/* Agent boxes share the square's width in columns of at least 8.5rem, two to a square on a phone. */
-.agent-boxes {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 8.5rem), 1fr));
-  gap: var(--space-2);
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-/* An agent: its character, handle, status and held issue on a tint of the owner's hue. */
-.agent-box {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: center;
-  gap: var(--space-2);
-  min-height: 3.5rem;
-  padding: var(--space-2);
-  border-radius: var(--radius-sm);
-  background: var(--agent-fill);
-  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--person) 24%, transparent);
-  color: var(--ink);
-  text-decoration: none;
-  --agent-fill: color-mix(in oklab, var(--person) 10%, var(--surface-raised));
-  transition: scale var(--dur-press) var(--ease-out);
-}
-
-a.agent-box:active {
-  scale: 0.96;
-}
-
-@media (hover: hover) and (pointer: fine) {
-  a.agent-box:hover {
-    box-shadow: inset 0 0 0 1px var(--person);
-  }
-}
-
-@media (hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) {
-  a.agent-box:hover {
-    transition:
-      box-shadow var(--dur-hover) var(--ease-out),
-      scale var(--dur-press) var(--ease-out);
-  }
-}
-
-.agent-box-text {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-}
-
-/* The handle and the held issue share the first line; the status has the second to itself. */
-.agent-box-top {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
-  min-width: 0;
-}
-
-/* A long handle ends in an ellipsis; its title holds it whole for a pointer. */
-.agent-box-handle {
-  flex: 1 0 auto;
-  max-width: 100%;
-  min-width: 0;
-  overflow: hidden;
-  font: var(--text-ui);
-  font-weight: 500;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* The held issue gives way before the handle does, so a narrow box keeps the agent's name. */
-.agent-box-issue {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--ink-muted);
-  font: var(--text-meta);
-  font-variant-numeric: tabular-nums;
-}
-
-/* The status keeps one line, so a live status change never changes a box's height. */
-.agent-status {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  min-width: 0;
-  color: var(--ink-muted);
-  font: var(--text-meta);
-  white-space: nowrap;
-}
-
-.agent-status-label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* A box with no card to open takes no tint, so it never reads as a link. */
-span.agent-box {
-  background: var(--surface-raised);
-  box-shadow: inset 0 0 0 1px var(--line);
-}
-
-/* Working takes the online dot, waiting the unread blue, blocked the failure hue; no session and
-   done take a ring, so every box keeps one dot. A 2px --surface-raised ring keeps each dot at 3:1 on
-   what touches it, which the tinted box alone does not in light. */
-.agent-status-dot {
-  width: 8px;
-  height: 8px;
-  flex: none;
-  border-radius: var(--radius-full);
-  box-shadow: 0 0 0 2px var(--surface-raised);
-}
-
-.agent-status-working .agent-status-dot {
-  background: var(--online);
-}
-
-.agent-status-waiting-at-a-checkpoint .agent-status-dot {
-  background: var(--unread);
-}
-
-.agent-status-blocked {
-  color: var(--failure);
-}
-
-.agent-status-blocked .agent-status-dot {
-  background: var(--failure);
-}
-
-.agent-status-done .agent-status-dot,
-.agent-status-none .agent-status-dot {
-  border: 1.5px solid var(--ink-muted);
 }
 
 .team-section {
@@ -2441,15 +2287,6 @@ span.agent-box {
 
 .person-head h1 {
   min-width: 0;
-}
-
-.person-scopes {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  margin: 0;
-  padding: 0;
-  list-style: none;
 }
 
 /* The agent card's owners link to their views, each beside their badge. */
@@ -2962,12 +2799,6 @@ span.agent-box {
   scale: 0.96;
 }
 
-.identity-row-avatar {
-  position: relative;
-  display: inline-grid;
-  flex: none;
-}
-
 .online-dot {
   position: absolute;
   right: -2px;
@@ -2977,29 +2808,6 @@ span.agent-box {
   border-radius: var(--radius-full);
   background: var(--online);
   box-shadow: 0 0 0 2px var(--row-fill);
-}
-
-.identity-row-text {
-  display: grid;
-  flex: 1;
-  min-width: 0;
-}
-
-.identity-row-handle,
-.identity-row-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.identity-row-handle {
-  font: var(--text-title);
-  line-height: 1.2;
-}
-
-.identity-row-name {
-  color: var(--ink-muted);
-  font: var(--text-ui);
 }
 
 /* Detail (Devin's playbook header): back link on a phone, avatar, handle, name, owners, actions. */
@@ -3666,27 +3474,931 @@ label.button:has(input:focus-visible) {
   margin-left: auto;
 }
 
-/* A merge plan part: its facts in one column, then the decision controls under them (#97 restyles). */
-.inbox-row.plan-part {
-  grid-template-columns: minmax(0, 1fr);
+/*
+ * Agent label (agent-label.tsx): the character in a 2px ring of its person's hue, the agent's name,
+ * then its person on a second line or, compact, after the name. The handle, vendor and branch stay on
+ * the agent card.
+ */
+.agent-mark {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px var(--person);
+}
+
+.agent-mark .avatar {
+  display: block;
+}
+
+.agent-mark .online-dot {
+  right: -4px;
+  bottom: -4px;
+}
+
+.agent-label {
+  display: inline-flex;
+  align-items: center;
   gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
+  min-width: 0;
+  max-width: 100%;
+  vertical-align: middle;
 }
 
-.plan-part .inbox-row-preview {
-  white-space: normal;
+.agent-label-text {
+  display: grid;
+  min-width: 0;
 }
 
-.plan-part pre {
-  margin: var(--space-1) 0 0;
-  overflow-x: auto;
+.agent-label-name {
+  min-width: 0;
+  color: var(--ink);
   font: var(--text-ui);
-  white-space: pre;
+  font-weight: 500;
+  overflow-wrap: anywhere;
 }
 
-.plan-part-controls {
+.agent-label-person {
+  min-width: 0;
+  color: var(--ink-muted);
+  font: var(--text-meta);
+  overflow-wrap: anywhere;
+}
+
+.agent-label-compact .agent-label-text {
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-start;
+  align-items: baseline;
+  column-gap: var(--space-1);
+}
+
+.agent-link {
+  display: inline-flex;
+  max-width: 100%;
+  min-height: 2.75rem;
+  align-items: center;
+  border-radius: var(--radius-sm);
+  color: inherit;
+  text-decoration: none;
+  transition: scale var(--dur-press) var(--ease-out);
+}
+
+.agent-link:active {
+  scale: 0.96;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .agent-link:hover .agent-label-name {
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+}
+
+.agent-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--space-4);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.agent-list > li {
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* A feature's one-word state: a neutral tag; only exceptions take the attention colour. */
+.feature-state {
+  flex: none;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-full);
+  background: var(--selected);
+  color: var(--ink);
+  font: var(--text-meta);
+  line-height: 1.375rem;
+  white-space: nowrap;
+}
+
+.feature-state-promoted {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--line);
+  color: var(--ink-muted);
+}
+
+.tag-attention {
+  color: var(--attention);
+}
+
+.tag-verified {
+  color: var(--verified);
+}
+
+.tag-failure {
+  color: var(--failure);
+}
+
+/* A person's role: a term column beside the scope names, which wrap. */
+.role {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+  margin: 0;
+  font: var(--text-meta);
+}
+
+.role-row {
+  display: grid;
+  grid-template-columns: 4.5rem minmax(0, 1fr);
   gap: var(--space-2);
+}
+
+.role dt {
+  color: var(--ink-muted);
+}
+
+/* One scope per line, its owner after it, so each pair reads as one entry. */
+.role dd {
+  display: grid;
+  min-width: 0;
+  margin: 0;
+}
+
+.role-scope {
+  min-width: 0;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.role-owner {
+  color: var(--ink-muted);
+}
+
+/* A person's features: each a row with its state, any exception and its agents. */
+.feature-rows {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.feature-row {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--person, var(--line)) 24%, transparent);
+}
+
+/* An exception is the one thing the team view highlights: a 3px attention edge and its line. */
+.feature-row[data-exception] {
+  box-shadow:
+    inset 3px 0 0 var(--attention-dot),
+    inset 0 0 0 1px color-mix(in oklab, var(--person, var(--line)) 24%, transparent);
+}
+
+.feature-row-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-1) var(--space-2);
+  min-width: 0;
+}
+
+.feature-row-link,
+.feature-link {
+  min-width: 0;
+  color: var(--ink);
+  font-weight: 500;
+  overflow-wrap: anywhere;
+  text-underline-offset: 3px;
+}
+
+.feature-row-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
+  font: var(--text-ui);
+  font-weight: 500;
+}
+
+.feature-exceptions {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  color: var(--attention);
+  font: var(--text-meta);
+  font-weight: 500;
+  list-style: none;
+  overflow-wrap: anywhere;
+}
+
+/* The approvals inbox: one group per kind of approval, each item a card with the facts behind it. */
+.approvals,
+.approval-group {
+  display: grid;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.approval-group-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  font: var(--text-heading);
+}
+
+.approval-card {
+  max-width: none;
+  gap: var(--space-3);
+}
+
+.approval-card[data-in-person] {
+  box-shadow:
+    inset 3px 0 0 var(--attention-dot),
+    var(--elevation-raised);
+}
+
+.approval-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-3);
+  min-width: 0;
+}
+
+.approval-card-title,
+.part-title,
+.review-title {
+  min-width: 0;
+  margin: 0;
+  font: var(--text-title);
+  overflow-wrap: anywhere;
+}
+
+.review-title,
+.part-title {
+  font: var(--text-heading);
+}
+
+.approval-person {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  color: var(--ink-name);
+  font: var(--text-meta);
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.approval-facts,
+.chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.approval-kind {
+  font: var(--text-meta);
+  overflow-wrap: anywhere;
+}
+
+.approval-reasons {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  color: var(--attention);
+  font: var(--text-ui);
+  font-weight: 500;
+  list-style: none;
+  overflow-wrap: anywhere;
+}
+
+.approval-quote p {
+  margin: 0;
+}
+
+.approval-quote footer {
+  font: var(--text-meta);
+  font-style: normal;
+}
+
+.inbox-hint {
+  margin: 0;
+  color: var(--ink-muted);
+  font: var(--text-ui);
+}
+
+/* A review: the form's rows, Penguin's refusals and the side-by-side run's differing inputs. */
+/* Nested in a 20px card with 12px padding, so its corner is 8px. */
+.review {
+  max-width: none;
+  border-radius: var(--radius-sm);
+  background: var(--field);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.review-head,
+.review-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+  min-width: 0;
+}
+
+.review-meta {
+  font: var(--text-meta);
+}
+
+.review-rows,
+.review-refusals,
+.review-exceptions,
+.break-list,
+.plain-list,
+.code-list,
+.tool-facts,
+.part-list,
+.fix-list,
+.tool-groups,
+.target-rows,
+.findings,
+.tool-runs,
+.record-list,
+.sbs-differences {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.review-row {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--line);
+}
+
+.review-row-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-2);
+  min-width: 0;
+}
+
+.review-invariant {
+  flex: 1 1 14rem;
+  min-width: 0;
+  font: var(--text-ui);
+  overflow-wrap: anywhere;
+}
+
+.verdict {
+  flex: none;
+  min-width: 3.5rem;
+  font: var(--text-meta);
+  font-weight: 500;
+}
+
+.verdict-holds {
+  color: var(--verified);
+}
+
+.verdict-breaks {
+  color: var(--failure);
+}
+
+.verdict-unknown {
+  color: var(--warning);
+}
+
+.review-evidence {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.review-stored,
+.review-refusals,
+.review-exceptions {
+  font: var(--text-meta);
+  overflow-wrap: anywhere;
+}
+
+.review-refusals {
+  color: var(--failure);
+}
+
+.review-exceptions {
+  color: var(--attention);
+  font-weight: 500;
+}
+
+.review-state-refused {
+  color: var(--failure);
+}
+
+.review-state-accepted {
+  color: var(--verified);
+}
+
+/* A tool by name beside what it reported. */
+.tool-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  min-width: 0;
+  margin: 0;
+  font: var(--text-ui);
+  overflow-wrap: anywhere;
+}
+
+.tool-name {
+  padding: 0.125rem var(--space-2);
+  border-radius: var(--radius-xs);
+  background: var(--selected);
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.side-by-side,
+.sbs-set,
+.tool-detail,
+.checks-view,
+.plan,
+.diff-files {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.sbs-set-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+  min-width: 0;
+  margin: 0;
+  font: var(--text-meta);
+  overflow-wrap: anywhere;
+}
+
+.sbs-differences {
+  gap: 0;
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+/* One differing input per row: its name, then main's and the fork's outcome side by side. */
+.sbs-difference {
+  display: grid;
+  gap: 2px var(--space-3);
+  min-width: 0;
+  padding: var(--space-1) var(--space-3);
+  border-top: 1px solid var(--line);
+  font: var(--text-meta);
+}
+
+.sbs-difference:first-child {
+  border-top: 0;
+}
+
+.sbs-differences > .muted {
+  padding: var(--space-1) var(--space-3);
+  border-top: 1px solid var(--line);
+  font: var(--text-meta);
+}
+
+@media (min-width: 640px) {
+  .sbs-difference {
+    grid-template-columns: minmax(6rem, 14rem) repeat(2, minmax(0, 1fr));
+    align-items: baseline;
+  }
+}
+
+.sbs-name {
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.sbs-side {
+  display: grid;
+  grid-template-columns: 2.5rem minmax(0, 1fr);
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.sbs-label {
+  color: var(--ink-muted);
+}
+
+.break {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--failure);
+  font: var(--text-meta);
+}
+
+.break-statement {
+  font: var(--text-ui);
+  overflow-wrap: anywhere;
+}
+
+.break-node,
+.break-line {
+  color: var(--ink-muted);
+}
+
+.break-error {
+  color: var(--failure);
+}
+
+/* A fix's changed lines: one block per file. */
+.diff-file summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  min-height: 2.75rem;
+  cursor: pointer;
+  font: var(--text-meta);
+  overflow-wrap: anywhere;
+}
+
+.diff {
+  max-width: 100%;
+  margin: 0;
+  padding: var(--space-2) 0;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  font: 400 13px / 1.5 var(--mono);
+}
+
+/* A long line wraps inside the block, keeping its indentation, so the page never scrolls sideways. */
+.diff > span {
+  display: block;
+  padding: 0 var(--space-3);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.diff-add {
+  background: var(--verified-tint);
+}
+
+.diff-remove {
+  background: var(--failure-tint);
+}
+
+/* The feature page: a header, then one section per part of the feature's story. */
+.feature {
+  display: grid;
+  gap: var(--space-6);
+  min-width: 0;
+}
+
+.feature-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  min-width: 0;
+}
+
+.feature-head h1 {
+  min-width: 0;
+}
+
+.feature-meta {
+  display: flex;
+  flex-basis: 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+  min-width: 0;
+  margin: 0;
+  color: var(--ink-muted);
+  font: var(--text-meta);
+}
+
+.feature-section {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.facts {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+}
+
+.fact {
+  display: grid;
+  grid-template-columns: 6rem minmax(0, 1fr);
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.fact dt {
+  color: var(--ink-muted);
+  font: var(--text-meta);
+  line-height: 1.75rem;
+}
+
+.fact dd {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+  min-width: 0;
+  margin: 0;
+}
+
+.plain-list,
+.code-list {
+  font: var(--text-ui);
+  overflow-wrap: anywhere;
+}
+
+.plain-list .attention {
+  color: var(--attention);
+  font-weight: 500;
+}
+
+.plan-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  min-width: 0;
+  margin: 0;
+  font: var(--text-meta);
+}
+
+.plan-id {
+  font-weight: 500;
+}
+
+.plan-change {
+  margin: 0;
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--ink);
+}
+
+.plan-change p {
+  margin: 0;
+  font: var(--text-title);
+  overflow-wrap: anywhere;
+}
+
+.plan-change footer {
+  font: var(--text-meta);
+}
+
+.plan-subheading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 0;
+  font: var(--text-meta);
+  font-weight: 500;
+}
+
+.tool-fact {
+  display: grid;
+  grid-template-columns: minmax(7rem, 10rem) fit-content(40%) minmax(12rem, 1fr);
+  align-items: baseline;
+  gap: var(--space-1) var(--space-2);
+  min-width: 0;
+  font: var(--text-meta);
+  overflow-wrap: anywhere;
+}
+
+.tool-fact-name {
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.part,
+.tool-group,
+.tool-run {
+  max-width: none;
+}
+
+.fix-row,
+.record-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+  min-width: 0;
+  padding: var(--space-2) 0;
+  border-top: 1px solid var(--line);
+  font: var(--text-meta);
+  overflow-wrap: anywhere;
+}
+
+.fix-row:first-child,
+.record-row:first-child {
+  border-top: 0;
+}
+
+.record-list,
+.fix-list {
+  gap: 0;
+}
+
+.record-type {
+  min-width: 8rem;
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.record-path {
+  flex-basis: 100%;
+  color: var(--ink-muted);
+}
+
+.target-row {
+  display: grid;
+  grid-template-columns: minmax(6rem, 12rem) auto minmax(0, 1fr);
+  align-items: baseline;
+  gap: var(--space-1) var(--space-2);
+  min-width: 0;
+  font: var(--text-meta);
+  overflow-wrap: anywhere;
+}
+
+.target-name {
+  font-weight: 500;
+}
+
+.target-row .findings {
+  grid-column: 1 / -1;
+  gap: 2px;
+  padding-left: var(--space-3);
+  color: var(--ink-muted);
+}
+
+.tool-check {
+  color: var(--ink-muted);
+  font: var(--text-meta);
+}
+
+.tool-summary {
+  margin: 0;
+  font: var(--text-ui);
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 520px) {
+  .tool-fact,
+  .target-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .tool-fact > :last-child,
+  .target-summary {
+    grid-column: 1 / -1;
+  }
+
+  .fact,
+  .role-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+
+  .fact dt {
+    line-height: 1.4;
+  }
+}
+
+/* A plan part keeps its facts and changed lines behind one line that counts them. */
+.part-details {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.part-details > summary {
+  display: flex;
+  align-items: center;
+  min-height: 2.75rem;
+  color: var(--ink-muted);
+  font: var(--text-meta);
+  cursor: pointer;
+}
+
+.target-others {
+  font: var(--text-meta);
+}
+
+/* A list row of code, tags and notes wraps as whole pieces, so no two pieces share a line box. */
+.code-list > li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px var(--space-2);
+  min-width: 0;
+}
+
+/* A feature named inside a sentence keeps a 24px target on a phone. */
+.feature-link {
+  display: inline-block;
+  padding-block: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-link {
+    transition: none;
+  }
+
+  .agent-link:active {
+    scale: none;
+  }
+}
+
+/* The online dot cuts out of whatever the label sits on. */
+.agent-label .online-dot {
+  box-shadow: 0 0 0 2px var(--row-fill, var(--surface-raised));
+}
+
+/* A disclosure's chevron points at its line while closed and down once open. */
+.disclosure-mark {
+  display: inline-flex;
+  color: var(--ink-muted);
+  rotate: -90deg;
+  transition: rotate var(--dur-hover) var(--ease-out);
+}
+
+details[open] > summary .disclosure-mark {
+  rotate: none;
+}
+
+.diff-file > summary,
+.part-details > summary {
+  gap: var(--space-2);
+  list-style: none;
+}
+
+.diff-file > summary::-webkit-details-marker,
+.part-details > summary::-webkit-details-marker {
+  display: none;
+}
+
+/* A feature named in a card's title takes a 44px target. */
+.approval-card-title .feature-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
+  padding-block: 0;
+}
+
+.show-more {
+  min-height: 1.75rem;
+  padding: 0;
+  font: var(--text-meta);
+}
+
+/* A note under a view's facts reads at the meta size of the lines around it. */
+.feature p.muted,
+.approvals p.muted,
+.review p.muted {
+  font: var(--text-meta);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .disclosure-mark {
+    transition: none;
+  }
+}
+
+.fix-write {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+  min-width: 0;
 }

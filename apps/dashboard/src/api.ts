@@ -2,6 +2,7 @@
 
 import type {
   Board,
+  FeaturePage,
   IdentitiesPage,
   IdentityWriteOutcome,
   Inbox,
@@ -10,6 +11,7 @@ import type {
   OverlapRequest,
   OverlapRequests,
   PlanInbox,
+  TeamView,
 } from "@penguin/protocol";
 
 export interface Session {
@@ -144,6 +146,21 @@ export async function writeIdentity(path: string, body: Readonly<Record<string, 
   const answer: unknown = await response.json().catch(() => undefined);
   if (typeof answer === "object" && answer !== null && "status" in answer) return answer as IdentityWriteOutcome;
   throw new Error(`${path} answered ${response.status}`);
+}
+
+/** Every person with their role, their features with each state and agents, and their idle agents. */
+export async function fetchTeam(): Promise<TeamView> {
+  return getJson<TeamView>("/api/team");
+}
+
+/** A feature's page as the signed-in person may see it, or undefined for no such feature. */
+export async function fetchFeaturePage(featureId: string): Promise<FeaturePage | undefined> {
+  try {
+    return await getJson<FeaturePage>(`/api/features/${encodeURIComponent(featureId)}/page`);
+  } catch (error) {
+    if (error instanceof NotFound) return undefined;
+    throw error;
+  }
 }
 
 export async function fetchBoard(): Promise<Board> {

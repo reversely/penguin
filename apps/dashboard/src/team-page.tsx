@@ -1,79 +1,75 @@
-// The team map (the dashboard's home): one square per person, edged in the person's hue
-// (assignPersonHues in character.ts), holding their agents as smaller boxes tinted in that hue. Each
-// box shows the agent's character, handle, session status and the number of the issue it holds, and
-// opens the agent's card on the identities page. Each square counts what needs the person and opens
-// the person's view: their scopes, their agents and the issues that involve them. The map reads the
-// board and the identities again on every live change, so a session going online or offline and an
-// issue moving show without reload. Every value renders as React text, so markup in a name, handle
-// or title shows as text.
+// The team view (the dashboard's home, PRD section 10): one square per person, edged in the person's
+// hue (assignPersonHues in character.ts). Each square states the person's role in the scope map (the
+// scopes they own, the scopes that read theirs and the scopes theirs read), then each of their
+// features with its one-word state and its agents, then their agents on no feature. Only exceptions
+// are highlighted: a feature with an exception PRD section 7 routes to a person carries it in the
+// attention colour. A feature opens its page; a person opens their view, which adds the issues that
+// involve them. The view reads GET /api/team again on every live message. Every value renders as
+// React text, so markup in a name, handle or scope shows as text.
 //
-// The shell reads the board and the identities for the map (useTeam), because the person hues every
-// page shows come from the map's people: one read gives the squares and every badge the same hues.
+// The shell reads the team for the view (useTeam), because the person hues every page shows come from
+// its people: one read gives the squares and every badge the same hues.
 
-import type { Board, IdentitiesPage } from "@penguin/protocol";
+import type { Board, IdentitiesPage, TeamFeature, TeamPerson, TeamView } from "@penguin/protocol";
 import { useMemo, type ReactNode } from "react";
 
-import { fetchBoard, fetchIdentities } from "./api.ts";
-import { IdentityAvatar, PersonAvatar, PersonHuesProvider, usePersonHue } from "./avatar.tsx";
-import { boardPenguinState } from "./board-view.ts";
+import { Agent, AgentDirectory } from "./agent-directory.tsx";
+import { fetchBoard, fetchIdentities, fetchTeam } from "./api.ts";
+import { PersonAvatar, PersonHuesProvider, usePersonHue } from "./avatar.tsx";
 import { assignPersonHues } from "./character.ts";
+import { exceptionText, stateClass } from "./feature-view.ts";
 import { Icon } from "./icon.tsx";
 import { useRead, type Read } from "./inbox-page.tsx";
-import { PenguinIndicator } from "./issue-page.tsx";
 import { STATE_LABEL } from "./issue-view.ts";
 import { linkHandler } from "./links.ts";
-import { Reorder, useArrivals } from "./motion.tsx";
-import { NewIssueLink } from "./new-issue-page.tsx";
-import { identityPath, personPath } from "./routes.ts";
-import {
-  AGENT_STATUS_LABEL,
-  INVOLVEMENT_LABEL,
-  personIssues,
-  teamMap,
-  teamPeople,
-  type Agent,
-  type Needs,
-  type Person,
-  type PersonIssue,
-} from "./team-view.ts";
+import { useArrivals } from "./motion.tsx";
+import { featurePath, personPath } from "./routes.ts";
+import { INVOLVEMENT_LABEL, personIssues, teamPeople, type PersonIssue } from "./team-view.ts";
 import type { Live } from "./use-live.ts";
 
-/** The board and the identities as the team map reads them. */
+/** The team view, the board and the identities as the shell reads them. */
 export interface Team {
+  readonly view: Read<TeamView>;
   readonly board: Read<Board>;
   readonly identities: Read<IdentitiesPage>;
 }
 
-/** Reads the team for the shell. */
+/** Reads the team for the shell, again on every live message and after a reconnect. */
 export function useTeam(live: Live, onSignedOut: () => void): Team {
-  // A session going online or offline and an identity change each read both again, as a reconnect does.
-  const revision = `${live.revision}:${live.identitiesRevision}:${live.status === "live"}`;
+  const revision = `${live.revision}:${live.inboxRevision}:${live.identitiesRevision}:${live.status === "live"}`;
+  const view = useRead(fetchTeam, revision, onSignedOut);
   const board = useRead(fetchBoard, revision, onSignedOut);
   const identities = useRead(fetchIdentities, revision, onSignedOut);
-  return { board, identities };
+  return { view, board, identities };
 }
 
-/** Gives every person avatar and square below it the hues of the team's people. */
+/** The team's people: the view's, the board's and every identity owner. */
+export function hueTeam(team: Team): string[] {
+  const people = new Set<string>(team.view.kind === "ready" ? team.view.value.people.map((person) => person.id) : []);
+  if (team.board.kind === "ready" && team.identities.kind === "ready") for (const id of teamPeople(team.board.value, team.identities.value)) people.add(id);
+  return [...people];
+}
+
+/** Gives every person avatar and square below it the hues of the team's people, and every agent label its identity. */
 export function TeamHues({ team, children }: { readonly team: Team; readonly children: ReactNode }) {
-  const { board, identities } = team;
-  const hues = useMemo(
-    () => assignPersonHues(board.kind === "ready" && identities.kind === "ready" ? teamPeople(board.value, identities.value) : []),
-    [board, identities],
+  const hues = useMemo(() => assignPersonHues(hueTeam(team)), [team]);
+  return (
+    <PersonHuesProvider value={hues}>
+      <AgentDirectory page={team.identities.kind === "ready" ? team.identities.value : undefined}>{children}</AgentDirectory>
+    </PersonHuesProvider>
   );
-  return <PersonHuesProvider value={hues}>{children}</PersonHuesProvider>;
 }
 
 interface Props {
   readonly team: Team;
-  readonly viewer: string;
-  /** The person whose view is open, or null for the whole map. */
+  /** The person whose view is open, or null for the whole team. */
   readonly person: string | null;
   readonly navigate: (path: string) => void;
 }
 
-export function TeamPage({ team, viewer, person, navigate }: Props) {
-  const { board, identities } = team;
-  if (board.kind === "failed" || identities.kind === "failed") {
+export function TeamPage({ team, person, navigate }: Props) {
+  const { view, board } = team;
+  if (view.kind === "failed") {
     return (
       <div className="team">
         <h1>Team</h1>
@@ -83,52 +79,34 @@ export function TeamPage({ team, viewer, person, navigate }: Props) {
       </div>
     );
   }
-  // Both arrive before the map paints, so no square grows after it shows.
-  if (board.kind === "loading" || identities.kind === "loading") return <div className="team" aria-busy="true" />;
-  const props = { board: board.value, page: identities.value, viewer, navigate };
-  return person === null ? <TeamMapView {...props} /> : <PersonView {...props} person={person} />;
+  // The view arrives before the squares paint, so no square grows after it shows.
+  if (view.kind === "loading") return <div className="team" aria-busy="true" />;
+  if (person === null) return <TeamMapView view={view.value} navigate={navigate} />;
+  return <PersonView view={view.value} board={board.kind === "ready" ? board.value : undefined} person={person} navigate={navigate} />;
 }
 
-interface ViewProps {
-  readonly board: Board;
-  readonly page: IdentitiesPage;
-  readonly viewer: string;
-  readonly navigate: (path: string) => void;
-}
-
-/** The map as read, without the fetch, so it renders on the server in a test. */
-export function TeamMapView({ board, page, viewer, navigate }: ViewProps) {
-  const map = useMemo(() => teamMap(board, page, viewer), [board, page, viewer]);
+/** The team as read, without the fetch, so it renders on the server in a test. */
+export function TeamMapView({ view, navigate }: { readonly view: TeamView; readonly navigate: (path: string) => void }) {
   return (
     <div className="team">
       <header className="page-header">
         <h1>Team</h1>
-        <PenguinIndicator state={boardPenguinState(board)} />
-        <NewIssueLink navigate={navigate} />
       </header>
-      {map.people.length === 0 ? <p className="muted">Please add an owner to penguin/scopes.json</p> : null}
+      {view.people.length === 0 ? <p className="muted">Please add an owner to penguin/scopes.json</p> : null}
       <ul className="team-map">
-        {map.people.map((person) => (
+        {view.people.map((person) => (
           <PersonSquare key={person.id} person={person} navigate={navigate} />
         ))}
       </ul>
-      {map.unassigned.length === 0 ? null : (
-        <section className="team-section" aria-labelledby="team-unassigned">
-          <h2 id="team-unassigned" className="team-section-heading">
-            Unassigned <span className="tab-count">{map.unassigned.length}</span>
-          </h2>
-          <IssueList scope="unassigned" rows={map.unassigned.map((issue) => ({ issue, involvement: [] }))} navigate={navigate} />
-        </section>
-      )}
     </div>
   );
 }
 
-function PersonSquare({ person, navigate }: { person: Person; navigate: (path: string) => void }) {
+function PersonSquare({ person, navigate }: { readonly person: TeamPerson; readonly navigate: (path: string) => void }) {
   const path = personPath(person.id);
   const hue = usePersonHue(person.id);
   return (
-    <li className={`person-square person-${hue}`}>
+    <li className={`person-square person-${hue}`} data-exception={person.features.some((feature) => feature.exceptions.length > 0) ? true : undefined}>
       <h2 className="person-square-head">
         <a className="person-square-link" href={path} onClick={linkHandler(navigate, path)}>
           <PersonAvatar id={person.id} size="row" />
@@ -136,105 +114,108 @@ function PersonSquare({ person, navigate }: { person: Person; navigate: (path: s
           <Icon name="chevron" />
         </a>
       </h2>
-      <NeedsTags needs={person.needs} />
-      <AgentBoxes owner={person.id} agents={person.agents} navigate={navigate} />
+      <Role person={person} />
+      <FeatureList owner={person.id} features={person.features} navigate={navigate} />
+      {person.idleAgents.length === 0 ? null : (
+        <ul className="agent-list" aria-label={`${person.id}'s agents on no feature`}>
+          {person.idleAgents.map((agent) => (
+            <li key={agent.handle}>
+              <Agent handle={agent.handle} person={agent.person} variant="compact" navigate={navigate} />
+            </li>
+          ))}
+        </ul>
+      )}
     </li>
   );
 }
 
-const NEEDS: readonly { readonly key: keyof Needs; readonly one: string; readonly many: string }[] = [
-  { key: "reviews", one: "review", many: "reviews" },
-  { key: "threads", one: "thread", many: "threads" },
-  { key: "sessions", one: "session to start", many: "sessions to start" },
-];
-
-/** What waits on the person, as counted tags; nothing when nothing does. */
-function NeedsTags({ needs }: { needs: Needs }) {
-  const shown = NEEDS.filter(({ key }) => needs[key] > 0);
-  if (shown.length === 0) return null;
+/** The person's role as rows of scope names; a row with nothing to name is left out, except Owns. */
+function Role({ person }: { readonly person: TeamPerson }) {
+  const { scopes, dependents, dependencies } = person.role;
+  const rows = [
+    { label: "Owns", scopes, others: false },
+    { label: "Read by", scopes: dependents, others: true },
+    { label: "Reads", scopes: dependencies, others: true },
+  ].filter((row, index) => index === 0 || row.scopes.length > 0);
   return (
-    <ul className="person-needs" aria-label="Waiting">
-      {shown.map(({ key, one, many }) => (
-        <li key={key} className="person-need">
-          {`${needs[key]} ${needs[key] === 1 ? one : many}`}
-        </li>
+    <dl className="role">
+      {rows.map((row) => (
+        <div key={row.label} className="role-row">
+          <dt>{row.label}</dt>
+          <dd>
+            {row.scopes.length === 0 ? (
+              <span className="muted">None</span>
+            ) : (
+              row.scopes.map((scope) => (
+                <span key={scope.id} className="role-scope" title={scope.id}>
+                  {scope.name}
+                  {row.others ? <span className="role-owner"> {scope.ownerId}</span> : null}
+                </span>
+              ))
+            )}
+          </dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+/** The person's features, each with its state, its exceptions and its agents. */
+function FeatureList({ owner, features, navigate }: { readonly owner: string; readonly features: readonly TeamFeature[]; readonly navigate: (path: string) => void }) {
+  const arrival = useArrivals(features.map((feature) => feature.id), owner);
+  if (features.length === 0) return <p className="muted person-empty">No features</p>;
+  return (
+    <ul className="feature-rows" aria-label={`${owner}'s features`}>
+      {features.map((feature) => (
+        <FeatureRow key={feature.id} feature={feature} arrival={arrival(feature.id)} navigate={navigate} />
       ))}
     </ul>
   );
 }
 
-interface BoxesProps {
-  /** The person whose square holds the boxes. */
-  readonly owner: string;
-  readonly agents: readonly Agent[];
+function FeatureRow({ feature, arrival, navigate }: { readonly feature: TeamFeature; readonly arrival: string | undefined; readonly navigate: (path: string) => void }) {
+  const path = featurePath(feature.id);
+  return (
+    <li className="feature-row" data-arrival={arrival} data-exception={feature.exceptions.length > 0 ? true : undefined}>
+      <span className="feature-row-head">
+        <a className="feature-row-link" href={path} onClick={linkHandler(navigate, path)}>
+          {feature.id}
+        </a>
+        <span className={stateClass(feature.state)}>{feature.state}</span>
+      </span>
+      {feature.exceptions.length === 0 ? null : (
+        <ul className="feature-exceptions" aria-label="Exceptions">
+          {feature.exceptions.map((exception, index) => (
+            <li key={index}>{exceptionText(exception)}</li>
+          ))}
+        </ul>
+      )}
+      {feature.agents.length === 0 ? null : (
+        <ul className="agent-list" aria-label={`${feature.id}'s agents`}>
+          {feature.agents.map((agent) => (
+            <li key={agent.handle}>
+              <Agent handle={agent.handle} person={agent.person} variant="compact" online={agent.online} navigate={navigate} />
+            </li>
+          ))}
+        </ul>
+      )}
+    </li>
+  );
+}
+
+interface PersonProps {
+  readonly view: TeamView;
+  /** The board, for the issues that involve the person; undefined while it is read or when it failed. */
+  readonly board: Board | undefined;
+  readonly person: string;
   readonly navigate: (path: string) => void;
 }
 
-/**
- * The person's agents. A session going online or offline reorders them, so each box slides to its new
- * place; a box a live change adds slides in.
- */
-function AgentBoxes({ owner, agents, navigate }: BoxesProps) {
-  const handles = agents.map((agent) => agent.identity.handle);
-  const arrival = useArrivals(handles, owner);
-  if (agents.length === 0) return <p className="muted person-empty">No agents</p>;
-  return (
-    <Reorder className="agent-boxes" order={handles.join(" ")}>
-      {agents.map((agent) => (
-        <li key={agent.identity.handle} data-key={agent.identity.handle} data-arrival={arrival(agent.identity.handle)}>
-          <AgentBox owner={owner} agent={agent} navigate={navigate} />
-        </li>
-      ))}
-    </Reorder>
-  );
-}
-
-/** One agent: its character, handle, status dot and label, and the issue it holds. */
-function AgentBox({ owner, agent, navigate }: { owner: string; agent: Agent; navigate: (path: string) => void }) {
-  const { identity, status, held } = agent;
-  const [first] = held;
-  // Inside its owner's square a handle's "@owner/" half repeats the square's name, so it is read but not shown.
-  const prefix = `@${owner}/`;
-  const own = identity.handle.startsWith(prefix);
-  const body = (
-    <>
-      <IdentityAvatar handle={identity.handle} image={identity.avatar} size="row" />
-      <span className="agent-box-text">
-        <span className="agent-box-top">
-          <span className="agent-box-handle" title={identity.handle}>
-            {own ? <span className="visually-hidden">{prefix}</span> : null}
-            {own ? identity.handle.slice(prefix.length) : identity.handle}
-          </span>
-          {first === undefined ? null : (
-            // "+2" counts the other open issues the agent holds; the title lists them.
-            <span className="agent-box-issue" title={held.map((issue) => `#${issue.issue.id}`).join(" ")}>
-              #{first.issue.id}
-              {held.length > 1 ? ` +${held.length - 1}` : ""}
-              {held.length > 1 ? <span className="visually-hidden"> more issues</span> : null}
-            </span>
-          )}
-        </span>
-        <span className={`agent-status agent-status-${status.replaceAll(" ", "-")}`}>
-          <span className="agent-status-dot" aria-hidden="true" />
-          <span className="agent-status-label">{AGENT_STATUS_LABEL[status]}</span>
-        </span>
-      </span>
-    </>
-  );
-  if (agent.id === null) return <span className="agent-box">{body}</span>;
-  const path = identityPath(agent.id);
-  return (
-    <a className="agent-box" href={path} onClick={linkHandler(navigate, path)}>
-      {body}
-    </a>
-  );
-}
-
-/** One person: their scopes, their agents and the issues that involve them. */
-export function PersonView({ board, page, viewer, navigate, person }: ViewProps & { readonly person: string }) {
+/** One person: their role, their features, their agents and the issues that involve them. */
+export function PersonView({ view, board, person, navigate }: PersonProps) {
   const hue = usePersonHue(person);
-  const found = useMemo(() => teamMap(board, page, viewer).people.find((entry) => entry.id === person), [board, page, viewer, person]);
-  const issues = useMemo(() => personIssues(board, person), [board, person]);
+  const found = view.people.find((entry) => entry.id === person);
+  const issues = useMemo(() => (board === undefined ? [] : personIssues(board, person)), [board, person]);
   const back = (
     <a className="back-link" href="/" onClick={linkHandler(navigate, "/")}>
       <Icon name="back" />
@@ -246,80 +227,80 @@ export function PersonView({ board, page, viewer, navigate, person }: ViewProps 
       <div className="team">
         {back}
         <h1>Person not found</h1>
-        <p className="muted">Please choose a person on the team map</p>
+        <p className="muted">Please choose a person on the team view</p>
       </div>
     );
   }
-  const scopes = page.scopes.filter((scope) => scope.ownerId === person);
   return (
     <article className="team person-view" aria-labelledby="person-heading">
       {back}
       <header className={`person-head person-${hue}`}>
         <PersonAvatar id={person} size="header" />
         <h1 id="person-heading">{person}</h1>
-        <NeedsTags needs={found.needs} />
       </header>
-      <section className="team-section" aria-labelledby="person-scopes">
-        <h2 id="person-scopes" className="team-section-heading">
-          Scopes <span className="tab-count">{scopes.length}</span>
+      <section className="team-section" aria-labelledby="person-role">
+        <h2 id="person-role" className="team-section-heading">
+          Role
         </h2>
-        {scopes.length === 0 ? (
-          <p className="muted">None</p>
-        ) : (
-          <ul className="person-scopes">
-            {scopes.map((scope) => (
-              <li key={scope.id} className="chip" title={scope.id}>
-                {scope.name}
+        <Role person={found} />
+      </section>
+      <section className={`team-section person-${hue}`} aria-labelledby="person-features">
+        <h2 id="person-features" className="team-section-heading">
+          Features <span className="tab-count">{found.features.length}</span>
+        </h2>
+        <FeatureList owner={person} features={found.features} navigate={navigate} />
+      </section>
+      {found.idleAgents.length === 0 ? null : (
+        <section className="team-section" aria-labelledby="person-agents">
+          <h2 id="person-agents" className="team-section-heading">
+            Agents on no feature <span className="tab-count">{found.idleAgents.length}</span>
+          </h2>
+          <ul className="agent-list">
+            {found.idleAgents.map((agent) => (
+              <li key={agent.handle}>
+                <Agent handle={agent.handle} person={agent.person} navigate={navigate} />
               </li>
             ))}
           </ul>
-        )}
-      </section>
-      <section className={`team-section person-${hue}`} aria-labelledby="person-agents">
-        <h2 id="person-agents" className="team-section-heading">
-          Agents <span className="tab-count">{found.agents.length}</span>
-        </h2>
-        <AgentBoxes owner={person} agents={found.agents} navigate={navigate} />
-      </section>
-      <section className="team-section" aria-labelledby="person-issues">
-        <h2 id="person-issues" className="team-section-heading">
-          Issues <span className="tab-count">{issues.length}</span>
-        </h2>
-        {issues.length === 0 ? <p className="muted">None</p> : <IssueList scope={person} rows={issues} navigate={navigate} />}
-      </section>
+        </section>
+      )}
+      {issues.length === 0 ? null : (
+        <section className="team-section" aria-labelledby="person-issues">
+          <h2 id="person-issues" className="team-section-heading">
+            Issues <span className="tab-count">{issues.length}</span>
+          </h2>
+          <IssueList scope={person} rows={issues} navigate={navigate} />
+        </section>
+      )}
     </article>
   );
 }
 
 /** Issues as rows: number and title, then the state and why the issue is on the list. */
 function IssueList({ scope, rows, navigate }: { scope: string; rows: readonly PersonIssue[]; navigate: (path: string) => void }) {
-  // The scope is the person or the unassigned list, so moving between people adds no arrival.
+  // The scope is the person, so moving between people adds no arrival.
   const arrival = useArrivals(rows.map(({ issue }) => issue.issue.id), scope);
   return (
     <ul className="team-issues">
-      {rows.map(({ issue, involvement }) => (
-        <IssueRow key={issue.issue.id} issue={issue} involvement={involvement} arrival={arrival(issue.issue.id)} navigate={navigate} />
-      ))}
+      {rows.map(({ issue, involvement }) => {
+        const { id, title, state } = issue.issue;
+        const path = `/issues/${id}`;
+        return (
+          <li key={id} className="team-issue" data-arrival={arrival(id)}>
+            <a className="team-issue-title" href={path} onClick={linkHandler(navigate, path)}>
+              <span className="issue-number">#{id}</span> {title}
+            </a>
+            <span className="team-issue-tags">
+              <span className={`tag state-${state}`}>{STATE_LABEL[state] ?? state}</span>
+              {involvement.map((reason) => (
+                <span key={reason} className="tag">
+                  {INVOLVEMENT_LABEL[reason]}
+                </span>
+              ))}
+            </span>
+          </li>
+        );
+      })}
     </ul>
-  );
-}
-
-function IssueRow({ issue, involvement, arrival, navigate }: PersonIssue & { arrival: string | undefined; navigate: (path: string) => void }) {
-  const { id, title, state } = issue.issue;
-  const path = `/issues/${id}`;
-  return (
-    <li className="team-issue" data-arrival={arrival}>
-      <a className="team-issue-title" href={path} onClick={linkHandler(navigate, path)}>
-        <span className="issue-number">#{id}</span> {title}
-      </a>
-      <span className="team-issue-tags">
-        <span className={`tag state-${state}`}>{STATE_LABEL[state] ?? state}</span>
-        {involvement.map((reason) => (
-          <span key={reason} className="tag">
-            {INVOLVEMENT_LABEL[reason]}
-          </span>
-        ))}
-      </span>
-    </li>
   );
 }

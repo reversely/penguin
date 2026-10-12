@@ -88,6 +88,7 @@ import { IngestLedger, ingestPush, type IngestReport } from "./push-ingest.ts";
 import { rebuildIndex, type RebuildReport } from "./rebuild.ts";
 import { OWNERS_PATH, parseOwnersFile, parseScopeFile, SCOPE_MAP_PATH } from "./scope-file.ts";
 import { ReviewStore, submitReview, type ReviewInput, type ReviewOutcome, type StoredReview } from "./review-submit.ts";
+import { buildFeaturePage, buildTeamView, type DashboardViewDeps } from "./dashboard-views.ts";
 import { claimReviews, recordReview, type ReviewClaim, type ReviewReportOutcome } from "./review-record.ts";
 import {
   AgentToolStore,
@@ -178,11 +179,13 @@ import {
   type IdentitiesPage,
   type IdentityWriteOutcome,
   type Inbox,
+  type FeaturePage,
   type IssuePage,
   type OverlapRequests,
   type Plan,
   type PlanInbox,
   type PlanFactsRequest,
+  type TeamView,
   type VerificationRunSpec,
 } from "@penguin/protocol";
 import { INVARIANTS_PATH, type ScopeMap } from "@penguin/scope-map";
@@ -1798,9 +1801,39 @@ export class ProjectAgent extends Agent {
         scopeMap: async () => rules.scopeMap,
         delegates: async () => rules.delegates,
         roundLimit: this.#roundLimit(),
+        records: (featureId) => this.#featureStore().records(featureId),
       },
       caller,
     );
+  }
+
+  /** The dashboard's team view (dashboard-views.ts): every person with their role, features and agents. */
+  async teamView(caller: string, repos: ProjectRepos): Promise<TeamView> {
+    return buildTeamView(await this.#dashboardViewDeps(repos), caller);
+  }
+
+  /** One feature's page as `caller` may see it (dashboard-views.ts), or undefined for no such feature. */
+  async featurePage(caller: string, featureId: string, repos: ProjectRepos): Promise<FeaturePage | undefined> {
+    return buildFeaturePage(await this.#dashboardViewDeps(repos), featureId, caller);
+  }
+
+  async #dashboardViewDeps(repos: ProjectRepos): Promise<DashboardViewDeps> {
+    const rules = await this.#reviewRules(repos);
+    return {
+      features: this.#featureStore(),
+      overlaps: this.#overlapStore(),
+      routes: this.#planRouteStore(),
+      reviews: this.#reviewStore(),
+      tools: this.#toolStore(),
+      session: (sessionId) => this.#sessionStore().get(sessionId),
+      identities: () => this.#identityStore().list(),
+      factsRun: (featureId, checkpoint) => this.#planFactsStore().forCheckpoint(featureId, checkpoint)?.state,
+      scopeMap: async () => rules.scopeMap,
+      delegates: async () => rules.delegates,
+      plan: async (featureId) => this.#planKeeper(featureId).latestPlan(featureId),
+      roundLimit: this.#roundLimit(),
+      fixWrite: (partId, revision) => this.#fixGrantStore().get(partId, revision),
+    };
   }
 
   /**

@@ -21,6 +21,7 @@ import {
   type ReactNode,
 } from "react";
 
+import { AgentLabel } from "./agent-label.tsx";
 import { fetchBoard, fetchIdentities, SignedOut, writeIdentity } from "./api.ts";
 import { IdentityAvatar, PersonAvatar } from "./avatar.tsx";
 import { useMediaQuery } from "./details-pane.tsx";
@@ -256,15 +257,8 @@ export function IdentityList({ identities, selectedId, onChoose }: ListProps) {
               aria-current={identity.id === selectedId ? "page" : undefined}
               onClick={linkHandler(() => onChoose(identity.id), path)}
             >
-              <span className="identity-row-avatar">
-                <IdentityAvatar handle={identity.handle} image={identity.avatar} size="row" />
-                {online ? <span className="online-dot" /> : null}
-              </span>
-              <span className="identity-row-text">
-                <span className="identity-row-handle">{identity.handle}</span>
-                <span className="identity-row-name">{identity.name}</span>
-              </span>
-              {online ? <span className="visually-hidden">Running</span> : null}
+              {/* The shared agent label: the name and the person; the full handle is on the card. */}
+              <AgentLabel handle={identity.handle} image={identity.avatar} person={identity.owners[0] ?? ""} personText={identity.owners.join(", ")} online={online} />
             </a>
           </li>
         );

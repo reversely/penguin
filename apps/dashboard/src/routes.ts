@@ -7,6 +7,8 @@ export type Route =
   | { readonly page: "inbox"; readonly showAll: boolean }
   | { readonly page: "identities" }
   | { readonly page: "new-issue" }
+  /** One feature's page: its declaration, merge plan, checks, tools and record. */
+  | { readonly page: "feature"; readonly featureId: string }
   | { readonly page: "issue"; readonly issueId: string };
 
 export type Page = Route["page"];
@@ -17,6 +19,11 @@ export const INBOX_ALL_PATH = "/inbox?closed=all";
 /** A person's view of the team map. */
 export function personPath(person: string): string {
   return `/?person=${encodeURIComponent(person)}`;
+}
+
+/** A feature's page. */
+export function featurePath(featureId: string): string {
+  return `/features/${encodeURIComponent(featureId)}`;
 }
 
 /** An identity's agent card on the identities page. */
@@ -33,6 +40,9 @@ export function parseRoute(pathname: string, search = ""): Route | undefined {
   if (pathname === "/identities") return { page: "identities" };
   // No issue takes this id: a number is digits and a temporary ID is an op_id, which has hyphens.
   if (pathname === "/issues/new") return { page: "new-issue" };
+  // A feature id is lowercase letters and digits joined by single dots or hyphens.
+  const featureId = /^\/features\/([a-z0-9.-]{1,63})$/.exec(pathname)?.[1];
+  if (featureId !== undefined) return { page: "feature", featureId };
   const issueId = /^\/issues\/([A-Za-z0-9_-]+)$/.exec(pathname)?.[1];
   return issueId === undefined ? undefined : { page: "issue", issueId };
 }

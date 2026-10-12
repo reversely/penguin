@@ -33,8 +33,7 @@ import { STATE_LABEL } from "./issue-view.ts";
 import { linkHandler } from "./links.ts";
 import { useArrivals } from "./motion.tsx";
 import { NewIssueLink } from "./new-issue-page.tsx";
-import { OverlapRequests } from "./overlap-requests.tsx";
-import { PlanParts } from "./plan-parts.tsx";
+import { approvalCount, ApprovalsInbox, useApprovals } from "./approvals.tsx";
 import { INBOX_ALL_PATH, type Route } from "./routes.ts";
 import { SIDEBAR_LIST, SidebarList } from "./sidebar-slot.tsx";
 import type { Live } from "./use-live.ts";
@@ -173,23 +172,29 @@ function SidebarInbox({ inbox, viewer, live, showAll, openIssue, navigate, onSig
   return <InboxList inbox={inbox} facts={facts} viewer={viewer} now={new Date()} showAll={showAll} openIssue={openIssue} navigate={navigate} />;
 }
 
-/** The inbox page: from 760px an empty state beside the sidebar's rows; below it the rows themselves. */
+/**
+ * The inbox page: the approvals that wait on the person, with the facts behind each; then, from 760px,
+ * a pointer to the sidebar's issue rows, and below 760px the rows themselves.
+ */
 export function InboxPage({ inbox, viewer, live, showAll, navigate, onSignedOut }: HostProps & { readonly showAll: boolean }) {
   const wide = useMediaQuery(SIDEBAR_LIST);
+  const approvals = useApprovals(live, onSignedOut);
   const { load } = inbox;
-  if (load.kind === "loading") return <div className="inbox" aria-busy="true" />;
+  if (load.kind === "loading" || !approvals.loaded) return <div className="inbox" aria-busy="true" />;
+  const waiting = approvalCount(approvals.approvals);
   return (
     <div className="inbox">
       <header className="page-header">
         <h1>Inbox</h1>
         <NewIssueLink navigate={navigate} />
       </header>
-      <OverlapRequests live={live} onSignedOut={onSignedOut} />
-      <PlanParts live={live} onSignedOut={onSignedOut} />
+      <ApprovalsInbox state={approvals} navigate={navigate} onSignedOut={onSignedOut} />
       {wide ? (
         // The sidebar holds the rows and says when the inbox could not be read.
-        load.kind === "ready" ? (
-          <p className="inbox-empty">{load.items.length > 0 ? "Please choose an item to open its issue" : "Nothing needs you right now"}</p>
+        load.kind === "ready" && (load.items.length > 0 || (waiting === 0 && !approvals.failed)) ? (
+          <p className={waiting === 0 ? "inbox-empty" : "inbox-hint"}>
+            {load.items.length > 0 ? "Please choose an issue in the list to open it" : "Nothing needs you right now"}
+          </p>
         ) : null
       ) : (
         <PhoneInbox inbox={inbox} viewer={viewer} live={live} showAll={showAll} navigate={navigate} onSignedOut={onSignedOut} />

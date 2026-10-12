@@ -29,28 +29,33 @@ import {
   partRouting,
   PLAN_LIMITS,
   PLAN_ROUND_LIMIT_DEFAULT,
+  type BreakView,
   type PartReviewResult,
   type Plan,
+  type PlanBreakFact,
   type PlanInbox,
   type PlanPart,
   type PlanPartAsk,
+  type PlanPartFile,
   type PlanPartRequest,
   type PlanPartState,
   type PlanPlace,
   type ProtectedPathHit,
+  type ReturnedPlanRequest,
   type ReviewExceptionRequest,
 } from "@penguin/protocol";
 import type { Delegates } from "@penguin/issues";
 import { protectedPathFor, type ScopeMap } from "@penguin/scope-map";
 
 import type { FeatureRejection } from "./feature-open.ts";
-import { parseFeatureId, type FeatureRecord, type FeatureStore, type UnsignedFeatureRecord } from "./feature-store.ts";
+import { parseFeatureId, type FeatureRecord, type FeatureStore, type StoredFeatureRecord, type UnsignedFeatureRecord } from "./feature-store.ts";
 import { parsePartRef, type InboxItem, type InboxStore } from "./inbox-store.ts";
 import type { SqlDatabase, SqlValue } from "./issue-index.ts";
 import type { PlanFactsStore } from "./plan-facts.ts";
 import type { PlanKeeper } from "./plan-store.ts";
 import { classifyFix, classifyFixPlace, parseFixFields, readFix, type AffectedPlace, type RepoReading } from "./propose-plan.ts";
 import type { ReviewStore, StoredReview } from "./review-submit.ts";
+import { reviewView } from "./review-view.ts";
 import type { PlanDecisionNotice, PlanNoticeSources, PlanPartNotice, ReviewResultNotice, SessionOutcome } from "./session-store.ts";
 
 type Row = Record<string, SqlValue>;
@@ -603,6 +608,8 @@ export interface PlanInboxDeps {
   readonly scopeMap: () => Promise<ScopeMap>;
   readonly delegates: () => Promise<Delegates>;
   readonly roundLimit: number | undefined;
+  /** The feature's signed records, which hold each returned plan (FeatureStore.records). */
+  readonly records: (featureId: string) => readonly StoredFeatureRecord[];
 }
 
 const REVIEW_REF = /^([^/]+)\/([^/]+)$/u;
@@ -638,7 +645,8 @@ export async function buildPlanInbox(deps: PlanInboxDeps, caller: string): Promi
     const plan = routed === undefined ? undefined : await planOf(routed.featureId);
     const part = plan?.parts.find((each) => each.partId === partId);
     if (routed === undefined || plan === undefined || part === undefined) continue;
-    const reviews: PartReviewResult[] = deps.reviews.list(plan.featureId).map((review) => ({
+    const stored = deps.reviews.list(plan.featureId);
+    const reviews: PartReviewResult[] = stored.map((review) => ({
       reviewId: review.id,
       scope: review.scopeId,
       state: review.state,
@@ -655,10 +663,13 @@ export async function buildPlanInbox(deps: PlanInboxDeps, caller: string): Promi
       place: part.place,
       owner: part.owner,
       kind: part.kind,
+      kindReason: part.kindReason,
       state: part.approvalState,
       changeRequests: part.changeRequests,
       roundLimit: deps.roundLimit ?? PLAN_ROUND_LIMIT_DEFAULT,
-      files: part.diff.files.map((file) => ({ path: file.path, status: file.status, lines: file.hunks.flatMap((hunk) => hunk.lines) })),
+      files: partFiles(part),
+      breaks: part.breaks.map(breakView),
+      reviews: newestReviews(stored, part.scopes).map(reviewView),
       routing: partRouting(part, reviews, lookup),
       changeRequest:
         part.changeRequest === null ? null : { by: part.changeRequest.by, revision: part.changeRequest.revision, text: part.changeRequest.text },
@@ -683,10 +694,38 @@ export async function buildPlanInbox(deps: PlanInboxDeps, caller: string): Promi
         reviewId: review.id,
         state: review.state === "refused" ? "refused" : "accepted",
         exceptions: review.exceptions,
+        review: reviewView(review),
         read: item.read,
         raisedAt: item.raisedAt,
       },
     ];
   });
-  return { parts, reviewExceptions };
+
+  const returnedPlans: ReturnedPlanRequest[] = items.flatMap((item) => {
+    const featureId = item.reason === "plan_returned" ? item.issueId.slice("plan:".length) : undefined;
+    if (featureId === undefined) return [];
+    const returned = deps
+      .records(featureId)
+      .map((kept) => JSON.parse(kept.file) as FeatureRecord)
+      .filter((each) => each.type === "plan_returned")
+      .at(-1);
+    if (returned === undefined) return [];
+    const { break_limit: breakLimit, behavioural } = returned.payload as { break_limit: number; behavioural: string[] };
+    return [{ feature: featureId, breakLimit, behavioural, read: item.read, raisedAt: item.raisedAt }];
+  });
+  return { parts, reviewExceptions, returnedPlans };
+}
+
+/** A part's diff as each file's lines, the way the dashboard shows changed lines. */
+export function partFiles(part: Pick<PlanPart, "diff">): PlanPartFile[] {
+  return part.diff.files.map((file) => ({ path: file.path, status: file.status, lines: file.hunks.flatMap((hunk) => hunk.lines) }));
+}
+
+export function breakView({ target, statement, nodeId, assertion, error }: PlanBreakFact): BreakView {
+  return { target, statement, nodeId, assertion, error };
+}
+
+/** The newest review of each of `scopes`, in scope order: a newer form replaces an older one. */
+export function newestReviews(reviews: readonly StoredReview[], scopes: readonly string[]): StoredReview[] {
+  return scopes.flatMap((scope) => reviews.filter((review) => review.scopeId === scope).at(-1) ?? []);
 }

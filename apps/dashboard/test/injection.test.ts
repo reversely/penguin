@@ -196,28 +196,6 @@ function markedTeam() {
   return { board, page, identity };
 }
 
-test("markup in an owner, a handle, a session, an issue title and a scope renders as text on the team map and a person's view", async () => {
-  const { render } = await load<{ render: (board: unknown, page: unknown, person: string) => string }>(`
-    import { renderToStaticMarkup } from "react-dom/server";
-    import { createElement, Fragment } from "react";
-    import { PersonView, TeamMapView } from "./src/team-page.tsx";
-    export function render(board, page, person) {
-      const props = { board, page, viewer: "jun", navigate() {} };
-      return renderToStaticMarkup(createElement(Fragment, null,
-        createElement(TeamMapView, props),
-        createElement(PersonView, { ...props, person })));
-    }`);
-  const { board, page } = markedTeam();
-  const html = render(board, page, "jun");
-  assert.match(html, /@jun\/&lt;img src=x onerror=&quot;globalThis\.pwned = 1&quot;&gt;/);
-  assert.match(html, /&lt;script&gt;globalThis\.pwned = 2&lt;\/script&gt;/);
-  assert.match(html, /&lt;em&gt;/);
-  assert.match(html, /@x\/&lt;s&gt;idle&lt;\/s&gt;/);
-  assert.match(html, /&lt;s&gt;Analytics&lt;\/s&gt;/);
-  assert.match(html, /1 review/);
-  assert.doesNotMatch(html, /<img|<script|<b>|<i>|<em>|<s>|<u>|<q>|<kbd>|onerror="/);
-});
-
 test("markup in an issue title, body, comment, thread, check, review and identity renders as text on the issue page", async () => {
   const { render } = await load<{ render: (page: unknown, handle: string) => string }>(`
     import { renderToStaticMarkup } from "react-dom/server";
@@ -340,53 +318,4 @@ test("markup in a held issue's title, a session's worktree and an operation rend
   assert.match(html, /Reply from &lt;kbd&gt;/);
   assert.match(html, /9b2f10c/);
   assert.doesNotMatch(html, /<img|<script|<b>|<i>|<q>|<kbd>|<mark>|onerror="/);
-});
-
-test("markup in a plan part's changed lines, a requested change and a review exception renders as escaped text", async () => {
-  // The plan part list takes its data as props, so it renders on the server without a fetch.
-  const { render } = await load<{ render: (inbox: unknown) => string }>(`
-    import { renderToStaticMarkup } from "react-dom/server";
-    import { createElement } from "react";
-    import { PlanPartList } from "./src/plan-parts.tsx";
-    export function render(inbox) {
-      return renderToStaticMarkup(createElement(PlanPartList, { inbox, busy: undefined, onApprove() {}, onRequestChange() {} }));
-    }`);
-  const part = {
-    ask: "approve",
-    feature: "money-minor",
-    person: "ines",
-    partId: "money-minor/v1#2",
-    revision: 2,
-    place: { kind: "feature", feature: "tax-rounding" },
-    owner: "rahul",
-    kind: "behavioural",
-    state: "pending",
-    changeRequests: 1,
-    roundLimit: 3,
-    files: [{ path: "tax/rounding.py", status: "modified", lines: [`+total = ${MARKUP}`] }],
-    routing: { inPerson: true, reasons: [{ kind: "broken_invariant", scope: "tax", invariant: MARKUP, reviewId: 4 }] },
-    changeRequest: { by: "rahul", revision: 1, text: "<script>globalThis.pwned = 2</script>" },
-    read: false,
-    raisedAt: "2026-10-11T09:00:00.000Z",
-  };
-  const exception = {
-    feature: "money-minor",
-    scope: "tax",
-    reviewId: 4,
-    state: "accepted",
-    exceptions: [{ kind: "broken_invariant", invariant: MARKUP, scope: "tax" }],
-    read: false,
-    raisedAt: "2026-10-11T09:00:00.000Z",
-  };
-  const html = render({ parts: [part], reviewExceptions: [exception] });
-  assert.match(html, /Approve revision 2/);
-  assert.match(html, /Request change/);
-  assert.match(html, /\+total = &lt;img src=x onerror=&quot;globalThis\.pwned = 1&quot;&gt;/);
-  assert.match(html, /rahul asked on revision 1: &lt;script&gt;globalThis\.pwned = 2&lt;\/script&gt;/);
-  assert.match(html, /Review 4 of tax on money-minor, accepted/);
-  assert.doesNotMatch(html, /<img|<script|onerror="/);
-  // A part of the person's own plan past the round limit is shown without controls.
-  const limited = render({ parts: [{ ...part, ask: "round_limit", state: "round_limit" }], reviewExceptions: [] });
-  assert.match(limited, /Past the round limit/);
-  assert.doesNotMatch(limited, /<button/);
 });

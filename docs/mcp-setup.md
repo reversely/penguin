@@ -124,7 +124,7 @@ identity in the first prompt, for example:
 and `report_checkpoint`. Each of those calls keeps the session running. After about 90 seconds without
 one, Penguin marks the session offline and the agent registers again. Once a session registers, the
 identity's agent box in its owner's square on the team map leaves "No session". The identity's agent
-card lists the session with its vendor, branch and worktree ([dashboard.md](dashboard.md#team-map)).
+card lists the session with its vendor, branch and worktree ([dashboard.md](dashboard.md#agent-card)).
 
 Penguin refuses `register_session` for an identity the token's owner does not own. The refusal reads
 `forbidden` and names the identity's owner.

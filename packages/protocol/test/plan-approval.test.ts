@@ -133,16 +133,62 @@ test("the dashboard answer schema takes a part with its routing and refuses mark
     place: { kind: "scope", scope: "analytics" },
     owner: "jun",
     kind: "behavioural",
+    kindReason: "analytics/revenue_report.py:4 changes more than a codemod edit swaps",
     state: "pending",
     changeRequests: 0,
     roundLimit: 3,
     files: [{ path: "analytics/revenue_report.py", status: "modified", lines: ["-a", "+b"] }],
+    breaks: [{ target: "main", statement: "Revenue in different currencies is never added together.", nodeId: "analytics/tests/test_revenue.py::test_currencies", assertion: "assert x", error: null }],
+    reviews: [REVIEW],
     routing,
     changeRequest: null,
     read: false,
     raisedAt: "2026-10-11T09:00:00.000Z",
   };
-  assert.deepEqual(checkPlanInbox({ parts: [item], reviewExceptions: [] }), []);
-  assert.notDeepEqual(checkPlanInbox({ parts: [{ ...item, owner: "<b>jun</b>" }], reviewExceptions: [] }), []);
-  assert.notDeepEqual(checkPlanInbox({ parts: [{ ...item, state: "merged" }], reviewExceptions: [] }), []);
+  const empty = { parts: [], reviewExceptions: [], returnedPlans: [] };
+  assert.deepEqual(checkPlanInbox({ ...empty, parts: [item] }), []);
+  assert.notDeepEqual(checkPlanInbox({ ...empty, parts: [{ ...item, owner: "<b>jun</b>" }] }), []);
+  assert.notDeepEqual(checkPlanInbox({ ...empty, parts: [{ ...item, state: "merged" }] }), []);
+  // A review must carry its form's verdicts as one of the three and its run's commits as SHAs.
+  assert.notDeepEqual(checkPlanInbox({ ...empty, parts: [{ ...item, reviews: [{ ...REVIEW, rows: [{ ...REVIEW.rows[0], verdict: "fine" }] }] }] }), []);
+  assert.notDeepEqual(checkPlanInbox({ ...empty, parts: [{ ...item, reviews: [{ ...REVIEW, checkpoint: "main" }] }] }), []);
+  const exception = { feature: "money-minor", scope: "tax", reviewId: 4, state: "accepted", exceptions: REVIEW.exceptions, review: REVIEW, read: false, raisedAt: "2026-10-11T09:00:00.000Z" };
+  const returned = { feature: "money-minor", breakLimit: 10, behavioural: ["scope tax", "feature tax-exempt"], read: true, raisedAt: "2026-10-11T09:00:00.000Z" };
+  assert.deepEqual(checkPlanInbox({ ...empty, reviewExceptions: [exception], returnedPlans: [returned] }), []);
+  assert.notDeepEqual(checkPlanInbox({ ...empty, returnedPlans: [{ ...returned, feature: "../main" }] }), []);
+  assert.notDeepEqual(checkPlanInbox({ parts: [], reviewExceptions: [] }), []);
 });
+
+/** A review as the dashboard shows it: the form's rows, the runner's verdict and its side-by-side run. */
+const REVIEW = {
+  reviewId: 4,
+  feature: "money-minor",
+  scope: "tax",
+  reviewer: "@rahul/deposits",
+  state: "accepted",
+  checkpoint: "a".repeat(40),
+  rows: [{ invariant: "tax-per-line", statement: "Tax is rounded per line item", protected: false, verdict: "breaks", evidence: ["tax/invoice.py::invoice_tax"], storedData: "" }],
+  storedDataMarker: { kind: "migration", evidence: "orders/model.py::Order::from_record" },
+  riskyInputs: [],
+  refusals: [],
+  sideBySide: {
+    tool: "side-by-side",
+    commandId: "analysis:side-by-side",
+    base: "b".repeat(40),
+    fork: "a".repeat(40),
+    totals: { inputs: 5000, differing: 1633, invalid: 0 },
+    sets: [
+      {
+        source: "examples",
+        file: "tax/examples/invoice_tax.json",
+        contract: "tax/invoice.py::invoice_tax_minor",
+        invariants: ["tax-per-line"],
+        inputs: 5000,
+        differing: [{ name: "order-0003", args: '{"order":1}', main: "36", fork: "35" }],
+        omitted: 1632,
+        invalid: 0,
+      },
+    ],
+  },
+  exceptions: [{ kind: "broken_invariant", invariant: "tax-per-line", scope: "tax" }],
+};

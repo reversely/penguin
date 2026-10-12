@@ -2,7 +2,7 @@
  * The dashboard's routes: the built React app, GitHub sign-in (K6), the dashboard API and the live
  * connection to the ProjectAgent.
  *
- * - GET /, /inbox, /identities and /issues/<id>: the app's page, with the team map at /. GET /board
+ * - GET /, /inbox, /identities, /features/<id> and /issues/<id>: the app's page, with the team view at /. GET /board
  *   redirects to /, which replaced the board. GET /app.js and /app.css: its bundle; GET /fonts/<name>.woff2: the self-hosted Inter and Piazzolla files;
  *   GET /fonts/<name>.txt: their OFL texts. These carry no data, so they need no session: an
  *   unauthenticated visit shows sign-in.
@@ -28,6 +28,11 @@
  *     nothing. No token is returned: write tokens go to the feature's agent sessions only.
  *   - POST /api/features/<id>/area: replaces the declared area, `{ area }`, of one of the signed-in
  *     person's features.
+ *   - GET /api/team: every person with their role in the scope map, their features with each one's
+ *     one-word state and agents, and their idle agents (TeamView in @penguin/protocol).
+ *   - GET /api/features/<id>/page: the feature page as the signed-in person may see it (FeaturePage in
+ *     @penguin/protocol): a part's changed lines only for the feature's person, the part's owner and
+ *     that owner's delegate; 404 for no such feature.
  *   - GET /api/features/<id>/plan: the feature's newest merge plan with its facts and parts, as
  *     JSON; 404 when it has none. Commit subjects, docstrings, assertion lines and diff lines are
  *     plain strings in it, never markup.
@@ -122,6 +127,10 @@ export interface DashboardBackend {
   declareFeatureArea(owner: string, featureId: string, area: unknown): Promise<FeatureAreaResult>;
   /** The feature's newest merge plan as plain JSON (Plan in @penguin/protocol), or undefined. */
   featurePlan(featureId: string): Promise<unknown>;
+  /** The team view for `owner` as plain JSON (TeamView in @penguin/protocol). */
+  team(owner: string): Promise<unknown>;
+  /** The feature page as `owner` may see it (FeaturePage in @penguin/protocol), or undefined. */
+  featurePage(owner: string, featureId: string): Promise<unknown>;
   /** The overlapping starts waiting for `owner` as plain JSON (OverlapRequests in @penguin/protocol). */
   overlapRequests(owner: string): Promise<unknown>;
   /** Approves the start of `blockedFeatureId` beside `featureId` as `owner`; the ProjectAgent checks ownership. */
@@ -186,7 +195,7 @@ export const CONTENT_SECURITY_POLICY = [
 const OAUTH_COOKIE = "__Host-penguin_oauth";
 const OAUTH_TTL_SECONDS = 600;
 const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]"]);
-const PAGE_PATH = /^\/(?:|inbox|identities|issues\/[A-Za-z0-9_-]+)$/;
+const PAGE_PATH = /^\/(?:|inbox|identities|issues\/[A-Za-z0-9_-]+|features\/[a-z0-9.-]{1,63})$/;
 const ASSET_PATH = /^\/(?:app\.(?:js|css)|fonts\/[a-z0-9-]+\.(?:woff2|txt))$/;
 const FONT_PATH = /^\/fonts\/[a-z0-9-]+\.woff2$/;
 /**
@@ -430,6 +439,12 @@ async function featureRoute(
   session: DashboardSession,
   handlers: DashboardHandlers,
 ): Promise<Response | undefined> {
+  const page = /^\/api\/features\/([a-z0-9.-]{1,63})\/page$/.exec(url.pathname)?.[1];
+  if (page !== undefined) {
+    if (request.method !== "GET") return methodNotAllowed("GET");
+    const found = await (await handlers.dashboard()).featurePage(session.owner, page);
+    return found === undefined ? json({ error: "not found", message: `no feature ${page}` }, 404) : json(found);
+  }
   const plan = /^\/api\/features\/([a-z0-9.-]{1,63})\/plan$/.exec(url.pathname)?.[1];
   if (plan !== undefined) {
     if (request.method !== "GET") return methodNotAllowed("GET");
@@ -575,6 +590,10 @@ async function handleApi(
   }
   if (url.pathname === "/api/plan-parts" || url.pathname.startsWith("/api/plan-parts/")) {
     return planPartRoute(request, url, session, handlers);
+  }
+  if (url.pathname === "/api/team") {
+    if (request.method !== "GET") return methodNotAllowed("GET");
+    return json(await (await handlers.dashboard()).team(session.owner));
   }
   if (url.pathname === "/api/board") {
     if (request.method !== "GET") return methodNotAllowed("GET");

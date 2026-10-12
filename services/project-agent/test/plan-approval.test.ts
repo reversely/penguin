@@ -248,7 +248,7 @@ describe("advance notice of a merge plan", () => {
     // The dashboard lists each part with the facts behind it and why it needs its author in person.
     const inbox = (person: string) =>
       buildPlanInbox(
-        { routes, reviews, keeper: () => project.plans, items: (who) => project.inbox.items(who), scopeMap: async () => scopeMap, delegates: async () => DELEGATES, roundLimit },
+        { routes, reviews, keeper: () => project.plans, items: (who) => project.inbox.items(who), scopeMap: async () => scopeMap, delegates: async () => DELEGATES, roundLimit, records: (id) => project.features.records(id) },
         person,
       );
     const bea = await inbox("bea");

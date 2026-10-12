@@ -1,12 +1,11 @@
 # Dashboard
 
-> **Design change.** This page describes the current build. The dashboard in
-> [design.md](design.md#dashboard-for-people) shows each person's features with their agents on the
-> team view. It adds an approvals inbox. A feature page takes over from the issue page.
-
-The dashboard is where people on the team see who is working on what and what waits on them. They
-act on issues there too: open and assign issues, review fixes, answer threads and manage their agent
-identities.
+The dashboard is where people on the team see who is working on what and what waits on them. The
+team view shows each person's features with their agents and one-word states. The approvals inbox
+holds what waits on the signed-in person with the facts behind each item. A feature page tells one
+feature's story from its declaration to its record. People also act on issues there: open and
+assign issues, review fixes, answer threads and manage their agent identities. The issue pages stay
+as they were until a ticket replaces them.
 Every action it takes is an issue operation or an identity change sent to the ProjectAgent. The
 Worker serves it from the same origin as its API. The code is in `apps/dashboard/src/`; the Worker's
 routes for it are in `apps/worker/src/dashboard.ts`.
@@ -15,9 +14,10 @@ routes for it are in `apps/worker/src/dashboard.ts`.
 
 | Path | Page |
 |---|---|
-| `/` | The team map |
+| `/` | The team view |
 | `/?person=<id>` | One person's view |
-| `/inbox`, `/inbox?closed=all` | The signed-in person's inbox |
+| `/features/<id>` | One feature's page |
+| `/inbox`, `/inbox?closed=all` | The signed-in person's approvals and issue inbox |
 | `/identities`, `/identities?identity=<id>` | Every identity, with the chosen one's agent card |
 | `/issues/<number or temporary ID>` | One issue |
 | `/issues/new` | The New issue form |
@@ -47,41 +47,63 @@ Every write is authored as the owner id the cookie names; an operation that name
 refused. Every POST also requires a same-origin `Origin` header. Account menu, Sign out sends
 `POST /auth/signout`. [deploy.md](deploy.md#dashboard-sign-in) covers setting up the OAuth app.
 
-## Team map
+## Team view
 
-The home page shows one square per person, the signed-in person first
-(`team-page.tsx`, `team-view.ts`). The people are every owner in the scope map, every owner who holds
-an identity or an assigned issue, plus every person an inbox item asks to act.
+The home page shows one square per person, the signed-in person first (`team-page.tsx`, read from
+`GET /api/team`). The people are every owner in the scope map, every person with a feature and every
+identity owner. The ProjectAgent builds the answer (`services/project-agent/src/dashboard-views.ts`).
 
 Each square holds:
 
 - the person's name and avatar in their hue, linking to the person's view;
-- counts of what waits on them, shown only when non-zero: reviews, threads and sessions to start;
-- one box per agent identity of theirs. A box shows the identity's character, its handle, its session
-  status and the number of the open issue it holds, with `+N` for others. It opens the identity's
-  agent card.
+- the person's role in `penguin/scopes.json`, by scope name: Owns lists their scopes, Read by lists
+  other people's scopes that depend on theirs and Reads lists the scopes theirs depend on. Each scope
+  another person owns carries that person's id. A row with no scope is left out, except Owns, which
+  says None;
+- each of the person's features, newest first, linking to its page, with its one-word state and the
+  agents whose sessions joined it;
+- the person's agents on no feature.
 
-| Status | When |
+A feature's state comes from facts Penguin holds, the latest step first:
+
+| State | When |
 |---|---|
-| Blocked | No running session holds the issue, or an open thread on it needs a person |
-| Waiting | The issue is in `verifying` or `in_review` |
-| Working | A running session holds the issue and nothing above applies |
-| Done | The issue is closed |
-| No session | No session of the identity is running |
+| promoting | Every part of the feature's merge plan is approved |
+| waiting on approvals | The feature's start waits for an overlap approval, or a plan part waits for its author |
+| planning | Its agent proposed a plan and the check runner's facts run waits, or Penguin answered with what the plan lacks and no plan is stored, or the plan was returned over the break limit, or a part waits on the agent's revision |
+| building | Anything else |
+| promoted | Shown once block promotion records a promotion |
 
-No MCP tool reports a session's status, so the dashboard derives it from the issue's state and
-routing (`board-view.ts`). Boxes order by the most pressing status. A team identity sits under the
-owners who assigned it its issues, or under every owner it serves while it holds none.
-
-Below the squares, Unassigned lists open issues with no assignee. The page header carries Penguin's
-state across every open issue (observing, coordinating, fixing, verification failed, awaiting review,
-ready to approve) and New issue.
+States take a neutral tag. Only exceptions are highlighted: a feature carries each exception PRD
+section 7 routes to a person as a line in the attention colour, with an attention edge on its row.
+The exceptions are a part past the round limit, a plan returned over the break limit and a broken
+invariant or a protected difference in the newest review of each scope.
 
 ### Person view
 
-`/?person=<id>` shows the person's scopes from the scope map, their agent boxes and every issue that
-involves them, open issues first. Each issue row carries why it is there: Assigned, Review, Reply or
-Session to start.
+`/?person=<id>` shows the person's role, their features as on the square, their agents on no feature
+and every issue that involves them, open issues first. Each issue row carries why it is there:
+Assigned, Review, Reply or Session to start.
+
+## Feature page
+
+`/features/<id>` shows one feature (`feature-page.tsx`, read from `GET /api/features/<id>/page`):
+
+| Section | Content |
+|---|---|
+| Header | The feature id, its state, its person, its fork and its latest checkpoint |
+| Declaration | Its scopes, contracts and paths; whose approval its start waits for or got; the running features that read what it changes |
+| Agents | The agents whose sessions joined it |
+| Merge plan | The change in plain words; each fact with the tool or read that produced it; the contract diff; the callers on main; each affected place as a part with its owner, kind, state and rounds. A part's breaks, invariants and changed lines open from a line that counts them |
+| Reviews | Each review form with the check runner's verdict and side-by-side run |
+| Fixes in other forks | Each part whose fix goes into a running feature's fork, with its approval state and its write: queued for the check runner, granted to the originating agent, or written with its commit ([design.md](design.md#steps-1-and-3-in-the-build)) |
+| Block checks | The newest `check` run's results grouped by the tool that ran them, with its version and command ID: the failing targets with their findings, a count of the rest and one next step per failing check |
+| Tool runs | Every agent tool call on the feature, newest first: the tool, its caller, its result and what it reported, such as the impact graph's changed symbols and the forks that use them |
+| Record | Each signed record with its type, author, time and path in the record repo |
+
+Each deterministic tool shows by name beside its output, as [demo-story.md](demo-story.md#tools-on-screen)
+asks. A part's changed lines go only to the feature's person, the part's owner and that owner's
+delegate; anyone else sees the part's place, state and facts.
 
 ## Agent card
 
@@ -121,7 +143,29 @@ receives no assigned work ([huddle-flow.md](huddle-flow.md#5-fix-delivery-at-saf
 
 ## Inbox
 
-The inbox lists the signed-in person's items in five groups (`inbox-page.tsx`, `inbox-view.ts`):
+The inbox page holds the approvals that wait on the signed-in person (`approvals.tsx`, read from
+`GET /api/overlaps` and `GET /api/plan-parts`), each a card with the facts behind it:
+
+| Group | Holds | Controls |
+|---|---|---|
+| Overlapping starts | Each feature whose start waits beside one of the person's running features, its person and the scopes, contracts and paths where the two areas meet | Approve start, `POST /api/overlaps/approve` |
+| Plan parts | Each part that touches the person's code: the originating feature and person, the place, the kind and why, the revision and rounds, why it needs the person in person, the latest requested change, the tests that break in the place, the newest review of each scope it touches and the fix's changed lines | Approve revision, `POST /api/plan-parts/approve`; Request change, which opens a field whose text posts `POST /api/plan-parts/request-change` |
+| Protected paths | Parts that write a path the person protects, with the same facts | None |
+| Round limits | Parts of the person's own plans past the round limit | None |
+| Review exceptions | Each review of the person's scopes whose record raised an exception | None |
+| Returned plans | Each plan of the person's returned over the break limit, with its behavioural places | None |
+
+A review shows the form row by row: each invariant's statement, the verdict and the evidence, the
+stored data marker, Penguin's refusals and the exceptions it raised. Under it the side-by-side run
+names its tool and command ID. It counts the inputs that differ between main and the fork. It lists
+up to five differing inputs per set with their outcome on each side. Request change puts its field
+in focus; Escape or Cancel closes it and returns focus to Request change. While a decision sends,
+its button keeps focus and reads Approving or Sending. The server names the approver and the
+decider from the session ([design.md](design.md#advance-notice-in-the-build)).
+
+Below the approvals, from 760px, the issue inbox's rows sit in the sidebar and stay there while an
+issue is open beside them. On a phone they follow the approvals under a strip of the person's own
+identities. The rows fall in five groups (`inbox-page.tsx`, `inbox-view.ts`):
 
 | Group | Holds |
 |---|---|
@@ -133,28 +177,18 @@ The inbox lists the signed-in person's items in five groups (`inbox-page.tsx`, `
 
 A row shows what the item waits on the person for: "Waiting for your review", "Waiting for your
 reply", "Waiting for you to start a session" or "Waiting for your acceptance". A dot marks an unread
-item; pressing the dot marks it read, in every browser the person has open. From 760px the rows sit in the sidebar and
-stay there while an issue is open beside them. On a phone they fill the page under a strip of the
-person's own identities.
+item; pressing the dot marks it read, in every browser the person has open. The person who did
+something gets no item for it. An item is keyed by person, issue and reason, so a later event of the
+same reason marks it unread again (`services/project-agent/src/inbox-store.ts`).
 
-The person who did something gets no item for it. An item is keyed by person, issue and reason, so a
-later event of the same reason marks it unread again (`services/project-agent/src/inbox-store.ts`).
+## Agent labels
 
-Above the groups, Overlapping starts lists each feature whose start waits for the person beside one
-of their running features (`overlap-requests.tsx`, read from `GET /api/overlaps`). A row names the
-waiting feature, its person, the person's own feature and the scopes, contracts and paths where the
-two areas meet. Approve start posts `POST /api/overlaps/approve`; the row goes once the approval is
-recorded ([design.md](design.md#step-3-in-the-build)). The section shows only while a start waits.
-
-Below it, Merge plan parts lists each plan part that waits on the person as its owner or the owner's
-delegate (`plan-parts.tsx`, read from `GET /api/plan-parts`). A row names the part, its revision, the
-originating feature and person, the place it changes and its round count against the limit. It
-shows each reason the part needs the person in person, the latest requested change and each changed
-file's diff lines. Approve revision posts `POST /api/plan-parts/approve`. Request change opens a field
-whose text posts `POST /api/plan-parts/request-change`
-([design.md](design.md#advance-notice-in-the-build)). The same list shows, without controls, the
-parts that write a path the person protects and the parts of the person's own plans past the round
-limit. Review exceptions lists each review of the person's scopes whose record raised an exception.
+Every surface outside the agent card names an agent the same way, through `AgentLabel` in
+`agent-label.tsx`: the agent's name, the part of its handle after `@<owner>/` (`merge-rules` for
+`@priya/merge-rules`), beside its character, then its person. A 2px ring in the person's hue circles
+the character, so two people's agents with the same name read apart. The full label puts the person
+on a second line; the compact label, on team view rows and tool runs, puts it after the name. The
+full handle, the vendor and the branch appear only on the agent card.
 
 ## Issue page
 
@@ -191,6 +225,11 @@ then one `assign` per identity, then opens the new issue.
 
 ## Live updates
 
+The team view, a feature page and the approvals read their answers again on every live message the
+person's connection receives and after a reconnect. The ProjectAgent sends an inbox-changed message
+to the people a decision, an overlap or a review exception concerns, so another person's open team
+view shows a feature's new state at their next live message.
+
 The dashboard opens a WebSocket at `/api/live` (`use-live.ts`). The Worker accepts it only with a
 valid session cookie and forwards it to the ProjectAgent with the person's owner id. The agent sends a
 message naming changed issues and identities whose sessions went online or offline, an inbox-changed
@@ -219,5 +258,27 @@ People and agents look different at a glance (`character.ts`, `avatar.tsx`):
 
 Every dashboard response carries a Content Security Policy that allows scripts, styles, fonts and
 connections from the Worker's own origin only, with no inline script. Fonts (Inter and Piazzolla) are
-self-hosted. Every value from an issue or identity renders as React text, so markup in a title, body,
-name or handle shows as text and runs nothing.
+self-hosted. Every value from an issue, identity, record, commit, docstring, review form or person renders as
+React text, so markup in a title, body, name or handle shows as text and runs nothing. Each API route
+answers only as the session's person. The approvals list only that person's items. A feature page
+sends a part's changed lines only to the people they concern. No route returns an agent's
+session transcript; Penguin holds none.
+
+## Local preview
+
+`node scripts/preview/dashboard.ts [--example identity-unification|money-minor-units] [--port <port>] [--as <owner>]`
+serves the built dashboard (`npm run build -w @penguin/dashboard`) on the Worker's own routes over a
+project seeded from one fixture under `examples/` (`scripts/preview/seed.ts`). The seed builds the
+fixture's repository with its own `build.py` and goes through the modules the ProjectAgent calls:
+identities from `penguin/identities.json`, each feature opened by its agent with its declared area
+and overlap check, each checkpoint, `whats_near`, `impact` and `check` run by the check runner's
+programs, the merge plan with a real facts run, each review with the review harness and each
+person's decision. A request signs in as the owner its `X-Preview-Owner` header names, or as the
+`--as` owner, or as the originating person; `/preview/as/<owner>` switches a browser's seat.
+
+On identity unification the plan stays unstored. Penguin's facts list analytics and messaging as
+places with callers on main. The fixture holds no fix for them, so Priya's feature reads planning
+and Jun's review exception carries the case. On money in minor units the plan is returned
+over the default break limit of 10; the preview then raises the project's
+limit to the plan's behavioural count and Ines's agent proposes it again, so the plan is stored and the return stays in
+Ines's inbox.

@@ -8,6 +8,7 @@ export * from "./impact.ts";
 export * from "./block-check.ts";
 export * from "./plan.ts";
 export * from "./plan-approval.ts";
+export * from "./dashboard.ts";
 export * from "./patch.ts";
 export * from "./fix-write.ts";
 export { RUNNER_INTERVAL_MS } from "./runner.ts";

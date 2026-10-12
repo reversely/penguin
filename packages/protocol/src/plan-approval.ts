@@ -12,6 +12,7 @@
 // Worker checks it against PLAN_INBOX_SCHEMA before answering, so a malformed field never reaches the
 // page.
 
+import { BREAK_VIEW_SCHEMA, REVIEW_VIEW_SCHEMA, type BreakView, type ReviewView } from "./dashboard.ts";
 import { FEATURE_ID_MAX_LENGTH } from "./overlap.ts";
 import { PERSON_ID_MAX_LENGTH, PERSON_ID_PATTERN, SEGMENT_PATTERN } from "./operation-schema.ts";
 import { PLAN_LIMITS, PLAN_PART_KINDS, PLAN_PART_STATES, type PlanPart, type PlanPartKind, type PlanPartState, type PlanPlace } from "./plan.ts";
@@ -123,10 +124,16 @@ export interface PlanPartRequest {
   readonly place: PlanPlace;
   readonly owner: string;
   readonly kind: PlanPartKind;
+  /** Why Penguin classified the fix this way. */
+  readonly kindReason: string;
   readonly state: PlanPartState;
   readonly changeRequests: number;
   readonly roundLimit: number;
   readonly files: readonly PlanPartFile[];
+  /** The tests that break in the part's place once the change merges, as the plan states them. */
+  readonly breaks: readonly BreakView[];
+  /** The newest review of each scope the part touches, with its form and side-by-side run. */
+  readonly reviews: readonly ReviewView[];
   readonly routing: PartRouting;
   /** The latest requested change: who asked, for which revision, and their words as data. */
   readonly changeRequest: { readonly by: string; readonly revision: number; readonly text: string } | null;
@@ -141,6 +148,18 @@ export interface ReviewExceptionRequest {
   readonly reviewId: number;
   readonly state: "accepted" | "refused";
   readonly exceptions: readonly ReviewException[];
+  /** The review with its form and side-by-side run. */
+  readonly review: ReviewView;
+  readonly read: boolean;
+  readonly raisedAt: string;
+}
+
+/** A plan of the person's feature returned over the break limit (`plan_returned`, PRD 4.2 step 5). */
+export interface ReturnedPlanRequest {
+  readonly feature: string;
+  readonly breakLimit: number;
+  /** The behavioural places the plan held, as `scope <id>` or `feature <id>`. */
+  readonly behavioural: readonly string[];
   readonly read: boolean;
   readonly raisedAt: string;
 }
@@ -148,6 +167,7 @@ export interface ReviewExceptionRequest {
 export interface PlanInbox {
   readonly parts: readonly PlanPartRequest[];
   readonly reviewExceptions: readonly ReviewExceptionRequest[];
+  readonly returnedPlans: readonly ReturnedPlanRequest[];
 }
 
 const FEATURE_ID: JsonSchema = { type: "string", pattern: `^${SEGMENT_PATTERN}$`, maxLength: FEATURE_ID_MAX_LENGTH };
@@ -192,6 +212,7 @@ export const PLAN_INBOX_SCHEMA: JsonSchema = {
         },
         owner: PERSON,
         kind: { type: "string", enum: [...PLAN_PART_KINDS] },
+        kindReason: TEXT,
         state: { type: "string", enum: [...PLAN_PART_STATES] },
         changeRequests: COUNT,
         roundLimit: { type: "integer", minimum: 1 },
@@ -204,6 +225,8 @@ export const PLAN_INBOX_SCHEMA: JsonSchema = {
             lines: { type: "array", items: { type: "string", maxLength: PLAN_LIMITS.diffLineLength + 1 } },
           }),
         },
+        breaks: { type: "array", items: BREAK_VIEW_SCHEMA },
+        reviews: { type: "array", items: REVIEW_VIEW_SCHEMA },
         routing: record({ inPerson: { type: "boolean" }, reasons: { type: "array", items: REASON } }),
         changeRequest: {
           anyOf: [
@@ -223,6 +246,17 @@ export const PLAN_INBOX_SCHEMA: JsonSchema = {
         reviewId: COUNT,
         state: { type: "string", enum: ["accepted", "refused"] },
         exceptions: { type: "array", items: EXCEPTION },
+        review: REVIEW_VIEW_SCHEMA,
+        read: { type: "boolean" },
+        raisedAt: { type: "string" },
+      }),
+    },
+    returnedPlans: {
+      type: "array",
+      items: record({
+        feature: FEATURE_ID,
+        breakLimit: { type: "integer", minimum: 1 },
+        behavioural: { type: "array", items: TEXT },
         read: { type: "boolean" },
         raisedAt: { type: "string" },
       }),

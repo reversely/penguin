@@ -4,7 +4,7 @@ import { test } from "node:test";
 import type { Board, IdentitiesPage, IdentityEntry } from "@penguin/protocol";
 
 import { assignPersonHues, fnv1a, PERSON_HUES, personHue, type PersonHue } from "../src/character.ts";
-import { agentStatus, agentWork, heldIssues, personIssues, sessionIssue, teamMap, teamPeople } from "../src/team-view.ts";
+import { agentWork, heldIssues, personIssues, sessionIssue, teamPeople } from "../src/team-view.ts";
 import { boardIdentity, identity, issue, person, running, thread } from "./board-fixtures.ts";
 import { load } from "./render.ts";
 
@@ -62,62 +62,6 @@ function board(): Board {
     ],
   };
 }
-
-test("every owner, scope owner and person asked to act gets a square, the viewer's first", () => {
-  const map = teamMap(board(), page(["jun", "priya", "zoe"], ["@jun/reports"]), "priya");
-  assert.deepEqual(
-    map.people.map((entry) => entry.id),
-    ["priya", "jun", "lee", "sam", "zoe"],
-  );
-  assert.deepEqual(
-    map.unassigned.map((entry) => entry.issue.id),
-    ["35"],
-  );
-});
-
-test("an agent box carries its card's id, its most pressing status and its open issues", () => {
-  const map = teamMap(board(), page([], ["@jun/reports"]), "jun");
-  const jun = map.people.find((entry) => entry.id === "jun");
-  assert.deepEqual(
-    jun?.agents.map((agent) => [agent.identity.handle, agent.id, agent.status, agent.held.map((held) => held.issue.id)]),
-    // Issue 32 blocks the session on Priya's reply, so it comes before 31, which waits at a checkpoint.
-    [["@jun/reports", "identity-1", "blocked", ["32", "31"]]],
-  );
-  const priya = map.people.find((entry) => entry.id === "priya");
-  assert.deepEqual(
-    priya?.agents.map((agent) => [agent.identity.handle, agent.id, agent.status]),
-    // The team identity sits under Priya, who assigned it its issue, and not under Jun. Agents with no
-    // session follow by handle.
-    [
-      ["@jun/data-pair", null, "none"],
-      ["@priya/merge-rules", null, "none"],
-    ],
-  );
-});
-
-test("a team identity holding nothing sits under every owner it serves", () => {
-  const idle = { ...board(), issues: [] };
-  const map = teamMap(idle, page([], []), "jun");
-  const handles = (id: string) => map.people.find((entry) => entry.id === id)?.agents.map((agent) => agent.identity.handle);
-  assert.deepEqual(handles("jun"), ["@jun/reports", "@jun/data-pair"]);
-  assert.deepEqual(handles("priya"), ["@jun/data-pair", "@priya/merge-rules"]);
-});
-
-test("what needs a person counts reviews, threads still open on them and sessions to start", () => {
-  const map = teamMap(board(), page([], []), "jun");
-  const needs = (id: string) => map.people.find((entry) => entry.id === id)?.needs;
-  assert.deepEqual(needs("priya"), { reviews: 1, threads: 1, sessions: 1 });
-  // Lee's thread item is on an issue with no open thread that needs Lee.
-  assert.deepEqual(needs("lee"), { reviews: 0, threads: 0, sessions: 0 });
-  assert.deepEqual(needs("jun"), { reviews: 0, threads: 0, sessions: 0 });
-});
-
-test("an identity's status is its sessions' most pressing one, working with none routed and none offline", () => {
-  const two = boardIdentity("@jun/reports", 2);
-  assert.equal(agentStatus(two, new Map([["session-1", "done"], ["session-2", "waiting at a checkpoint"]])), "waiting at a checkpoint");
-  assert.equal(agentStatus(two, new Map()), "working");
-  assert.equal(agentStatus(boardIdentity("@jun/reports", 0), new Map()), "none");
-});
 
 test("a person's issues are those assigned to them or their agents or waiting on them, open first and newest first", () => {
   const rows = (id: string) => personIssues(board(), id).map((row) => [row.issue.issue.id, row.involvement]);
@@ -220,11 +164,6 @@ test("past the palette's size hues repeat as evenly as they can", () => {
   assert.deepEqual([...counts].sort(), [2, 2, 2, 2, 2, 3, 3, 3]);
 });
 
-test("the team's people are the map's squares", () => {
-  const people = teamPeople(board(), page(["jun", "priya", "mia"], []));
-  assert.deepEqual([...people].sort(), teamMap(board(), page(["jun", "priya", "mia"], []), "jun").people.map(({ id }) => id).sort());
-});
-
 test("the team map's squares and a person's badge on any page show the shell's one assignment", async () => {
   const { render } = await load<{ render: (board: Board, page: IdentitiesPage, ids: readonly string[]) => string }>(`
     import { renderToStaticMarkup } from "react-dom/server";
@@ -232,9 +171,11 @@ test("the team map's squares and a person's badge on any page show the shell's o
     import { PersonAvatar } from "./src/avatar.tsx";
     import { TeamHues, TeamMapView } from "./src/team-page.tsx";
     export function render(board, page, ids) {
-      const team = { board: { kind: "ready", value: board }, identities: { kind: "ready", value: page } };
+      const role = { scopes: [], dependents: [], dependencies: [] };
+      const view = { people: ids.filter((id) => id !== "outsider").map((id) => ({ id, role, features: [], idleAgents: [] })) };
+      const team = { view: { kind: "ready", value: view }, board: { kind: "ready", value: board }, identities: { kind: "ready", value: page } };
       return renderToStaticMarkup(createElement(TeamHues, { team },
-        createElement(TeamMapView, { board, page, viewer: "jun", navigate() {} }),
+        createElement(TeamMapView, { view, navigate() {} }),
         ...ids.map((id) => createElement("p", { key: id, "data-badge": id }, createElement(PersonAvatar, { id, size: "card" })))));
     }`);
   const owners = ["jun", "priya", "sam", "lee", "mia", "ana", "kai", "noor"];
