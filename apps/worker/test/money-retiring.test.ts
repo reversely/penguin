@@ -1,7 +1,8 @@
 // Retiring symbols (#113, PRD 0.5 section 4.2 step 2) on the money-minor-units fixture's own data,
 // through the ProjectAgent's modules and the check runner's programs as the preview seed wires them
 // (scripts/preview/seed.ts). The expand wave's plan marks the float API retiring; main then moves
-// past the migrate waves; Noor's pagination reports its second checkpoint, which calls two retiring
+// past the migrate waves, and after each promotion Penguin counts the callers left (#117), too many
+// for the contract step; Noor's pagination reports its second checkpoint, which calls two retiring
 // functions, and gets one next step per call; the plan's display rule rewrites one of them; and the
 // remaining callers on main and in the running features' own changes come back grouped by owner.
 // Expected features and owners are read from larder.json; the counts are the runs' own.
@@ -35,6 +36,8 @@ const LARDER = JSON.parse(readFileSync(join(ROOT, "examples", "money-minor-units
 const feature = (id: string) => LARDER.features.find((each) => each.id === id) as LarderFeature;
 // The readers and the midway feature call the float API in their own changes.
 const CALLERS = LARDER.features.filter((each) => each.role === "reader" || each.role === "midway");
+// The waves between the expand wave and the contract wave.
+const MIGRATE_WAVES = LARDER.features.filter((each) => each.role === "wave").slice(1, -1);
 
 /** The float API the expand wave leaves beside Money, each with what replaces it. */
 const RETIRING: RetiringSymbol[] = [
@@ -97,11 +100,34 @@ test("the expand wave's plan marks the float API retiring, signed, with the rewr
   assert.equal(record?.payload.symbols.length, RETIRING.length);
   t.diagnostic(`retiring: ${declared.map((each) => `${each.contract} (${each.rules.length} rules)`).join(", ")}`);
 
-  // The expand wave lands; main moves on past the five migrate waves.
-  preview.moveMain(preview.git("rev-parse", "feature-money-type"));
+  // The expand wave lands; main moves on past the five migrate waves, each its own feature and block.
+  // After each promotion Penguin counts the callers of every retiring symbol (#117).
   preview.features.setState(expand.id, ["opening", "building", "landing"], "landed");
-  preview.moveMain(preview.git("rev-parse", "feature-money-messaging-mobile"));
+  await countAfter(t, expand.id);
+  for (const wave of MIGRATE_WAVES) {
+    await preview.open(agentOf(wave), wave.id, { scopes: wave.area });
+    for (const lock of preview.overlaps.locksOn(wave.id)) await preview.approveStart(lock.personId, lock.featureId, wave.id);
+    await preview.checkpoint(wave.id, `feature-${wave.id}`);
+    preview.features.setState(wave.id, ["opening", "building", "landing"], "landed");
+    await countAfter(t, wave.id);
+  }
+  assert.equal(preview.git("rev-parse", "main"), preview.git("rev-parse", `feature-${MIGRATE_WAVES.at(-1)?.id}`));
 });
+
+/** The counts of Penguin's own, one per promotion, in promotion order. */
+const promotions: { feature: string; runId: number }[] = [];
+
+/** `featureId`'s block reaches main at its fork's head; Penguin counts the callers left. */
+async function countAfter(t: TestContext, featureId: string): Promise<void> {
+  const runId = await preview.promoted(featureId, preview.git("rev-parse", `feature-${featureId}`), true);
+  assert.ok(runId !== undefined, `${featureId}: the promotion asked for a count`);
+  promotions.push({ feature: featureId, runId });
+  const counted = preview.counts.find((each) => each.runId === runId)?.outcome;
+  assert.ok(counted, `${featureId}: the runner reported the count`);
+  const total = counted.counts?.reduce((sum, each) => sum + each.callers, 0) ?? null;
+  const onMain = counted.counts?.reduce((sum, each) => sum + each.onMain, 0) ?? null;
+  t.diagnostic(`after ${featureId}: ${total ?? "unknown"} callers (${onMain ?? "unknown"} on main); ${outcomeOf(runId).summary}`);
+}
 
 test("Noor's pagination adds retiring calls midway and its checkpoint gets one next step per call", async (t: TestContext) => {
   const sha = await preview.checkpoint("pagination", "feature-pagination-checkpoint");
@@ -153,4 +179,32 @@ test("the remaining callers on main and in the running features' own changes com
   const onMain = migration.groups.flatMap((group) => group.places.flatMap((each) => (each.place.kind === "scope" ? [`${group.owner}:${each.place.scope}`] : [])));
   assert.deepEqual(onMain, ["ines:money", "tomas:orders"]);
   assert.equal(migration.unowned, 0);
+});
+
+test("after the migrate waves callers of the float API are left, so Penguin proposes no contract step", (t: TestContext) => {
+  assert.deepEqual(
+    promotions.map((each) => each.feature),
+    [feature("money-type").id, ...MIGRATE_WAVES.map((wave) => wave.id)],
+  );
+  const last = preview.counts.find((each) => each.runId === promotions.at(-1)?.runId)?.outcome;
+  assert.ok(last?.counts, "the count after the last migrate wave is complete");
+  for (const each of last.counts) {
+    const features = each.features.map((use) => `${use.feature} (${use.uses})`).join(", ");
+    t.diagnostic(`${each.contract}: ${each.callers} callers, ${each.onMain} on main; in features: ${features || "none"}`);
+  }
+  // No count proposed or withdrew a contract step.
+  for (const { runId } of promotions) {
+    const outcome = preview.counts.find((each) => each.runId === runId)?.outcome;
+    assert.deepEqual([outcome?.proposed, outcome?.withdrawn], [[], []], `count ${runId}`);
+  }
+  const steps = preview.retiring.contractSteps(feature("money-type").id);
+  assert.deepEqual(
+    steps.map((each) => [each.contract, each.state]),
+    last.counts.map((each) => [each.contract, each.callers === 0 ? "no_callers" : "callers_left"]),
+  );
+  // At that promotion the running features whose own changes call the float API are the readers.
+  // Noor's pagination calls it only from its second checkpoint, reported after the last wave.
+  const calling = new Set(last.counts.flatMap((each) => each.features.map((use) => use.feature)));
+  assert.deepEqual([...calling].sort(), CALLERS.filter((each) => each.role === "reader").map((each) => each.id).sort());
+  t.diagnostic(`contract step: ${steps.map((each) => `${each.contract} ${each.state}`).join(", ")}`);
 });

@@ -158,6 +158,7 @@ import {
   type LandOutcome,
 } from "./block-land.ts";
 import { requestExpand, retryExpand, type ExpandDeps } from "./expand-promotion.ts";
+import { closeRemoved, countReported, requestRetiringCount, type RetiringCountDeps } from "./retiring-count.ts";
 import { checkpointRecord, parseBreakLimit, proposePlan, type ProposePlanInput, type ProposePlanOutcome } from "./propose-plan.ts";
 import { claimToolRuns, recordToolResult, type ToolReportOutcome, type ToolRunClaim } from "./agent-tool-runner.ts";
 import { reviewResult } from "./part-checks.ts";
@@ -408,6 +409,15 @@ export {
   type LandRejection,
 } from "./block-land.ts";
 export { onlyAddsFailures, requestExpand, retryExpand, type ExpandDeps, type ExpandInput } from "./expand-promotion.ts";
+export {
+  CALLERS_SEARCH,
+  closeRemoved,
+  countReported,
+  PENGUIN_SESSION,
+  requestRetiringCount,
+  type CountOutcome,
+  type RetiringCountDeps,
+} from "./retiring-count.ts";
 export {
   contractNextStep,
   contractWork,
@@ -2080,9 +2090,49 @@ export class ProjectAgent extends Agent {
     );
   }
 
-  /** Attaches the runner's result to waiting tool request `runId`; the session hears of it at its next safe checkpoint. */
-  reportToolRun(caller: BridgeCaller, runId: number, result: unknown): ToolReportOutcome {
-    return recordToolResult(this.#toolStore(), caller, runId, result);
+  /**
+   * Attaches the runner's result to waiting tool request `runId`; the session hears of it at its next
+   * safe checkpoint. A count of Penguin's own after a promotion goes on to the contract step
+   * (retiring-count.ts); a failure there is logged and never fails the report.
+   */
+  async reportToolRun(caller: BridgeCaller, runId: number, result: unknown): Promise<ToolReportOutcome> {
+    const outcome = recordToolResult(this.#toolStore(), caller, runId, result);
+    if (outcome.status === "recorded") {
+      try {
+        const counted = await this.#planStep(() => countReported(this.#countDeps(), outcome.run));
+        if (counted !== undefined && counted.proposed.length + counted.withdrawn.length > 0) this.#liveFeed().featuresChanged();
+      } catch (error) {
+        console.error(JSON.stringify({ event: "retiring_count_failed", run: runId, error: String(error).slice(0, 200) }));
+      }
+    }
+    return outcome;
+  }
+
+  /** What counting the callers of retiring symbols and the contract step read and write (retiring-count.ts). */
+  #countDeps(): RetiringCountDeps {
+    return {
+      features: this.#featureStore(),
+      runs: this.#toolStore(),
+      retiring: this.#retiringStore(),
+      facts: this.#planFactsStore(),
+      sign: async (record) => signFeatureRecord(record, (await this.#loadServiceKey()).privateKey),
+      notify: (personId) => sendToOwner(this.getConnections<{ owner?: string }>(), personId, inboxChangedMessage()),
+    };
+  }
+
+  /**
+   * After a promotion of `featureId` moved main to `mainAfter`: each symbol whose removal a landed
+   * block carried closes as removed, then Penguin asks for one count of the remaining callers
+   * (retiring-count.ts). A failure is logged and never fails the promotion. Not a plan step: the
+   * promoting FeatureAgent waits on this call, and a plan step may be waiting on that FeatureAgent.
+   */
+  async #countAfterPromotion(featureId: string, mainAfter: string, landed: boolean): Promise<void> {
+    try {
+      if (landed) await closeRemoved(this.#countDeps(), featureId, mainAfter);
+      requestRetiringCount(this.#countDeps(), featureId, mainAfter);
+    } catch (error) {
+      console.error(JSON.stringify({ event: "retiring_count_failed", feature: featureId, error: String(error).slice(0, 200) }));
+    }
   }
 
   #toolStore(): AgentToolStore {
@@ -2373,6 +2423,7 @@ export class ProjectAgent extends Agent {
       dependents: (featureId) => this.#overlapStore().dependents(featureId),
       retiring: this.#retiringStore(),
       notify: (personId) => sendToOwner(this.getConnections<{ owner?: string }>(), personId, inboxChangedMessage()),
+      contractSteps: (featureId) => this.#retiringStore().contractSteps(featureId),
     };
   }
 
@@ -2583,12 +2634,15 @@ export class ProjectAgent extends Agent {
     this.#blockQueueStore().release(runId);
   }
 
-  /** Main moved to the feature's checkpoint: the feature is landed, its plan retired and the starts it held checked again. */
-  featureLanded(featureId: string, promotion: Promotion, repos: ProjectRepos): Promise<void> {
+  /**
+   * Main moved to the feature's checkpoint: the feature is landed, its plan retired and the starts it
+   * held checked again. The symbols its block removed close, and the callers of the rest are counted.
+   */
+  async featureLanded(featureId: string, promotion: Promotion, repos: ProjectRepos): Promise<void> {
     const notify = (personId: string) => sendToOwner(this.getConnections<{ owner?: string }>(), personId, inboxChangedMessage());
     // Penguin's approvals of the block's parts stand once it lands, so their reversible items go.
     for (const person of new Set(this.#inboxStore().blockLanded(featureId))) notify(person);
-    return this.#featuresChanging(featureLanded(
+    await this.#featuresChanging(featureLanded(
       {
         features: this.#featureStore(),
         queue: this.#blockQueueStore(),
@@ -2604,6 +2658,7 @@ export class ProjectAgent extends Agent {
       featureId,
       promotion,
     ));
+    await this.#countAfterPromotion(featureId, promotion.mainAfter, true);
   }
 
   /** A land run failed its checks or its push: the feature is building again. */
@@ -2625,6 +2680,7 @@ export class ProjectAgent extends Agent {
     const feature = this.#featureStore().get(featureId);
     // Not a plan step: a block run reports from the feature's own Durable Object, which a plan step may be waiting on.
     await retireSplit(this.#splitDeps(), featureId, promotion.mainAfter);
+    await this.#countAfterPromotion(featureId, promotion.mainAfter, false);
     this.#liveFeed().featuresChanged();
     if (feature !== undefined) sendToOwner(this.getConnections<{ owner?: string }>(), feature.personId, inboxChangedMessage());
   }

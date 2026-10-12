@@ -448,7 +448,7 @@ export async function requestTool(
 }
 
 /** A retiring symbol as a runner request carries it: what the analysis and the ladder need. */
-function retiringInput(each: RetiringDeclaration): RetiringDeclaration {
+export function retiringInput(each: RetiringDeclaration): RetiringDeclaration {
   const { contract, replacement, feature, planId, person, rules, recordId, declaredAt } = each;
   return { contract, replacement, feature, planId, person, rules, recordId, declaredAt };
 }

@@ -881,7 +881,9 @@ export function createPenguinMcpServer(
         "the promotion once main moved to your checkpoint; `expansions` lists each expand checkpoint promoted on its own. " +
         "`contract` is how Penguin sorted your latest checkpoint's contract diff: each entry additive, compatible, incompatible " +
         "(callers outside your scopes) or a behaviour change, your feature's split, and `nextStep`. An incompatible entry makes " +
-        "the next step \"Expand first\" with the entries listed; a behaviour change keeps the merge plan.",
+        "the next step \"Expand first\" with the entries listed; a behaviour change keeps the merge plan. `contractStep` lists " +
+        "each symbol your feature retires with its callers at Penguin's count after the last promotion; once none is left, " +
+        "Penguin approves removing it. The next step then starts with \"Contract\": remove it, report a checkpoint and land.",
       inputSchema: workInput,
       annotations: { readOnlyHint: true, openWorldHint: false },
     },

@@ -101,7 +101,7 @@ Assigned, Review, Reply or Session to start.
 | Fixes in other forks | Each part whose fix goes into a running feature's fork, with its approval state and its write: queued for the check runner, granted to the originating agent, or written with its commit ([design.md](design.md#steps-1-and-3-in-the-build)) |
 | Block checks | The newest `check` run's results grouped by the tool that ran them, with its version and command ID: the failing targets with their findings, a count of the rest and one next step per failing check |
 | Tool runs | Every agent tool call on the feature, newest first: the tool, its caller, its result and what it reported, such as the impact graph's changed symbols and the forks that use them |
-| Record | Each signed record with its type, author, time and path in the record repo. An expand checkpoint promoted on its own shows as its own `Expand promoted` record after its `Expand requested` record |
+| Record | Each signed record with its type, author, time and path in the record repo. An expand checkpoint promoted on its own shows as its own `Expand promoted` record after its `Expand requested` record. The contract step shows as `Contract step approved` when Penguin approves removing a retiring symbol with no caller left, `Contract step withdrawn` when a caller comes back and `Symbols removed` once the block that removes it reaches main |
 
 Each deterministic tool shows by name beside its output, as [demo-story.md](demo-story.md#tools-on-screen)
 asks. A part's changed lines go only to the feature's person, the part's owner and that owner's

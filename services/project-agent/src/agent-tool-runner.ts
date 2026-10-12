@@ -9,6 +9,9 @@
 // The report attaches the runner's result to the request. The first report wins. The result reaches
 // the requesting session at its next safe checkpoint (AgentToolStore.deliver).
 //
+// Penguin's own count of the callers of retiring symbols after a promotion (retiring-count.ts) is
+// claimed the same way, with no agent's charter and with every running feature's fork.
+//
 // The runner holds write on a feature's fork only for an approved mechanical plan part, minted for
 // that part alone (fix-write.ts), so an `apply_fix` result names a commit kept as a local ref on the
 // runner and is never pushed.
@@ -30,6 +33,7 @@ import type { BlockRunTarget } from "@penguin/protocol";
 import type { Feature, FeatureStore } from "./feature-store.ts";
 import type { BridgeCaller } from "./issue-index.ts";
 import { RUNNING_STATES } from "./overlap-lock.ts";
+import { CALLERS_SEARCH, PENGUIN_SESSION } from "./retiring-count.ts";
 
 /** Another running feature's fork the checks merge the checkpoint onto, a target of its own. */
 export interface ClaimedFork {
@@ -90,6 +94,25 @@ export function otherForks(features: readonly Feature[], own: string): ClaimedFo
 const isRunnerTool = (tool: AgentToolName): tool is RunnerToolName => tool !== "whats_near";
 
 /**
+ * A count request of Penguin's own after a promotion (retiring-count.ts): main at the promotion, held
+ * by the promoted feature's fork, with `forks`: every running feature, the promoted one included. No
+ * agent's charter applies; the count routes nothing.
+ */
+function countClaim(run: AgentToolRun, feature: Feature, forks: readonly ClaimedFork[]): ClaimedToolRun {
+  return {
+    runId: run.id,
+    tool: "impact",
+    feature: feature.id,
+    fork: `feature-${feature.id}`,
+    base: run.baseSha as string,
+    checkpoint: run.checkpointSha as string,
+    input: run.input,
+    charter: { handle: "penguin", person: feature.personId, scopes: [], paths: [] },
+    forks,
+  };
+}
+
+/**
  * Claims the waiting tool requests for a runner bridge; any other role is refused. The fork heads are
  * read only when a request was claimed, once per feature.
  */
@@ -111,6 +134,11 @@ export async function claimToolRuns(deps: ToolRunnerDeps, caller: BridgeCaller):
   const runs: ClaimedToolRun[] = [];
   for (const run of listing.runs) {
     const feature = features.find((item) => item.id === run.featureId);
+    if (feature !== undefined && run.sessionId === PENGUIN_SESSION && run.input["search"] === CALLERS_SEARCH) {
+      // An empty `own` leaves out no running feature.
+      runs.push(countClaim(run, feature, await forks("")));
+      continue;
+    }
     const identity = run.identityId === null ? undefined : deps.identity(run.identityId);
     if (feature === undefined || identity === undefined || !isRunnerTool(run.tool)) continue;
     runs.push({

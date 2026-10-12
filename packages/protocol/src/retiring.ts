@@ -219,3 +219,80 @@ export function migrationGroups(
     .map(([owner, list]) => ({ owner, places: list, uses: list.reduce((sum, each) => sum + each.uses.length, 0) }));
   return { groups, unowned };
 }
+
+/** The callers of one retiring symbol at one count: uses on main and in each running feature's own changes. */
+export interface RetiringCallerCount {
+  readonly contract: string;
+  /** Uses on main, the report's head uses. */
+  readonly onMain: number;
+  /** Each running feature whose own changes use the symbol, in feature id order, with its uses. */
+  readonly features: readonly { readonly feature: string; readonly uses: number }[];
+  /** Every use: on main plus in the running features' own changes. */
+  readonly callers: number;
+}
+
+/**
+ * The callers of each retiring symbol in an impact report that searched for them (`symbols`), in
+ * contract order. A symbol nobody calls counts zero.
+ */
+export function retiringCallerCounts(impact: ImpactReport, declarations: readonly RetiringDeclaration[]): RetiringCallerCount[] {
+  const known = byDottedName(declarations);
+  const onMain = new Map<string, number>();
+  for (const use of impact.headUses) if (known.has(use.symbol)) onMain.set(use.symbol, (onMain.get(use.symbol) ?? 0) + 1);
+  const forks = [...impact.forks].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  return [...declarations]
+    .sort((a, b) => (a.contract < b.contract ? -1 : 1))
+    .map((declaration) => {
+      const dotted = contractDottedName(declaration.contract);
+      const features = forks.flatMap((fork) => {
+        const uses = fork.uses.filter((use) => use.symbol === dotted).length;
+        return uses === 0 ? [] : [{ feature: fork.id, uses }];
+      });
+      const main = onMain.get(dotted) ?? 0;
+      return { contract: declaration.contract, onMain: main, features, callers: features.reduce((sum, each) => sum + each.uses, main) };
+    });
+}
+
+/**
+ * Whether a count's report saw everything a caller could hide in: the analysis is complete, no list
+ * was cut and no file on main or in a running feature's own changes failed to parse. Only such a
+ * report proves that a symbol has no caller.
+ */
+export function countIsComplete(impact: ImpactReport): boolean {
+  return impact.complete && !impact.truncated && impact.errors.length === 0 && impact.forks.every((fork) => fork.errors.length === 0);
+}
+
+/**
+ * Whether a contract diff removes a retiring contract: the symbol is removed, renamed or moved and
+ * its old name no longer reaches the definition (not `kept`), or its module stops exporting it.
+ */
+export function contractRemoved(impact: ImpactReport, contract: string): boolean {
+  const dotted = contractDottedName(contract);
+  const gone = impact.changes.some((change) => change.symbol === dotted && change.kept !== true && (change.change === "removed" || change.change === "renamed" || change.change === "moved"));
+  return gone || impact.removedExports.some((each) => `${each.module}.${each.name}` === dotted);
+}
+
+/**
+ * Where the contract step of one retiring symbol stands (PRD 0.5 section 4.2 step 2, Contract):
+ * `counting` before a complete count, `callers_left` while a caller remains, `no_callers` when none is
+ * left but the originating feature is no longer running to carry the removal, `approved` once Penguin
+ * proposed and approved removing it, `removed` once the originating feature's block removed it.
+ */
+export type ContractStepState = "counting" | "callers_left" | "no_callers" | "approved" | "removed";
+
+/** One retiring symbol of a feature, its last count and its contract step. */
+export interface ContractStepEntry extends RetiringSymbol {
+  readonly state: ContractStepState;
+  /** The callers at the last count; null before a complete count. */
+  readonly callers: number | null;
+  readonly onMain: number;
+  readonly features: readonly { readonly feature: string; readonly uses: number }[];
+  /** Main's commit after the promotion the last count followed, and that count's tool request. */
+  readonly promotion: string | null;
+  readonly countRun: number | null;
+  /** The signed `contract_proposed` record, once approved. */
+  readonly recordId: string | null;
+  /** Main's commit after the block that removed it, and the signed `symbols_removed` record. */
+  readonly removedPromotion: string | null;
+  readonly removedRecordId: string | null;
+}

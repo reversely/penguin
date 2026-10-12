@@ -77,6 +77,7 @@ import {
   type ConfirmDeps,
 } from "../../services/project-agent/src/protected-change.ts";
 import { fileDiffs } from "../../services/project-agent/src/repo-diff.ts";
+import { closeRemoved, countReported, requestRetiringCount, type CountOutcome, type RetiringCountDeps } from "../../services/project-agent/src/retiring-count.ts";
 import { RetiringStore } from "../../services/project-agent/src/retiring-store.ts";
 import { claimReviews, recordReview } from "../../services/project-agent/src/review-record.ts";
 import { ReviewStore, submitReview } from "../../services/project-agent/src/review-submit.ts";
@@ -306,7 +307,30 @@ export class PreviewProject {
       dependents: (id) => this.overlaps.dependents(id),
       retiring: this.retiring,
       notify: this.#notify,
+      contractSteps: (id) => this.retiring.contractSteps(id),
     };
+  }
+
+  /** What counting the callers of retiring symbols and the contract step read and write, as the ProjectAgent wires it. */
+  countDeps(): RetiringCountDeps {
+    return { features: this.features, runs: this.tools, retiring: this.retiring, facts: this.facts, sign: (record) => this.#sign(record), notify: this.#notify };
+  }
+
+  /** Each count of Penguin's own the runner reported, with what it changed. */
+  readonly counts: { readonly runId: number; readonly outcome: CountOutcome }[] = [];
+
+  /**
+   * The promotion of `featureId` moved main to `sha`, as its block's push does: the symbols a landed
+   * block removed close, and Penguin's count of the remaining callers runs on the check runner.
+   * Answers the count's run id, or undefined when nothing is retiring.
+   */
+  async promoted(featureId: string, sha: string, landed: boolean): Promise<number | undefined> {
+    this.tick();
+    this.moveMain(sha);
+    if (landed) await closeRemoved(this.countDeps(), featureId, sha);
+    const runId = requestRetiringCount(this.countDeps(), featureId, sha);
+    if (runId !== undefined) await this.runnerPass();
+    return runId;
   }
 
   /** The check runner makes every pending facts run; each report of a latest checkpoint is sorted, as the ProjectAgent does. */
@@ -482,6 +506,9 @@ export class PreviewProject {
       report: async (runId, result) => {
         const recorded = recordToolResult(this.tools, RUNNER, runId, result);
         if (recorded.status !== "recorded") throw new Error(`report ${runId}: ${JSON.stringify(recorded)}`);
+        // A count of Penguin's own goes on to the contract step, as the ProjectAgent's report does.
+        const counted = await countReported(this.countDeps(), recorded.run);
+        if (counted !== undefined) this.counts.push({ runId, outcome: counted });
         return recorded as never;
       },
       fetchFork: (fork) => fetchRepoBranches(repo, () => localRemote(this.repo), fork),

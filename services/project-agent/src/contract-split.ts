@@ -31,6 +31,7 @@ import {
   type ContractSortResult,
   type ContractSplitState,
   type ContractSplitView,
+  type ContractStepEntry,
   type ContractWorkView,
   type RetiringSymbol,
 } from "@penguin/protocol";
@@ -126,6 +127,8 @@ export interface ContractSplitDeps {
     declareSplit(featureId: string, person: string, symbols: readonly RetiringSymbol[], recordId: string): unknown;
   };
   readonly notify?: (personId: string) => void;
+  /** Each symbol the feature retires with its count and contract step (retiring-count.ts); absent is none. */
+  readonly contractSteps?: (featureId: string) => readonly ContractStepEntry[];
 }
 
 /** The scopes `person` owns in the scope map: the author's scopes of the sort. */
@@ -303,8 +306,22 @@ function migrate(split: ContractSplitView): string {
     .join(" ");
 }
 
+/** The contract step once Penguin approved removing symbols with no caller left (retiring-count.ts). */
+function contract(approved: readonly ContractStepEntry[]): string {
+  const listed = names(approved.map((each) => each.contract));
+  const counted = [...new Set(approved.map((each) => short(each.promotion ?? "")))].join(", ");
+  const them = approved.length === 1 ? "it" : "them";
+  return (
+    `Contract: no caller of ${listed} is left on main or in any running feature's own changes (counted after promotion ${counted}). ` +
+    `Penguin approved removing ${them}: the plan has no places, so no person is asked. Remove ${them} from your fork, report that as a ` +
+    `checkpoint and call land_feature. Penguin promotes the block and closes each removed symbol's retiring record.`
+  );
+}
+
 /** The next step a sorted checkpoint gives the feature's agent. */
 export function contractNextStep(view: Omit<ContractWorkView, "nextStep">, sort: ContractSortResult | null): string {
+  const approved = view.contractStep.filter((each) => each.state === "approved");
+  if (approved.length > 0) return contract(approved);
   if (view.split?.state === "expand_first") return expandFirst(view.split.entries, sort);
   if (view.split?.state === "retiring") return migrate(view.split);
   if (view.decision === "split") return expandFirst((sort?.entries ?? []).filter((entry) => entry.sort === "incompatible"), sort);
@@ -322,7 +339,7 @@ export function contractNextStep(view: Omit<ContractWorkView, "nextStep">, sort:
 const ORDER = { incompatible: 0, behaviour: 1, compatible: 2, additive: 3 } as const;
 
 /** How Penguin sorted `feature`'s latest checkpoint, with its split and next step. Reads only. */
-export function contractWork(deps: Pick<ContractSplitDeps, "facts" | "splits">, feature: Feature, scopeMap: ScopeMap): ContractWorkView {
+export function contractWork(deps: Pick<ContractSplitDeps, "facts" | "splits" | "contractSteps">, feature: Feature, scopeMap: ScopeMap): ContractWorkView {
   const { run, sort } = sortLatest(deps, feature, scopeMap);
   const state: ContractWorkView["state"] =
     feature.latestCheckpointSha === null ? "no_checkpoint" : sort !== null ? "sorted" : run?.state === "reported" ? "failed" : "waiting";
@@ -337,6 +354,7 @@ export function contractWork(deps: Pick<ContractSplitDeps, "facts" | "splits">, 
     entries: entries.slice(0, CONTRACT_WORK_ENTRIES),
     omitted: Math.max(0, entries.length - CONTRACT_WORK_ENTRIES),
     split: deps.splits.get(feature.id) ?? null,
+    contractStep: deps.contractSteps?.(feature.id) ?? [],
   };
   return { ...view, nextStep: contractNextStep(view, sort) };
 }

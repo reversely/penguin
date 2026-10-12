@@ -289,6 +289,7 @@ feature's latest checkpoint under `contract`:
 | `decision` | `split` when an entry is incompatible, `plan` when an entry is a behaviour change and none is incompatible, `none` otherwise |
 | `counts`, `entries` | Each entry's `sort` (`additive`, `compatible`, `incompatible` or `behaviour`), its `breaks` (`rename`, `move`, `keyword-rename`, `removed`, `signature` or `type`), its `callers` outside your developer's scopes and a one-sentence `reason`. At most 100 entries, incompatible first; `omitted` counts the rest |
 | `split` | The feature's split: `expand_first`, then `retiring` once the expand reached main, with each retiring name and its replacement |
+| `contractStep` | Each symbol your feature retires with its callers at Penguin's count after the last promotion: on main and in each running feature's own changes. `state` is `counting`, `callers_left`, `no_callers`, `approved` or `removed` |
 | `nextStep` | What to do next, in one paragraph |
 
 An incompatible entry makes the next step start with "Expand first" and list the entries. For a
@@ -300,6 +301,12 @@ Name the parallel functions in its `retiring`. Once the expand reaches main, the
 names now retiring and asks for the migration plan. A behaviour change keeps the merge plan:
 the next step asks for `propose_plan`. `report_checkpoint` on a feature fork answers the facts run it
 sorts under `contractSort`.
+
+Penguin counts the callers of every retiring symbol after each promotion of main. When no caller of
+one of your feature's retiring symbols is left, Penguin approves removing it with no person asked.
+The next step then starts with "Contract" and names the symbols. Remove them from your fork, report
+the removal as a checkpoint and call `land_feature`. Once the block reaches main, each removed
+symbol's state is `removed`. A caller that comes back before then withdraws the approval.
 
 ## Merge plans
 

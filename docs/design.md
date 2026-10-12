@@ -328,6 +328,29 @@ Penguin sorts each feature checkpoint's contract diff and decides between a spli
   for the migration plan ([Steps 1 to 5 in the build](#steps-1-to-5-in-the-build), Retiring
   symbols). A later plan of the feature keeps the split's declarations, except each contract it
   declares itself.
+- **Contract.** Each promotion of main counts the callers of every retiring symbol
+  (`services/project-agent/src/retiring-count.ts`). A land and an expand promotion each record one
+  `impact` request of Penguin's own with `search: "callers"` while symbols are retiring. The check
+  runner searches main at the promotion and every running feature's own changes since that commit in
+  one analysis ([bridge-and-runner.md](bridge-and-runner.md#agent-tools-on-the-runner)). When the
+  runner reports, Penguin keeps each symbol's callers on main and per running feature
+  (`retiringCallerCounts` in `packages/protocol/src/retiring.ts`).
+  - **Proposal.** A symbol with no caller in a complete report is proposed for removal on its
+    originating feature while that feature is running. A complete report has no unreadable file on
+    main or in a running feature and no list cut at its limit. Penguin signs a `contract_proposed`
+    record with the symbols, the count and `places: []`. The plan has no places, so no part needs a
+    person and Penguin approves it ([Penguin's approval in the build](#penguins-approval-in-the-build)).
+    The feature's next step starts with "Contract" and names the symbols to remove. The agent removes
+    them, reports the removal as a checkpoint and calls `land_feature`. Penguin promotes the block.
+  - **Withdrawal.** A later count that finds a caller of an approved symbol withdraws the approval
+    with a signed `contract_withdrawn` record. A symbol whose originating feature has landed stays
+    retiring with the state `no_callers`, because a landed fork is read-only.
+  - **Closing.** When the originating feature's block reaches main, each approved symbol that the
+    landed checkpoint's contract diff removes (its facts run) closes under a signed
+    `symbols_removed` record. The symbol leaves the `RetiringSymbol` table. A later checkpoint that
+    calls it gets no retiring-calls step. Its type check and tests fail on the missing name.
+  - **Load.** Each promotion asks for one analysis, deduplicated by main's commit. An incomplete or
+    oversized report records each symbol's callers as unknown and proposes nothing.
 - **Behaviour change.** A sort with behaviour changes and no incompatible entry keeps the merge plan.
   The next step asks for `propose_plan`.
 - **The view.** `get_work` reports the sort of the session's feature under `contract`
@@ -343,6 +366,7 @@ Penguin sorts each feature checkpoint's contract diff and decides between a spli
   | `counts`, `complete` | The number of entries of each sort; false when the impact report was incomplete |
   | `entries`, `omitted` | Each `ContractSortEntry`: `symbol`, `path`, `line`, `kind`, `change`, `sort`, `breaks`, `scope`, `contract`, `to`, `keyword`, `callers` and `reason`. Incompatible entries come first, at most 100; `omitted` counts the rest |
   | `split` | Null without a split; otherwise `state` (`expand_first` or `retiring`), the `checkpoint` that last added an entry, its `entries`, the `replacements` the agent named, the `promotion` commit, the `retiring` pairs, the `unretired` names with reasons and the `recordId` of its last signed record |
+  | `contractStep` | Each symbol the feature retires: `contract`, `replacement`, `state` (`counting`, `callers_left`, `no_callers`, `approved` or `removed`), `callers` at the last count (null before a complete count), `onMain`, the running `features` with their uses, the `promotion` and `countRun` of that count, the `recordId` of the `contract_proposed` record and the `removedPromotion` and `removedRecordId` once removed |
   | `nextStep` | The agent's next step in one paragraph |
 - **On the fixtures.** Each sort comes from the fixture's checkpoint against main
   (`apps/worker/test/contract-sort-fixtures.test.ts`). On identity unification, Priya's checkpoint

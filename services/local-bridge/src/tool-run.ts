@@ -11,7 +11,9 @@
 //   carries them. A request Penguin made at a checkpoint (`search: "own"`) is the retiring-calls
 //   check: one analysis of the checkpoint's own changes, with one ladder step per file and symbol it
 //   uses. An agent's `impact` call also lists the remaining callers on main and in each other
-//   running feature's own changes, grouped by owner, from a second analysis.
+//   running feature's own changes, grouped by owner, from a second analysis. Penguin's own count
+//   after a promotion (`search: "callers"`) runs only that second analysis, on main at the promotion
+//   and every running feature, and reports it as the result's impact.
 // - `check` runs a combined run with the block checks (combined-run.ts): the checkpoint merged onto
 //   its baseline (`main`) and onto each other running feature's fork, keyed by the feature id. A
 //   person with two running features gets two merged trees, each tested in that person's scopes. Each failed or erred
@@ -173,6 +175,7 @@ async function runImpact(options: ToolPassOptions, claim: ClaimedToolRun): Promi
   const scopeMap = await loadScopeMap(options.repoPath, claim.checkpoint);
   const retiring = retiringOf(claim);
   if (retiring.length > 0 && claim.input["search"] === "own") return runRetiringCheck(options, claim, scopeMap, retiring);
+  if (retiring.length > 0 && claim.input["search"] === "callers") return runCallerCount(options, claim, scopeMap, retiring);
   const forks = claim.forks.map((other) => ({ id: other.feature, sha: other.checkpoint, scopes: ownedScopes(scopeMap, other.person) }));
   const impact: ImpactReport = await options.impact({ base: claim.base, head: claim.checkpoint, forks });
   const using = selectAffectedForks(impact);
@@ -193,6 +196,28 @@ async function runImpact(options: ToolPassOptions, claim: ClaimedToolRun): Promi
   const places = migration.groups.reduce((sum, group) => sum + group.places.length, 0);
   const listed = `; retiring symbols: ${plural(places, "place")} left in ${plural(migration.groups.length, "owner group")}`;
   return { ...emptyResult(claim), impact, migration, summary: bounded(`${summary}${listed}`) };
+}
+
+/**
+ * Penguin's count after a promotion (`search: "callers"`): one analysis of main at the promotion,
+ * with every running feature as a fork of its own changes since that commit, searched for every
+ * retiring symbol. The report is the result's impact, from which Penguin counts each symbol's
+ * callers; the migration groups come with it.
+ */
+async function runCallerCount(options: ToolPassOptions, claim: ClaimedToolRun, scopeMap: ScopeMap, retiring: readonly RetiringDeclaration[]): Promise<AgentToolResult> {
+  const impact = await options.impact({
+    base: claim.base,
+    head: claim.base,
+    forks: claim.forks.map((other) => ({ id: other.feature, sha: other.checkpoint, scopes: [], since: claim.base })),
+    symbols: retiring.map((each) => each.contract),
+  });
+  const person = new Map(claim.forks.map((other) => [other.feature, other.person]));
+  const migration = migrationGroups(impact, retiring, (scope) => scopeMap.scopes.get(scope)?.ownerId, (feature) => person.get(feature));
+  const uses = retiringUses(impact.headUses, retiring).length + impact.forks.reduce((sum, fork) => sum + retiringUses(fork.uses, retiring).length, 0);
+  const summary =
+    `${plural(uses, "caller")} of ${plural(retiring.length, "retiring symbol")} on main and in the own changes of ${plural(claim.forks.length, "running feature")}` +
+    (impact.complete ? "" : "; the report is incomplete");
+  return { ...emptyResult(claim), impact, migration, summary: bounded(summary) };
 }
 
 /**

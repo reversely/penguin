@@ -75,7 +75,9 @@ export interface Feature {
  * touching the plan's area is written by plan-coverage.ts. A land request, a plan check request, a
  * block run's checks, a promotion, a promotion main refused and a land Penguin returned are written
  * by block-land.ts. A person's confirmation of the lines the feature's own change writes under a
- * path they protect is written by protected-change.ts.
+ * path they protect is written by protected-change.ts. The contract step Penguin proposes when no caller
+ * of a retiring symbol is left, its withdrawal when a caller comes back and the symbols its block
+ * removed are written by retiring-count.ts.
  */
 export type FeatureRecordType =
   | "open_feature"
@@ -104,7 +106,10 @@ export type FeatureRecordType =
   | "land_returned"
   | "confirm_protected_change"
   | "expand_requested"
-  | "expand_promotion";
+  | "expand_promotion"
+  | "contract_proposed"
+  | "contract_withdrawn"
+  | "symbols_removed";
 
 export interface FeatureRecord {
   readonly schema_version: 1;

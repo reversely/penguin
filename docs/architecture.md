@@ -260,6 +260,9 @@ working on the rest in the same fork.
    the same two short-lived tokens and one push.
 4. The promotion is a signed `expand_promotion` record and a `Promotion` row marked `expand`. The fork
    keeps its write tokens and the feature stays `building`.
+5. While symbols are retiring, each promotion (a land or an expand) records one `impact` request of
+   Penguin's own that counts their callers on main and in every running feature's own changes. At
+   zero Penguin approves removing a symbol on its originating feature (`retiring-count.ts`).
 
 [design.md](design.md#expand-in-the-build) has the rules.
 

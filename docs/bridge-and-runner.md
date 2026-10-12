@@ -752,6 +752,12 @@ and every other running feature's fork with read tokens into the runner's reposi
   runner runs one analysis with the checkpoint as a fork of its own changes. It applies the declared
   rewrite rules to each file that uses a retiring symbol in a throwaway worktree and reports one
   ladder step per file and symbol under `decisions`.
+- A request Penguin records after a promotion with `search: "callers"` is the count of the
+  contract step. Its baseline and checkpoint are both main's commit after the promotion, held by the
+  promoted feature's fork. The claim carries no agent's charter (`penguin`) and lists every running
+  feature with a checkpoint, the promoted one included. The runner runs one analysis of main with
+  each fork's own changes since that commit, searched for the retiring symbols. It reports that
+  analysis as `impact` with the migration groups under `migration`.
 - `check` runs the [block checks](#block-checks) on the checkpoint merged onto its baseline and onto
   each other running feature's fork at its head, with every fix written into it, as a land merges
   onto it. Each merged tree is named by its feature id, so a person with

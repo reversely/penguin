@@ -2,8 +2,8 @@
 
 This case follows one breaking change through Penguin on a team of fourteen people with about sixty
 agents and about forty features in progress at once. The change does not fit one plan, so its author
-splits it into waves by parallel change. Every count below comes from `propose_plan` and the review
-harness run on the fixture in [fixture-money.md](fixture-money.md).
+splits it into waves by parallel change. Every count below comes from `propose_plan`, Penguin's caller
+counts and the review harness run on the fixture in [fixture-money.md](fixture-money.md).
 
 ## Team
 
@@ -167,6 +167,37 @@ check of its own changes.
 
 [fixture-money.md](fixture-money.md#retiring-the-float-api) lists each group with its uses.
 
+### Counting callers after each promotion
+
+After each wave's block reaches main, Penguin counts the callers of the six retiring functions on
+main and in the running features' own changes, in one analysis per promotion
+([design.md](design.md#sorting-and-splitting-in-the-build), Contract). The counts on the fixture:
+
+| Promotion | Callers | On main | In running features |
+|---|---|---|---|
+| `money-type` | 98 | 53 | 45 |
+| `money-checkout` | 93 | 48 | 45 |
+| `money-tax` | 83 | 38 | 45 |
+| `money-refunds-payouts` | 72 | 27 | 45 |
+| `money-analytics` | 68 | 23 | 45 |
+| `money-messaging-mobile` | 59 | 14 | 45 |
+
+The migrate waves moved callers on main only. The 45 uses in the 23 readers' own changes stay. After
+the last migrate wave every function still has callers:
+
+| Retiring function | Callers | On main | Running features calling it |
+|---|---|---|---|
+| `line_total()` | 8 | 2 | 3 |
+| `order_total()` | 12 | 2 | 5 |
+| `display()` | 11 | 1 | 10 |
+| `price()` | 14 | 2 | 12 |
+| `total()` | 8 | 1 | 7 |
+| `percent_off()` | 6 | 6 | 0 |
+
+No count reaches zero, so Penguin proposes no contract step. Each function's state is
+`callers_left`. The expand wave that declared the six functions has also landed, so its fork could
+not carry the removal at zero.
+
 ## What it took
 
 | | Count |
@@ -180,6 +211,7 @@ check of its own changes.
 | Times main moved | 6, one per stored wave, each with every scope's tests passing |
 | Review exceptions | 1: Rahul's broken `tax-per-line` invariant on the whole-order step |
 | Callers of the float API left on main before the contract wave | 1 scope: orders |
+| Callers of the retiring functions after the last migrate wave | 59: 14 on main, 45 in 23 running features |
 
 Penguin approves a part only when each of its checks is clean ([design.md](design.md#penguins-approval-in-the-build)).
 Neither stored part passes. Each part's trial applies its fix commit to main merged with the wave's

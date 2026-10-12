@@ -17,7 +17,7 @@
 // reads the report only: nothing here runs code.
 
 import type { CodemodEdit } from "./resolution.ts";
-import type { RetiringSymbol } from "./retiring.ts";
+import type { ContractStepEntry, RetiringSymbol } from "./retiring.ts";
 import type { ImpactChangeKind, ImpactLocation, ImpactReport, ImpactSymbolKind, ImpactUse } from "./impact.ts";
 
 export const CONTRACT_SORTS = ["additive", "compatible", "incompatible", "behaviour"] as const;
@@ -264,6 +264,11 @@ export interface ContractWorkView {
   readonly entries: readonly ContractSortEntry[];
   readonly omitted: number;
   readonly split: ContractSplitView | null;
+  /**
+   * The symbols this feature retires, each with its callers at the last count after a promotion and
+   * its contract step (retiring.ts); empty when it retires none.
+   */
+  readonly contractStep: readonly ContractStepEntry[];
   /** The feature's next step, in one paragraph. */
   readonly nextStep: string;
 }

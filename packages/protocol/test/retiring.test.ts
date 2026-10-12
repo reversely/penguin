@@ -7,6 +7,8 @@ import { describe, test } from "node:test";
 
 import {
   contractDottedName,
+  contractRemoved,
+  countIsComplete,
   IMPACT_COMMAND_ID,
   IMPACT_SCHEMA_VERSION,
   IMPACT_TOOL,
@@ -14,6 +16,7 @@ import {
   parseRetiring,
   parseToolResult,
   retiringCallDecisions,
+  retiringCallerCounts,
   TOOL_RESULT_SCHEMA_VERSION,
   type AgentToolResult,
   type ImpactReport,
@@ -205,5 +208,40 @@ describe("migration groups", () => {
       ],
     );
     assert.equal(unowned, 1);
+  });
+});
+
+describe("the callers of each retiring symbol", () => {
+  const impact = report({
+    headUses: [use("orders/tests/test_model.py", 9, "orders.model.line_total", "orders"), use("tools/x.py", 1, "orders.model.line_total", null)],
+    forks: [
+      { id: "split-shipments", sha: sha("c"), scopes: [], uses: [use("orders/shipments.py", 5, "orders.model.line_total", "orders")], errors: [] },
+      { id: "cart-sync", sha: sha("e"), scopes: [], uses: [use("mobile_api/cart_sync.py", 7, "orders.model.line_total", "mobile-api")], errors: [] },
+      { id: "no-calls", sha: sha("f"), scopes: [], uses: [use("app/x.py", 1, "shared.money.Money", "app")], errors: [] },
+    ],
+  });
+
+  test("count every use on main, in any scope or none, and in each running feature's own changes; a symbol nobody calls counts zero", () => {
+    assert.deepEqual(retiringCallerCounts(impact, RETIRING), [
+      { contract: "orders/model.py::line_total", onMain: 2, features: [{ feature: "cart-sync", uses: 1 }, { feature: "split-shipments", uses: 1 }], callers: 4 },
+      { contract: "shared/money/__init__.py::display", onMain: 0, features: [], callers: 0 },
+    ]);
+  });
+
+  test("only a complete report with no unreadable file proves that no caller is left", () => {
+    assert.equal(countIsComplete(impact), true);
+    assert.equal(countIsComplete({ ...impact, complete: false }), false);
+    assert.equal(countIsComplete({ ...impact, truncated: true }), false);
+    assert.equal(countIsComplete({ ...impact, errors: [{ kind: "syntax", path: "orders/x.py", message: "bad", tree: "head" }] }), false);
+    const unreadable = { ...impact, forks: [{ id: "cart-sync", sha: sha("e"), scopes: [], uses: [], errors: [{ kind: "syntax", path: "mobile_api/x.py", message: "bad" }] }] };
+    assert.equal(countIsComplete(unreadable), false);
+  });
+
+  test("a contract diff removes a contract when the old name is gone, not when an alias keeps it", () => {
+    const change = { symbol: "orders.model.line_total", path: "orders/model.py", line: 4, kind: "function", scope: "orders", contract: "orders/model.py::line_total" } as const;
+    assert.equal(contractRemoved(report({ changes: [{ ...change, change: "removed" }] }), "orders/model.py::line_total"), true);
+    assert.equal(contractRemoved(report({ changes: [{ ...change, change: "renamed", kept: true }] }), "orders/model.py::line_total"), false);
+    assert.equal(contractRemoved(report({ changes: [{ ...change, change: "modified" }] }), "orders/model.py::line_total"), false);
+    assert.equal(contractRemoved(report({ removedExports: [{ module: "orders.model", path: "orders/model.py", name: "line_total" }] }), "orders/model.py::line_total"), true);
   });
 });

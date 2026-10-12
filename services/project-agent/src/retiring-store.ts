@@ -12,8 +12,13 @@
 //
 // Readers: the retiring-calls check at each checkpoint (agent-tools.ts `requestRetiringCheck`), the
 // `impact` tool's migration groups and `apply_fix` by a retiring symbol's rewrite rule.
+//
+// The contract step (retiring-count.ts) keeps two more tables here: each symbol's callers at the last
+// count after a promotion, and each symbol Penguin proposed removing. A symbol whose removal reached
+// main leaves `RetiringSymbol`, so no check names it as retiring any more; its contract step stays,
+// marked removed.
 
-import type { Plan, RetiringDeclaration, RetiringSymbol, RewriteRule } from "@penguin/protocol";
+import type { ContractStepEntry, Plan, RetiringCallerCount, RetiringDeclaration, RetiringSymbol, RewriteRule } from "@penguin/protocol";
 
 import type { SqlDatabase, SqlValue } from "./issue-index.ts";
 
@@ -21,7 +26,27 @@ export const RETIRING_SCHEMA: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS RetiringSymbol (
     contract TEXT PRIMARY KEY, replacement TEXT NOT NULL, feature_id TEXT NOT NULL, plan_id TEXT NOT NULL,
     person_id TEXT NOT NULL, rules TEXT NOT NULL, record_id TEXT NOT NULL, declared_at INTEGER NOT NULL)`,
+  // Each symbol's callers at the last count after a promotion; null callers is an incomplete count.
+  `CREATE TABLE IF NOT EXISTS RetiringCount (
+    contract TEXT PRIMARY KEY, callers INTEGER, on_main INTEGER NOT NULL, features TEXT NOT NULL,
+    promotion TEXT NOT NULL, run_id INTEGER NOT NULL, counted_at INTEGER NOT NULL)`,
+  // Each symbol Penguin proposed removing: approved, then removed once the block reached main.
+  `CREATE TABLE IF NOT EXISTS ContractStep (
+    contract TEXT PRIMARY KEY, replacement TEXT NOT NULL, feature_id TEXT NOT NULL, state TEXT NOT NULL,
+    record_id TEXT NOT NULL, promotion TEXT NOT NULL, run_id INTEGER NOT NULL, proposed_at INTEGER NOT NULL,
+    removed_promotion TEXT, removed_record TEXT)`,
 ];
+
+/** A symbol Penguin proposed removing, as the ContractStep table keeps it. */
+export interface ContractStepRow extends RetiringSymbol {
+  readonly feature: string;
+  readonly state: "approved" | "removed";
+  readonly recordId: string;
+  readonly promotion: string;
+  readonly runId: number;
+  readonly removedPromotion: string | null;
+  readonly removedRecordId: string | null;
+}
 
 type Row = Record<string, SqlValue>;
 
@@ -35,6 +60,20 @@ function declaration(row: Row): RetiringDeclaration {
     rules: JSON.parse(String(row["rules"])) as RewriteRule[],
     recordId: String(row["record_id"]),
     declaredAt: new Date(Number(row["declared_at"])).toISOString(),
+  };
+}
+
+function stepRow(row: Row): ContractStepRow {
+  return {
+    contract: String(row["contract"]),
+    replacement: String(row["replacement"]),
+    feature: String(row["feature_id"]),
+    state: String(row["state"]) as ContractStepRow["state"],
+    recordId: String(row["record_id"]),
+    promotion: String(row["promotion"]),
+    runId: Number(row["run_id"]),
+    removedPromotion: row["removed_promotion"] === null ? null : String(row["removed_promotion"]),
+    removedRecordId: row["removed_record"] === null ? null : String(row["removed_record"]),
   };
 }
 
@@ -110,6 +149,113 @@ export class RetiringStore {
       }
     });
     return this.list().filter((each) => each.feature === featureId);
+  }
+
+  /**
+   * Keeps the count of tool request `runId` after the promotion to `promotion`, for each of
+   * `contracts`. `counts` null is an incomplete count: no number of callers is known.
+   */
+  counted(contracts: readonly string[], counts: readonly RetiringCallerCount[] | null, runId: number, promotion: string): void {
+    const now = this.#now();
+    const byContract = new Map((counts ?? []).map((each) => [each.contract, each]));
+    this.#db.transaction(() => {
+      for (const contract of contracts) {
+        const count = byContract.get(contract);
+        this.#db.exec(
+          `INSERT INTO RetiringCount (contract, callers, on_main, features, promotion, run_id, counted_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT (contract) DO UPDATE SET callers = excluded.callers, on_main = excluded.on_main, features = excluded.features,
+             promotion = excluded.promotion, run_id = excluded.run_id, counted_at = excluded.counted_at`,
+          contract,
+          count === undefined ? null : count.callers,
+          count?.onMain ?? 0,
+          JSON.stringify(count?.features ?? []),
+          promotion,
+          runId,
+          now,
+        );
+      }
+    });
+  }
+
+  /** The symbols Penguin approved removing whose removal has not reached main, of one feature or of all. */
+  approvedSteps(featureId?: string): ContractStepRow[] {
+    const rows =
+      featureId === undefined
+        ? this.#db.exec(`SELECT * FROM ContractStep WHERE state = 'approved' ORDER BY contract`)
+        : this.#db.exec(`SELECT * FROM ContractStep WHERE state = 'approved' AND feature_id = ? ORDER BY contract`, featureId);
+    return rows.map(stepRow);
+  }
+
+  /** Penguin approved removing `symbols` of `featureId`, after the count `runId`, under the signed record `recordId`. */
+  approveRemoval(featureId: string, symbols: readonly RetiringSymbol[], recordId: string, runId: number, promotion: string): void {
+    const now = this.#now();
+    this.#db.transaction(() => {
+      for (const symbol of symbols) {
+        this.#db.exec(
+          `INSERT OR REPLACE INTO ContractStep (contract, replacement, feature_id, state, record_id, promotion, run_id, proposed_at, removed_promotion, removed_record)
+           VALUES (?, ?, ?, 'approved', ?, ?, ?, ?, NULL, NULL)`,
+          symbol.contract,
+          symbol.replacement,
+          featureId,
+          recordId,
+          promotion,
+          runId,
+          now,
+        );
+      }
+    });
+  }
+
+  /** A caller of `contracts` came back: Penguin's approvals of their removal are withdrawn. */
+  withdrawRemoval(contracts: readonly string[]): void {
+    this.#db.transaction(() => {
+      for (const contract of contracts) this.#db.exec(`DELETE FROM ContractStep WHERE contract = ? AND state = 'approved'`, contract);
+    });
+  }
+
+  /**
+   * The block that removed `contracts` reached main at `promotion`: each leaves the retiring symbols,
+   * and its contract step is marked removed under the signed record `recordId`.
+   */
+  removed(contracts: readonly string[], promotion: string, recordId: string): void {
+    this.#db.transaction(() => {
+      for (const contract of contracts) {
+        this.#db.exec(`DELETE FROM RetiringSymbol WHERE contract = ?`, contract);
+        this.#db.exec(`UPDATE ContractStep SET state = 'removed', removed_promotion = ?, removed_record = ? WHERE contract = ?`, promotion, recordId, contract);
+      }
+    });
+  }
+
+  /**
+   * Each symbol `featureId` retires, with its last count and its contract step, in contract order:
+   * the symbols it still declares, then those its block removed.
+   */
+  contractSteps(featureId: string): ContractStepEntry[] {
+    const symbols = new Map(
+      this.#db.exec(`SELECT contract, replacement FROM RetiringSymbol WHERE feature_id = ?`, featureId).map((row) => [String(row["contract"]), String(row["replacement"])]),
+    );
+    const steps = new Map(this.#db.exec(`SELECT * FROM ContractStep WHERE feature_id = ?`, featureId).map((row) => [String(row["contract"]), stepRow(row)]));
+    for (const step of steps.values()) if (step.state === "removed" && !symbols.has(step.contract)) symbols.set(step.contract, step.replacement);
+    return [...symbols.entries()]
+      .sort(([a], [b]) => (a < b ? -1 : 1))
+      .map(([contract, replacement]): ContractStepEntry => {
+        const [count] = this.#db.exec(`SELECT * FROM RetiringCount WHERE contract = ?`, contract);
+        const callers = count === undefined || count["callers"] === null ? null : Number(count["callers"]);
+        const step = steps.get(contract);
+        return {
+          contract,
+          replacement,
+          state: step?.state ?? (callers === null ? "counting" : callers === 0 ? "no_callers" : "callers_left"),
+          callers,
+          onMain: count === undefined ? 0 : Number(count["on_main"]),
+          features: count === undefined ? [] : (JSON.parse(String(count["features"])) as ContractStepEntry["features"]),
+          promotion: count === undefined ? null : String(count["promotion"]),
+          countRun: count === undefined ? null : Number(count["run_id"]),
+          recordId: step?.recordId ?? null,
+          removedPromotion: step?.removedPromotion ?? null,
+          removedRecordId: step?.removedRecordId ?? null,
+        };
+      });
   }
 }
 
