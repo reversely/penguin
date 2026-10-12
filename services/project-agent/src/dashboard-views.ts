@@ -35,7 +35,7 @@ import type { Feature, FeatureRecord, FeatureStore } from "./feature-store.ts";
 import type { FixGrant } from "./fix-write.ts";
 import type { Identity } from "./identity-store.ts";
 import { RUNNING_STATES, type OverlapStore } from "./overlap-lock.ts";
-import { breakView, newestReviews, partFiles, type PartRoute, type PlanRouteStore } from "./plan-approval.ts";
+import { breakView, newestReviews, partFiles, returnedPayload, type PartRoute, type PlanRouteStore } from "./plan-approval.ts";
 import type { ReviewStore, StoredReview } from "./review-submit.ts";
 import { reviewView } from "./review-view.ts";
 import type { Session } from "./session-store.ts";
@@ -100,8 +100,8 @@ export function featureExceptions(parts: readonly PartRoute[], reviews: readonly
   const exceptions: FeatureException[] = parts.filter((part) => part.state === "round_limit").map((part) => ({ kind: "round_limit", partId: part.partId }));
   const lastPlan = records.filter((record) => record.type === "propose_plan" || record.type === "plan_returned").at(-1);
   if (lastPlan?.type === "plan_returned") {
-    const payload = lastPlan.payload as { break_limit: number; behavioural: readonly string[] };
-    exceptions.push({ kind: "plan_returned", behavioural: payload.behavioural.length, breakLimit: payload.break_limit });
+    const returned = returnedPayload(lastPlan.payload);
+    exceptions.push({ kind: "plan_returned", inPerson: returned.inPerson.length, breakLimit: returned.breakLimit });
   }
   const scopes = [...new Set(reviews.map((review) => review.scopeId))];
   for (const review of newestReviews(reviews, scopes)) {
@@ -361,6 +361,7 @@ export async function buildFeaturePage(deps: DashboardViewDeps, featureId: strin
           feature: part.place.feature,
           person: part.owner,
           state: part.approvalState,
+          approvedBy: part.approvedBy,
           revision: part.revision,
           write: write === undefined ? null : { state: write.state, writer: write.writer, commit: write.commitSha, rebased: write.rebased },
         },

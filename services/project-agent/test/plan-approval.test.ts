@@ -13,6 +13,9 @@ import {
   IMPACT_SCHEMA_VERSION,
   IMPACT_TOOL,
   PLAN_LIMITS,
+  REVIEW_SCHEMA_VERSION,
+  SIDE_BY_SIDE_COMMAND_ID,
+  SIDE_BY_SIDE_TOOL,
   type ImpactReport,
   type ImpactUse,
   type PlanFactsReport,
@@ -22,15 +25,19 @@ import { parseScopeMap } from "@penguin/scope-map";
 import type { FeatureRecord } from "../src/feature-store.ts";
 import { IdentityStore } from "../src/identity-store.ts";
 import { IssueIndex } from "../src/issue-index.ts";
+import { reviewResult } from "../src/part-checks.ts";
 import {
   announcePlan,
+  approveCleanParts,
   approvePlanPart,
   buildPlanInbox,
+  parseAdminMode,
   parseRoundLimit,
   planNoticeSources,
   PlanRouteStore,
   planWork,
   requestPlanChange,
+  reversePenguinApproval,
   revisePlanPart,
   type PartDecisionOutcome,
   type PlanApprovalDeps,
@@ -253,13 +260,21 @@ describe("advance notice of a merge plan", () => {
       );
     const bea = await inbox("bea");
     assert.deepEqual(bea.parts.map((each) => [each.ask, each.partId, each.routing.inPerson]), [["approve", BILLING, true]]);
+    // The billing fix is a commit after the checkpoint the facts run tested, Bea has not reviewed yet,
+    // and Bea protects the file it writes.
     assert.deepEqual(bea.parts[0]?.routing.reasons, [
+      { kind: "tests", scope: null, status: "fix_not_run", breaks: 0 },
+      { kind: "review", scope: "billing", state: "missing", reviewId: null, invariant: null },
       { kind: "protected_path", scope: "billing", owner: "bea", path: "billing/old.py", file: "billing/old.py" },
     ]);
     assert.deepEqual(bea.parts[0]?.files[0]?.lines, ["-from shared.money.api import price", "-fee = price(invoice)", "+from shared.money.api import price_minor", "+fee = price_minor(invoice)"]);
     const rahul = await inbox("rahul");
-    // No routing condition: Rahul's agent review stands and Rahul approves once.
-    assert.deepEqual(rahul.parts.map((each) => [each.ask, each.partId, each.routing.inPerson, each.state, each.roundLimit]), [["approve", TAX, false, "pending", 3]]);
+    // No run has tested the patch and Rahul's agent has not reviewed yet, so Penguin leaves it to Rahul.
+    assert.deepEqual(rahul.parts.map((each) => [each.ask, each.partId, each.routing.inPerson, each.state, each.roundLimit]), [["approve", TAX, true, "pending", 3]]);
+    assert.deepEqual(rahul.parts[0]?.routing.reasons, [
+      { kind: "tests", scope: null, status: "fix_not_run", breaks: 0 },
+      { kind: "review", scope: "tax", state: "missing", reviewId: null, invariant: null },
+    ]);
     // The delegate sees the parts waiting on the owner they stand for.
     assert.deepEqual((await inbox("sol")).parts.map((each) => each.partId), [TAX]);
     assert.deepEqual((await inbox("ines")).parts, []);
@@ -400,5 +415,234 @@ describe("advance notice of a merge plan", () => {
     assert.deepEqual(checkpoint("rahul").reviews, []);
     // Another person's session never hears of it.
     assert.deepEqual(checkpoint("bea").reviews, []);
+  });
+});
+
+// Penguin's approval (#114, PRD 0.5 section 4.3 step 3): the money checkpoint already holds the billing
+// fix, so the facts run tested it on main. Billing protects no path here. Bea's review is the last
+// check; once it is recorded and clean, Penguin approves the billing part, Bea is told and may reverse
+// it until the block lands. The tax part is a patch for a running feature, which no run has tested.
+describe("Penguin approves the parts whose checks are clean", () => {
+  const openMap = parseScopeMap({
+    scopes: [scope("money", "ines", ["shared/money/"], { contracts: ["shared/money/api.py::price"] }), scope("tax", "rahul", ["tax/"]), scope("billing", "bea", ["billing/"])],
+  });
+  // Ada stands in for Bea.
+  const delegates = new Map([["bea", "ada"]]);
+  let built: ReturnType<typeof buildRepo>;
+  let project: PlanProject;
+  let routes: PlanRouteStore;
+  let reviews: ReviewStore;
+  let adminMode: boolean;
+  let reversed: string[];
+  let approvedParts: string[];
+  const deps = (): PlanApprovalDeps => ({
+    features: project.features,
+    routes,
+    inbox: project.inbox,
+    keeper: () => project.plans,
+    delegates: async () => delegates,
+    sign: (draft) => project.sign(draft),
+    roundLimit: 3,
+    notify: () => undefined,
+    approved: (_featureId, _plan, part) => approvedParts.push(part.partId),
+    reversed: (_featureId, part) => reversed.push(`${part.partId}@${part.revision}`),
+    checks: { reviews: (featureId) => reviews.list(featureId), scopeMap: async () => openMap, adminMode },
+  });
+  const BILLING = "money-minor/v1#1";
+  const TAX = "money-minor/v1#2";
+  const billing = { feature: "money-minor", part: BILLING, revision: 1 };
+  const part = (partId: string) => project.plans.latestPlan("money-minor")?.parts.find((each) => each.partId === partId);
+  const items = (person: string) => project.inbox.items(person).map((item) => [item.reason, item.issueId]);
+  const inbox = (person: string) =>
+    buildPlanInbox(
+      {
+        routes,
+        reviews,
+        keeper: () => project.plans,
+        items: (who) => project.inbox.items(who),
+        scopeMap: async () => openMap,
+        delegates: async () => delegates,
+        roundLimit: 3,
+        adminMode,
+        landed: (featureId) => project.features.get(featureId)?.state === "landed",
+        records: (id) => project.features.records(id),
+      },
+      person,
+    );
+  /** Bea's agent reviews billing on the checkpoint and the runner records it. */
+  const review = (verdict: "holds" | "unknown", forkSha = built.billingFix, state: "accepted" | "refused" | "pending" = "accepted") => {
+    const form = { rows: [{ invariant: "fee-cents", verdict, evidence: ["billing/old.py::fee"], storedData: "" }], riskyInputs: [], storedDataMarker: null };
+    const stored = reviews.insert({ featureId: "money-minor", scopeId: "billing", ownerId: "bea", reviewer: "@bea/work", sessionId: null, forkSha, baseSha: built.main, form, invariants: [], state: "pending", refusals: [] });
+    if (state === "pending") return;
+    const sideBySide = { schemaVersion: REVIEW_SCHEMA_VERSION, tool: SIDE_BY_SIDE_TOOL, commandId: SIDE_BY_SIDE_COMMAND_ID, base: built.main, fork: forkSha, scope: "billing", sets: [], totals: { inputs: 0, differing: 0, invalid: 0 }, timings: { mainMs: 0, forkMs: 0, totalMs: 0 } } as const;
+    const record = { schemaVersion: REVIEW_SCHEMA_VERSION, base: built.main, fork: forkSha, scope: "billing", state, refusals: [], invariants: [], storedShapes: null, sideBySide, exceptions: [], timings: { impactMs: 0, sideBySideMs: 0, totalMs: 0 } } as const;
+    reviews.complete(stored.id, { state, refusals: [], record, sideBySideRef: "sha256:0", exceptions: [] });
+  };
+  const ok = (outcome: PartDecisionOutcome) => {
+    assert.equal(outcome.status, "ok", JSON.stringify(outcome));
+    if (outcome.status !== "ok") throw new Error("not ok");
+    return outcome;
+  };
+  const refused = (outcome: PartDecisionOutcome, reason: string) => {
+    assert.equal(outcome.status, "rejected", JSON.stringify(outcome));
+    assert.equal((outcome as { reason: string }).reason, reason, JSON.stringify(outcome));
+  };
+
+  /** Proposes the plan at a checkpoint holding the billing fix, with the facts run's results. */
+  async function propose(results: PlanFactsReport["results"]): Promise<void> {
+    project.announce = (plan, map) => announcePlan(deps(), plan, map);
+    assert.equal((await project.propose("ines", "s-ines", "money-minor", parts())).status, "missing");
+    const [request] = project.facts.pending();
+    assert.ok(request);
+    const report: PlanFactsReport = { impact: impactReport(built.main, built.billingFix, built.main), impactError: null, results, durationMs: 10 };
+    assert.equal(project.facts.record(request.runId, "runner", JSON.parse(JSON.stringify(report))).status, "recorded");
+    const stored = await project.propose("ines", "s-ines", "money-minor", parts());
+    assert.equal(stored.status, "stored", JSON.stringify(stored));
+  }
+  const parts = () => [
+    { place: { scope: "billing" }, diff: { commit: built.billingFix } },
+    { place: { feature: "tax-rounding" }, patch: { base: built.main, diff: patch("tax/rounding.py", TAX_BEFORE, TAX_AFTER) } },
+  ];
+  const PASSING = (): PlanFactsReport["results"] => [
+    { target: "main", scopeId: "billing", commandId: "test:billing", merged: built.billingFix, ...PASSED },
+    { target: "tax-rounding", scopeId: "tax", commandId: "test:tax", merged: built.billingFix, ...PASSED },
+  ];
+
+  beforeEach(async () => {
+    built = buildRepo();
+    adminMode = false;
+    reversed = [];
+    approvedParts = [];
+    project = new PlanProject(openMap, built.repo.dir);
+    routes = new PlanRouteStore(project.sql);
+    reviews = new ReviewStore(project.sql);
+    await project.open("money-minor", "ines", { scopes: ["money"] }, { id: "s-ines", handle: "@ines/money" });
+    await project.checkpoint("money-minor", built.billingFix, built.main, "@ines/money");
+    await project.open("tax-rounding", "rahul", { scopes: ["tax"] });
+    await project.checkpoint("tax-rounding", built.main, built.main, "@rahul/work");
+  });
+
+  test("Penguin approves a part once its review is recorded clean, with a signed record naming the evidence", async () => {
+    await propose(PASSING());
+    // Before Bea's review, Penguin waits: nothing is approved and Bea is asked as usual.
+    assert.deepEqual(await approveCleanParts(deps(), "money-minor"), []);
+    review("holds", built.billingFix, "pending");
+    assert.deepEqual(await approveCleanParts(deps(), "money-minor"), []);
+    review("holds");
+    const approved = await approveCleanParts(deps(), "money-minor");
+    assert.deepEqual(approved.map((each) => [each.partId, each.approvalState, each.approvedBy]), [[BILLING, "approved", "penguin"]]);
+    assert.deepEqual([part(TAX)?.approvalState, part(TAX)?.approvedBy], ["pending", null]);
+    assert.deepEqual(approvedParts, [BILLING]);
+    // The approval is Penguin's signed record with each check's evidence.
+    const [record] = project.records("money-minor", "approve_plan_part");
+    assert.deepEqual(record?.author, { penguin: true });
+    assert.equal(record?.payload["approved_by"], "penguin");
+    assert.deepEqual(record?.payload["checks"], {
+      checkpoint: built.billingFix,
+      facts_run: part(BILLING)?.tests?.runId,
+      tests: [{ scope: "billing", command: "test:billing", status: "passed" }],
+      reviews: [2],
+    });
+    // Bea is told: the item to approve gives way to one she may reverse.
+    assert.deepEqual(items("bea"), [["penguin_approved", `part:${BILLING}`]]);
+    const listed = await inbox("bea");
+    assert.deepEqual(listed.parts.map((each) => [each.ask, each.partId, each.approvedBy, each.routing.inPerson]), [["penguin_approved", BILLING, "penguin", false]]);
+    // Her delegate sees it too; nobody else does.
+    assert.deepEqual((await inbox("ada")).parts.map((each) => [each.ask, each.partId]), [["penguin_approved", BILLING]]);
+    assert.deepEqual((await inbox("rahul")).parts.map((each) => [each.ask, each.partId]), [["approve", TAX]]);
+    // A second look approves nothing twice.
+    assert.deepEqual(await approveCleanParts(deps(), "money-minor"), []);
+    assert.equal(project.records("money-minor", "approve_plan_part").length, 1);
+  });
+
+  test("one failing check leaves the part to its author", async () => {
+    const failing = PASSING().map((result) => (result.scopeId === "billing" ? { ...result, status: "failed" as const } : result));
+    await propose(failing);
+    review("holds");
+    assert.deepEqual(await approveCleanParts(deps(), "money-minor"), []);
+    const listed = await inbox("bea");
+    assert.deepEqual(listed.parts[0]?.routing.reasons, [{ kind: "tests", scope: "billing", status: "failed", breaks: 0 }]);
+  });
+
+  test("a review that is unsure, refused or of another checkpoint leaves the part to its author", async () => {
+    await propose(PASSING());
+    for (const [verdict, forkSha, state] of [
+      ["unknown", built.billingFix, "accepted"],
+      ["holds", built.billingFix, "refused"],
+      ["holds", built.checkpoint, "accepted"],
+    ] as const) {
+      review(verdict, forkSha, state);
+      assert.deepEqual(await approveCleanParts(deps(), "money-minor"), [], `${verdict} ${state}`);
+    }
+    assert.equal(part(BILLING)?.approvalState, "pending");
+  });
+
+  test("admin mode needs a person for every part", async () => {
+    // PENGUIN_PLAN_ADMIN_MODE: off when unset, empty or off; any other value, mistyped included, is on.
+    for (const value of [undefined, "", "off"]) assert.equal(parseAdminMode(value), false, String(value));
+    for (const value of ["on", "ON", "true", "of"]) assert.equal(parseAdminMode(value), true, value);
+    adminMode = true;
+    await propose(PASSING());
+    review("holds");
+    assert.deepEqual(await approveCleanParts(deps(), "money-minor"), []);
+    assert.deepEqual((await inbox("bea")).parts[0]?.routing.reasons, [{ kind: "admin_mode" }]);
+    ok(await approvePlanPart(deps(), "bea", billing));
+    assert.equal(part(BILLING)?.approvedBy, "bea");
+  });
+
+  test("only the author or their delegate reverses Penguin's approval, and the part comes back to them", async () => {
+    await propose(PASSING());
+    review("holds");
+    await approveCleanParts(deps(), "money-minor");
+    refused(await reversePenguinApproval(deps(), "rahul", billing), "forbidden");
+    refused(await reversePenguinApproval(deps(), "ines", billing), "forbidden");
+    refused(await reversePenguinApproval(deps(), "bea", { ...billing, revision: 2 }), "conflict");
+    // A person's approval is not Penguin's to reverse.
+    refused(await reversePenguinApproval(deps(), "rahul", { feature: "money-minor", part: TAX, revision: 1 }), "conflict");
+
+    const back = ok(await reversePenguinApproval(deps(), "ada", billing));
+    assert.deepEqual([back.part.approvalState, back.part.approvedBy, back.part.reversal?.by], ["pending", null, "ada"]);
+    assert.deepEqual(reversed, [`${BILLING}@1`]);
+    const [record] = project.records("money-minor", "reverse_penguin_approval");
+    assert.deepEqual([record?.author, record?.payload["part_id"], record?.payload["revision"]], [{ person: "ada" }, BILLING, 1]);
+    assert.deepEqual(items("bea"), [["plan_part", `part:${BILLING}`]]);
+    // Penguin never approves the reversed revision again; Bea decides it in person.
+    assert.deepEqual(await approveCleanParts(deps(), "money-minor"), []);
+    assert.deepEqual((await inbox("bea")).parts[0]?.routing.reasons, [{ kind: "reversed", by: "ada" }]);
+    refused(await reversePenguinApproval(deps(), "bea", billing), "conflict");
+    ok(await approvePlanPart(deps(), "bea", billing));
+    assert.equal(part(BILLING)?.approvedBy, "bea");
+  });
+
+  test("Penguin's approval stands once the block lands", async () => {
+    await propose(PASSING());
+    review("holds");
+    await approveCleanParts(deps(), "money-minor");
+    project.features.setState("money-minor", ["opening", "building", "landing"], "landed");
+    project.inbox.blockLanded("money-minor");
+    refused(await reversePenguinApproval(deps(), "bea", billing), "conflict");
+    assert.deepEqual(items("bea"), []);
+    assert.deepEqual((await inbox("bea")).parts, []);
+    assert.equal(part(BILLING)?.approvedBy, "penguin");
+  });
+
+  test("the break limit counts parts needing a person, mechanical or not", async () => {
+    // Both parts are mechanical renames. The tax patch is untested, so it needs Rahul; the billing part
+    // only waits for Bea's review, which the limit does not count.
+    project.breakLimit = 1;
+    await propose(PASSING());
+    assert.deepEqual(project.plans.latestPlan("money-minor")?.parts.map((each) => each.kind), ["mechanical", "mechanical"]);
+    // With Bea's review unsure the billing part fails a check as well: two over a limit of one.
+    project.evidence = () => ({ reviews: reviews.list("money-minor").map(reviewResult), adminMode: false });
+    review("unknown");
+    const again = await project.propose("ines", "s-ines", "money-minor", parts());
+    assert.equal(again.status, "returned", JSON.stringify(again).slice(0, 300));
+    if (again.status !== "returned") return;
+    assert.deepEqual(again.inPerson, [{ kind: "scope", scope: "billing" }, { kind: "feature", feature: "tax-rounding" }]);
+    const [record] = project.records("money-minor", "plan_returned");
+    assert.deepEqual(record?.payload["in_person"], ["scope billing", "feature tax-rounding"]);
+    // Admin mode counts every part.
+    project.evidence = () => ({ reviews: [], adminMode: true });
+    assert.equal((await project.propose("ines", "s-ines", "money-minor", parts())).status, "returned");
   });
 });

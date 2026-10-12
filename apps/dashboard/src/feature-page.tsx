@@ -16,7 +16,7 @@ import { PersonAvatar } from "./avatar.tsx";
 import {
   checksByTool,
   counted,
-  PART_STATE_LABEL,
+  partStateText,
   partNumber,
   placeText,
   recordLabel,
@@ -169,7 +169,7 @@ export function FeatureView({ page, navigate, back }: { readonly page: FeaturePa
                 <span className="muted">
                   part {partNumber(fix.partId)} revision {fix.revision}
                 </span>
-                <span className={fix.state === "approved" ? "tag tag-verified" : fix.state === "pending" ? "tag tag-attention" : "tag"}>{PART_STATE_LABEL[fix.state]}</span>
+                <span className={fix.state === "approved" ? "tag tag-verified" : fix.state === "pending" ? "tag tag-attention" : "tag"}>{partStateText(fix.state, fix.approvedBy)}</span>
                 {fix.write === null ? null : <FixWriteText write={fix.write} />}
               </li>
             ))}
@@ -386,7 +386,7 @@ function PartView({ part, plan, person, navigate }: { readonly part: PlanPartVie
         <h4 className="part-title">
           {partNumber(part.partId)} {part.place.kind === "feature" ? <FeatureLink feature={part.place.feature} navigate={navigate} /> : placeText(part.place)}
         </h4>
-        <span className={part.state === "approved" ? "tag tag-verified" : part.state === "pending" ? "tag tag-attention" : "tag"}>{PART_STATE_LABEL[part.state]}</span>
+        <span className={part.state === "approved" ? "tag tag-verified" : part.state === "pending" ? "tag tag-attention" : "tag"}>{partStateText(part.state, part.approvedBy)}</span>
       </header>
       <p className="approval-line">
         <a className="approval-person" href={ownerPath} onClick={linkHandler(navigate, ownerPath)}>

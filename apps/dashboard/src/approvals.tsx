@@ -2,7 +2,8 @@
 // behind it. Overlapping starts show where the two areas meet. Each merge plan is one card: why it
 // needs the person, each review its parts carry (once, however many parts share it) and then the
 // person's parts, each with its rounds, its breaks and changed lines behind a line counting them, and
-// Approve and Request change on a part that waits on them. Protected-path confirmations and parts past
+// Approve and Request change on a part that waits on them. A part Penguin approved because every check
+// was clean shows who approved it and Reverse approval until its block reaches main. Protected-path confirmations and parts past
 // the round limit sit in their plan's card without controls. A feature's own change to a path the
 // person protects is its own card, with the changed lines and Confirm lines while it waits; a
 // confirmed one stays, marked confirmed, until a later checkpoint changes the lines. Review exceptions
@@ -17,8 +18,8 @@ import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type K
 import { approveOverlap, confirmProtectedChange, decidePlanPart, fetchOverlapRequests, fetchPlanInbox, SignedOut } from "./api.ts";
 import {
   counted,
-  PART_STATE_LABEL,
   partNumber,
+  partStateText,
   placeText,
   planGroups,
   reviewAnchor,
@@ -132,6 +133,7 @@ export function ApprovalsInbox({ state, navigate, onSignedOut }: Props) {
         act(part.partId, () => decidePlanPart(text === undefined ? { kind: "approve", ...decision } : { kind: "request_change", ...decision, text }));
       }}
       onConfirm={(change) => act(changeKey(change), () => confirmProtectedChange(change))}
+      onReverse={(part) => act(part.partId, () => decidePlanPart({ kind: "reverse", feature: part.feature, part: part.partId, revision: part.revision }))}
     />
   );
 }
@@ -147,10 +149,12 @@ interface ViewProps {
   readonly onApproveStart: (request: OverlapRequest) => void;
   readonly onDecide: (part: PlanPartRequest, text?: string) => void;
   readonly onConfirm?: (change: ProtectedChangeRequest) => void;
+  /** Reverses Penguin's approval of a part. */
+  readonly onReverse?: (part: PlanPartRequest) => void;
 }
 
 /** The approvals as read, without the fetch, so they render on the server in a test. */
-export function ApprovalsView({ approvals, busy, failed, unread = false, navigate, onApproveStart, onDecide, onConfirm = () => undefined }: ViewProps) {
+export function ApprovalsView({ approvals, busy, failed, unread = false, navigate, onApproveStart, onDecide, onConfirm = () => undefined, onReverse = () => undefined }: ViewProps) {
   const { overlaps, plan } = approvals;
   const plans = planGroups(plan.parts);
   const shownReviews = new Set(plans.flatMap((group) => group.reviews.map((review) => review.reviewId)));
@@ -188,7 +192,7 @@ export function ApprovalsView({ approvals, busy, failed, unread = false, navigat
             Plans <span className="tab-count">{plans.length}</span>
           </h2>
           {plans.map((group) => (
-            <PlanCard key={group.planId} group={group} busy={busy} navigate={navigate} onDecide={onDecide} />
+            <PlanCard key={group.planId} group={group} busy={busy} navigate={navigate} onDecide={onDecide} onReverse={onReverse} />
           ))}
         </section>
       )}
@@ -224,12 +228,12 @@ export function ApprovalsView({ approvals, busy, failed, unread = false, navigat
                   <FeatureLink feature={item.feature} navigate={navigate} />
                 </h3>
                 <span className="tag tag-attention">
-                  {item.behavioural.length} behavioural over the limit of {item.breakLimit}
+                  {item.inPerson.length} needing a person over the limit of {item.breakLimit}
                 </span>
               </header>
               <p className="muted">Please split the plan or restructure it</p>
-              <ul className="chip-list" aria-label="Behavioural places">
-                {item.behavioural.map((place) => (
+              <ul className="chip-list" aria-label="Places needing a person">
+                {item.inPerson.map((place) => (
                   <li key={place} className="chip">
                     {place}
                   </li>
@@ -310,6 +314,7 @@ interface PlanProps {
   readonly busy: string | undefined;
   readonly navigate: (path: string) => void;
   readonly onDecide: (part: PlanPartRequest, text?: string) => void;
+  readonly onReverse: (part: PlanPartRequest) => void;
 }
 
 /**
@@ -317,7 +322,7 @@ interface PlanProps {
  * carry, then the person's parts with their decisions. A part is listed once per reason it reaches the
  * person, so a part they approve and also confirm a protected path for shows twice.
  */
-function PlanCard({ group, busy, navigate, onDecide }: PlanProps) {
+function PlanCard({ group, busy, navigate, onDecide, onReverse }: PlanProps) {
   const inPerson = group.parts.some((part) => part.routing.inPerson);
   return (
     <article className="approval-card card-raised plan-card" data-unread={group.unread ? true : undefined} data-in-person={inPerson ? true : undefined}>
@@ -344,27 +349,28 @@ function PlanCard({ group, busy, navigate, onDecide }: PlanProps) {
       )}
       <ol className="plan-parts" aria-label="Your parts">
         {group.parts.map((part) => (
-          <PartRow key={`${part.ask}/${part.partId}`} part={part} sending={busy === part.partId} onDecide={onDecide} />
+          <PartRow key={`${part.ask}/${part.partId}`} part={part} sending={busy === part.partId} onDecide={onDecide} onReverse={onReverse} />
         ))}
       </ol>
     </article>
   );
 }
 
-/** The tag beside a part: its state, or why it reaches the person when they only confirm it. */
+/** The tag beside a part: its state with who approved it, or why it reaches the person when they only confirm it. */
 function partTag(part: PlanPartRequest): { readonly text: string; readonly attention: boolean } {
   if (part.ask === "protected_path") return { text: "Protected path", attention: false };
-  return { text: PART_STATE_LABEL[part.state], attention: part.ask === "approve" && part.state === "pending" };
+  return { text: partStateText(part.state, part.approvedBy), attention: part.ask === "approve" && part.state === "pending" };
 }
 
 interface PartProps {
   readonly part: PlanPartRequest;
   readonly sending: boolean;
   readonly onDecide: (part: PlanPartRequest, text?: string) => void;
+  readonly onReverse: (part: PlanPartRequest) => void;
 }
 
 /** One part in its plan's card: its place and rounds, its facts behind a counting line, and the decision. */
-function PartRow({ part, sending, onDecide }: PartProps) {
+function PartRow({ part, sending, onDecide, onReverse }: PartProps) {
   const [asking, setAsking] = useState(false);
   const [text, setText] = useState("");
   const fieldId = useId();
@@ -388,6 +394,7 @@ function PartRow({ part, sending, onDecide }: PartProps) {
     }
   };
   const decides = part.ask === "approve";
+  const reverses = part.ask === "penguin_approved";
   return (
     <li className="plan-part" data-unread={part.read ? undefined : true}>
       <div className="plan-part-head">
@@ -399,7 +406,15 @@ function PartRow({ part, sending, onDecide }: PartProps) {
           <li className="tag tag-data">revision {part.revision}</li>
           <li className="tag tag-data">{roundText(part.changeRequests, part.roundLimit)}</li>
         </ul>
-        <span className={tag.attention ? "tag tag-attention plan-part-state" : "tag plan-part-state"}>{tag.text}</span>
+        <span className={tag.attention ? "tag tag-attention plan-part-state" : reverses ? "tag tag-verified plan-part-state" : "tag plan-part-state"}>{tag.text}</span>
+        {!reverses ? null : (
+          // Penguin's approval stands until its author reverses it or the block reaches main.
+          <div className="approval-actions">
+            <button type="button" className="button" aria-disabled={sending} aria-describedby={titleId} onClick={() => sending || onReverse(part)}>
+              {sending ? "Reversing" : "Reverse approval"}
+            </button>
+          </div>
+        )}
         {!decides || asking ? null : (
           // While a decision sends the buttons keep focus and refuse presses through aria-disabled.
           <div className="approval-actions">
@@ -414,6 +429,7 @@ function PartRow({ part, sending, onDecide }: PartProps) {
           </div>
         )}
       </div>
+      {reverses ? <p className="muted approval-kind">You may reverse it until the block reaches main</p> : null}
       {decides && asking ? (
         // Asking for a change replaces the decision buttons: the request is then the one primary action.
         <form className="approval-reason" onSubmit={send} aria-labelledby={titleId}>

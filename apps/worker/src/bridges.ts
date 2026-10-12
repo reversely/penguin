@@ -150,8 +150,11 @@ export interface BridgeDirectory {
   sessionCheckpoint(owner: string, worktreeId: string): Promise<Delivery[]> | Delivery[];
   /** Claims the pending reviews; refused unless `caller` holds the runner role. */
   claimReviews(caller: BridgeCaller): Promise<ReviewClaim> | ReviewClaim;
-  /** Attaches the runner's record to review `reviewId`; refused unless `caller` holds the runner role. */
-  reportReview(caller: BridgeCaller, reviewId: number, record: unknown): Promise<ReviewReportOutcome>;
+  /**
+   * Attaches the runner's record to review `reviewId`; refused unless `caller` holds the runner role.
+   * Penguin then approves each part of the feature's plan whose checks are clean.
+   */
+  reportReview(caller: BridgeCaller, reviewId: number, record: unknown, repos: ProjectRepos): Promise<ReviewReportOutcome>;
   /** The merge-plan facts runs waiting for the runner; refused unless `caller` holds the runner role. */
   planFactsRuns(
     caller: BridgeCaller,
@@ -643,7 +646,7 @@ async function reportReview(request: Request, reviewId: number, handlers: Bridge
   }
   const body = await readObject(request);
   if (body === undefined) return invalid("", "must be a JSON object");
-  const outcome = await (await handlers.bridges()).reportReview({ bridgeId: bridge.bridgeId, role: bridge.role }, reviewId, body);
+  const outcome = await (await handlers.bridges()).reportReview({ bridgeId: bridge.bridgeId, role: bridge.role }, reviewId, body, handlers.projectRepos);
   if (outcome.status === "rejected") {
     return json({ error: outcome.reason, message: outcome.message }, REVIEW_REJECTION_STATUS[outcome.reason] ?? 409);
   }

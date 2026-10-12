@@ -105,12 +105,21 @@ export async function fetchPlanInbox(): Promise<PlanInbox> {
 
 /** One decision on one revision of a plan part; the server names the decider from the session. */
 export type PlanPartDecision =
-  | { readonly kind: "approve"; readonly feature: string; readonly part: string; readonly revision: number }
+  | { readonly kind: "approve" | "reverse"; readonly feature: string; readonly part: string; readonly revision: number }
   | { readonly kind: "request_change"; readonly feature: string; readonly part: string; readonly revision: number; readonly text: string };
 
-/** Approves a part's revision or asks for a change to it. Resolves false when the part moved on since it was read. */
+const DECISION_PATH: Readonly<Record<PlanPartDecision["kind"], string>> = {
+  approve: "/api/plan-parts/approve",
+  reverse: "/api/plan-parts/reverse",
+  request_change: "/api/plan-parts/request-change",
+};
+
+/**
+ * Approves a part's revision, reverses Penguin's approval of it or asks for a change to it. Resolves
+ * false when the part moved on since it was read.
+ */
 export async function decidePlanPart({ kind, ...decision }: PlanPartDecision): Promise<boolean> {
-  const path = kind === "approve" ? "/api/plan-parts/approve" : "/api/plan-parts/request-change";
+  const path = DECISION_PATH[kind];
   const response = await fetch(path, {
     method: "POST",
     credentials: "same-origin",

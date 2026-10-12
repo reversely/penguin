@@ -826,10 +826,31 @@ describe("a signed-in person's merge plan parts", () => {
     );
   });
 
+  test("reverses Penguin's approval as the session's person; a body with text or a decider is refused", async () => {
+    const rahul = new Browser();
+    await rahul.signIn("rahul-gh");
+    const part = { feature: "money-minor", part: "money-minor/v1#2", revision: 1 };
+    for (const forged of [{ ...part, reversed_by: "rahul" }, { ...part, text: "undo" }]) {
+      assert.equal((await rahul.post("/api/plan-parts/reverse", forged)).status, 400);
+    }
+    assert.equal((await rahul.post("/api/plan-parts/reverse", part, "https://evil.test")).status, 403);
+    assert.equal((await rahul.request("/api/plan-parts/reverse")).status, 405);
+    assert.deepEqual(rahul.backend.decisions, []);
+    const jun = new Browser(rahul.backend);
+    await jun.signIn("jun-gh");
+    assert.equal((await jun.post("/api/plan-parts/reverse", part)).status, 403);
+    assert.equal((await rahul.post("/api/plan-parts/reverse", part)).status, 200);
+    assert.deepEqual(rahul.backend.decisions.map(({ owner, decision }) => [owner, decision]), [
+      ["jun", { kind: "reverse", ...part }],
+      ["rahul", { kind: "reverse", ...part }],
+    ]);
+  });
+
   test("without a session the plan part routes answer 401", async () => {
     const browser = new Browser();
     assert.equal((await browser.request("/api/plan-parts")).status, 401);
     assert.equal((await browser.post("/api/plan-parts/approve", { feature: "a", part: "a/v1#1", revision: 1 })).status, 401);
+    assert.equal((await browser.post("/api/plan-parts/reverse", { feature: "a", part: "a/v1#1", revision: 1 })).status, 401);
     assert.deepEqual(browser.backend.decisions, []);
   });
 });

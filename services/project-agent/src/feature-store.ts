@@ -68,9 +68,9 @@ export interface Feature {
 /**
  * The record types of a feature: the opening, a declaration and a checkpoint's update, written here,
  * an overlap check and an approval of a start, written by overlap-lock.ts, a merge plan and a plan
- * returned over the break limit, written by propose-plan.ts, and an author's approval of a part, a
- * requested change, the originating agent's revision and a part past the round limit, written by
- * plan-approval.ts. A fix written into an affected fork, a pushed fix Penguin refused and a part sent
+ * returned over the break limit, written by propose-plan.ts, and an approval of a part by its author or
+ * by Penguin, an author's reversal of Penguin's approval, a requested change, the originating agent's
+ * revision and a part past the round limit, written by plan-approval.ts. A fix written into an affected fork, a pushed fix Penguin refused and a part sent
  * back because its fork head moved are written by fix-write.ts. A part added for a feature that started
  * touching the plan's area is written by plan-coverage.ts. A land request, a plan check request, a
  * block run's checks, a promotion, a promotion main refused and a land Penguin returned are written
@@ -87,6 +87,7 @@ export type FeatureRecordType =
   | "retire_symbols"
   | "plan_returned"
   | "approve_plan_part"
+  | "reverse_penguin_approval"
   | "request_plan_change"
   | "revise_plan_part"
   | "plan_round_limit"

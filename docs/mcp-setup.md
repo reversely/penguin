@@ -205,8 +205,10 @@ feature of the same person makes no lock; `ownOverlaps` lists it.
 A merge plan part that touches the developer's code reaches each of the developer's running sessions
 once, at their next safe checkpoint ([design.md](design.md#advance-notice-in-the-build)). The hook
 answer names it. `report_checkpoint` lists it under `newPlanParts`. `get_work` lists it under
-`planPartsNeedingYou` with the scopes the agent reviews through `submit_review`. The developer
-approves the part or asks for a change on the dashboard inbox; no tool approves it. A session of the
+`planPartsNeedingYou` with the scopes the agent reviews through `submit_review`. Penguin approves the
+part itself once every check is clean, the agent's review included. Otherwise the developer approves
+the part or asks for a change on the dashboard inbox; no tool approves it. Each part in `get_work`'s
+`plan` names its `approvedBy`: the developer, their delegate or `penguin`. A session of the
 originating feature hears each decision under `planDecisions`. It answers a `change_requested` part
 with `revise_plan_part`. A session that submitted a review hears the check runner's verdict under
 `reviewResults`.
@@ -290,7 +292,10 @@ place the facts show unaffected (`not_affected`, with the reason), two parts for
 patch that names another base, writes outside the place's scopes or does not apply at the head. A
 running feature is affected only by its own changes: the files it added or changed since its merge
 base with main. A caller in a file it carries unchanged from main is main's, so a feature with no
-caller of its own and no break needs no part. A plan with more behavioural parts than the project's break limit answers `returned`.
+caller of its own and no break needs no part. A part needs a person when one of Penguin's checks fails
+([design.md](design.md#penguins-approval-in-the-build)). A plan with more such parts than the
+project's break limit answers `returned`, with their places under `inPerson`. A review the author's
+agent has yet to submit does not count.
 
 A plan may also declare `rules`: up to 32 rewrite rules for its mechanical fixes. Each rule names
 `id`, `contract` (`path::symbol`, one the contract diff touches), `kind` (`expression` or

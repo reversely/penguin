@@ -117,6 +117,18 @@ describe("declaring retiring symbols", () => {
     );
   });
 
+  test("the break limit counts no retiring declaration, only parts needing a person", async () => {
+    // Admin mode makes every part need a person and the limit is one: a plan with no part and a
+    // retiring declaration is still stored, since a declaration is not a part.
+    project.breakLimit = 1;
+    project.evidence = () => ({ reviews: [], adminMode: true });
+    await project.propose("ines", "s-ines", "money-type", [], [RULE], [PRICE]);
+    reportFacts();
+    const outcome = await project.propose("ines", "s-ines", "money-type", [], [RULE], [PRICE]);
+    assert.equal(outcome.status, "stored", JSON.stringify(outcome).slice(0, 500));
+    assert.equal(project.records("money-type", "plan_returned").length, 0);
+  });
+
   test("a rule for a retiring contract the change does not touch is not refused; without the declaration it is", async () => {
     await project.propose("ines", "s-ines", "money-type", [], [RULE]);
     reportFacts();

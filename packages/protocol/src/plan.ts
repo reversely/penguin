@@ -20,8 +20,11 @@ import { checkSchema, type JsonSchema, type SchemaError } from "./schema-check.t
 
 export const PLAN_SCHEMA_VERSION = 1;
 
-/** PRD 4.2 step 5: a plan may touch at most this many running features unless the project says otherwise. */
+/** PRD 4.2 step 4: a plan may hold at most this many parts needing a person unless the project says otherwise. */
 export const PLAN_BREAK_LIMIT_DEFAULT = 10;
+
+/** The approver a part records when Penguin approved it because every check was clean (PRD 4.3 step 3). */
+export const PENGUIN_APPROVER = "penguin";
 
 /**
  * PRD section 7: past this many requested changes on one part, the next request goes to the
@@ -327,7 +330,7 @@ export interface PlanInvariantFact {
 
 /**
  * Where one part's approval stands (PRD 4.3 step 3). `pending`: the part's current revision waits for
- * its author. `approved`: the author approved that revision. `change_requested`: the author asked for
+ * its author. `approved`: the author, or Penguin with every check clean, approved that revision. `change_requested`: the author asked for
  * a change, which goes back to the originating agent. `round_limit`: the author asked for one change
  * more than the project's round limit, so the part waits on the originating feature's person.
  */
@@ -388,6 +391,11 @@ export interface PlanPart {
     readonly files: readonly PlanFileDiff[];
     /** True when a file or line was cut at PLAN_LIMITS; a patch is never cut. */
     readonly truncated: boolean;
+    /**
+     * The files a commit changes outside the part's scopes, which `files` leaves out; empty for a
+     * patch, which may not leave them. Absent on a part from before #114, which Penguin never approves.
+     */
+    readonly outside?: readonly string[];
   };
   /** Uses of a changed symbol in this place: callers on main, or in the feature's fork. */
   readonly callers: readonly ImpactUse[];
@@ -396,12 +404,49 @@ export interface PlanPart {
   /** The originating agent's note on the part, or null. */
   readonly note: string | null;
   readonly approvalState: PlanPartState;
-  /** The person whose approval of the current revision is recorded, or null. */
+  /** Who approved the current revision: a person, or PENGUIN_APPROVER; null before an approval. */
   readonly approvedBy: string | null;
   /** The changes the author asked for on this part so far, one per round. */
   readonly changeRequests: number;
   /** The latest requested change, or null before the first. */
   readonly changeRequest: PlanChangeRequest | null;
+  /**
+   * The facts run's test results for the part's scopes on its place's merged tree. Absent on a part
+   * from before #114 and on one added after the plan was announced, which Penguin never approves.
+   */
+  readonly tests?: PartTestEvidence | null;
+  /** The author's reversal of Penguin's approval; the reversed revision then waits on them in person. */
+  readonly reversal?: PlanPartReversal | null;
+}
+
+/** One test command's outcome on the merged tree of a part's place, as the facts run reported it. */
+export interface PartTestResult {
+  readonly scopeId: string;
+  readonly commandId: string;
+  readonly status: PlanResultStatus;
+  readonly breaks: number;
+}
+
+/**
+ * What the plan's facts run shows of a part's tests. The run merged the originating checkpoint onto
+ * the place: main for code on main, the feature's fork head for a running feature. `fixInTree` is
+ * true only when that tree holds the part's fix, a commit at or under the checkpoint. A patch for a
+ * running feature is written only once the part is approved, so no run has tested it.
+ */
+export interface PartTestEvidence {
+  /** The facts run's target: `main` or the running feature's id. */
+  readonly target: string;
+  readonly runId: string;
+  readonly fixInTree: boolean;
+  readonly results: readonly PartTestResult[];
+}
+
+/** An author's reversal of Penguin's approval of one revision of their part. */
+export interface PlanPartReversal {
+  readonly by: string;
+  readonly revision: number;
+  readonly at: string;
+  readonly recordId: string;
 }
 
 /** A running feature the change reaches, and how Penguin knows. */

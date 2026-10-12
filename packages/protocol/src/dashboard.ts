@@ -28,7 +28,8 @@ export type FeatureStateWord = (typeof FEATURE_STATES)[number];
 /** An exception PRD section 7 routes to a person, which the team view highlights on its feature. */
 export type FeatureException =
   | { readonly kind: "round_limit"; readonly partId: string }
-  | { readonly kind: "plan_returned"; readonly behavioural: number; readonly breakLimit: number }
+  /** `inPerson`: the returned plan's parts that needed a person. */
+  | { readonly kind: "plan_returned"; readonly inPerson: number; readonly breakLimit: number }
   | { readonly kind: "broken_invariant"; readonly scope: string; readonly invariant: string }
   | { readonly kind: "protected_difference"; readonly scope: string; readonly invariant: string; readonly differing: number };
 
@@ -296,6 +297,8 @@ export interface FixView {
   readonly feature: string;
   readonly person: string;
   readonly state: PlanPartState;
+  /** Who approved the current revision: the person, their delegate or `penguin`; null before. */
+  readonly approvedBy: string | null;
   readonly revision: number;
   /**
    * The write of the current revision: `queued` or `granted` while it waits for its commit, `written`

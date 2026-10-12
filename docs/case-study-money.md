@@ -55,9 +55,10 @@ agent proposes a plan with a fix for each place the change reaches. Penguin find
 - **Running features.** The 23 features whose own changes call the money contracts.
 
 All 32 fixes are behavioural. Each one rewrites test data or expectations, or makes a choice per
-call such as the yen's currency, which no rewrite rule writes. The project's break limit is 10, so
-Penguin returns the plan to Ines with a signed `plan_returned` record. The returned plan stays in
-Ines's inbox.
+call such as the yen's currency, which no rewrite rule writes. All 32 parts also need a person: no
+facts run has tested any of their fixes, since each fix comes after the checkpoint Ines's agent
+reported. The project's break limit is 10, so Penguin returns the plan to Ines with a signed
+`plan_returned` record. The returned plan stays in Ines's inbox.
 
 ## Waves by parallel change
 
@@ -136,8 +137,8 @@ After the migrate waves, one caller of the float API is left on main: `orders`, 
 
 The migrate waves changed main's code, never the running features' own changes. The 23 running
 features that call the float API in the modules they add still call it, so each is a place of the
-contract wave. Their 23 fixes and the orders fix make 24 behavioural parts, over the limit of 10, so
-Penguin returns the contract wave's plan to Ines as well.
+contract wave. Their 23 fixes and the orders fix make 24 parts needing a person, over the limit of
+10, so Penguin returns the contract wave's plan to Ines as well.
 
 Two moments depend on the contract wave's plan being announced:
 
@@ -172,15 +173,24 @@ check of its own changes.
 |---|---|
 | Plans returned over the break limit | 2: the one-block attempt (32) and the contract wave (24) |
 | Plans stored | 6: the expand wave and five migrate waves |
-| Parts approved in the migrate waves | 2: Lena for promotions, Mei for invoicing |
+| Parts approved in the migrate waves | 2, both by a person: Lena for promotions, Mei for invoicing |
+| Parts Penguin approved | 0: each stored part fails a check (below) |
 | Protected-path confirmations | 1: Jun for the analytics wave's `analytics/revenue_report.py` |
 | Starts approved beside a running feature | 1 for the one-block attempt and 23 for the waves |
 | Times main moved | 6, one per stored wave, each with every scope's tests passing |
 | Review exceptions | 1: Rahul's broken `tax-per-line` invariant on the whole-order step |
 | Callers of the float API left on main before the contract wave | 1 scope: orders |
 
-The waves moved the nine scopes on main one or two at a time, with at most one behavioural part per
-plan. The running features' own float calls stay in place until the contract wave, so that wave
+Penguin approves a part only when each of its checks is clean ([design.md](design.md#penguins-approval-in-the-build)).
+Neither stored part passes. Lena's promotions part names a fix commit after the checkpoint the facts
+run tested. The run has no test result for promotions on main. The fix also edits
+`promotions/tests/test_stacking.py`, which holds no caller of a changed symbol and no break. No
+agent reviewed the part. Mei's invoicing part names a fix commit after the checkpoint as well. Its
+tests fail on that tree with 2 breaks. No agent reviewed it. Rahul's tax review is a review of
+the tax wave's own change, so its broken invariant still reaches Rahul as a review exception.
+
+The waves moved the nine scopes on main one or two at a time, with at most one part needing a person
+per plan. The running features' own float calls stay in place until the contract wave, so that wave
 carries the same 23 feature fixes the one-block attempt carried.
 
 Every step lives as a signed record in the project's record repo in Artifacts: each plan, each

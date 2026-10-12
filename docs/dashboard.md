@@ -96,7 +96,7 @@ Assigned, Review, Reply or Session to start.
 | Header | The feature id, its state, its person, its fork and its latest checkpoint |
 | Declaration | Its scopes, contracts and paths; whose approval its start waits for or got; the running features that read what it changes |
 | Agents | The agents whose sessions joined it |
-| Merge plan | The change in plain words; each fact with the tool or read that produced it; the contract diff; the callers on main; each affected place as a part with its owner, kind, state and rounds. A part's breaks, invariants and changed lines open from a line that counts them |
+| Merge plan | The change in plain words; each fact with the tool or read that produced it; the contract diff; the callers on main; each affected place as a part with its owner, kind, state and rounds. An approved part names its approver: Approved by Penguin, or Approved by the person who approved it. A part's breaks, invariants and changed lines open from a line that counts them |
 | Reviews | Each review form with the check runner's verdict and side-by-side run |
 | Fixes in other forks | Each part whose fix goes into a running feature's fork, with its approval state and its write: queued for the check runner, granted to the originating agent, or written with its commit ([design.md](design.md#steps-1-and-3-in-the-build)) |
 | Block checks | The newest `check` run's results grouped by the tool that ran them, with its version and command ID: the failing targets with their findings, a count of the rest and one next step per failing check |
@@ -151,17 +151,22 @@ The inbox page holds the approvals that wait on the signed-in person (`approvals
 | Group | Holds | Controls |
 |---|---|---|
 | Overlapping starts | Each feature whose start waits beside one of the person's running features, its person and the scopes, contracts and paths where the two areas meet. An expand checkpoint that adds to the person's scopes shows here too, with the scopes and paths it adds to ([design.md](design.md#expand-in-the-build)) | Approve start, `POST /api/overlaps/approve`; for an expand, Approve addition with `feature` set to `owner:<person>` |
-| Plans | One card per merge plan with parts for the person: the originating feature and person, why the plan needs the person in person, each review the parts carry and then each of the person's parts | Per part: Approve revision, `POST /api/plan-parts/approve`; Request change, which opens a field whose text posts `POST /api/plan-parts/request-change` |
+| Plans | One card per merge plan with parts for the person: the originating feature and person, why the plan needs the person in person, each review the parts carry and then each of the person's parts. A part Penguin approved for the person is listed too, until its block reaches main | Per part waiting on the person: Approve revision, `POST /api/plan-parts/approve`; Request change, which opens a field whose text posts `POST /api/plan-parts/request-change`. Per part Penguin approved: Reverse approval, `POST /api/plan-parts/reverse` |
 | Protected paths | Each feature whose own change, since its merge base with main, writes a path the person protects in `penguin/scopes.json`: the feature and its person, the checkpoint, each protected path and the changed lines of each file under it | Confirm lines, `POST /api/plan-parts/confirm-protected` with `{ feature, owner, checkpoint }`. A confirmed card stays, marked Confirmed, until a later checkpoint changes the lines |
 | Review exceptions | Each review of the person's scopes whose record raised an exception | None |
-| Returned plans | Each plan of the person's returned over the break limit, with its behavioural places | None |
+| Returned plans | Each plan of the person's returned over the break limit, with the places of its parts that need a person | None |
 
 A plan card shows each review and each reason once, however many of its parts carry them
 (`planGroups` in `feature-view.ts`). The parts follow one per row: the part number and place, the
 kind, the revision and the rounds, then the part's state. A part the person approves carries its
 decision at the end of that row. A part that writes a path the person protects reads Protected path.
 A part of the person's own plan past the round limit reads Past the round limit. Neither carries
-controls. The latest requested change follows as a quote. The tests that break in the place and the
+controls. A part Penguin approved reads Approved by Penguin in the verified colour, with Reverse
+approval at the end of its row and the line "You may reverse it until the block reaches main". A
+reversal sends the part back to the person, who then approves it or asks for a change. The reasons
+a plan needs the person list every check Penguin found not clean, one line each, such as "No run has
+tested the fix", "invoicing tests fail on the merged tree with 2 breaks" or "No review yet for tax".
+The inbox reads the routing from `GET /api/plan-parts` alone, with no further request per part. The latest requested change follows as a quote. The tests that break in the place and the
 fix's changed lines open from a line that counts them, such as "4 breaks, 3 changed files". A review
 exception whose review a plan card already shows lists its exceptions with a link to that review.
 
@@ -305,23 +310,28 @@ session transcript; Penguin holds none.
 
 ## Local preview
 
-`node scripts/preview/dashboard.ts [--example identity-unification|money-minor-units] [--port <port>] [--as <owner>]`
+`node scripts/preview/dashboard.ts [--example identity-unification|helpful-fix|money-minor-units] [--port <port>] [--as <owner>]`
 serves the built dashboard (`npm run build -w @penguin/dashboard`) on the Worker's own routes over a
 project seeded from one fixture under `examples/` (`scripts/preview/seed.ts`). The seed builds the
 fixture's repository with its own `build.py` and goes through the modules the ProjectAgent calls:
 identities from `penguin/identities.json`, each feature opened by its agent with its declared area
 and overlap check, each checkpoint, `whats_near`, `impact` and `check` run by the check runner's
-programs, the merge plan with a real facts run, each review with the review harness and each
-person's decision. A request signs in as the owner its `X-Preview-Owner` header names, or as the
+programs, the merge plan with a real facts run, each review with the review harness, Penguin's
+approval of each part whose checks are clean and each person's decision on the rest. A request signs in as the owner its `X-Preview-Owner` header names, or as the
 `--as` owner, or as the originating person; `/preview/as/<owner>` switches a browser's seat.
 
 On identity unification the plan is stored with four parts: Priya's fix commits for analytics' and
 messaging's code on main, and the patches for Jun's and Sam's forks. Jun's and Sam's agents submit
-the fixture's review forms from `examples/identity-unification/reviews/`. Sam approves both of Sam's
-parts. Jun's review raises the tablet invariant, so Jun's two parts wait on Jun. On money in minor units the one-block plan is returned
+the fixture's review forms from `examples/identity-unification/reviews/`. Penguin approves none of the four: both
+reviews are refused for a stored data change with no marker. No run has tested any fix. Sam
+approves both of Sam's parts. Jun's review raises the tablet invariant, so Jun's two parts wait on
+Jun. On the helpful fix the plan holds the patches for Jun's weekly report and Sam's reminders. Both
+reviews hold. No run has tested either patch, and each feature's tests fail on its merged tree
+before the patch, so Penguin approves neither. Jun and Sam each approve their own part. On money in minor units the one-block plan is returned
 over the default break limit of 10 and stays in Ines's inbox. The seed then runs the seven waves of
 [case-study-money.md](case-study-money.md): each wave opens from main as the wave before left it. The
-seed approves each overlapping start and each stored plan's parts, then moves main to the wave's
-head. Rahul's tax review raises the broken `tax-per-line` invariant on the tax wave's first
-checkpoint and holds on its revision. The contract wave's plan is returned with 24 behavioural parts
+seed approves each overlapping start. Penguin approves no stored part, so Lena and Mei approve
+theirs ([case-study-money.md](case-study-money.md#what-it-took)). The seed then moves main to the
+wave's head. Rahul's tax review raises the broken `tax-per-line` invariant on the tax wave's first
+checkpoint and holds on its revision. The contract wave's plan is returned with 24 parts needing a person
 and stays in Ines's inbox beside the one-block plan.

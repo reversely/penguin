@@ -3,7 +3,7 @@
 // (handleDashboardRoute) with the seeded stores behind them. Nothing leaves the machine.
 //
 //   npm run build -w @penguin/dashboard
-//   node scripts/preview/dashboard.ts [--example identity-unification|money-minor-units] [--port 8792] [--as <owner>]
+//   node scripts/preview/dashboard.ts [--example identity-unification|helpful-fix|money-minor-units] [--port 8792] [--as <owner>]
 //
 // A request signs in as the owner its X-Preview-Owner header names, or else as the person the
 // `preview-owner` cookie names, or else as the --as owner or the fixture's originating person. Opening

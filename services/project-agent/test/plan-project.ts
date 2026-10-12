@@ -33,6 +33,8 @@ export class PlanProject {
   breakLimit: number | undefined = 10;
   /** Sends a stored plan to its authors, as the ProjectAgent does (plan-approval.ts); none when unset. */
   announce: ProposePlanDeps["announce"];
+  /** The reviews and admin mode the break limit's routing reads; none known and off when unset. */
+  evidence: ProposePlanDeps["evidence"];
   invariants: string | null = null;
   #key: Promise<CryptoKeyPair> = generateSigningKeyPair();
 
@@ -114,6 +116,7 @@ export class PlanProject {
         },
         ...(this.announce === undefined ? {} : { announce: this.announce }),
         retiring: this.retiring,
+        ...(this.evidence === undefined ? {} : { evidence: this.evidence }),
       },
       caller,
       sessionId,

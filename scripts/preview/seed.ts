@@ -51,12 +51,15 @@ import { InboxStore } from "../../services/project-agent/src/inbox-store.ts";
 import { IssueIndex, type BridgeCaller, type SqlDatabase } from "../../services/project-agent/src/issue-index.ts";
 import { approveOverlap, checkOverlap, OverlapStore, type OverlapDeps } from "../../services/project-agent/src/overlap-lock.ts";
 import { OwnerForkStore } from "../../services/project-agent/src/owner-forks.ts";
+import { reviewResult } from "../../services/project-agent/src/part-checks.ts";
 import {
   announcePlan,
+  approveCleanParts,
   approvePlanPart,
   buildPlanInbox,
   PlanRouteStore,
   requestPlanChange,
+  reversePenguinApproval,
   type PlanApprovalDeps,
 } from "../../services/project-agent/src/plan-approval.ts";
 import { PlanFactsStore } from "../../services/project-agent/src/plan-facts.ts";
@@ -85,7 +88,7 @@ const RUFF = existsSync(join(VENV_BIN, "ruff")) ? join(VENV_BIN, "ruff") : "ruff
 const ENV = { ...process.env, PATH: [VENV_BIN, process.env["PATH"]].join(delimiter), UV_OFFLINE: "1" };
 const RUNNER: BridgeCaller = { bridgeId: "preview-runner", role: "runner" };
 
-export const FIXTURES = ["identity-unification", "money-minor-units"] as const;
+export const FIXTURES = ["identity-unification", "helpful-fix", "money-minor-units"] as const;
 export type FixtureName = (typeof FIXTURES)[number];
 
 /** One identity as the fixture's `penguin/identities.json` seeds it. */
@@ -139,6 +142,8 @@ export class PreviewProject {
   runnerTools = true;
   /** PENGUIN_PLAN_BREAK_LIMIT: the PRD default until a scenario changes the project's setting. */
   breakLimit = 10;
+  /** PENGUIN_PLAN_ADMIN_MODE: off, so Penguin approves each part whose checks are clean. */
+  adminMode = false;
   /** The originating agent's last `propose_plan` answer for use cases 1 to 3. */
   planOutcome: ProposePlanOutcome | undefined;
   /** Use case 4: Penguin's answer to the one-block attempt's plan. */
@@ -251,7 +256,13 @@ export class PreviewProject {
       sign: (record) => this.#sign(record),
       roundLimit: this.roundLimit,
       notify: this.#notify,
+      checks: { reviews: (featureId) => this.reviews.list(featureId), scopeMap: async () => this.scopeMap, adminMode: this.adminMode },
     };
+  }
+
+  /** Penguin approves each pending part of the feature's plan whose checks are clean, as the ProjectAgent does. */
+  async penguinApproves(featureId: string): Promise<void> {
+    await approveCleanParts(this.approvalDeps(), featureId);
   }
 
   toolDeps(): AgentToolDeps {
@@ -465,6 +476,7 @@ export class PreviewProject {
           heartbeat: (caller, session) => this.sessions.heartbeat(caller, session),
           sign: (record) => this.#sign(record),
           breakLimit: this.breakLimit,
+          evidence: (id) => ({ reviews: this.reviews.list(id).map(reviewResult), adminMode: this.adminMode }),
           exception: (person, id) => {
             this.inbox.planReturned(person, id);
             this.#notify(person);
@@ -476,8 +488,14 @@ export class PreviewProject {
         this.sessionOf.get(featureId) as string,
         { feature: featureId, parts, ...(rules.length === 0 ? {} : { rules }), ...(retiring.length === 0 ? {} : { retiring }) },
       );
+    // Penguin approves each part whose checks are already clean once the plan is stored.
+    const settled = async (outcome: ProposePlanOutcome): Promise<ProposePlanOutcome> => {
+      if (outcome.status !== "stored") return outcome;
+      await this.penguinApproves(featureId);
+      return { ...outcome, plan: (await this.plan(featureId)) ?? outcome.plan };
+    };
     const first = await call();
-    if (first.status !== "missing" || !first.missing.some((item) => item.code === "waiting_for_runner")) return first;
+    if (first.status !== "missing" || !first.missing.some((item) => item.code === "waiting_for_runner")) return settled(first);
     const scratch = await mkdtemp(join(tmpdir(), "penguin-preview-facts-"));
     const runner = new PlanFactsRunner({
       repoPath: this.repo,
@@ -490,7 +508,7 @@ export class PreviewProject {
       const recorded = this.facts.record(request.runId, RUNNER.bridgeId, report);
       if (recorded.status !== "recorded") throw new Error(`facts ${request.runId}: ${JSON.stringify(recorded)}`);
     }
-    return call();
+    return settled(await call());
   }
 
   /** The newest plan of a feature, or undefined. */
@@ -550,6 +568,8 @@ export class PreviewProject {
       );
       if (recorded.status === "rejected") throw new Error(`review record ${request.reviewId}: ${recorded.message}`);
     }
+    // A recorded review may complete a part's checks.
+    await this.penguinApproves(featureId);
   }
 
   /** A part's owner approves its current revision, or asks for a change with `text`. */
@@ -649,6 +669,8 @@ export class PreviewProject {
             scopeMap: async () => this.scopeMap,
             delegates: async () => new Map(),
             roundLimit: this.roundLimit,
+            adminMode: this.adminMode,
+            landed: (featureId) => this.features.get(featureId)?.state === "landed",
             records: (featureId) => this.features.records(featureId),
             protectedChanges: (owners, items, delegates) => protectedChangeRequests(this.protectedChanges, this.features, items, owners, owner, delegates),
           },
@@ -656,7 +678,11 @@ export class PreviewProject {
         ),
       decidePlanPart: async (owner, decision) => {
         const decided =
-          decision.kind === "approve" ? await approvePlanPart(this.approvalDeps(), owner, decision) : await requestPlanChange(this.approvalDeps(), owner, decision);
+          decision.kind === "request_change"
+            ? await requestPlanChange(this.approvalDeps(), owner, decision)
+            : decision.kind === "reverse"
+              ? await reversePenguinApproval(this.approvalDeps(), owner, decision)
+              : await approvePlanPart(this.approvalDeps(), owner, decision);
         return decided.status === "ok" ? { status: "ok", part: decided.part, recordId: decided.recordId } : decided;
       },
       confirmProtectedChange: async (owner, input) => {
@@ -800,14 +826,19 @@ async function featuresFixture(preview: PreviewProject): Promise<void> {
   const proposed = await preview.step("propose_plan", () => preview.propose(origin.id, [...scopeParts, ...featureParts]));
   if (proposed.status !== "stored") throw new Error(`plan: ${JSON.stringify(proposed).slice(0, 2_000)}`);
   preview.planOutcome = proposed;
-  // Each running feature's agent reviews its scope with the fixture's form, `reviews/<scope>.json`.
+  // Each running feature's agent reviews its scope with the fixture's form, `reviews/<scope>.json`. A
+  // scope with no form in the fixture gets no review.
   for (const feature of running) {
     const scope = feature.area.scopes[0] as string;
-    const form = JSON.parse(await readFile(join(fixtureDir, "reviews", `${scope}.json`), "utf8")) as ReviewForm;
+    const file = join(fixtureDir, "reviews", `${scope}.json`);
+    if (!existsSync(file)) continue;
+    const form = JSON.parse(await readFile(file, "utf8")) as ReviewForm;
     await preview.step(`submit_review ${scope}`, () => preview.review(feature.id, origin.id, scope, form));
   }
-  // An author whose review stands with no exception approves; one with an exception decides in person.
-  for (const part of proposed.plan.parts) {
+  // Penguin approved each part whose checks are clean. An author whose review raised no exception
+  // approves a part still waiting on them; one with an exception decides in person.
+  for (const part of (await preview.plan(origin.id))?.parts ?? []) {
+    if (part.approvalState !== "pending") continue;
     const exceptions = preview.reviews.list(origin.id).filter((review) => part.scopes.includes(review.scopeId)).flatMap((review) => review.exceptions);
     if (exceptions.length === 0) await preview.step(`approve ${part.partId}`, () => preview.decide(part.owner, origin.id, part.partId));
   }
@@ -969,9 +1000,12 @@ async function moneyMinorUnits(preview: PreviewProject): Promise<void> {
     }
     preview.waveOutcomes.push({ feature: wave.id, outcome: proposed });
     if (proposed.status !== "stored" || last) break;
-    // Each author approves their part once, and each person whose protected path the wave's own change
-    // writes confirms its lines; main moves to the wave's head and the wave has landed.
-    for (const part of proposed.plan.parts) await preview.step(`approve ${part.partId}`, () => preview.decide(part.owner, wave.id, part.partId));
+    // Penguin approved each part whose checks are clean; each author approves a part still waiting on
+    // them once. Each person whose protected path the wave's own change writes confirms its lines; main
+    // moves to the wave's head and the wave has landed.
+    for (const part of (await preview.plan(wave.id))?.parts ?? []) {
+      if (part.approvalState === "pending") await preview.step(`approve ${part.partId}`, () => preview.decide(part.owner, wave.id, part.partId));
+    }
     for (const change of preview.protectedChanges.ofFeature(wave.id).filter((row) => row.state === "pending")) {
       await preview.step(`confirm ${wave.id}'s protected lines as ${change.ownerId}`, () => preview.confirmProtected(change.ownerId, wave.id));
     }
@@ -984,7 +1018,7 @@ async function moneyMinorUnits(preview: PreviewProject): Promise<void> {
 export async function seed(fixture: FixtureName, options: { readonly runnerTools?: boolean } = {}): Promise<PreviewProject> {
   const preview = await project(fixture);
   preview.runnerTools = options.runnerTools ?? true;
-  if (fixture === "identity-unification") await featuresFixture(preview);
-  else await moneyMinorUnits(preview);
+  if (fixture === "money-minor-units") await moneyMinorUnits(preview);
+  else await featuresFixture(preview);
   return preview;
 }

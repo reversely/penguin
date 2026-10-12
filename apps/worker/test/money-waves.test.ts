@@ -40,12 +40,12 @@ before(async () => {
 
 const label = (place: PlanPlace) => (place.kind === "scope" ? `scope:${place.scope}` : `feature:${place.feature}`);
 
-/** Every place of an answer and how many of them are behavioural. */
-function places(outcome: ProposePlanOutcome | undefined): { places: string[]; behavioural: number } {
+/** Every place of an answer and how many of its parts need a person (PRD 4.2 step 4). */
+function places(outcome: ProposePlanOutcome | undefined): { places: string[]; inPerson: number } {
   if (outcome?.status === "stored") {
-    return { places: outcome.plan.parts.map((part) => label(part.place)).sort(), behavioural: outcome.plan.parts.filter((part) => part.kind === "behavioural").length };
+    return { places: outcome.plan.parts.map((part) => label(part.place)).sort(), inPerson: outcome.plan.parts.filter((part) => part.approvedBy !== "penguin").length };
   }
-  if (outcome?.status === "returned") return { places: outcome.behavioural.map(label).sort(), behavioural: outcome.behavioural.length };
+  if (outcome?.status === "returned") return { places: outcome.inPerson.map(label).sort(), inPerson: outcome.inPerson.length };
   throw new Error(`no plan: ${JSON.stringify(outcome).slice(0, 2_000)}`);
 }
 
@@ -55,9 +55,9 @@ test("the one-block plan reaches every scope that reads money and the readers' o
   const outcome = preview.blockOutcome;
   assert.equal(outcome?.status, "returned");
   const found = places(outcome);
-  t.diagnostic(`one-block: ${found.behavioural} behavioural parts`);
+  t.diagnostic(`one-block: ${found.inPerson} parts needing a person`);
   assert.deepEqual(found.places, [...LARDER.plan.parts.map((part) => `scope:${part.scope}`), ...READERS.map((feature) => `feature:${feature.id}`)].sort());
-  assert.ok(found.behavioural > preview.breakLimit);
+  assert.ok(found.inPerson > preview.breakLimit);
 });
 
 test("every wave is proposed in order, the expand wave with no place at all", () => {
@@ -67,7 +67,7 @@ test("every wave is proposed in order, the expand wave with no place at all", ()
   );
   const expand = outcomeOf(WAVES[0]?.id as string);
   assert.equal(expand?.status, "stored");
-  assert.deepEqual(places(expand), { places: [], behavioural: 0 });
+  assert.deepEqual(places(expand), { places: [], inPerson: 0 });
 });
 
 test("each migrate wave's places are the other scopes on main its fix commits name", (t: TestContext) => {
@@ -75,17 +75,17 @@ test("each migrate wave's places are the other scopes on main its fix commits na
     const outcome = outcomeOf(wave.id);
     assert.equal(outcome?.status, "stored", wave.id);
     const found = places(outcome);
-    t.diagnostic(`${wave.id}: ${found.places.length} parts, ${found.behavioural} behavioural`);
+    t.diagnostic(`${wave.id}: ${found.places.length} parts, ${found.inPerson} needing a person`);
     const named = wave.commits.flatMap((commit) => (commit.fix === undefined || commit.fix.kind === "revision" ? [] : [`scope:${commit.fix.scope}`]));
     assert.deepEqual(found.places, named.sort(), wave.id);
-    assert.ok(found.behavioural <= preview.breakLimit, wave.id);
+    assert.ok(found.inPerson <= preview.breakLimit, wave.id);
   }
 });
 
 test("the contract wave's places are the remaining callers of the float API: orders on main and each reader's own changes", (t: TestContext) => {
   const contract = WAVES.at(-1) as LarderFeature;
   const found = places(outcomeOf(contract.id));
-  t.diagnostic(`${contract.id}: ${outcomeOf(contract.id)?.status}, ${found.behavioural} behavioural parts`);
+  t.diagnostic(`${contract.id}: ${outcomeOf(contract.id)?.status}, ${found.inPerson} parts needing a person`);
   const onMain = contract.commits.flatMap((commit) => (commit.fix === undefined ? [] : [`scope:${commit.fix.scope}`]));
   // A reader is a place when the checkpoint it reported is the one its wave fix is built on.
   const reached = READERS.filter((feature) => feature.commits.some((commit) => commit.after !== undefined)).map((feature) => `feature:${feature.id}`);
@@ -121,4 +121,17 @@ test("a wave whose own change writes a protected file asks the file's protector,
     assert.deepEqual(inbox.protectedChanges.map((change) => [change.feature, change.state]), [[row.featureId, "confirmed"]]);
     assert.ok(inbox.protectedChanges[0]?.files.every((file) => file.lines !== null && file.lines.length > 0), "the protector reads the changed lines");
   }
+});
+
+test("each stored wave's part goes to its author, and Rahul's tax review still goes to Rahul", async () => {
+  // Neither part's fix is under the checkpoint its facts run tested, and neither author's agent reviewed it.
+  const decided = [];
+  for (const wave of WAVES) {
+    for (const part of (await preview.plan(wave.id))?.parts ?? []) decided.push([part.partId, part.owner, part.approvedBy]);
+  }
+  assert.deepEqual(decided, [
+    ["money-checkout/v1#1", "lena", "lena"],
+    ["money-tax/v2#1", "mei", "mei"],
+  ]);
+  assert.deepEqual(preview.inbox.items("rahul").map((item) => [item.reason, item.issueId]), [["review_exception", "money-tax/tax"]]);
 });

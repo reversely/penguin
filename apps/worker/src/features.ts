@@ -550,7 +550,7 @@ export function planAnswer(outcome: Exclude<ProposePlanOutcome, { status: "rejec
         status: "returned",
         feature: outcome.featureId,
         breakLimit: outcome.breakLimit,
-        behavioural: outcome.behavioural.map((place) => ({ ...place })),
+        inPerson: outcome.inPerson.map((place) => ({ ...place })),
         recordId: outcome.recordId,
         message: outcome.message,
         facts: factsFields(outcome.facts),

@@ -2,6 +2,7 @@
 // pure functions so the rules are tested without a browser (test/feature-view.test.ts). Labels here
 // are bare data labels: a state, a count, a place, a tool and what it found.
 
+import { PENGUIN_APPROVER } from "@penguin/protocol";
 import type {
   BlockCheck,
   FeatureException,
@@ -10,6 +11,7 @@ import type {
   PlanPartRequest,
   PlanPartState,
   PlanPlace,
+  ReviewCheckState,
   ReviewException,
   ReviewView,
 } from "@penguin/protocol";
@@ -37,13 +39,22 @@ export const PART_STATE_LABEL: Readonly<Record<PlanPartState, string>> = {
   round_limit: "Past the round limit",
 };
 
+/** The name the dashboard gives Penguin as an approver. */
+export const PENGUIN_NAME = "Penguin";
+
+/** A part's state as a tag, naming who approved an approved part: `Approved by Penguin`, `Approved by mei`. */
+export function partStateText(state: PlanPartState, approvedBy: string | null): string {
+  if (state !== "approved" || approvedBy === null) return PART_STATE_LABEL[state];
+  return `Approved by ${approvedBy === PENGUIN_APPROVER ? PENGUIN_NAME : approvedBy}`;
+}
+
 /** An exception PRD section 7 routes to a person, as one highlighted line on its feature. */
 export function exceptionText(exception: FeatureException): string {
   switch (exception.kind) {
     case "round_limit":
       return `Part ${partNumber(exception.partId)} past the round limit`;
     case "plan_returned":
-      return `Plan returned: ${exception.behavioural} behavioural parts over the limit of ${exception.breakLimit}`;
+      return `Plan returned: ${counted(exception.inPerson, "part")} needing a person over the limit of ${exception.breakLimit}`;
     case "broken_invariant":
       return `${exception.invariant} reported broken in ${exception.scope}`;
     case "protected_difference":
@@ -51,9 +62,44 @@ export function exceptionText(exception: FeatureException): string {
   }
 }
 
+/** A test check that is not clean, as one line. */
+function testText(scope: string | null, status: Exclude<Extract<PartRoutingReason, { kind: "tests" }>["status"], "fix_not_run">, breaks: number): string {
+  const tests = scope === null ? "Tests" : `${scope} tests`;
+  switch (status) {
+    case "failed":
+      return `${tests} fail on the merged tree with ${counted(breaks, "break")}`;
+    case "conflict":
+      return `${tests} did not run because the merge conflicts`;
+    case "missing":
+      return `No test result for ${scope ?? "the part"}`;
+    case "not-affected":
+    case "not-run":
+      return `${tests} did not run`;
+  }
+}
+
+const REVIEW_STATE_TEXT: Readonly<Record<Exclude<ReviewCheckState, "not_holding">, string>> = {
+  missing: "No review yet",
+  pending: "Review waits for the check runner",
+  stale: "Review is of an older checkpoint",
+  refused: "Review was refused",
+};
+
 /** Why a part needs its author in person, as one line. */
 export function reasonText(reason: PartRoutingReason): string {
   switch (reason.kind) {
+    case "admin_mode":
+      return "Admin mode needs a person for every part";
+    case "reversed":
+      return `${reason.by} reversed Penguin's approval`;
+    case "tests":
+      return reason.status === "fix_not_run" ? "No run has tested the fix" : testText(reason.scope, reason.status, reason.breaks);
+    case "review":
+      return reason.state === "not_holding"
+        ? `Review of ${reason.scope} does not say ${reason.invariant ?? "every invariant"} holds`
+        : `${REVIEW_STATE_TEXT[reason.state]} for ${reason.scope}`;
+    case "outside_place":
+      return reason.file === null ? "Files outside its scopes were not recorded" : `Changes ${reason.file} outside its place`;
     case "broken_invariant":
       return `The review reports ${reason.invariant} broken in ${reason.scope}`;
     case "protected_difference":
@@ -80,6 +126,7 @@ const RECORD_LABEL: Readonly<Record<string, string>> = {
   plan_returned: "Plan returned",
   retire_symbols: "Symbols retiring",
   approve_plan_part: "Part approved",
+  reverse_penguin_approval: "Penguin's approval reversed",
   request_plan_change: "Change requested",
   revise_plan_part: "Part revised",
   plan_round_limit: "Past the round limit",

@@ -32,14 +32,21 @@
 // feature's area names. A rewrite rule may then name a retiring contract the contract diff does not
 // touch. A stored plan's retiring symbols become signed project data (retiring-store.ts).
 //
-// A plan whose behavioural parts
-// outnumber the project's break limit is returned to its author and the originating person gets the
-// exception (PRD section 7). A complete plan is signed and kept with every part (plan-store.ts),
-// then sent to every author at once (plan-approval.ts). Nothing here calls a model or runs code.
+// Each part keeps what Penguin's approval checks later (PRD 0.5 section 4.3): the facts run's test
+// results for its scopes on its place's merged tree, whether that tree holds the fix, and the files a
+// commit changes outside the part's scopes. A plan with more parts needing a person than the project's
+// break limit (PRD 4.2 step 4: a part that fails a condition of section 4.3, by partRouting) is
+// returned to its author and the originating person gets the exception (PRD section 7). A complete
+// plan is signed and kept with every part (plan-store.ts), then sent to every author at once
+// (plan-approval.ts). Nothing here calls a model or runs code.
 
 import {
   applyPatchFile,
   codemodPlan,
+  needsPerson,
+  partRouting,
+  type PartReviewResult,
+  type PartTestEvidence,
   parseRewriteRules,
   PATCH_LIMITS,
   parsePatch,
@@ -76,6 +83,7 @@ import { InvariantsFileError, parseInvariantsBytes, scopeForPath, type ScopeMap 
 import type { FeatureRejection, FeatureRejectReason } from "./feature-open.ts";
 import { parseFeatureId, type Feature, type FeatureRecord, type FeatureStore, type UnsignedFeatureRecord } from "./feature-store.ts";
 import type { FeatureDependent } from "./overlap-lock.ts";
+import { protectedLookup } from "./part-checks.ts";
 import { factsRequest, type PlanFactsRun, type PlanFactsStore } from "./plan-facts.ts";
 import type { PlanKeeper } from "./plan-store.ts";
 import { changedFiles, commitSubject, fileDiffs, splitLines, type ChangedFile, type GitObjectReader } from "./repo-diff.ts";
@@ -99,6 +107,11 @@ export interface ProposePlanDeps {
   readonly sign: (record: UnsignedFeatureRecord) => Promise<FeatureRecord>;
   /** The project's break limit; undefined when its configuration is invalid. */
   readonly breakLimit: number | undefined;
+  /**
+   * What the break limit's routing reads beyond the plan: the reviews submitted on the feature so far
+   * and the project's admin mode. Absent, no review is known and admin mode is off.
+   */
+  readonly evidence?: (featureId: string) => { readonly reviews: readonly PartReviewResult[]; readonly adminMode: boolean };
   /** Tells the originating person that a plan went over the break limit. */
   readonly exception: (personId: string, featureId: string) => void;
   /**
@@ -168,8 +181,8 @@ export type ProposePlanOutcome =
       readonly status: "returned";
       readonly featureId: string;
       readonly breakLimit: number;
-      /** The places of the behavioural parts, the fixes an agent writes, which the limit counts. */
-      readonly behavioural: readonly PlanPlace[];
+      /** The places of the parts needing a person, which the limit counts. */
+      readonly inPerson: readonly PlanPlace[];
       readonly recordId: string;
       readonly message: string;
       readonly facts: PlanFacts;
@@ -699,7 +712,7 @@ export async function proposePlan(deps: ProposePlanDeps, caller: string, session
   for (const [index, part] of parts.entries()) {
     const place = byPlace.get(placeKey(part.place));
     if (place === undefined || claimed.get(placeKey(part.place)) !== index) continue;
-    const read = await readFix(deps, part, place, repo, scopeMap, calls);
+    const read = await readFix(deps, part, place, repo, scopeMap, calls, checkpoint);
     if ("code" in read) {
       missing.push({ ...read, part: index, place: part.place });
       continue;
@@ -723,23 +736,29 @@ export async function proposePlan(deps: ProposePlanDeps, caller: string, session
       approvedBy: null,
       changeRequests: 0,
       changeRequest: null,
+      tests: testEvidence(report, run.runId, place, read.fixInTree),
+      reversal: null,
     });
   }
   const facts = planFacts(factsBase, report, deps.dependents(featureId), calls);
-  // The limit counts the fixes an agent writes; Penguin's codemod writes the mechanical ones.
-  const behavioural = built.filter((part) => part.kind === "behavioural").map((part) => part.place);
-  if (behavioural.length > deps.breakLimit) {
+  // The limit counts the parts that fail a condition of PRD 4.3 now; a review still to come is waited for.
+  const evidence = deps.evidence?.(featureId) ?? { reviews: [], adminMode: false };
+  const lookup = protectedLookup(scopeMap);
+  const inPerson = built
+    .filter((part) => needsPerson(partRouting(part, { reviews: evidence.reviews, checkpoint, adminMode: evidence.adminMode }, lookup)))
+    .map((part) => part.place);
+  if (inPerson.length > deps.breakLimit) {
     const record = await deps.sign(
       deps.features.draftRecord(featureId, "plan_returned", { identity: live.session.handle }, {
         checkpoint,
         break_limit: deps.breakLimit,
-        behavioural: behavioural.map(placeLabel),
+        in_person: inPerson.map(placeLabel),
       }),
     );
     deps.features.addRecord(record);
     deps.exception(feature.personId, featureId);
-    const message = `the plan has ${behavioural.length} behavioural parts, over the project's break limit of ${deps.breakLimit}; split or restructure it`;
-    return { status: "returned", featureId, breakLimit: deps.breakLimit, behavioural, recordId: record.record_id, message, facts };
+    const message = `the plan has ${inPerson.length} parts needing a person, over the project's break limit of ${deps.breakLimit}; split or restructure it`;
+    return { status: "returned", featureId, breakLimit: deps.breakLimit, inPerson, recordId: record.record_id, message, facts };
   }
   if (missing.length > 0) return { status: "missing", featureId, checkpoint, missing, facts };
 
@@ -815,11 +834,49 @@ async function fixRef(repo: string, fix: SubmittedFix): Promise<string> {
 export interface FixReading {
   readonly diff: PlanPart["diff"];
   readonly image: FixImage;
+  /** Whether the plan's checkpoint holds the fix: a commit at or under it. Never for a patch. */
+  readonly fixInTree: boolean;
 }
 
 export type FixRead = FixReading | { readonly code: MissingItem["code"]; readonly message: string };
 
-/** Reads and checks one part's fix through the binding, only inside the place's scopes. */
+/** The most changed files outside a part's scopes a part names; the routing needs only that there is one. */
+const OUTSIDE_LIMIT = 20;
+
+/** Commits an ancestry search from the checkpoint visits before it says the fix is not under it. */
+const FIX_ANCESTRY_LIMIT = 500;
+
+/**
+ * Whether `commit` is `head` or one of its ancestors, searching at most FIX_ANCESTRY_LIMIT commits.
+ * A search that runs out answers false, so Penguin never counts an unseen fix as tested.
+ */
+async function holdsCommit(reader: GitObjectReader, head: string, commit: string): Promise<boolean> {
+  const queue = [head];
+  const seen = new Set<string>();
+  while (queue.length > 0 && seen.size < FIX_ANCESTRY_LIMIT) {
+    const hash = queue.shift() as string;
+    if (hash === commit) return true;
+    if (seen.has(hash)) continue;
+    seen.add(hash);
+    const read = await reader.readCommit(hash);
+    if (read !== null) queue.push(...read.parents);
+  }
+  return false;
+}
+
+/** The facts run's results for a part's scopes on its place's merged tree. */
+export function testEvidence(report: PlanFactsReport, runId: string, place: AffectedPlace, fixInTree: boolean): PartTestEvidence {
+  const target = rewriteTarget(place.place);
+  const results = report.results
+    .filter((result) => result.target === target && place.scopes.has(result.scopeId))
+    .map(({ scopeId, commandId, status, breaks }) => ({ scopeId, commandId, status, breaks: breaks.length }));
+  return { target, runId, fixInTree, results };
+}
+
+/**
+ * Reads and checks one part's fix through the binding, only inside the place's scopes. With
+ * `checkpoint`, a commit fix is also looked for under the checkpoint the facts run tested.
+ */
 export async function readFix(
   deps: Pick<ProposePlanDeps, "readRepo" | "features">,
   part: SubmittedPart,
@@ -827,18 +884,25 @@ export async function readFix(
   originRepo: string,
   scopeMap: ScopeMap,
   calls: Record<string, number>,
+  checkpoint?: string,
 ): Promise<FixRead> {
   const inside = inScopes(scopeMap, place.scopes);
   const scopes = [...place.scopes].join(", ");
   if (part.fix.kind === "commit") {
     if (place.place.kind === "feature") return { code: "wrong_fix_form", message: "a part for a running feature carries a patch against its fork head" };
     const fix = part.fix;
-    const read = await deps.readRepo(originRepo, (reader) => readCommitDiff(counted(reader, calls), fix.commit, fix.base, scopeMap, inside));
+    const read = await deps.readRepo(originRepo, async (reader) => {
+      const counting = counted(reader, calls);
+      const diff = await readCommitDiff(counting, fix.commit, fix.base, scopeMap, inside);
+      const held = diff !== undefined && checkpoint !== undefined && (await holdsCommit(counting, checkpoint, fix.commit));
+      return diff === undefined ? undefined : { ...diff, held };
+    });
     if (read === undefined) return { code: "diff_not_found", message: `commit ${fix.commit} or its base is not in the feature's fork` };
     if (read.files.length === 0) return { code: "diff_empty", message: `the diff changes no file in ${scopes}` };
     const repo = originRepo.slice(originRepo.indexOf("feature-"));
     const image = new Map(read.changed.map((file) => [file.path, { before: file.oldHash, after: file.newHash }]));
-    return { diff: { source: "commit", repo, ref: await fixRef(repo, fix), commit: fix.commit, base: read.base, patch: null, files: read.files, truncated: read.truncated }, image };
+    const diff = { source: "commit" as const, repo, ref: await fixRef(repo, fix), commit: fix.commit, base: read.base, patch: null, files: read.files, truncated: read.truncated, outside: read.outside };
+    return { diff, image, fixInTree: read.held };
   }
   if (place.place.kind === "scope" || place.head === null) return { code: "wrong_fix_form", message: "a part for code on main names a commit in your fork" };
   const fix = part.fix;
@@ -870,7 +934,8 @@ export async function readFix(
   if (mismatch !== null) return { code: "patch_does_not_apply", message: mismatch };
   const files = parsed.files.map((file) => ({ ...file, scopeId: scopeForPath(scopeMap, file.path) ?? null }));
   const repo = `feature-${place.place.feature}`;
-  return { diff: { source: "patch", repo, ref: await fixRef(repo, fix), commit: null, base: fix.base, patch: fix.text, files, truncated: false }, image };
+  // Every file of a patch lies inside the place's scopes, or it was refused above.
+  return { diff: { source: "patch", repo, ref: await fixRef(repo, fix), commit: null, base: fix.base, patch: fix.text, files, truncated: false, outside: [] }, image, fixInTree: false };
 }
 
 /**
@@ -913,16 +978,18 @@ async function readCommitDiff(
   baseSha: string | null,
   scopeMap: ScopeMap,
   inside: (path: string) => boolean,
-): Promise<{ base: string | null; files: PlanFileDiff[]; changed: ChangedFile[]; truncated: boolean } | undefined> {
+): Promise<{ base: string | null; files: PlanFileDiff[]; changed: ChangedFile[]; truncated: boolean; outside: string[] } | undefined> {
   const head = await reader.readCommit(commit);
   if (head === null) return undefined;
   const from = baseSha ?? head.parents[0] ?? null;
   const base = from === null ? null : await reader.readCommit(from);
   if (from !== null && base === null) return undefined;
-  // Only files inside the part's scopes are read: a blob outside them is never fetched.
-  const files = (await changedFiles(reader, base?.treeHash ?? null, head.treeHash)).filter((file) => inside(file.path));
+  // Only files inside the part's scopes are read: a blob outside them is never fetched, only named.
+  const changed = await changedFiles(reader, base?.treeHash ?? null, head.treeHash);
+  const files = changed.filter((file) => inside(file.path));
+  const outside = changed.filter((file) => !inside(file.path)).slice(0, OUTSIDE_LIMIT).map((file) => file.path);
   const diffs = await fileDiffs(reader, files, (path) => scopeForPath(scopeMap, path) ?? null);
-  return { base: from, files: diffs.files, changed: files, truncated: diffs.truncated };
+  return { base: from, files: diffs.files, changed: files, truncated: diffs.truncated, outside };
 }
 
 interface FactsBase {

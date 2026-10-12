@@ -365,6 +365,21 @@ describe("propose_plan", () => {
     assert.equal(project.reads.filter((read) => read.repo === "feature-tax-rounding").length, 0);
   });
 
+  test("each part keeps the evidence Penguin's approval reads: its tests, whether they ran on the fix, and files outside it", async () => {
+    await reportFacts();
+    const outcome = await project.propose("ines", "s-ines", "money-minor", parts());
+    assert.equal(outcome.status, "stored", JSON.stringify(outcome).slice(0, 500));
+    if (outcome.status !== "stored") return;
+    const [billing, tax] = outcome.plan.parts;
+    // The billing fix is a commit after the checkpoint: the facts run passed on a tree without it.
+    assert.deepEqual(billing?.tests?.results, [{ scopeId: "billing", commandId: "test:billing", status: "passed", breaks: 0 }]);
+    assert.deepEqual([billing?.tests?.target, billing?.tests?.fixInTree], ["main", false]);
+    // Its commit also changes orders/export.py, which the part never reads but names.
+    assert.deepEqual(billing?.diff.outside, ["orders/export.py"]);
+    assert.deepEqual(tax?.tests?.results, [{ scopeId: "tax", commandId: "test:tax", status: "failed", breaks: 2 }]);
+    assert.deepEqual([tax?.tests?.target, tax?.tests?.fixInTree, tax?.diff.outside], ["tax-rounding", false, []]);
+  });
+
   test("a plan missing parts or naming unaffected places is returned with every gap", async () => {
     await reportFacts();
     const [, tax, orders, billing] = parts();
@@ -407,23 +422,29 @@ describe("propose_plan", () => {
     assert.equal(project.records("money-minor", "propose_plan").length, 0);
   });
 
-  test("the break limit counts behavioural parts only", async () => {
-    project.breakLimit = 1;
+  test("the break limit counts parts needing a person, mechanical ones included", async () => {
+    project.breakLimit = 3;
     await reportFacts();
-    // Three mechanical parts and one behavioural part: within a limit of one.
+    // Three mechanical parts and one behavioural part, and no run has tested any of their fixes: all four
+    // need a person, over a limit of three. Counting behavioural parts would have stored the plan.
     const outcome = await project.propose("ines", "s-ines", "money-minor", parts());
-    assert.equal(outcome.status, "stored", JSON.stringify(outcome).slice(0, 500));
+    assert.equal(outcome.status, "returned", JSON.stringify(outcome).slice(0, 500));
+    if (outcome.status !== "returned") return;
+    assert.equal(outcome.inPerson.length, 4);
+    project.breakLimit = 4;
+    assert.equal((await project.propose("ines", "s-ines", "money-minor", parts())).status, "stored");
   });
 
   test("a plan over the break limit is returned and the originating person hears of it", async () => {
     project.breakLimit = 2;
     await reportFacts();
-    // Each running feature's fix also scales the value: three behavioural parts.
+    // Each running feature's fix also scales the value, and no run has tested any fix: four parts need a person.
     const scaled = { tax: TAX_AFTER.replace("(line)", "(line) / 100"), orders: ORDERS_AFTER, billing: BILLING_AFTER.replace("(invoice)", "(invoice) / 100") };
     const outcome = await project.propose("ines", "s-ines", "money-minor", parts(scaled));
     assert.equal(outcome.status, "returned", JSON.stringify(outcome));
     if (outcome.status !== "returned") return;
-    assert.deepEqual(outcome.behavioural, [
+    assert.deepEqual(outcome.inPerson, [
+      { kind: "scope", scope: "billing" },
       { kind: "feature", feature: "tax-rounding" },
       { kind: "feature", feature: "orders-export" },
       { kind: "feature", feature: "billing-v2" },
@@ -435,7 +456,7 @@ describe("propose_plan", () => {
     assert.deepEqual(record?.payload, {
       checkpoint: built.checkpoint,
       break_limit: 2,
-      behavioural: ["feature tax-rounding", "feature orders-export", "feature billing-v2"],
+      in_person: ["scope billing", "feature tax-rounding", "feature orders-export", "feature billing-v2"],
     });
     assert.equal(project.plans.planVersion("money-minor"), 0);
   });
@@ -621,6 +642,8 @@ test("assembling the facts of a nine-scope plan is timed", async (t) => {
   const featureHeads = consumers.map((id) => repo.commit({ [`${id}/work.py`]: call("price", "y") }, `work ${id}`));
 
   const project = new PlanProject(map, repo.dir);
+  // No run has tested any of the 18 fixes, so each needs its author: the limit is raised to time them all.
+  project.breakLimit = 18;
   await project.open("money-minor", "ines", { scopes: ["money"] }, { id: "s-ines", handle: "@ines/money" });
   await project.checkpoint("money-minor", checkpoint, main, "@ines/money");
   for (const [i, id] of consumers.entries()) {

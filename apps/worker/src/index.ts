@@ -115,9 +115,13 @@ export default {
             },
             planParts: async (owner) => agent.planInbox(owner, repos),
             // The decider is the session's person, named by the dashboard route, never by the body.
-            decidePlanPart: async (owner, { kind, ...decision }) => {
+            decidePlanPart: async (owner, decision) => {
               const decided =
-                kind === "approve" ? await agent.approvePlanPart(owner, decision, repos) : await agent.requestPlanChange(owner, decision, repos);
+                decision.kind === "request_change"
+                  ? await agent.requestPlanChange(owner, decision, repos)
+                  : decision.kind === "reverse"
+                    ? await agent.reversePenguinApproval(owner, decision, repos)
+                    : await agent.approvePlanPart(owner, decision, repos);
               return decided.status === "ok" ? { status: "ok", part: decided.part, recordId: decided.recordId } : decided;
             },
             // The confirmer is the session's person, named by the dashboard route, never by the body.

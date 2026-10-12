@@ -202,6 +202,8 @@ export interface PlanWorkView {
       readonly owner: string;
       readonly kind: string;
       readonly state: string;
+      /** Who approved the current revision: its author, their delegate or `penguin`; null before. */
+      readonly approvedBy: string | null;
       readonly changeRequests: number;
       readonly changeRequest: { readonly by: string; readonly revision: number; readonly text: string } | null;
     }[];
@@ -662,7 +664,7 @@ const proposePlanInput = z.strictObject({
     .optional()
     .describe(
       "Rewrite rules for the change's mechanical fixes, such as money.display($amount) to $amount.display(). Penguin applies them on the " +
-        "check runner; a part whose fix is exactly what the rules write is mechanical and does not count against the break limit.",
+        "check runner; a part whose fix is exactly what the rules write is mechanical, which Penguin's codemod writes.",
     ),
   retiring: z
     .array(
@@ -1190,8 +1192,10 @@ function registerFeatureTools(server: McpServer, features: McpFeatures): void {
         "refused when it would rewrite code outside its contract. The first call for a " +
         "checkpoint asks the check runner for the impact graph and test runs and answers `missing` until it " +
         "reports; call again later. `missing` lists every place without a part and every part Penguin cannot " +
-        "read or apply. A plan with more behavioural parts than the project's break limit is `returned`: split it. " +
-        "A complete plan is `stored` as a signed record.",
+        "read or apply. A part needs a person when a check fails: its tests on the merged tree with the fix, its review form, " +
+        "the side-by-side run, a protected path, or a change outside its place. A plan with more such parts than the project's " +
+        "break limit is `returned` with them under `inPerson`: split it. A complete plan is `stored` as a signed record, and " +
+        "Penguin approves each part whose checks are all clean; its `approvedBy` is then `penguin`.",
       inputSchema: proposePlanInput,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
@@ -1417,13 +1421,14 @@ function planWorkFields(work: PlanWorkView): Record<string, unknown> {
         : {
             planId: work.ownPlan.planId,
             roundLimit: work.ownPlan.roundLimit,
-            parts: work.ownPlan.parts.map(({ partId, revision, place, owner, kind, state, changeRequests, changeRequest }) => ({
+            parts: work.ownPlan.parts.map(({ partId, revision, place, owner, kind, state, approvedBy, changeRequests, changeRequest }) => ({
               part: partId,
               revision,
               place: { ...place },
               owner,
               kind,
               state,
+              approvedBy,
               changeRequests,
               personWritten: {
                 changeRequest: changeRequest === null ? null : { by: changeRequest.by, revision: changeRequest.revision, text: changeRequest.text },

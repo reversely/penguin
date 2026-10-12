@@ -494,6 +494,13 @@ export interface BlockReportDeps {
   readonly push: (run: BlockRun) => Promise<FastForwardOutcome>;
   /** Revokes every write token on the originating fork; returns how many. */
   readonly seal: (run: BlockRun) => Promise<number>;
+  /**
+   * Whether every part of the feature's plan still stands approved: plan `planId` for a land run, or
+   * the feature's newest plan, when it has one, for an expand run, which names none. An author may
+   * reverse Penguin's approval until the block reaches main, so a passing run whose plan lost an
+   * approval is not promoted. Absent, the approvals the request checked stand.
+   */
+  readonly planApproved?: (featureId: string, planId: string | null) => boolean;
   readonly now?: () => number;
 }
 
@@ -558,6 +565,16 @@ export async function reportBlockRun(deps: BlockReportDeps, caller: BridgeCaller
   return { ...result, ...(await promote(deps, { ...reported, recordId }, checkMs)) };
 }
 
+/**
+ * Whether `plan`, the feature's newest, still has every part approved for a run naming `planId`. A
+ * land run names its plan, which must still be the newest. An expand run names none: a feature with no
+ * plan passes, and one with a plan needs every part approved.
+ */
+export function planStillApproved(plan: Plan | undefined, planId: string | null): boolean {
+  if (planId === null) return plan === undefined || plan.parts.every((part) => part.approvalState === "approved");
+  return plan?.planId === planId && plan.parts.every((part) => part.approvalState === "approved");
+}
+
 /** Moves main to a passing land or expand run's checkpoint, or says why not. */
 async function promote(
   deps: BlockReportDeps,
@@ -580,6 +597,11 @@ async function promote(
       retried: state === "raced",
     });
   };
+  if (deps.planApproved !== undefined && !deps.planApproved(run.featureId, run.planId)) {
+    await refuse("refused", `a part of ${run.planId === null ? "the feature's plan" : `plan ${run.planId}`} is no longer approved`, null);
+    await deps.port.landFailed(run.featureId, run.runId);
+    return { state: "refused", promotion: null, retried: null };
+  }
   if (!(await deps.port.acquirePromotion(run.featureId, run.runId))) {
     await refuse("raced", "another promotion was moving main", null);
     return { state: "raced", promotion: null, retried: await retry() };

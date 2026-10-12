@@ -53,7 +53,7 @@ test("a feature highlights a part past the round limit, a returned plan and its 
     featureExceptions(parts, [review(1, "tax", [broken]), review(2, "analytics", [])], [record("plan_returned", { break_limit: 10, behavioural: ["scope tax", "scope payouts"] })]),
     [
       { kind: "round_limit", partId: "money/v1#1" },
-      { kind: "plan_returned", behavioural: 2, breakLimit: 10 },
+      { kind: "plan_returned", inPerson: 2, breakLimit: 10 },
       broken,
     ],
   );

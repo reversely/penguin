@@ -11,6 +11,7 @@ import {
   parsePromotionTokenTtl,
   pendingApprovals,
   pendingVerifications,
+  planStillApproved,
   PlanStore,
   PROMOTION_TOKEN_TTL_MAX_MINUTES,
   recordApprovedBranch,
@@ -171,6 +172,9 @@ export class FeatureAgent extends Agent implements HuddleVerifier, HuddleReviewe
         port,
         push: (run) => this.#pushMain(run, repos),
         seal: (run) => this.#seal(`${repos.prefix}${run.request.fork}`),
+        // An author may reverse Penguin's approval while the run checks, so the plan is read again here.
+        // An expand run names no plan: the feature's newest plan, when it has one, must still stand.
+        planApproved: (featureId, planId) => planStillApproved(this.#planStore().latestPlan(featureId), planId),
       },
       caller,
       runId,

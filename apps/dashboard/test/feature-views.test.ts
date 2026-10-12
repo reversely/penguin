@@ -7,7 +7,7 @@ import { test } from "node:test";
 
 import type { BlockCheck, PlanPartRequest } from "@penguin/protocol";
 
-import { checksByTool, exceptionText, partNumber, placeText, planGroups, recordLabel, stateClass } from "../src/feature-view.ts";
+import { checksByTool, exceptionText, partNumber, partStateText, placeText, planGroups, reasonText, recordLabel, stateClass } from "../src/feature-view.ts";
 import { load } from "./render.ts";
 
 const MARKUP = '<img src=x onerror="globalThis.pwned = 1">';
@@ -20,10 +20,41 @@ test("a feature's state takes a neutral tag and only the attention edge marks an
   assert.equal(partNumber("money-minor-units/v1#9"), "#9");
   assert.equal(placeText({ kind: "scope", scope: "tax" }), "scope tax");
   assert.equal(placeText({ kind: "feature", feature: "tax-exempt" }), "feature tax-exempt");
-  assert.equal(exceptionText({ kind: "plan_returned", behavioural: 31, breakLimit: 10 }), "Plan returned: 31 behavioural parts over the limit of 10");
+  assert.equal(exceptionText({ kind: "plan_returned", inPerson: 31, breakLimit: 10 }), "Plan returned: 31 parts needing a person over the limit of 10");
   assert.equal(exceptionText({ kind: "protected_difference", scope: "analytics", invariant: "tablet", differing: 2 }), "2 inputs differ on protected tablet");
   assert.equal(recordLabel("approve_plan_part"), "Part approved");
   assert.equal(recordLabel("some_later_type"), "some_later_type");
+});
+
+test("a part names who approved it, and each reason Penguin left it to a person reads as one line", () => {
+  assert.equal(partStateText("approved", "penguin"), "Approved by Penguin");
+  assert.equal(partStateText("approved", "mei"), "Approved by mei");
+  assert.equal(partStateText("pending", null), "Waiting for approval");
+  assert.equal(recordLabel("reverse_penguin_approval"), "Penguin's approval reversed");
+  const lines = [
+    reasonText({ kind: "admin_mode" }),
+    reasonText({ kind: "reversed", by: "rahul" }),
+    reasonText({ kind: "tests", scope: null, status: "fix_not_run", breaks: 2 }),
+    reasonText({ kind: "tests", scope: "invoicing", status: "failed", breaks: 2 }),
+    reasonText({ kind: "tests", scope: "promotions", status: "missing", breaks: 0 }),
+    reasonText({ kind: "review", scope: "tax", state: "missing", reviewId: null, invariant: null }),
+    reasonText({ kind: "review", scope: "tax", state: "not_holding", reviewId: 4, invariant: "tax-per-line" }),
+    reasonText({ kind: "outside_place", file: "checkout/cart.py" }),
+    reasonText({ kind: "outside_place", file: null }),
+  ];
+  assert.deepEqual(lines, [
+    "Admin mode needs a person for every part",
+    "rahul reversed Penguin's approval",
+    "No run has tested the fix",
+    "invoicing tests fail on the merged tree with 2 breaks",
+    "No test result for promotions",
+    "No review yet for tax",
+    "Review of tax does not say tax-per-line holds",
+    "Changes checkout/cart.py outside its place",
+    "Files outside its scopes were not recorded",
+  ]);
+  // One clause each: no line carries a comma or a period.
+  for (const line of lines) assert.doesNotMatch(line, /[,.](?!py)/u, line);
 });
 
 test("block checks group by the tool that ran them, with its version, and count each tool's failures", () => {
@@ -220,7 +251,7 @@ test("markup in an approval's overlap, part, breaks, review, changed lines and r
     export const renderDiff = (files) => renderToStaticMarkup(createElement(DiffFiles, { files }));
     export function render(approvals) {
       const noop = () => {};
-      return renderToStaticMarkup(createElement(ApprovalsView, { approvals, busy: undefined, failed: false, navigate: noop, onApproveStart: noop, onDecide: noop }));
+      return renderToStaticMarkup(createElement(ApprovalsView, { approvals, busy: undefined, failed: false, navigate: noop, onApproveStart: noop, onDecide: noop, onReverse: noop }));
     }`);
   const part = {
     ask: "approve",
@@ -233,6 +264,7 @@ test("markup in an approval's overlap, part, breaks, review, changed lines and r
     kind: "behavioural",
     kindReason: SCRIPT,
     state: "pending",
+    approvedBy: null,
     changeRequests: 1,
     roundLimit: 3,
     files: [{ path: MARKUP, status: "modified", lines: [`+total = ${MARKUP}`, `-${UNBROKEN}`] }],
@@ -246,7 +278,11 @@ test("markup in an approval's overlap, part, breaks, review, changed lines and r
   const approvals = {
     overlaps: [{ feature: "rounding", blockedFeature: "money", blockedPerson: "ines", overlap: { scopes: [MARKUP], paths: [UNBROKEN], contracts: [SCRIPT], omittedPaths: 2 }, read: false, raisedAt: "2026-10-11T09:00:00.000Z" }],
     plan: {
-      parts: [part, { ...part, ask: "round_limit", state: "round_limit", partId: "money/v1#3" }],
+      parts: [
+        part,
+        { ...part, ask: "round_limit", state: "round_limit", partId: "money/v1#3" },
+        { ...part, ask: "penguin_approved", state: "approved", approvedBy: "penguin", partId: "money/v1#4", routing: { inPerson: false, reasons: [] } },
+      ],
       protectedChanges: [
         {
           feature: "money-analytics",
@@ -274,7 +310,7 @@ test("markup in an approval's overlap, part, breaks, review, changed lines and r
         },
       ],
       reviewExceptions: [{ feature: "money", scope: "tax", reviewId: 4, state: "accepted", exceptions: REVIEW.exceptions, review: REVIEW, read: false, raisedAt: "2026-10-11T09:00:00.000Z" }],
-      returnedPlans: [{ feature: "money", breakLimit: 10, behavioural: [MARKUP], read: false, raisedAt: "2026-10-11T09:00:00.000Z" }],
+      returnedPlans: [{ feature: "money", breakLimit: 10, inPerson: [MARKUP], read: false, raisedAt: "2026-10-11T09:00:00.000Z" }],
     },
   };
   const html = render(approvals);
@@ -295,8 +331,12 @@ test("markup in an approval's overlap, part, breaks, review, changed lines and r
   assert.equal(html.match(/class="approval-card card-raised plan-card"/g)?.length, 1);
   assert.equal(html.match(/<h4 class="review-title">/g)?.length, 1);
   assert.equal(html.match(/The review reports/g)?.length, 1);
-  assert.equal(html.match(/class="plan-part"/g)?.length, 2);
+  assert.equal(html.match(/class="plan-part"/g)?.length, 3);
   assert.match(html, /Past the round limit/);
+  // The part Penguin approved names its approver and offers its author the reversal alone.
+  assert.match(html, /tag tag-verified plan-part-state">Approved by Penguin</);
+  assert.equal(html.match(/Reverse approval/g)?.length, 1);
+  assert.match(html, /You may reverse it until the block reaches main/);
   // The review exception names the same review, so it links to the card above instead of repeating it.
   assert.match(html, /<a class="review-link" href="#review-4">Review of tax<\/a>/);
   // A part's breaks and lines stay closed behind a line counting them.

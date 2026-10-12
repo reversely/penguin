@@ -50,12 +50,14 @@
  *     `approved_by`, is refused. The ProjectAgent refuses a lock on another person's feature and a
  *     second approval of the same lock.
  *   - GET /api/plan-parts: the merge plan parts waiting on the signed-in person as owner or
- *     delegate, the parts that write a path they protect, the features whose own change writes one,
- *     the parts of their plans past the round limit and the reviews of their scopes that raised an
+ *     delegate, the parts Penguin approved for them, the parts that write a path they protect, the
+ *     features whose own change writes one, the parts of their plans past the round limit and the
+ *     reviews of their scopes that raised an
  *     exception, checked against PLAN_INBOX_SCHEMA; an answer that breaks it answers 500.
  *   - POST /api/plan-parts/approve: approves one revision of a part, `{ feature, part, revision }`,
- *     as the signed-in person. POST /api/plan-parts/request-change asks for a change to it,
- *     `{ feature, part, revision, text }`. The decider is the session's person: a body with any other
+ *     as the signed-in person. POST /api/plan-parts/reverse reverses Penguin's approval of it, with
+ *     the same fields, until its block reaches main. POST /api/plan-parts/request-change asks for a change to
+ *     it, `{ feature, part, revision, text }`. The decider is the session's person: a body with any other
  *     field is refused. The ProjectAgent refuses anyone but the part's owner or their delegate, a
  *     part outside the feature's newest plan, a stale revision and a part already decided.
  *   - POST /api/plan-parts/confirm-protected: confirms the lines a feature's own change writes under
@@ -173,7 +175,7 @@ export type ProtectedChangeConfirmResult =
 
 /** A person's decision on one revision of a plan part, as the dashboard posts it. */
 export type PlanPartDecision =
-  | { readonly kind: "approve"; readonly feature: string; readonly part: string; readonly revision: number }
+  | { readonly kind: "approve" | "reverse"; readonly feature: string; readonly part: string; readonly revision: number }
   | { readonly kind: "request_change"; readonly feature: string; readonly part: string; readonly revision: number; readonly text: string };
 
 export type PlanPartDecisionResult =
@@ -552,6 +554,13 @@ async function overlapRoute(request: Request, url: URL, session: DashboardSessio
 /** The longest change request the route reads; the ProjectAgent applies the exact limit. */
 const MAX_PLAN_DECISION_BYTES = 16 * 1024;
 
+/** The decision each plan part route posts. */
+const PLAN_DECISION_ROUTES: Readonly<Record<string, PlanPartDecision["kind"]>> = {
+  "/api/plan-parts/approve": "approve",
+  "/api/plan-parts/reverse": "reverse",
+  "/api/plan-parts/request-change": "request_change",
+};
+
 /**
  * The plan part routes. GET /api/plan-parts lists what waits on the session's person; the POST routes
  * approve one revision of a part or ask for a change to it as that person. The decider comes from the
@@ -564,7 +573,7 @@ async function planPartRoute(request: Request, url: URL, session: DashboardSessi
     return checkPlanInbox(parts).length === 0 ? json(parts) : json({ error: "invalid plan parts" }, 500);
   }
   if (url.pathname === "/api/plan-parts/confirm-protected") return confirmProtectedRoute(request, url, session, handlers);
-  const kind = url.pathname === "/api/plan-parts/approve" ? "approve" : url.pathname === "/api/plan-parts/request-change" ? "request_change" : undefined;
+  const kind = Object.hasOwn(PLAN_DECISION_ROUTES, url.pathname) ? PLAN_DECISION_ROUTES[url.pathname] : undefined;
   if (kind === undefined) return json({ error: "not found" }, 404);
   if (request.method !== "POST") return methodNotAllowed("POST");
   if (!isSameOrigin(request, url)) return json({ error: "cross-origin request" }, 403);
@@ -574,8 +583,8 @@ async function planPartRoute(request: Request, url: URL, session: DashboardSessi
   const body = await readJsonObject(request);
   if (body === undefined) return json({ error: "invalid request", message: "the body must be a JSON object" }, 400);
   const { feature, part, revision, text, ...rest } = body;
-  const fields = kind === "approve" ? "feature, part and revision" : "feature, part, revision and text";
-  if (Object.keys(rest).length > 0 || (kind === "approve" && text !== undefined)) {
+  const fields = kind === "request_change" ? "feature, part, revision and text" : "feature, part and revision";
+  if (Object.keys(rest).length > 0 || (kind !== "request_change" && text !== undefined)) {
     return json({ error: "invalid", message: `the body takes only ${fields}; the decider is the signed-in person` }, 400);
   }
   if (!isFeatureId(feature) || typeof part !== "string" || typeof revision !== "number") {
@@ -583,7 +592,7 @@ async function planPartRoute(request: Request, url: URL, session: DashboardSessi
   }
   if (kind === "request_change" && typeof text !== "string") return json({ error: "invalid", message: "text must say what to change" }, 400);
   const decision: PlanPartDecision =
-    kind === "approve" ? { kind, feature, part, revision } : { kind, feature, part, revision, text: text as string };
+    kind === "request_change" ? { kind, feature, part, revision, text: text as string } : { kind, feature, part, revision };
   const decided = await (await handlers.dashboard()).decidePlanPart(session.owner, decision);
   return json(decided, decided.status === "ok" ? 200 : (FEATURE_REJECTION_STATUS[decided.reason] ?? 422));
 }

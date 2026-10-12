@@ -17,6 +17,7 @@ import {
   claimBlockRuns,
   featureLanded,
   landFailed,
+  planStillApproved,
   reportBlockRun,
   requestLand,
   requestPlanCheck,
@@ -135,6 +136,7 @@ describe("landing a feature as a block", () => {
       sealed.push(run.request.fork);
       return 1;
     },
+    planApproved: (featureId, planId) => planStillApproved(fx.project.plans.latestPlan(featureId), planId),
     now: () => fx.now,
   });
   const land = (input: Record<string, unknown> = {}, session: string = SESSIONS.ines, caller = "ines") =>
@@ -314,6 +316,36 @@ describe("landing a feature as a block", () => {
     refused(grant, "forbidden");
     refused(await agentFixGrant(fx.fixDeps(), fx.heartbeat, "ines", SESSIONS.ines, { feature: "money-minor", part: TAX, revision: 1 }), "conflict");
     refused(await land(), "conflict");
+  });
+
+  test("a land run's plan must still be the newest with every part approved; an expand's, when there is one", async () => {
+    await fx.proposeWith(TAX_FIXED);
+    const plan = fx.project.plans.latestPlan("money-minor");
+    assert.ok(plan);
+    assert.deepEqual([planStillApproved(plan, plan.planId), planStillApproved(plan, null)], [false, false]);
+    const approved = { ...plan, parts: plan.parts.map((part) => ({ ...part, approvalState: "approved" as const })) };
+    assert.deepEqual([planStillApproved(approved, approved.planId), planStillApproved(approved, null), planStillApproved(approved, "money-minor/v9")], [true, true, false]);
+    assert.deepEqual([planStillApproved(undefined, null), planStillApproved(undefined, plan.planId)], [true, false]);
+  });
+
+  test("an approval reversed while the block is checked stops the promotion", async () => {
+    await ready();
+    await land();
+    const [run] = await claim();
+    assert.ok(run);
+    // The author reverses an approval of Penguin's before the run reports: the part waits on them again.
+    const plan = fx.project.plans.latestPlan("money-minor");
+    const billing = plan?.parts.find((part) => part.partId === BILLING);
+    assert.ok(billing);
+    assert.equal(fx.project.plans.replacePart("money-minor", { ...billing, approvalState: "pending", approvedBy: null }, { revision: 1, state: "approved" }), true);
+    const result = await reportBlockRun(reportDeps(), RUNNER, run.runId, JSON.parse(JSON.stringify(reportOf(run))));
+    assert.equal(result.status, "recorded");
+    if (result.status !== "recorded") return;
+    assert.deepEqual([result.state, result.promotion], ["refused", null]);
+    assert.equal(mainHead(), fx.main, "main does not move");
+    assert.equal(fx.project.features.get("money-minor")?.state, "building");
+    const [record] = fx.records("promotion_refused");
+    assert.match(String(record?.payload["reason"]), /no longer approved/u);
   });
 
   test("a promotion that raced another push to main is refused and the land goes back through the checks", async () => {

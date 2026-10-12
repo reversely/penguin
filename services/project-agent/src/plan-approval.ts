@@ -9,12 +9,20 @@
 //   in `penguin/scopes.json` also gives that owner a `protected_path` item. A newer plan of the feature
 //   withdraws the older plan's items. The originating feature's own change to a protected path is
 //   checked at each of its checkpoints instead (protected-change.ts).
-// - Decisions. Only a person decides a part, on the dashboard: the part's owner, or the delegate that
-//   owner names in `penguin/owners.json`. Agents submit reviews (review-submit.ts) and never approve.
-//   A decision names the part and the revision it saw. A decision by anyone else, on a part outside the
-//   feature's newest plan, on another revision, or on a part already decided is refused. Each approval
-//   and each request is a signed record on the originating feature, and the request's text is kept as
-//   data of at most PLAN_LIMITS.changeRequestLength characters.
+// - Penguin's approval (PRD 0.5 section 4.3 step 3). Penguin approves a pending part when every check
+//   of partRouting (@penguin/protocol) is clean and the project is not in admin mode
+//   (approveCleanParts). It looks after the plan is announced, after a review of the feature is
+//   recorded and after a revision. The approval is a signed `approve_plan_part` record authored by
+//   Penguin, naming each check's evidence. The author's `plan_part` item gives way to a
+//   `penguin_approved` item, and the author may reverse the approval until the block reaches main
+//   (reversePenguinApproval): the part then waits on them in person and Penguin never approves that
+//   revision again.
+// - Decisions. A person decides every other part, on the dashboard: the part's owner, or the delegate
+//   that owner names in `penguin/owners.json`. Agents submit reviews (review-submit.ts) and never
+//   approve. A decision names the part and the revision it saw. A decision by anyone else, on a part
+//   outside the feature's newest plan, on another revision, or on a part already decided is refused.
+//   Each approval, reversal and request is a signed record on the originating feature, and the
+//   request's text is kept as data of at most PLAN_LIMITS.changeRequestLength characters.
 // - Rounds. Each requested change is one round. The originating agent answers it with
 //   `revise_plan_part`, which makes the part's next revision and asks its author again. The request
 //   that would start round `roundLimit + 1` instead moves the part to `round_limit`: the agent may not
@@ -28,10 +36,11 @@
 
 import {
   partRouting,
+  PENGUIN_APPROVER,
   PLAN_LIMITS,
   PLAN_ROUND_LIMIT_DEFAULT,
   type BreakView,
-  type PartReviewResult,
+  type PartRouting,
   type Plan,
   type PlanBreakFact,
   type PlanInbox,
@@ -47,12 +56,13 @@ import {
   type ReviewExceptionRequest,
 } from "@penguin/protocol";
 import type { Delegates } from "@penguin/issues";
-import { protectedPathFor, scopeForPath, type ScopeMap } from "@penguin/scope-map";
+import { scopeForPath, type ScopeMap } from "@penguin/scope-map";
 
 import type { FeatureRejection } from "./feature-open.ts";
 import { parseFeatureId, type FeatureRecord, type FeatureStore, type StoredFeatureRecord, type UnsignedFeatureRecord } from "./feature-store.ts";
 import { parsePartRef, type InboxItem, type InboxStore } from "./inbox-store.ts";
 import type { SqlDatabase, SqlValue } from "./issue-index.ts";
+import { protectedLookup, reviewResult } from "./part-checks.ts";
 import type { PlanFactsStore } from "./plan-facts.ts";
 import type { PlanKeeper } from "./plan-store.ts";
 import { classifyPart, parseFixFields, readFix, type AffectedPlace, type RepoReading } from "./propose-plan.ts";
@@ -178,8 +188,19 @@ export function parseRoundLimit(value: string | undefined): number | undefined {
   return Number(value);
 }
 
+/**
+ * Reads the project's admin mode setting: unset, empty or `off` is off and `on` is on. Any other value
+ * also counts as on, so a mistyped setting never lets Penguin approve.
+ */
+export function parseAdminMode(value: string | undefined): boolean {
+  return !(value === undefined || value === "" || value === "off");
+}
+
 /** The inbox calls advance notice makes (inbox-store.ts). */
-export type PlanInboxWrites = Pick<InboxStore, "planPartAsked" | "planPartSettled" | "protectedPathTouched" | "roundLimitReached" | "partWithdrawn">;
+export type PlanInboxWrites = Pick<
+  InboxStore,
+  "planPartAsked" | "planPartSettled" | "protectedPathTouched" | "roundLimitReached" | "partWithdrawn" | "penguinApproved" | "penguinApprovalSettled"
+>;
 
 export interface PlanApprovalDeps {
   readonly features: FeatureStore;
@@ -199,7 +220,25 @@ export interface PlanApprovalDeps {
    * a mechanical part on a running feature (fix-write.ts). Absent, nothing is queued.
    */
   readonly approved?: (featureId: string, plan: Plan, part: PlanPart) => void;
+  /**
+   * Called once an author reversed Penguin's approval of a revision: withdraws the write of that
+   * revision when it has not happened yet (fix-write.ts). Absent, nothing is withdrawn.
+   */
+  readonly reversed?: (featureId: string, part: PlanPart) => void;
+  /**
+   * What Penguin's approval checks beyond the part: the feature's reviews, the scope map's protected
+   * paths and the project's admin mode. Absent, Penguin approves no part.
+   */
+  readonly checks?: PartCheckDeps;
   readonly now?: () => number;
+}
+
+export interface PartCheckDeps {
+  /** The reviews submitted on the originating feature (ReviewStore.list). */
+  readonly reviews: (featureId: string) => readonly StoredReview[];
+  readonly scopeMap: () => Promise<ScopeMap>;
+  /** PENGUIN_PLAN_ADMIN_MODE: a person approves every part. */
+  readonly adminMode: boolean;
 }
 
 export interface ReviseDeps extends PlanApprovalDeps {
@@ -248,18 +287,11 @@ const rejected = (reason: PartRejection["reason"], message: string): PartRejecti
 /** The longest part id: a feature id, `/v`, a version and `#`, a part number. */
 const PART_ID_MAX_LENGTH = 128;
 
-/** A protected-path lookup over `scopeMap`, naming each covering path's scope and that scope's owner. */
-export function protectedLookup(scopeMap: ScopeMap): (path: string) => ProtectedPathHit | undefined {
-  return (path) => {
-    let hit;
-    try {
-      hit = protectedPathFor(scopeMap, path);
-    } catch {
-      return undefined;
-    }
-    const owner = hit === undefined ? undefined : scopeMap.scopes.get(hit.scopeId)?.ownerId;
-    return hit === undefined || owner === undefined ? undefined : { scope: hit.scopeId, owner, path: hit.path };
-  };
+export { protectedLookup };
+
+/** One part's routing against the plan it belongs to (PRD 4.3): every reason it needs a person. */
+export function routePart(plan: Plan, part: PlanPart, reviews: readonly StoredReview[], scopeMap: ScopeMap, adminMode: boolean): PartRouting {
+  return partRouting(part, { reviews: reviews.map(reviewResult), checkpoint: plan.facts.change.checkpoint, adminMode }, protectedLookup(scopeMap));
 }
 
 /** The people who protect a path the part's fix writes. */
@@ -435,6 +467,99 @@ export async function requestPlanChange(deps: PlanApprovalDeps, caller: string, 
 }
 
 /**
+ * Penguin approves each pending part of feature `featureId`'s newest plan whose checks are all clean
+ * (PRD 4.3 step 3), unless the project is in admin mode or the block has landed. Each approval is a
+ * signed record authored by Penguin that names the evidence, and the author gets a `penguin_approved`
+ * item in place of the `plan_part` one. Returns the parts approved.
+ */
+export async function approveCleanParts(deps: PlanApprovalDeps, featureId: string): Promise<PlanPart[]> {
+  const checks = deps.checks;
+  if (checks === undefined || checks.adminMode || deps.features.get(featureId)?.state === "landed") return [];
+  const plan = await deps.keeper(featureId).latestPlan(featureId);
+  const pending = plan?.parts.filter((part) => part.approvalState === "pending") ?? [];
+  if (plan === undefined || pending.length === 0) return [];
+  const scopeMap = await checks.scopeMap();
+  const reviews = checks.reviews(featureId);
+  const approved: PlanPart[] = [];
+  for (const part of pending) {
+    if (routePart(plan, part, reviews, scopeMap, false).inPerson) continue;
+    const record = await deps.sign(
+      deps.features.draftRecord(featureId, "approve_plan_part", { penguin: true }, {
+        plan_id: plan.planId,
+        part_id: part.partId,
+        revision: part.revision,
+        place: part.place,
+        diff: part.diff.ref,
+        owner: part.owner,
+        approved_by: PENGUIN_APPROVER,
+        // The evidence of each clean check: the facts run's tests on the tree holding the fix and the reviews.
+        checks: {
+          checkpoint: plan.facts.change.checkpoint,
+          facts_run: part.tests?.runId ?? null,
+          tests: (part.tests?.results ?? []).map(({ scopeId, commandId, status }) => ({ scope: scopeId, command: commandId, status })),
+          reviews: newestReviews(reviews, part.scopes).map((review) => review.id),
+        },
+      }),
+    );
+    const next: PlanPart = { ...part, approvalState: "approved", approvedBy: PENGUIN_APPROVER };
+    if (!(await deps.keeper(featureId).replacePart(featureId, next, { revision: part.revision, state: "pending" }))) continue;
+    deps.features.addRecord(record);
+    deps.routes.set(featureId, next);
+    deps.inbox.planPartSettled(part.owner, part.partId);
+    deps.inbox.penguinApproved(part.owner, part.partId);
+    deps.notify(part.owner);
+    deps.approved?.(featureId, plan, next);
+    approved.push(next);
+  }
+  return approved;
+}
+
+/**
+ * `caller` reverses Penguin's approval of one revision of a part, until the block lands. Only the
+ * part's owner or their delegate may. The part then waits on its author in person; the reversal is a
+ * signed record, and Penguin never approves that revision again.
+ */
+export async function reversePenguinApproval(deps: PlanApprovalDeps, caller: string, input: PartDecisionInput): Promise<PartDecisionOutcome> {
+  const loaded = await loadPart(deps, input);
+  if ("status" in loaded) return loaded;
+  const { featureId, plan, part } = loaded;
+  const refusal = await decider(deps, caller, part);
+  if (refusal !== undefined) return refusal;
+  if (part.approvalState !== "approved" || part.approvedBy !== PENGUIN_APPROVER) {
+    return rejected("conflict", `Penguin did not approve revision ${part.revision} of part ${part.partId}, so there is no approval of Penguin's to reverse`);
+  }
+  if (deps.features.get(featureId)?.state === "landed") {
+    return rejected("conflict", `feature ${featureId}'s block has landed, so its approvals stand`);
+  }
+  const record = await deps.sign(
+    deps.features.draftRecord(featureId, "reverse_penguin_approval", { person: caller }, {
+      plan_id: plan.planId,
+      part_id: part.partId,
+      revision: part.revision,
+      owner: part.owner,
+      reversed_by: caller,
+    }),
+  );
+  const at = new Date((deps.now ?? Date.now)()).toISOString();
+  const next: PlanPart = {
+    ...part,
+    approvalState: "pending",
+    approvedBy: null,
+    reversal: { by: caller, revision: part.revision, at, recordId: record.record_id },
+  };
+  if (!(await deps.keeper(featureId).replacePart(featureId, next, { revision: part.revision, state: "approved" }))) {
+    return rejected("conflict", `part ${part.partId} changed while its approval was reversed; read it again`);
+  }
+  deps.features.addRecord(record);
+  deps.routes.set(featureId, next);
+  deps.inbox.penguinApprovalSettled(part.owner, part.partId);
+  deps.inbox.planPartAsked(part.owner, part.partId);
+  deps.notify(part.owner);
+  deps.reversed?.(featureId, next);
+  return { status: "ok", part: next, recordId: record.record_id, roundLimitRecordId: null };
+}
+
+/**
  * The originating agent's revision of a part whose author asked for a change: a new fix, read and
  * checked as `propose_plan` checks it and classified again, which becomes the part's next revision
  * and waits on its author once more.
@@ -477,7 +602,7 @@ export async function revisePlanPart(deps: ReviseDeps, caller: string, sessionId
     callers: [...part.callers],
     breaks: [...part.breaks],
   };
-  const read = await readFix(deps, { place: part.place, ...fix }, place, feature.repo, scopeMap, {});
+  const read = await readFix(deps, { place: part.place, ...fix }, place, feature.repo, scopeMap, {}, plan.facts.change.checkpoint);
   if ("code" in read) return rejected("invalid", `${read.code}: ${read.message}`);
   const kind = classifyPart(read, impact, part.place, plan.rules ?? [], report?.rewrites, (path) => {
     const scope = scopeForPath(scopeMap, path);
@@ -504,6 +629,8 @@ export async function revisePlanPart(deps: ReviseDeps, caller: string, sessionId
     note: fix.note,
     approvalState: "pending",
     approvedBy: null,
+    // The facts run's results stand; whether the tested tree holds the new fix is read again.
+    tests: part.tests === undefined || part.tests === null ? part.tests : { ...part.tests, fixInTree: read.fixInTree },
   };
   if (!(await deps.keeper(featureId).replacePart(featureId, next, { revision: part.revision, state: part.approvalState }))) {
     return rejected("conflict", `part ${part.partId} changed while it was revised; read it again`);
@@ -564,6 +691,8 @@ export interface OwnPlanPart {
   readonly owner: string;
   readonly kind: PlanPart["kind"];
   readonly state: PlanPartState;
+  /** Who approved the current revision: its author, their delegate or `penguin`; null before. */
+  readonly approvedBy: string | null;
   readonly changeRequests: number;
   readonly changeRequest: PlanPart["changeRequest"];
 }
@@ -590,13 +719,14 @@ export async function planWork(deps: PlanWorkDeps, person: string, sessionId: st
         : {
             planId: plan.planId,
             roundLimit: roundLimit ?? PLAN_ROUND_LIMIT_DEFAULT,
-            parts: plan.parts.map(({ partId, revision, place, owner, kind, approvalState, changeRequests, changeRequest }) => ({
+            parts: plan.parts.map(({ partId, revision, place, owner, kind, approvalState, approvedBy, changeRequests, changeRequest }) => ({
               partId,
               revision,
               place,
               owner,
               kind,
               state: approvalState,
+              approvedBy,
               changeRequests,
               changeRequest,
             })),
@@ -614,6 +744,10 @@ export interface PlanInboxDeps {
   readonly scopeMap: () => Promise<ScopeMap>;
   readonly delegates: () => Promise<Delegates>;
   readonly roundLimit: number | undefined;
+  /** PENGUIN_PLAN_ADMIN_MODE, which each part's routing names; off when absent. */
+  readonly adminMode?: boolean;
+  /** Whether a feature's block has landed, after which Penguin's approvals stand; never when absent. */
+  readonly landed?: (featureId: string) => boolean;
   /** The feature's signed records, which hold each returned plan (FeatureStore.records). */
   readonly records: (featureId: string) => readonly StoredFeatureRecord[];
   /**
@@ -625,11 +759,19 @@ export interface PlanInboxDeps {
 
 const REVIEW_REF = /^([^/]+)\/([^/]+)$/u;
 
+/** The inbox reason behind each ask. */
+const ASK_REASON: Readonly<Record<PlanPartAsk, InboxItem["reason"]>> = {
+  approve: "plan_part",
+  penguin_approved: "penguin_approved",
+  protected_path: "protected_path",
+  round_limit: "round_limit",
+};
+
 /**
  * The dashboard's plan parts for `caller`: the parts waiting on them as owner or delegate, the parts
- * that write a path they protect, the features whose own change writes such a path, the parts of
- * their own plans past the round limit, and the reviews of their scopes that raised an exception,
- * each with the facts behind it.
+ * Penguin approved for them, the parts that write a path they protect, the features whose own change
+ * writes such a path, the parts of their own plans past the round limit, and the reviews of their
+ * scopes that raised an exception, each with the facts behind it.
  */
 export async function buildPlanInbox(deps: PlanInboxDeps, caller: string): Promise<PlanInbox> {
   const [scopeMap, delegates] = await Promise.all([deps.scopeMap(), deps.delegates()]);
@@ -638,6 +780,10 @@ export async function buildPlanInbox(deps: PlanInboxDeps, caller: string): Promi
   const asks = new Map<string, PlanPartAsk>();
   // Past the round limit the author may still approve the revision they have.
   for (const waiting of deps.routes.waitingOn(owners, ["pending", "round_limit"])) asks.set(waiting.partId, "approve");
+  // An approved part is listed when Penguin approved it, below, and its block has not landed.
+  for (const approved of deps.routes.waitingOn(owners, ["approved"])) {
+    if (deps.landed?.(approved.featureId) !== true) asks.set(approved.partId, "penguin_approved");
+  }
   for (const item of items) {
     const partId = parsePartRef(item.issueId);
     if (partId === undefined || asks.has(partId)) continue;
@@ -650,22 +796,16 @@ export async function buildPlanInbox(deps: PlanInboxDeps, caller: string): Promi
     if (!plans.has(featureId)) plans.set(featureId, await deps.keeper(featureId).latestPlan(featureId));
     return plans.get(featureId);
   };
-  const lookup = protectedLookup(scopeMap);
   const parts: PlanPartRequest[] = [];
   for (const [partId, ask] of asks) {
     const routed = deps.routes.get(partId);
     const plan = routed === undefined ? undefined : await planOf(routed.featureId);
     const part = plan?.parts.find((each) => each.partId === partId);
     if (routed === undefined || plan === undefined || part === undefined) continue;
+    // A part a person approved has left the list; only Penguin's approval stays, for its reversal.
+    if (ask === "penguin_approved" && part.approvedBy !== PENGUIN_APPROVER) continue;
     const stored = deps.reviews.list(plan.featureId);
-    const reviews: PartReviewResult[] = stored.map((review) => ({
-      reviewId: review.id,
-      scope: review.scopeId,
-      state: review.state,
-      exceptions: review.exceptions,
-    }));
-    const reason = ask === "approve" ? "plan_part" : ask;
-    const item = items.find((each) => each.issueId === `part:${partId}` && each.reason === reason);
+    const item = items.find((each) => each.issueId === `part:${partId}` && each.reason === ASK_REASON[ask]);
     parts.push({
       ask,
       feature: plan.featureId,
@@ -677,12 +817,13 @@ export async function buildPlanInbox(deps: PlanInboxDeps, caller: string): Promi
       kind: part.kind,
       kindReason: part.kindReason,
       state: part.approvalState,
+      approvedBy: part.approvedBy,
       changeRequests: part.changeRequests,
       roundLimit: deps.roundLimit ?? PLAN_ROUND_LIMIT_DEFAULT,
       files: partFiles(part),
       breaks: part.breaks.map(breakView),
       reviews: newestReviews(stored, part.scopes).map(reviewView),
-      routing: partRouting(part, reviews, lookup),
+      routing: routePart(plan, part, stored, scopeMap, deps.adminMode ?? false),
       changeRequest:
         part.changeRequest === null ? null : { by: part.changeRequest.by, revision: part.changeRequest.revision, text: part.changeRequest.text },
       read: item?.read ?? false,
@@ -722,11 +863,19 @@ export async function buildPlanInbox(deps: PlanInboxDeps, caller: string): Promi
       .filter((each) => each.type === "plan_returned")
       .at(-1);
     if (returned === undefined) return [];
-    const { break_limit: breakLimit, behavioural } = returned.payload as { break_limit: number; behavioural: string[] };
-    return [{ feature: featureId, breakLimit, behavioural, read: item.read, raisedAt: item.raisedAt }];
+    return [{ feature: featureId, ...returnedPayload(returned.payload), read: item.read, raisedAt: item.raisedAt }];
   });
   const protectedChanges = [...(deps.protectedChanges?.(owners, items, delegates) ?? [])];
   return { parts, protectedChanges, reviewExceptions, returnedPlans };
+}
+
+/**
+ * A `plan_returned` record's limit and the places it counted. A record from before #114 counted the
+ * behavioural parts, under `behavioural`.
+ */
+export function returnedPayload(payload: Record<string, unknown>): { readonly breakLimit: number; readonly inPerson: readonly string[] } {
+  const places = payload["in_person"] ?? payload["behavioural"];
+  return { breakLimit: payload["break_limit"] as number, inPerson: Array.isArray(places) ? (places as string[]) : [] };
 }
 
 /** A part's diff as each file's lines, the way the dashboard shows changed lines. */

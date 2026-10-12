@@ -340,6 +340,24 @@ describe("promoting an expand checkpoint on its own", () => {
     assert.equal((await expand()).status, "checking");
   });
 
+  test("an expand re-checks the feature's plan approvals before it moves main, as a land does", async () => {
+    const expanded = await checkpoint({ [API]: PRICE + PRICE_MINOR });
+    refused(await expand(), "waiting_for_runner");
+    reportFacts(({ baseline }) => impact(baseline, expanded, git(fx.forkDir, "rev-parse", "main")));
+    assert.equal((await expand()).status, "checking");
+    const run = await claimOne();
+    // An author reversed Penguin's approval of a part of the feature's plan while the expand was checked.
+    const asked: (string | null)[][] = [];
+    const deps = { ...reportDeps(), planApproved: (featureId: string, planId: string | null) => (asked.push([featureId, planId]), false) };
+    const result = await reportBlockRun(deps, RUNNER, run.runId, JSON.parse(JSON.stringify(reportOf(run))));
+    assert.equal(result.status, "recorded");
+    if (result.status !== "recorded") return;
+    assert.deepEqual([result.state, result.promotion], ["refused", null]);
+    assert.deepEqual(asked, [["money-minor", null]], "an expand names no plan, so the feature's newest plan is read");
+    assert.equal(mainHead(), fx.main, "main does not move");
+    assert.match(String(fx.records("promotion_refused")[0]?.payload["reason"]), /the feature's plan is no longer approved/u);
+  });
+
   test("an expand that raced another push is checked again as an expand", async () => {
     const expanded = await checkpoint({ [API]: PRICE + PRICE_MINOR });
     refused(await expand(), "waiting_for_runner");

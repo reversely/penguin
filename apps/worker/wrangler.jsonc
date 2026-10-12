@@ -25,9 +25,13 @@
   // PENGUIN_FIX_TOKEN_TTL_MINUTES (PRD 0.4 section 8). Unset means 10; a value other than a whole
   // number from 1 to 60 refuses every fix token as misconfigured.
   //
-  // A merge plan that touches more running features than PENGUIN_PLAN_BREAK_LIMIT is returned to its
-  // author (PRD 0.4 section 4.2 step 5). Unset means the PRD's default of 10; any value other than a
+  // A merge plan with more parts needing a person than PENGUIN_PLAN_BREAK_LIMIT is returned to its
+  // author (PRD 0.5 section 4.2 step 4). Unset means the PRD's default of 10; any value other than a
   // positive whole number refuses every plan as misconfigured.
+  //
+  // Penguin approves each plan part whose checks are clean (PRD 0.5 section 4.3). PENGUIN_PLAN_ADMIN_MODE
+  // set to "on" makes a person approve every part instead. Unset or "off" leaves it off; any other
+  // value counts as on.
   //
   // An author may ask for PENGUIN_PLAN_ROUND_LIMIT changes to one plan part; the next request sends
   // the part to the originating feature's person (PRD 0.4 section 7). Unset means the PRD's default
@@ -42,6 +46,7 @@
     "PENGUIN_FEATURE_FORK_DEFAULT_BRANCH_ONLY": "true",
     "PENGUIN_FEATURE_TOKEN_TTL_MINUTES": "30",
     "PENGUIN_FIX_TOKEN_TTL_MINUTES": "10",
+    "PENGUIN_PLAN_ADMIN_MODE": "off",
     "PENGUIN_PLAN_BREAK_LIMIT": "10",
     "PENGUIN_PLAN_ROUND_LIMIT": "3",
     "PENGUIN_PROMOTION_TOKEN_TTL_MINUTES": "5"

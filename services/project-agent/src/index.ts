@@ -147,15 +147,19 @@ import {
 import { requestExpand, retryExpand, type ExpandDeps } from "./expand-promotion.ts";
 import { parseBreakLimit, proposePlan, type ProposePlanInput, type ProposePlanOutcome } from "./propose-plan.ts";
 import { claimToolRuns, recordToolResult, type ToolReportOutcome, type ToolRunClaim } from "./agent-tool-runner.ts";
+import { reviewResult } from "./part-checks.ts";
 import {
   announcePlan,
+  approveCleanParts,
   approvePlanPart,
   buildPlanInbox,
+  parseAdminMode,
   parseRoundLimit,
   planNoticeSources,
   PlanRouteStore,
   planWork,
   requestPlanChange,
+  reversePenguinApproval,
   revisePlanPart,
   type ChangeRequestInput,
   type PartDecisionInput,
@@ -366,6 +370,7 @@ export {
   featureLanded,
   landFailed,
   parsePromotionTokenTtl,
+  planStillApproved,
   PROMOTION_SLOT_MS,
   PROMOTION_TOKEN_TTL_DEFAULT_MINUTES,
   PROMOTION_TOKEN_TTL_MAX_MINUTES,
@@ -420,16 +425,20 @@ export {
   type JoinedPlan,
   type PlanMeeting,
 } from "./plan-coverage.ts";
+export { protectedLookup, reviewResult } from "./part-checks.ts";
 export {
   announcePlan,
+  approveCleanParts,
   approvePlanPart,
   buildPlanInbox,
+  parseAdminMode,
   parseRoundLimit,
   PLAN_ROUTE_SCHEMA,
   planNoticeSources,
   PlanRouteStore,
   planWork,
   requestPlanChange,
+  reversePenguinApproval,
   revisePlanPart,
   type ChangeRequestInput,
   type OwnPlanPart,
@@ -695,8 +704,10 @@ interface ProjectAgentEnv {
   readonly PENGUIN_OP_SIGNING_KEY?: string;
   /** Seconds without a heartbeat before a session goes offline. Defaults to SESSION_OFFLINE_AFTER_MS. */
   readonly PENGUIN_SESSION_OFFLINE_SECONDS?: string;
-  /** The most running features one merge plan may touch. Defaults to PLAN_BREAK_LIMIT_DEFAULT (PRD 4.2). */
+  /** The most parts needing a person one merge plan may hold. Defaults to PLAN_BREAK_LIMIT_DEFAULT (PRD 4.2). */
   readonly PENGUIN_PLAN_BREAK_LIMIT?: string;
+  /** `on` makes a person approve every plan part, so Penguin approves none (PRD 4.3 step 5). Off when unset. */
+  readonly PENGUIN_PLAN_ADMIN_MODE?: string;
   /** The changes an author may ask for on one plan part. Defaults to PLAN_ROUND_LIMIT_DEFAULT (PRD 7). */
   readonly PENGUIN_PLAN_ROUND_LIMIT?: string;
 }
@@ -1832,10 +1843,11 @@ export class ProjectAgent extends Agent {
 
   /**
    * Attaches the runner's record to pending review `reviewId`. When the record raises an exception,
-   * the scope's owner gets a `review_exception` inbox item.
+   * the scope's owner gets a `review_exception` inbox item. A recorded review may complete the checks
+   * of a part of the feature's plan, so Penguin then approves each clean part (plan-approval.ts).
    */
-  reportReview(caller: BridgeCaller, reviewId: number, record: unknown): Promise<ReviewReportOutcome> {
-    return this.#featuresChanging(recordReview(
+  async reportReview(caller: BridgeCaller, reviewId: number, record: unknown, repos: ProjectRepos): Promise<ReviewReportOutcome> {
+    const outcome = await this.#featuresChanging(recordReview(
       {
         reviews: this.#reviewStore(),
         routeToOwner: (ownerId, review) => {
@@ -1847,6 +1859,11 @@ export class ProjectAgent extends Agent {
       reviewId,
       record,
     ));
+    if (outcome.status === "recorded") {
+      const featureId = outcome.review.featureId;
+      await this.#featuresChanging(this.#planStep(() => approveCleanParts(this.#planApprovalDeps(repos), featureId)));
+    }
+    return outcome;
   }
 
   /** The reviews of one feature, oldest first, each with its record once the runner attached it. */
@@ -1956,8 +1973,8 @@ export class ProjectAgent extends Agent {
    * plan and has the feature's own Durable Object keep it. Proposals run one at a time.
    */
   proposePlan(owner: string, sessionId: string, input: ProposePlanInput, repos: ProjectRepos): Promise<ProposePlanOutcome> {
-    const run = this.#planSteps.then(() =>
-      proposePlan(
+    const run = this.#planSteps.then(async () => {
+      const outcome = await proposePlan(
         {
           features: this.#featureStore(),
           facts: this.#planFactsStore(),
@@ -1970,6 +1987,7 @@ export class ProjectAgent extends Agent {
           sign: async (record) => signFeatureRecord(record, (await this.#loadServiceKey()).privateKey),
           breakLimit: parseBreakLimit((this.env as unknown as ProjectAgentEnv).PENGUIN_PLAN_BREAK_LIMIT),
           retiring: this.#retiringStore(),
+          evidence: (featureId) => ({ reviews: this.#reviewStore().list(featureId).map(reviewResult), adminMode: this.#adminMode() }),
           exception: (personId, featureId) => {
             this.#inboxStore().planReturned(personId, featureId);
             sendToOwner(this.getConnections<{ owner?: string }>(), personId, inboxChangedMessage());
@@ -1984,8 +2002,13 @@ export class ProjectAgent extends Agent {
         owner,
         sessionId,
         input,
-      ),
-    );
+      );
+      if (outcome.status !== "stored") return outcome;
+      // Penguin approves each part whose checks are already clean; the answer shows who approved what.
+      const featureId = outcome.plan.featureId;
+      if ((await approveCleanParts(this.#planApprovalDeps(repos), featureId)).length === 0) return outcome;
+      return { ...outcome, plan: (await this.#planKeeper(featureId).latestPlan(featureId)) ?? outcome.plan };
+    });
     this.#planSteps = run.catch(() => undefined);
     return this.#featuresChanging(run);
   }
@@ -2006,6 +2029,8 @@ export class ProjectAgent extends Agent {
         scopeMap: async () => rules.scopeMap,
         delegates: async () => rules.delegates,
         roundLimit: this.#roundLimit(),
+        adminMode: this.#adminMode(),
+        landed: (featureId) => this.#featureStore().get(featureId)?.state === "landed",
         records: (featureId) => this.#featureStore().records(featureId),
         protectedChanges: (owners, items, delegates) =>
           protectedChangeRequests(this.#protectedChangeStore(), this.#featureStore(), items, owners, caller, delegates),
@@ -2057,13 +2082,25 @@ export class ProjectAgent extends Agent {
     return this.#featuresChanging(this.#planStep(() => requestPlanChange(this.#planApprovalDeps(repos), caller, input)));
   }
 
-  /** `revise_plan_part`: the originating agent's revision of a part its author asked to change. */
+  /**
+   * `caller` reverses Penguin's approval of one revision of a plan part, until the block lands. Only
+   * the part's owner or their delegate may; the part then waits on them in person (plan-approval.ts).
+   */
+  reversePenguinApproval(caller: string, input: PartDecisionInput, repos: ProjectRepos): Promise<PartDecisionOutcome> {
+    return this.#featuresChanging(this.#planStep(() => reversePenguinApproval(this.#planApprovalDeps(repos), caller, input)));
+  }
+
+  /**
+   * `revise_plan_part`: the originating agent's revision of a part its author asked to change. Penguin
+   * approves the revision at once when its checks are clean.
+   */
   revisePlanPart(owner: string, sessionId: string, input: RevisionInput, repos: ProjectRepos): Promise<PartDecisionOutcome> {
     return this.#featuresChanging(
-      this.#planStep(() =>
-        revisePlanPart(
+      this.#planStep(async () => {
+        const deps = this.#planApprovalDeps(repos);
+        const outcome = await revisePlanPart(
           {
-            ...this.#planApprovalDeps(repos),
+            ...deps,
             facts: this.#planFactsStore(),
             scopeMap: () => this.#scopeMap(repos),
             readRepo: (repo, use) => withRepo(this.env.ARTIFACTS, repo, (opened) => use(opened as unknown as GitObjectReader)),
@@ -2072,8 +2109,12 @@ export class ProjectAgent extends Agent {
           owner,
           sessionId,
           input,
-        ),
-      ),
+        );
+        if (outcome.status !== "ok") return outcome;
+        const featureId = this.#featureStore().featureOfSession(sessionId) as string;
+        const approved = (await approveCleanParts(deps, featureId)).find((part) => part.partId === outcome.part.partId);
+        return approved === undefined ? outcome : { ...outcome, part: approved };
+      }),
     );
   }
 
@@ -2099,7 +2140,22 @@ export class ProjectAgent extends Agent {
       notify: (personId) => sendToOwner(this.getConnections<{ owner?: string }>(), personId, inboxChangedMessage()),
       // An approved mechanical part on a running feature waits for the check runner to write it (fix-write.ts).
       approved: (featureId, plan, part) => queueRunnerWrite(this.#fixGrantStore(), featureId, plan, part),
+      // A reversed approval withdraws its revision's write while it has not happened yet.
+      reversed: (_featureId, part) => {
+        const grant = this.#fixGrantStore().get(part.partId, part.revision);
+        if (grant !== undefined) this.#fixGrantStore().withdraw(grant.id);
+      },
+      checks: {
+        reviews: (featureId) => this.#reviewStore().list(featureId),
+        scopeMap: () => this.#scopeMap(repos),
+        adminMode: this.#adminMode(),
+      },
     };
+  }
+
+  /** PENGUIN_PLAN_ADMIN_MODE: whether a person approves every plan part. */
+  #adminMode(): boolean {
+    return parseAdminMode((this.env as unknown as ProjectAgentEnv).PENGUIN_PLAN_ADMIN_MODE);
   }
 
   /**
@@ -2335,6 +2391,8 @@ export class ProjectAgent extends Agent {
   /** Main moved to the feature's checkpoint: the feature is landed, its plan retired and the starts it held checked again. */
   featureLanded(featureId: string, promotion: Promotion, repos: ProjectRepos): Promise<void> {
     const notify = (personId: string) => sendToOwner(this.getConnections<{ owner?: string }>(), personId, inboxChangedMessage());
+    // Penguin's approvals of the block's parts stand once it lands, so their reversible items go.
+    for (const person of new Set(this.#inboxStore().blockLanded(featureId))) notify(person);
     return this.#featuresChanging(featureLanded(
       {
         features: this.#featureStore(),

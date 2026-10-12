@@ -23,13 +23,16 @@
 //   exception (review-record.ts, PRD 4.3 step 4): the form reports a broken invariant, or the
 //   side-by-side run differs on a protected invariant. Its `issue_id` holds `<feature>/<scope>`. A
 //   later review of the same scope with an exception marks it unread again.
-// - "plan_returned": a merge plan of the person's feature touched more running features than the
+// - "plan_returned": a merge plan of the person's feature had more parts needing a person than the
 //   project's break limit, so Penguin returned it to its author (propose-plan.ts, PRD section 7). Its
 //   `issue_id` holds `plan:<feature>`. A later return marks it unread again.
 // - "plan_part": a part of a merge plan touches the person's code and waits for their approval
 //   (plan-approval.ts, PRD 4.3). Its `issue_id` holds `part:<part id>`. Each plan's parts reach every
 //   author at once; a revision marks the item unread again, and an approval or a requested change
 //   takes it away until the part next waits on the person.
+// - "penguin_approved": Penguin approved the person's part because every check was clean
+//   (plan-approval.ts, PRD 0.5 section 4.3 step 3). Its `issue_id` holds `part:<part id>`. It goes when
+//   the person reverses the approval, when a newer plan replaces the part or when the block lands.
 // - "protected_path": a part's fix touches a path the person protects in `penguin/scopes.json`, so
 //   they confirm its lines (PRD section 7). Its `issue_id` holds `part:<part id>`. A feature's own
 //   change since its merge base with main that touches such a path raises the same reason with
@@ -67,6 +70,7 @@ export const INBOX_REASONS = [
   "review_exception",
   "plan_returned",
   "plan_part",
+  "penguin_approved",
   "protected_path",
   "round_limit",
 ] as const;
@@ -217,6 +221,29 @@ export class InboxStore implements StartRequestListener {
   /** The part no longer waits on `personId`: they decided it, or a newer plan replaced it. */
   planPartSettled(personId: string, partId: string): void {
     this.#db.exec(`DELETE FROM InboxItem WHERE person_id = ? AND issue_id = ? AND reason = 'plan_part'`, personId, partRef(partId));
+  }
+
+  /** Tells `personId` that Penguin approved their part `partId`, which they may reverse until it lands. */
+  penguinApproved(personId: string, partId: string): void {
+    this.#raise(personId, partRef(partId), "penguin_approved");
+  }
+
+  /** Penguin's approval of part `partId` no longer stands for `personId` to reverse. */
+  penguinApprovalSettled(personId: string, partId: string): void {
+    this.#db.exec(`DELETE FROM InboxItem WHERE person_id = ? AND issue_id = ? AND reason = 'penguin_approved'`, personId, partRef(partId));
+  }
+
+  /** Feature `featureId`'s block landed, so Penguin's approvals of its parts stand: their items go. */
+  blockLanded(featureId: string): string[] {
+    // A part id starts with its feature id and `/v`, which no other feature's part id can.
+    const prefix = partRef(`${featureId}/v`);
+    return this.#db
+      .exec(
+        `DELETE FROM InboxItem WHERE reason = 'penguin_approved' AND substr(issue_id, 1, ?) = ? RETURNING person_id`,
+        prefix.length,
+        prefix,
+      )
+      .map((row) => row["person_id"] as string);
   }
 
   /** Asks `personId` to confirm the lines part `partId` writes under a path they protect. */
