@@ -52,7 +52,7 @@ import { answerers, routeScope, scopeForPath, type ScopeMap } from "@penguin/sco
 import type { EditRoster } from "./edit-roster.ts";
 import type { EditReportOutcome, EditSource, EditTask, EditTaskStore, SessionFor } from "./edit-tasks.ts";
 import type { FeatureStore } from "./feature-store.ts";
-import { taskFixGrant, taskFixReport, type FixGrantStore, type FixWriteDeps } from "./fix-write.ts";
+import { taskFixGrant, taskFixReport, withdrawMovedOn, type FixGrantStore, type FixWriteDeps } from "./fix-write.ts";
 import type { IssuedTaskToken } from "./mcp-tokens.ts";
 import { RUNNING_STATES } from "./overlap-lock.ts";
 import type { PartRoute, PlanRouteStore } from "./plan-approval.ts";
@@ -364,15 +364,26 @@ export async function claimEditTasks(deps: EditWorkDeps, person: string, bridgeI
   const scopeMap = await deps.scopeMap();
   // Without task tokens a review cannot run headless, so the claim leaves reviews to sessions.
   const headless = deps.taskTokens === undefined ? (task: Pick<EditTask, "kind">) => task.kind !== "review" : () => true;
+  // The fork order is read from the table below, so writes whose part moved on leave it first.
+  const open = deps.grants.allOpen();
+  if (open.length > 0) await withdrawMovedOn(deps.fix, open);
   // A fork whose start waits on an overlap lock gets no write token yet, so its edits wait in the queue.
-  const claimable = (task: EditTask) => headless(task) && (task.kind === "review" || deps.fix.locked?.(task.target) !== true);
+  // A fix whose write waits for its fork's turn (fix-write.ts) stays queued and takes no run.
+  const claimable = (task: EditTask) =>
+    headless(task) && (task.kind === "review" || deps.fix.locked?.(task.target) !== true) && !(task.kind === "fix" && fixWaits(deps, task));
   const claimed = deps.tasks.claim(person, bridgeId, deps.cap, deps.leaseMs, sessionFor(deps), claimable);
   const specs: EditTaskSpec[] = [];
   const mcp: Record<number, IssuedTaskToken> = {};
   for (const task of claimed) {
     let fixWrite: EditTaskSpec["fixWrite"] = null;
     if (task.kind === "fix") {
-      const granted = await taskFixGrant(deps.fix, fixPart(task), task.handle as string);
+      // The token lasts the run's lease, so the write holds the fork as long.
+      const granted = await taskFixGrant(deps.fix, fixPart(task), task.handle as string, deps.leaseMs);
+      if (granted.status === "rejected" && granted.reason === "waiting") {
+        // Another write took the fork in this same claim: the task waits for its turn.
+        deps.tasks.unclaim(task.id);
+        continue;
+      }
       if (granted.status !== "ok") {
         deps.tasks.close(task.sourceKey, "dropped", granted.message);
         continue;
@@ -391,6 +402,13 @@ export async function claimEditTasks(deps: EditWorkDeps, person: string, bridgeI
 }
 
 const fixPart = (task: EditTask) => ({ feature: task.feature, part: task.ref["part"], revision: task.ref["revision"] });
+
+/** Whether a fix task's write waits for its fork's turn, as the grant table stands. */
+function fixWaits(deps: EditWorkDeps, task: EditTask): boolean {
+  const { part, revision } = task.ref;
+  const grant = typeof part === "string" && typeof revision === "number" ? deps.grants.get(part, revision) : undefined;
+  return grant !== undefined && (grant.state === "queued" || grant.state === "granted") && deps.grants.waitsFor(grant) !== null;
+}
 
 /** The paths a task's change may touch: its files and the paths of its scopes. */
 export function allowedPaths(task: Pick<EditTask, "files" | "scopes">, scopeMap: ScopeMap): string[] {

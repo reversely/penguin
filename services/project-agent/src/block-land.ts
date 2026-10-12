@@ -498,6 +498,11 @@ export interface BlockProjectPort {
    * passing run does the feature's open ones (edit-work.ts). Absent, no task opens.
    */
   blockReported?(featureId: string, run: { readonly runId: string; readonly checkpoint: string; readonly passed: boolean }, decisions: readonly LadderDecision[]): Promise<void>;
+  /**
+   * The fixes written into any of `targets`' forks at or after `since`, each as `<part> into <feature>`
+   * (fix-write.ts). A run that named those heads checked the block without them. Absent, none.
+   */
+  fixesWrittenSince?(targets: readonly string[], since: string): Promise<readonly string[]>;
 }
 
 export interface BlockReportDeps {
@@ -622,6 +627,13 @@ async function promote(
     await refuse("refused", `a part of ${run.planId === null ? "the feature's plan" : `plan ${run.planId}`} is no longer approved`, null);
     await deps.port.landFailed(run.featureId, run.runId);
     return { state: "refused", promotion: null, retried: null };
+  }
+  // Each plan's block is checked on fork heads holding every fix written so far: a fix written into a
+  // target after the run named its head means the block is checked again on the new heads.
+  const later = (await deps.port.fixesWrittenSince?.(run.request.targets.map((target) => target.feature), run.requestedAt)) ?? [];
+  if (later.length > 0) {
+    await refuse("raced", `fixes were written into the targets' forks after the block was checked: ${later.slice(0, 10).join(", ")}`, null);
+    return { state: "raced", promotion: null, retried: await retry() };
   }
   if (!(await deps.port.acquirePromotion(run.featureId, run.runId))) {
     await refuse("raced", "another promotion was moving main", null);

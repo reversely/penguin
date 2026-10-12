@@ -276,7 +276,8 @@ interface PartProps {
 }
 
 const WRITE_TEXT: Readonly<Record<string, string>> = {
-  queued: "Write queued for the check runner",
+  queued: "Write queued",
+  waiting: "Write waits for its turn on the fork",
   granted: "Write token granted",
   written: "Written",
   withdrawn: "Write withdrawn",
@@ -321,8 +322,9 @@ function PartNode({ part, plan, fix, featureId, person, navigate }: PartProps) {
           </span>
           {fix?.write == null ? null : (
             <span className="fix-write">
-              <span className={fix.write.state === "written" ? "verdict-holds" : "muted"}>{WRITE_TEXT[fix.write.state] ?? fix.write.state}</span>
+              <span className={fix.write.state === "written" ? "verdict-holds" : "muted"}>{WRITE_TEXT[fix.write.waitsFor == null ? fix.write.state : "waiting"] ?? fix.write.state}</span>
               <span className="muted">by {fix.write.writer === "runner" ? "the check runner" : "the originating agent"}</span>
+              {fix.write.waitsFor == null ? null : <span className="muted">{fix.write.waitsFor}</span>}
               {fix.write.commit === null ? null : <code>{shortSha(fix.write.commit)}</code>}
             </span>
           )}

@@ -10,7 +10,7 @@ import { parseScopeMap, type ScopeMap } from "@penguin/scope-map";
 
 import { EditRoster } from "../src/edit-roster.ts";
 import { EditTaskStore, type EditSource } from "../src/edit-tasks.ts";
-import { blockReported, deliverEditTasks, holdsFixTask, openEditTask, syncEditWork, type EditWorkDeps } from "../src/edit-work.ts";
+import { blockReported, claimEditTasks, deliverEditTasks, holdsFixTask, openEditTask, syncEditWork, type EditWorkDeps } from "../src/edit-work.ts";
 import { EMPTY_AREA, FeatureStore, type FeatureArea } from "../src/feature-store.ts";
 import { FixGrantStore, type FixWriteDeps } from "../src/fix-write.ts";
 import { IdentityStore } from "../src/identity-store.ts";
@@ -208,6 +208,36 @@ test("an approved fix for a running feature routes whole to that feature's build
   project.grants.written(grant.id, "d".repeat(40), "rec-1");
   await syncEditWork(project.deps());
   assert.deepEqual([project.tasks.get(task!.id)?.state, project.tasks.get(task!.id)?.commit], ["done", "d".repeat(40)]);
+});
+
+test("a fix whose write waits for its fork's turn stays queued and takes no background run", async () => {
+  const project = new Project();
+  project.open("utc-day", "priya", { scopes: ["ingestion"] });
+  project.open("local-day", "priya", { scopes: ["ingestion"] });
+  project.open("weekly-report", "jun", { scopes: ["analytics"] });
+  const first = part("utc-day/v1#1", { kind: "feature", feature: "weekly-report" }, "jun", ["analytics"], "approved");
+  const second = part("local-day/v1#1", { kind: "feature", feature: "weekly-report" }, "jun", ["analytics"], "approved");
+  project.routes.set("utc-day", first);
+  project.routes.set("local-day", second);
+  // Both writes open at approval, in that order; the first is written, so the second is tried again on the new head.
+  const written = project.grants.open("utc-day", "utc-day/v1", first, "weekly-report", "agent");
+  const waiting = project.grants.open("local-day", "local-day/v1", second, "weekly-report", "agent");
+  project.grants.written(written.id, "d".repeat(40), "rec-1");
+  project.grants.retrial(waiting.id, "d".repeat(40), 7);
+  await syncEditWork(project.deps());
+  // The claim reads each open write's part from its plan: the second part still stands approved.
+  const approved = { ...second, approvedBy: "jun", diff: { source: "patch", patch: "", base: "b".repeat(40), files: [] } } as unknown as PlanPart;
+  const fix = { features: project.features, grants: project.grants, keeper: () => ({ latestPlan: async () => ({ planId: "local-day/v1", parts: [approved] }) }) } as unknown as FixWriteDeps;
+  const claim = await claimEditTasks({ ...project.deps(), fix }, "jun", "bridge-jun");
+  assert.deepEqual(claim.status === "ok" ? claim.tasks : null, []);
+  assert.equal(project.grants.get("local-day/v1#1", 1)?.state, "queued");
+  // The bridge is online, so the task waits in its queue.
+  await syncEditWork(project.deps());
+  const [task] = project.tasks.forFeature("local-day");
+  assert.deepEqual([task?.kind, task?.state], ["fix", "queued"]);
+  // Its trial passed on that head: the write's turn has come.
+  project.grants.trialled(waiting.id, "d".repeat(40));
+  assert.equal(project.grants.waitsFor(project.grants.get("local-day/v1#1", 1)!), null);
 });
 
 test("a migration part opened from outside routes by charter like any edit", async () => {

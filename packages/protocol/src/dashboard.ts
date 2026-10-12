@@ -462,6 +462,12 @@ export interface FixView {
     readonly writer: string;
     readonly commit: string | null;
     readonly rebased: boolean;
+    /**
+     * Why a write not yet made waits for its turn on the fork: another write holds the fork's token,
+     * a part approved earlier is written there first, or the part is tried again on the head another
+     * fix left. Null when it is the write's turn or the write is done.
+     */
+    readonly waitsFor?: string | null;
   } | null;
 }
 

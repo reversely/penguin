@@ -61,8 +61,12 @@ export type JobFact =
       readonly review: PartReviewState;
       readonly reviewer: string | null;
     }
-  /** One fix written into a running feature's fork. `none`: no write asked yet; `refused`: Penguin refused the pushed fix. */
-  | { readonly kind: "write"; readonly partId: string; readonly feature: string; readonly owner: string; readonly state: "none" | "queued" | "granted" | "written" | "withdrawn" | "refused" }
+  /**
+   * One fix written into a running feature's fork. `none`: no write asked yet; `waiting`: it waits for
+   * its turn on the fork (another write holds it, one approved earlier goes first, or the part is tried
+   * again on the head another fix left); `refused`: Penguin refused the pushed fix.
+   */
+  | { readonly kind: "write"; readonly partId: string; readonly feature: string; readonly owner: string; readonly state: "none" | "waiting" | "queued" | "granted" | "written" | "withdrawn" | "refused" }
   /** One check kind of the newest block checks, over its targets. */
   | {
       readonly kind: "check";
@@ -105,7 +109,7 @@ export interface PipelineStage {
   readonly jobs: readonly PipelineJob[];
 }
 
-export const BRANCH_LABELS = ["sent", "reviewing", "fix written", "approved", "needs a person"] as const;
+export const BRANCH_LABELS = ["sent", "reviewing", "waiting", "fix written", "approved", "needs a person"] as const;
 export type BranchLabel = (typeof BRANCH_LABELS)[number];
 
 /** The feature's work reaching another person or their agent, at the stage where it happened. */
@@ -172,8 +176,13 @@ export interface PipelineFacts {
   readonly parts: readonly { readonly partId: string; readonly owner: string; readonly place: PlanPlace; readonly scopes: readonly string[]; readonly revision: number; readonly state: PlanPartState }[];
   /** The reviews submitted on the feature, oldest first. */
   readonly reviews: readonly { readonly reviewId: number; readonly scope: string; readonly reviewer: string; readonly state: "pending" | "accepted" | "refused" }[];
-  /** The write of each part's current revision into another fork. */
-  readonly writes: ReadonlyMap<string, "queued" | "granted" | "written" | "withdrawn">;
+  /** The write of each part's current revision into another fork; `waiting` while it waits for the fork's turn. */
+  readonly writes: ReadonlyMap<string, "waiting" | "queued" | "granted" | "written" | "withdrawn">;
+  /**
+   * Writes of other features' plans into this feature's fork that wait for their turn there, oldest
+   * first: each part, the originating feature and its person. Absent, none.
+   */
+  readonly incoming?: readonly { readonly partId: string; readonly feature: string; readonly person: string }[];
   /** The newest `check` run: its checks once reported, and whether the runner still holds it. */
   readonly checks: { readonly checks: readonly BlockCheck[]; readonly waiting: boolean; readonly checkpoint: string | null } | null;
   /** Every reported `check` run with the checkpoint it ran on, for the agents' activity. */
@@ -466,6 +475,11 @@ function branches(facts: PipelineFacts, stages: readonly PipelineStage[], path: 
       if (job.fact.kind !== "part" || job.fact.owner === facts.person) continue;
       const { partId, owner, reviewer } = job.fact;
       const write = writes.get(partId);
+      // An approved part whose write waits for its fork's turn stays out as a waiting branch.
+      if (job.status === "passed" && write?.fact.kind === "write" && write.fact.state === "waiting") {
+        out.push({ key: job.key, stage: "fixes", person: owner, agent: reviewer, label: "waiting", partId, settled: false });
+        continue;
+      }
       if (job.status === "passed" && write !== undefined) {
         const written = write.status === "passed";
         out.push({ key: job.key, stage: "fixes", person: owner, agent: reviewer, label: written ? "fix written" : "approved", partId, settled: true });
@@ -473,6 +487,13 @@ function branches(facts: PipelineFacts, stages: readonly PipelineStage[], path: 
       }
       out.push({ key: job.key, stage: "review", person: owner, agent: reviewer, label: partLabel(job), partId, settled: job.status === "passed" });
     }
+  }
+  // Another plan's write into this fork waiting for its turn hangs at the current stage, under the
+  // person whose plan it is. Its part belongs to that plan's page, so the branch links no diff here.
+  const current = stages.find((stage) => stage.status !== "passed") ?? stages.at(-1);
+  for (const write of facts.incoming ?? []) {
+    if (current === undefined) break;
+    out.push({ key: `incoming:${write.partId}`, stage: current.key, person: write.person, agent: null, label: "waiting", partId: null, settled: false });
   }
   // A stopped run needs the feature's own person, who has its run_failed inbox item.
   for (const stage of stages) {

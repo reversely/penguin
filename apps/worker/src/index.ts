@@ -186,6 +186,7 @@ export default {
                 expandPromoted: (feature, promotion) => project.expandPromoted(feature, promotion),
                 retryExpand: (feature, run, charter) => project.retryExpand(feature, run, charter, repos),
                 blockReported: (feature, run, decisions) => project.blockReported(feature, run, decisions, repos),
+                fixesWrittenSince: (targets, since) => project.fixesWrittenSince(targets, since),
               };
               return (await agent.reportBlockRun(caller, runId, body, port, { base: names.base, prefix: names.prefix })) as BlockReportAnswer;
             },

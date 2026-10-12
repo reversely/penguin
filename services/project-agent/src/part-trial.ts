@@ -248,6 +248,17 @@ export function queueTrials(deps: TrialQueueDeps, plan: Plan, parts: readonly Pl
   });
 }
 
+/**
+ * Asks for a trial of one part revision on `head` of its fork instead of the head its patch was
+ * written against: another fix written into the fork moved it there (fix-retrial.ts). Undefined when
+ * the part has no trial.
+ */
+export function queueTrialOn(deps: TrialQueueDeps, plan: Plan, part: PlanPart, head: string): StoredPartTrial | undefined {
+  const spec = trialSpec(plan, part, deps.reviews.list(plan.featureId));
+  if (spec === undefined || spec.target.id === "main") return undefined;
+  return deps.trials.queue({ ...spec, target: { ...spec.target, sha: head } }, part.scopes);
+}
+
 /** After a form of `scope` is submitted on the plan's checkpoint, asks again for each part covering the scope. */
 export function queueTrialsForReview(deps: TrialQueueDeps, plan: Plan | undefined, scope: string, checkpoint: string): StoredPartTrial[] {
   if (plan === undefined || plan.facts.change.checkpoint !== checkpoint) return [];

@@ -95,6 +95,7 @@ import {
   claimPartTrials,
   PartTrialStore,
   queueTrials,
+  queueTrialOn,
   queueTrialsForReview,
   recordPartTrial,
   trialHolds,
@@ -132,7 +133,8 @@ import {
   agentFixReport,
   claimRunnerWrites,
   FixGrantStore,
-  queueRunnerWrite,
+  openFixWrite,
+  parseFixTokenLease,
   runnerFixReport,
   type FixGrantOutcome,
   type FixPartInput,
@@ -140,6 +142,7 @@ import {
   type FixWriteOutcome,
   type ForkReader,
 } from "./fix-write.ts";
+import { retrialReported, retryWaitingWrites } from "./fix-retrial.ts";
 import { EditRoster } from "./edit-roster.ts";
 import { EditTaskStore, type EditReportOutcome, type EditSource, type EditTask } from "./edit-tasks.ts";
 import {
@@ -528,7 +531,7 @@ export {
   FIX_GRANT_SCHEMA,
   FIX_WRITE_LEASE_MS,
   FixGrantStore,
-  queueRunnerWrite,
+  openFixWrite,
   runnerFixReport,
   type FixGrant,
   type FixGrantOutcome,
@@ -876,6 +879,8 @@ interface ProjectAgentEnv {
   readonly PENGUIN_BACKGROUND_RUN_CAP?: string;
   /** Minutes one background run holds its edit task and its token. Defaults to EDIT_RUN_MINUTES_DEFAULT. */
   readonly PENGUIN_EDIT_RUN_MINUTES?: string;
+  /** The lifetime of a fix writer's token, which is how long a granted write holds its fork (fix-write.ts). */
+  readonly PENGUIN_FIX_TOKEN_TTL_MINUTES?: string;
   /** Whether a fork Penguin makes for a feature it opens keeps only the default branch, as the Worker's forks do. */
   readonly PENGUIN_FEATURE_FORK_DEFAULT_BRANCH_ONLY?: string;
 }
@@ -2097,7 +2102,11 @@ export class ProjectAgent extends Agent {
       const featureId = outcome.trial.featureId;
       // A migration part's trial is decided by its own plan (migration-plans.ts); any other by the feature's plan.
       if (isMigrationPlanId(outcome.trial.planId)) await this.#featuresChanging(this.#planStep(() => migrationTrialReported(this.#migrationDeps(repos), outcome.trial)));
-      else await this.#featuresChanging(this.#planStep(() => approveCleanParts(this.#planApprovalDeps(repos), featureId)));
+      else {
+        // A waiting write's trial on the head another fix left decides its turn (fix-retrial.ts).
+        await this.#featuresChanging(this.#planStep(() => retrialReported(this.#fixWriteDeps(repos), outcome.trial)));
+        await this.#featuresChanging(this.#planStep(() => approveCleanParts(this.#planApprovalDeps(repos), featureId)));
+      }
     }
     return outcome;
   }
@@ -2499,7 +2508,20 @@ export class ProjectAgent extends Agent {
       delegates: async () => rules.delegates,
       plan: async (featureId) => this.#planKeeper(featureId).latestPlan(featureId),
       roundLimit: this.#roundLimit(),
-      fixWrite: (partId, revision) => this.#fixGrantStore().get(partId, revision),
+      fixWrite: (partId, revision) => {
+        const grants = this.#fixGrantStore();
+        const grant = grants.get(partId, revision);
+        if (grant === undefined) return undefined;
+        const open = grant.state === "queued" || grant.state === "granted";
+        return { ...grant, waitsFor: open ? grants.waitsFor(grant) : null };
+      },
+      incomingWrites: (featureId) => {
+        const grants = this.#fixGrantStore();
+        return grants
+          .openOn(featureId)
+          .filter((grant) => grant.featureId !== featureId && grants.waitsFor(grant) !== null)
+          .map((grant) => ({ partId: grant.partId, feature: grant.featureId, person: this.#featureStore().get(grant.featureId)?.personId ?? grant.featureId }));
+      },
       contract: (feature) => contractWork(this.#splitDeps(), feature, rules.scopeMap),
       stoppedRuns: (featureId) => this.#runFailureStore().stopped(featureId),
       protectedChanges: (featureId) => this.#protectedChangeStore().ofFeature(featureId),
@@ -2581,8 +2603,9 @@ export class ProjectAgent extends Agent {
       sign: async (record) => signFeatureRecord(record, (await this.#loadServiceKey()).privateKey),
       roundLimit: this.#roundLimit(),
       notify: (personId) => sendToOwner(this.getConnections<{ owner?: string }>(), personId, inboxChangedMessage()),
-      // An approved mechanical part on a running feature waits for the check runner to write it (fix-write.ts).
-      approved: (featureId, plan, part) => queueRunnerWrite(this.#fixGrantStore(), featureId, plan, part),
+      // An approved part on a running feature takes its place in its fork's order of writes (fix-write.ts):
+      // the check runner writes a mechanical one, the originating agent or its fix task a behavioural one.
+      approved: (featureId, plan, part) => openFixWrite(this.#fixGrantStore(), featureId, plan, part),
       // A reversed approval withdraws its revision's write while it has not happened yet.
       reversed: (_featureId, part) => {
         const grant = this.#fixGrantStore().get(part.partId, part.revision);
@@ -2629,7 +2652,7 @@ export class ProjectAgent extends Agent {
 
   #fixWriteDeps(repos: ProjectRepos): FixWriteDeps {
     const approval = this.#planApprovalDeps(repos);
-    return {
+    const deps: FixWriteDeps = {
       features: approval.features,
       routes: approval.routes,
       keeper: approval.keeper,
@@ -2644,7 +2667,13 @@ export class ProjectAgent extends Agent {
       migration: migrationWrites(this.#migrationDeps(repos)),
       // A fork whose start waits on an overlap lock gets no write token yet.
       locked: (featureId) => this.#overlapStore().status(featureId).waitingOn.length > 0,
+      tokenLeaseMs: parseFixTokenLease((this.env as unknown as ProjectAgentEnv).PENGUIN_FIX_TOKEN_TTL_MINUTES),
+      // A kept write moves its fork: every other write waiting there is tried on the new head first (fix-retrial.ts).
+      written: async (grant, commit) => {
+        await retryWaitingWrites({ ...deps, queueTrial: (plan, part, head) => queueTrialOn(this.#trialDeps(), plan, part, head)?.id ?? null }, grant, commit);
+      },
     };
+    return deps;
   }
 
   // Edit tasks (PRD 0.5 section 4.4a, edit-work.ts).
@@ -3090,6 +3119,16 @@ export class ProjectAgent extends Agent {
   landFailed(featureId: string, _runId: string): void {
     this.#liveFeed().featuresChanged();
     landFailed({ features: this.#featureStore(), notify: (personId) => sendToOwner(this.getConnections<{ owner?: string }>(), personId, inboxChangedMessage()) }, featureId);
+  }
+
+  /**
+   * The fixes written into any of `targets`' forks at or after `since` (an ISO time), as
+   * `<part> into <feature>`: a block run that named those fork heads checked them without the fixes.
+   */
+  async fixesWrittenSince(targets: readonly string[], since: string): Promise<string[]> {
+    const at = Date.parse(since);
+    if (Number.isNaN(at)) return [];
+    return this.#fixGrantStore().writtenSince(targets, at).map((grant) => `${grant.partId} into ${grant.targetFeatureId}`);
   }
 
   /** Penguin lands the feature again after main refused its push (block-land.ts retryLand). */

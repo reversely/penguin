@@ -134,6 +134,25 @@ test("identity unification sits in Review: a part with a submitted review needs 
   assert.deepEqual(pipeline.activity, [{ agent: "@priya/merge-rules", checkpoint: "c".repeat(40), at: AT, checks: { total: 2, failed: 1 } }]);
 });
 
+test("a write waiting for its fork's turn is a waiting branch on both timelines", () => {
+  // On the originating feature: Sam's approved part waits for another plan's write into Sam's fork.
+  const base = identityUnification();
+  const pipeline = featurePipeline({ ...base, writes: new Map([["p/v1#4", "waiting"]]) });
+  assert.deepEqual(pipeline.stages[3]?.jobs.map((job) => [job.key, job.status]), [
+    ["write:p/v1#3", "waiting"],
+    ["write:p/v1#4", "waiting"],
+  ]);
+  const sam = pipeline.branches.find((branch) => branch.partId === "p/v1#4");
+  assert.deepEqual([sam?.stage, sam?.person, sam?.label, sam?.settled], ["fixes", "sam", "waiting", false]);
+
+  // On the target feature: the waiting write hangs at its current stage under the plan's person.
+  const target = featurePipeline(facts({ person: "sam", incoming: [{ partId: "p/v1#4", feature: "person-id-merge-rules", person: "priya" }] }));
+  assert.deepEqual(
+    target.branches.map((branch) => [branch.key, branch.stage, branch.person, branch.label, branch.partId, branch.settled]),
+    [["incoming:p/v1#4", "plan", "priya", "waiting", null, false]],
+  );
+});
+
 test("a part sent with no review is waiting, a review the runner holds is running", () => {
   const base = identityUnification();
   const sent = featurePipeline({ ...base, reviews: [] });

@@ -50,6 +50,8 @@ describe("landing a feature as a block", () => {
   const notified: string[] = [];
   const sealed: string[] = [];
   let slotHeldElsewhere = false;
+  /** The fixes the port reports as written into a target after a run named its head (#133). */
+  let laterFixes: string[] = [];
 
   beforeEach(async () => {
     fx = await FixProject.create();
@@ -62,6 +64,7 @@ describe("landing a feature as a block", () => {
     notified.length = 0;
     sealed.length = 0;
     slotHeldElsewhere = false;
+    laterFixes = [];
   });
 
   afterEach(() => fx.remove());
@@ -118,6 +121,7 @@ describe("landing a feature as a block", () => {
     },
     expandPromoted: async () => undefined,
     retryExpand: async () => ({ status: "rejected", reason: "not_found", message: "no expand in these tests" }),
+    fixesWrittenSince: async () => laterFixes,
   });
   const reportDeps = (): BlockReportDeps => ({
     store: blocks,
@@ -378,6 +382,28 @@ describe("landing a feature as a block", () => {
     assert.equal(fx.project.features.get("money-minor")?.state, "building");
     assert.equal(fx.records("promotion_refused").length, 2);
     assert.equal(fx.records("land_returned").length, 1);
+  });
+
+  test("a fix another plan wrote into a target after the run named its head sends the block through the checks again", async () => {
+    await ready();
+    await land();
+    const [run] = await claim();
+    assert.ok(run);
+    // The run checked Rahul's fork at a head without that fix: main stays, and Penguin checks again.
+    laterFixes = ["money-display/v1#2 into tax-rounding"];
+    const stale = await reportBlockRun(reportDeps(), RUNNER, run.runId, JSON.parse(JSON.stringify(reportOf(run))));
+    assert.equal(stale.status, "recorded");
+    if (stale.status !== "recorded") return;
+    assert.deepEqual([stale.state, stale.retried?.status], ["raced", "checking"]);
+    assert.equal(mainHead(), fx.main);
+    assert.match(String(fx.records("promotion_refused")[0]?.payload["reason"]), /money-display\/v1#2 into tax-rounding/u);
+
+    // The new run names the fork heads as they stand; with nothing written since, main moves.
+    laterFixes = [];
+    const [again] = await claim();
+    assert.equal(again?.runId, stale.retried?.runId);
+    const promoted = await reportBlockRun(reportDeps(), RUNNER, again?.runId as string, JSON.parse(JSON.stringify(reportOf(again as BlockRunRequest))));
+    assert.equal(promoted.status === "recorded" ? promoted.state : promoted.status, "promoted");
   });
 
   test("the runner's report must answer the run it claimed", async () => {

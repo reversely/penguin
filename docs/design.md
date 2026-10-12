@@ -697,6 +697,10 @@ that also fails another check stays with its author. Its stored data reason is l
    conflict never forms.
 3. A running feature that starts touching the plan's area midway shows up at its next checkpoint.
    The plan gains a fix for it. Its author approves that fix the same way.
+4. Fixes from two or more plans into one fork are written one at a time, in the order their parts
+   were approved. After a write, Penguin tests every other approved part for that fork again on the
+   new head before its write. A part whose test fails there goes back to its originating agent with
+   the conflict. Each plan's block check merges onto the fork head with every fix written so far.
 
 #### Steps 1 and 3 in the build
 
@@ -748,6 +752,37 @@ that also fails another check stays with its author. Its stored data reason is l
   feature's checkpoint. The originating agent answers it with `revise_plan_part`. The feature's
   person approves the revision. The fix is then written as above. The checkpoint's answer lists the
   part under `plansJoined`. The originating feature's sessions hear of it under `planDecisions`.
+
+#### Step 4 in the build
+
+- **The order.** Approving a part on a running feature opens its write (`openFixWrite`,
+  `services/project-agent/src/fix-write.ts`). The check runner writes a mechanical part. The
+  originating agent or the holder of its fix task writes a behavioural one. The writes into one fork
+  stand in the order they opened.
+- **One token per fork.** Penguin grants a write only when three conditions hold
+  (`FixGrantStore.waitsFor`). No other write into the same fork holds a token. No earlier write into
+  that fork still waits. Any trial the write waits on has passed. A granted write holds the fork for the token's lifetime:
+  `PENGUIN_FIX_TOKEN_TTL_MINUTES` for `fix_token` and the runner's claim, `PENGUIN_EDIT_RUN_MINUTES`
+  for a fix task's background run. `fix_token` refuses a waiting write as `waiting` with what it waits
+  for. The runner's claim leaves it queued. A fix task whose write waits stays queued and takes no
+  background run. Before deciding, Penguin withdraws each earlier write whose part moved on (revised,
+  reversed, replaced by a newer plan, or its feature landed), so that write holds no place.
+- **The trial on the new head.** When Penguin keeps a write, each other write still open on that fork
+  waits for a trial of its part on the commit just written (`retryWaitingWrites`,
+  `services/project-agent/src/fix-retrial.ts`). The trial is the part's usual
+  [part trial](#part-trials) with that commit as its target. A built tree whose tests all pass lets
+  the write take its turn: its parent is the new head. A trial with no tree or a failing test sends
+  the part back to the originating agent as `change_requested`. Penguin's request names the new head,
+  the fix written there and the failure. The write is withdrawn. Each decision is a signed
+  `plan_part_retrial` record with the part, the head, the earlier part written there and the trial.
+  A contended part costs one extra trial per write that moved its fork.
+- **The block check.** A block run names each target fork's head when it is asked. A fix written into
+  a target after that time means the run checked a head without it. A passing run then does not move
+  main: Penguin signs `promotion_refused` naming the fixes and checks the block again on the new heads
+  (`fixesWrittenSince` on the ProjectAgent, read by the FeatureAgent before the promotion slot).
+- **The timelines.** A write waiting for its turn hangs as a `waiting` branch at Fixes written on the
+  originating feature's timeline. On the target feature's timeline it hangs at the current stage under
+  the originating feature's person. The feature page names why the write waits (`fixes[].write.waitsFor`).
 
 ### Edit tasks and who runs them
 
@@ -1529,7 +1564,7 @@ split in the split store) or it asked for an expand promotion. Any other feature
 | Split | Done | Main's move, with each protected-path confirmation |
 | Plan | Plan | The facts run (running while the check runner holds it) and the newest plan (failed when returned over the break limit) |
 | Plan | Review | One per part: waiting with no review yet, running while the runner holds the review or the originating agent revises, needing a person once a review is in, passed once approved, failed past the round limit |
-| Plan | Fixes written | One per part whose fix goes into a running feature's fork: running while queued or granted, passed once written, failed when Penguin refused the pushed commit |
+| Plan | Fixes written | One per part whose fix goes into a running feature's fork: waiting while it waits for the fork's turn, running while queued or granted, passed once written, failed when Penguin refused the pushed commit |
 | Plan | Block checks | A running job while the runner holds a `check` run, one job per check kind of the newest run with its target count and the findings its passing targets still name (the dependency diff's changed library and each place the target imports it), and the block run a `land` asked for |
 | Plan | Promoted | Each protected-path confirmation and main's move |
 
@@ -1546,7 +1581,9 @@ feature whose block reached main has passed every stage.
 
 A branch is the feature's work reaching another person or their agent: an overlapping start waiting on
 them, a part sent to them, a fix written into their fork, a migration group of theirs or a confirmation
-of their protected path. Its label is one of sent, reviewing, fix written, approved or needs a person.
+of their protected path. Its label is one of sent, reviewing, waiting, fix written, approved or needs a
+person. A fix waiting for its turn on another person's fork is a `waiting` branch on both features'
+timelines ([Step 4 in the build](#step-4-in-the-build)).
 It names the reviewing agent once a review is in. A branch settles once approved, written or confirmed.
 The dashboard draws one branch per person per stage, with the person's open edit tasks at the stage
 each serves, most urgent first.

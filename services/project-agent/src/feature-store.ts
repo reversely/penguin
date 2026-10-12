@@ -100,6 +100,7 @@ export type FeatureRecordType =
   | "fix_write"
   | "fix_write_refused"
   | "plan_part_rebase"
+  | "plan_part_retrial"
   | "plan_part_added"
   | "land_requested"
   | "plan_check_requested"

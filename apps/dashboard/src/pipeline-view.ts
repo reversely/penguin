@@ -94,7 +94,8 @@ export function jobText(fact: JobFact): { readonly label: string; readonly fact:
 
 const WRITE_FACT: Readonly<Record<Extract<JobFact, { kind: "write" }>["state"], string>> = {
   none: "Not written",
-  queued: "Queued for the runner",
+  waiting: "Waits for its turn on the fork",
+  queued: "Queued",
   granted: "Agent holds the token",
   written: "Written",
   withdrawn: "Withdrawn",
@@ -180,6 +181,7 @@ const LABEL_URGENCY: Readonly<Record<PipelineBranch["label"], Urgency>> = {
   "needs a person": 0,
   reviewing: 1,
   sent: 2,
+  waiting: 2,
   "fix written": 3,
   approved: 3,
 };

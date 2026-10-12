@@ -398,7 +398,7 @@ function PlanFacts({ page }: { readonly page: FeaturePage }) {
   );
 }
 
-const LABEL_TONE: Readonly<Record<string, Tone>> = { "needs a person": "person", approved: "passed", "fix written": "passed", reviewing: "running", sent: "waiting" };
+const LABEL_TONE: Readonly<Record<string, Tone>> = { "needs a person": "person", approved: "passed", "fix written": "passed", reviewing: "running", sent: "waiting", waiting: "waiting" };
 
 interface PeopleProps {
   readonly page: FeaturePage;

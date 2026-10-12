@@ -22,6 +22,11 @@
 //   new head: if every hunk still applies at its line, the head is the parent (a clean rebase); if not,
 //   the part goes back to the originating agent with Penguin's request to revise it against the new
 //   head. Its author approves the revision again.
+// - One write per fork at a time (#133, design.md Build step 4). Every approved part on a running feature
+//   opens its write at approval, so the writes into one fork stand in approval order. A write is
+//   granted only when no other write into that fork holds a token, no write approved earlier still
+//   waits there, and, after another write landed in the fork, the part's trial on the new head passed
+//   (fix-retrial.ts). Anything else is refused as `waiting` with what it waits for; no token is minted.
 // - The record. The writer reports the commit. Penguin reads it through the Artifacts binding and keeps
 //   it only when its one parent is the granted head, its message is the one built from the part's
 //   validated fields (fixCommitMessage), it changes exactly the patch's files and each file is the
@@ -65,6 +70,16 @@ type Row = Record<string, SqlValue>;
 /** How long a runner's claim of a write holds before another claim may take it. */
 export const FIX_WRITE_LEASE_MS = 10 * 60_000;
 
+/**
+ * How long a granted write holds its fork: the lifetime of the token the Worker mints for it,
+ * PENGUIN_FIX_TOKEN_TTL_MINUTES read as apps/worker/src/tokens.ts reads it (1 to 60 minutes, 10 when
+ * unset). A value the Worker refuses mints no token, so the default lease stands.
+ */
+export function parseFixTokenLease(minutes: string | undefined): number {
+  if (minutes === undefined || !/^[1-9][0-9]?$/u.test(minutes) || Number(minutes) > 60) return FIX_WRITE_LEASE_MS;
+  return Number(minutes) * 60_000;
+}
+
 /** How far back from the fork's head a reported commit is looked for on `main`. */
 const HEAD_SEARCH_LIMIT = 50;
 
@@ -76,6 +91,20 @@ export const FIX_GRANT_SCHEMA: readonly string[] = [
     record_id TEXT, created_at INTEGER NOT NULL, granted_at INTEGER, written_at INTEGER, UNIQUE (part_id, revision))`,
   `CREATE INDEX IF NOT EXISTS FixWriteGrant_writer ON FixWriteGrant (writer, state)`,
 ];
+
+/**
+ * Columns added since the table was first deployed: the fork head another plan's write left, which the
+ * part must be tried on before its own write (`retrial_head`), that trial's id, and the head its last
+ * passing re-trial ran on.
+ */
+const GRANT_COLUMNS: readonly (readonly [string, string])[] = [
+  ["retrial_head", "retrial_head TEXT"],
+  ["retrial_trial", "retrial_trial INTEGER"],
+  ["trialled_head", "trialled_head TEXT"],
+];
+
+/** The states in which a write still waits to be made: it holds the fork's order. */
+const OPEN_STATES = "('queued', 'granted')";
 
 /**
  * Where one revision's write stands. `queued`: a mechanical part waits for the runner to claim it.
@@ -100,9 +129,15 @@ export interface FixGrant {
   readonly leaseUntil: number | null;
   readonly commitSha: string | null;
   readonly recordId: string | null;
-  /** When the write was first asked for: the approval of a mechanical part, the first `fix_token` of a behavioural one. */
+  /** When the write was first asked for: the part's approval, or the first `fix_token` when none was recorded. */
   readonly createdAt: number;
   readonly writtenAt: number | null;
+  /** The fork head another write left, on which the part is tried again before its write; null when none did. */
+  readonly retrialHead: string | null;
+  /** The trial asked on `retrialHead`, or null. */
+  readonly retrialTrial: number | null;
+  /** The head the part's last passing re-trial ran on, or null. */
+  readonly trialledHead: string | null;
 }
 
 function grantOf(row: Row): FixGrant {
@@ -125,6 +160,9 @@ function grantOf(row: Row): FixGrant {
     recordId: nullable("record_id"),
     createdAt: Number(row["created_at"]),
     writtenAt: number("written_at"),
+    retrialHead: nullable("retrial_head"),
+    retrialTrial: number("retrial_trial"),
+    trialledHead: nullable("trialled_head"),
   };
 }
 
@@ -137,6 +175,11 @@ export class FixGrantStore {
     this.#db = db;
     this.#now = now;
     for (const statement of [...FIX_GRANT_SCHEMA, ...RUN_FAILURE_SCHEMA]) db.exec(statement);
+    // Column names and definitions come from the constant above, never from input.
+    const present = new Set(db.exec(`PRAGMA table_info(FixWriteGrant)`).map((row) => row["name"]));
+    for (const [name, definition] of GRANT_COLUMNS) {
+      if (!present.has(name)) db.exec(`ALTER TABLE FixWriteGrant ADD COLUMN ${definition}`);
+    }
   }
 
   /** The write of one revision of a part, made `queued` for `writer` when there is none yet. */
@@ -199,6 +242,70 @@ export class FixGrantStore {
     return { status: "released", featureId: found.featureId };
   }
 
+  /** The writes into `target`'s fork not yet made, in approval order. */
+  openOn(target: string): FixGrant[] {
+    return this.#db.exec(`SELECT * FROM FixWriteGrant WHERE target_feature_id = ? AND state IN ${OPEN_STATES} ORDER BY id`, target).map(grantOf);
+  }
+
+  /** Every write not yet made, into any fork, in approval order. */
+  allOpen(): FixGrant[] {
+    return this.#db.exec(`SELECT * FROM FixWriteGrant WHERE state IN ${OPEN_STATES} ORDER BY id`).map(grantOf);
+  }
+
+  /**
+   * Why open write `grant` may not be granted now, from the table alone, or null when it is its turn:
+   * another write into the fork holds a token, a write approved earlier still waits there, or its trial
+   * on the head another write left has not passed. A write whose part moved on still counts here.
+   */
+  waitsFor(grant: FixGrant): string | null {
+    const now = this.#now();
+    for (const other of this.openOn(grant.targetFeatureId)) {
+      if (other.id === grant.id) continue;
+      if (other.state === "granted" && (other.leaseUntil === null || other.leaseUntil > now)) {
+        return `the write of part ${other.partId} revision ${other.revision} holds feature ${grant.targetFeatureId}'s fork`;
+      }
+      if (other.id < grant.id) return `part ${other.partId} revision ${other.revision} was approved earlier and is written into feature ${grant.targetFeatureId}'s fork first`;
+    }
+    if (grant.retrialHead !== null && grant.trialledHead !== grant.retrialHead) {
+      return `the part is tried again on feature ${grant.targetFeatureId}'s fork head ${grant.retrialHead}, which another plan's fix moved`;
+    }
+    return null;
+  }
+
+  /** Asks write `id` to wait for trial `trialId` on fork head `head`, which another write left. */
+  retrial(id: number, head: string, trialId: number | null): void {
+    this.#db.exec(`UPDATE FixWriteGrant SET retrial_head = ?, retrial_trial = ? WHERE id = ? AND state IN ${OPEN_STATES}`, head, trialId, id);
+  }
+
+  /** The open write waiting on re-trial `trialId`, or undefined. */
+  byRetrial(trialId: number): FixGrant | undefined {
+    const [row] = this.#db.exec(`SELECT * FROM FixWriteGrant WHERE retrial_trial = ? AND state IN ${OPEN_STATES}`, trialId);
+    return row === undefined ? undefined : grantOf(row);
+  }
+
+  /** The kept write whose commit is `commit`, or undefined. */
+  writtenAs(commit: string): FixGrant | undefined {
+    const [row] = this.#db.exec(`SELECT * FROM FixWriteGrant WHERE state = 'written' AND commit_sha = ? ORDER BY id LIMIT 1`, commit);
+    return row === undefined ? undefined : grantOf(row);
+  }
+
+  /** The part's trial on `head` passed: write `id` may take its turn there. */
+  trialled(id: number, head: string): void {
+    this.#db.exec(`UPDATE FixWriteGrant SET trialled_head = ? WHERE id = ?`, head, id);
+  }
+
+  /** The writes kept into any of `targets`' forks at or after `since`, oldest first. */
+  writtenSince(targets: readonly string[], since: number): FixGrant[] {
+    if (targets.length === 0) return [];
+    return this.#db
+      .exec(
+        `SELECT * FROM FixWriteGrant WHERE state = 'written' AND written_at >= ? AND target_feature_id IN (${targets.map(() => "?").join(", ")}) ORDER BY id`,
+        since,
+        ...targets,
+      )
+      .map(grantOf);
+  }
+
   /** The runner's writes to claim: queued ones and granted ones whose claim ran out. */
   claimable(): FixGrant[] {
     return this.#db
@@ -240,6 +347,16 @@ export interface FixWriteDeps {
   readonly migration?: MigrationWrites;
   /** Whether the feature's start waits on an open overlap lock: its fork gets no write yet. Absent is never. */
   readonly locked?: (featureId: string) => boolean;
+  /**
+   * How long a granted write holds its fork: the lifetime of the write token the Worker mints
+   * (PENGUIN_FIX_TOKEN_TTL_MINUTES). Defaults to FIX_WRITE_LEASE_MS.
+   */
+  readonly tokenLeaseMs?: number;
+  /**
+   * Called once a write is kept, so every other write still waiting on that fork is tried again on
+   * the new head before it is granted (fix-retrial.ts). Absent, nothing is tried again.
+   */
+  readonly written?: (grant: FixGrant, commit: string) => Promise<void>;
 }
 
 /** What fix writes read and tell about a migration part (migration-plans.ts). */
@@ -252,7 +369,7 @@ export interface MigrationWrites {
   written(partId: string, commit: string, recordId: string): Promise<void>;
 }
 
-export type FixRejectReason = FeatureRejectReason | "not_approved" | "head_moved";
+export type FixRejectReason = FeatureRejectReason | "not_approved" | "head_moved" | "waiting";
 
 export type FixRejection = { readonly status: "rejected"; readonly reason: FixRejectReason; readonly message: string };
 
@@ -292,19 +409,19 @@ export interface ApprovedWrite {
   readonly target: Feature & { readonly repo: string };
 }
 
-interface ApprovedPart extends ApprovedWrite {
+export interface ApprovedPart extends ApprovedWrite {
   readonly plan: Plan;
   readonly part: PlanPart & { readonly place: { readonly kind: "feature"; readonly feature: string } };
 }
 
-const isRejection = (value: unknown): value is FixRejection =>
+export const isRejection = (value: unknown): value is FixRejection =>
   typeof value === "object" && value !== null && (value as { status?: unknown }).status === "rejected";
 
 /**
  * The current revision of an approved part on a running feature in the feature's newest plan, or why
  * no fix may be written for it.
  */
-async function approvedPart(deps: FixWriteDeps, input: FixPartInput): Promise<ApprovedPart | FixRejection> {
+export async function approvedPart(deps: FixWriteDeps, input: FixPartInput): Promise<ApprovedPart | FixRejection> {
   const featureId = parseFeatureId(input.feature);
   if (featureId === undefined) return rejected("invalid", "the feature id is not a valid feature id");
   const { part: partId, revision } = input;
@@ -403,6 +520,17 @@ async function sendBack(deps: FixWriteDeps, approved: ApprovedPart, head: string
       fork_head: head,
     }),
   );
+  const text = `Feature ${approved.part.place.feature}'s fork moved from ${approved.base} to ${head} and the approved patch no longer applies there (${problem}). Revise the part as a patch against ${head}.`;
+  await returnToOriginator(deps, approved, head, text, record);
+}
+
+/**
+ * Puts approved part `approved` back to the originating agent as `change_requested` with Penguin's
+ * request `text`, which names fork head `head` and cites signed record `record`. The part's author then
+ * approves the revision again.
+ */
+export async function returnToOriginator(deps: FixWriteDeps, approved: ApprovedPart, head: string, text: string, record: FeatureRecord): Promise<void> {
+  const { featureId, plan, part } = approved;
   const at = new Date((deps.now ?? Date.now)()).toISOString();
   const next: PlanPart = {
     ...part,
@@ -411,7 +539,7 @@ async function sendBack(deps: FixWriteDeps, approved: ApprovedPart, head: string
     changeRequest: {
       by: "penguin",
       revision: part.revision,
-      text: `Feature ${part.place.feature}'s fork moved from ${approved.base} to ${head} and the approved patch no longer applies there (${problem}). Revise the part as a patch against ${head}.`,
+      text,
       at,
       recordId: record.record_id,
       forkHead: head,
@@ -503,17 +631,7 @@ export async function agentFixGrant(
   if (live.session.handle !== approved.plan.proposedBy) {
     return rejected("forbidden", `the write token goes to ${approved.plan.proposedBy}, the originating agent named in plan ${approved.plan.planId}`);
   }
-  if (approved.part.kind === "mechanical") {
-    return rejected("forbidden", `part ${approved.part.partId} is mechanical: Penguin's check runner writes it`);
-  }
-  const grant = deps.grants.open(featureId, approved.plan.planId, approved.part, approved.target.id, "agent");
-  if (grant.state === "written") {
-    return rejected("conflict", `revision ${grant.revision} of part ${grant.partId} is already written as ${grant.commitSha}`);
-  }
-  const prepared = await prepare(deps, approved, grant, approved.plan.proposedBy, revise(deps, approved));
-  if (prepared.status === "ok") deps.grants.grant(grant.id, prepared.spec.parent, prepared.spec.rebased, null, null);
-  else if (prepared.reason === "head_moved") deps.grants.withdraw(grant.id);
-  return prepared;
+  return grantAgentWrite(deps, approved, approved.plan.proposedBy, deps.tokenLeaseMs ?? FIX_WRITE_LEASE_MS);
 }
 
 /**
@@ -521,9 +639,17 @@ export async function agentFixGrant(
  * (edit-tasks.ts): the same checks as `fix_token`, with the holder named as the writer in the commit
  * message. The caller has checked that `holder` holds the task.
  */
-export async function taskFixGrant(deps: FixWriteDeps, input: FixPartInput, holder: string): Promise<FixGrantOutcome> {
+export async function taskFixGrant(deps: FixWriteDeps, input: FixPartInput, holder: string, leaseMs: number = deps.tokenLeaseMs ?? FIX_WRITE_LEASE_MS): Promise<FixGrantOutcome> {
   const approved = await approvedPart(deps, input);
   if (isRejection(approved)) return approved;
+  return grantAgentWrite(deps, approved, holder, leaseMs);
+}
+
+/**
+ * The write of an approved behavioural part for `writtenBy`, once it is the fork's turn. The grant
+ * holds the fork for `leaseMs`, the lifetime of the token minted on it.
+ */
+async function grantAgentWrite(deps: FixWriteDeps, approved: ApprovedPart, writtenBy: string, leaseMs: number): Promise<FixGrantOutcome> {
   if (approved.part.kind === "mechanical") {
     return rejected("forbidden", `part ${approved.part.partId} is mechanical: Penguin's check runner writes it`);
   }
@@ -531,10 +657,32 @@ export async function taskFixGrant(deps: FixWriteDeps, input: FixPartInput, hold
   if (grant.state === "written") {
     return rejected("conflict", `revision ${grant.revision} of part ${grant.partId} is already written as ${grant.commitSha}`);
   }
-  const prepared = await prepare(deps, approved, grant, holder, revise(deps, approved));
-  if (prepared.status === "ok") deps.grants.grant(grant.id, prepared.spec.parent, prepared.spec.rebased, null, null);
+  const waiting = await forkTurn(deps, grant);
+  if (waiting !== null) return rejected("waiting", `the fix of part ${grant.partId} waits: ${waiting}; ask again once it is written`);
+  const prepared = await prepare(deps, approved, grant, writtenBy, revise(deps, approved));
+  if (prepared.status === "ok") deps.grants.grant(grant.id, prepared.spec.parent, prepared.spec.rebased, null, (deps.now ?? Date.now)() + leaseMs);
   else if (prepared.reason === "head_moved") deps.grants.withdraw(grant.id);
   return prepared;
+}
+
+/**
+ * Why `grant` waits for its turn on its fork, or null when it may be granted now. A write approved
+ * earlier whose part has since moved on (revised, reversed, superseded by a newer plan, or its feature
+ * landed) is withdrawn first, so it holds no place in the order.
+ */
+async function forkTurn(deps: FixWriteDeps, grant: FixGrant): Promise<string | null> {
+  await withdrawMovedOn(deps, deps.grants.openOn(grant.targetFeatureId).filter((other) => other.id !== grant.id));
+  return deps.grants.waitsFor(grant);
+}
+
+/**
+ * Withdraws each of `grants` (every open write when omitted) whose part moved on, so it holds no place
+ * in its fork's order. A claim that reads the order from the table alone calls this first.
+ */
+export async function withdrawMovedOn(deps: FixWriteDeps, grants: readonly FixGrant[] = deps.grants.allOpen()): Promise<void> {
+  for (const other of grants) {
+    if (isRejection(await grantedWrite(deps, other))) deps.grants.withdraw(other.id);
+  }
 }
 
 /** `holder` reports the commit it pushed for a write `taskFixGrant` granted it. */
@@ -556,10 +704,14 @@ function revise(deps: FixWriteDeps, approved: ApprovedPart): (head: string, prob
   };
 }
 
-/** On an approval: queues the check runner's write of a mechanical part on a running feature. */
-export function queueRunnerWrite(grants: FixGrantStore, featureId: string, plan: Plan, part: PlanPart): void {
-  if (part.place.kind !== "feature" || part.kind !== "mechanical" || part.approvalState !== "approved") return;
-  grants.open(featureId, plan.planId, part, part.place.feature, "runner");
+/**
+ * On an approval: opens the write of a part on a running feature, which places it in its fork's
+ * order. The check runner claims a mechanical part's write; the originating agent or the holder of its
+ * fix task asks for a behavioural one's.
+ */
+export function openFixWrite(grants: FixGrantStore, featureId: string, plan: Plan, part: PlanPart): void {
+  if (part.place.kind !== "feature" || part.approvalState !== "approved") return;
+  grants.open(featureId, plan.planId, part, part.place.feature, part.kind === "mechanical" ? "runner" : "agent");
 }
 
 /**
@@ -581,6 +733,8 @@ export async function claimRunnerWrites(
       deps.grants.withdraw(grant.id);
       continue;
     }
+    // A write that waits for its fork's turn stays queued for a later claim.
+    if ((await forkTurn(deps, grant)) !== null) continue;
     const migration = deps.migration;
     const headMoved =
       isMigrationPlanId(grant.planId) && migration !== undefined
@@ -698,6 +852,8 @@ async function recordFixWrite(deps: FixWriteDeps, grant: FixGrant, writtenBy: st
   await migration?.written(grant.partId, commit, record.record_id);
   deps.notify(approved.target.personId);
   deps.notify(approved.plan.person);
+  // The fork moved: each write still waiting there is tried on the new head before its turn.
+  await deps.written?.(grant, commit);
   return { status: "ok", write, durationMs: Math.max(0, now - grant.createdAt) };
 }
 

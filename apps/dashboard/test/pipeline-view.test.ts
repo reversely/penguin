@@ -55,7 +55,7 @@ test("every job reads as a bare label and one clause with no comma", () => {
     { label: "#1 analytics", fact: "Review refused" },
     { label: "#2 messaging", fact: "Approved by Penguin" },
     { label: "#3 retention-dashboard", fact: "Waits for jun" },
-    { label: "retention-dashboard", fact: "Queued for the runner" },
+    { label: "retention-dashboard", fact: "Queued" },
   ]);
   assert.deepEqual(lines[9], { label: "tests", fact: "Failed on 1 of 3 targets" });
   assert.deepEqual(lines[10], { label: "lint", fact: "Passed on 1 target" });

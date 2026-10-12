@@ -75,7 +75,10 @@ export interface DashboardViewDeps {
   readonly plan: (featureId: string) => Promise<Plan | undefined>;
   readonly roundLimit: number | undefined;
   /** The write of one revision of a part into another fork (FixGrantStore.get), or undefined. */
-  readonly fixWrite: (partId: string, revision: number) => Pick<FixGrant, "state" | "writer" | "commitSha" | "rebased"> | undefined;
+  /** Other features' writes into the feature's fork that wait for their turn there, oldest first. */
+  readonly incomingWrites?: (featureId: string) => PipelineFacts["incoming"];
+  /** The write of a part revision; `waitsFor` says why one not yet made waits for its fork's turn (FixGrantStore.waitsFor). */
+  readonly fixWrite: (partId: string, revision: number) => (Pick<FixGrant, "state" | "writer" | "commitSha" | "rebased"> & { readonly waitsFor?: string | null }) | undefined;
   /** How Penguin sorted the feature's latest checkpoint (contract-split.ts contractWork); absent, the page shows none. */
   readonly contract?: (feature: Feature) => ContractWorkView;
   /** The feature's runs the check runner failed up to the failure limit (RunFailureStore.stopped); absent, none. */
@@ -100,10 +103,11 @@ export interface DashboardViewDeps {
  */
 function pipelineFacts(deps: DashboardViewDeps, feature: Feature, records: readonly FeatureRecord[], parts: readonly PartRoute[]): PipelineFacts {
   const lock = (each: ReturnType<OverlapStore["locksOn"]>[number]) => ({ feature: each.featureId, person: each.personId, state: each.state, approvedBy: each.approvedBy });
-  const writes = new Map<string, "queued" | "granted" | "written" | "withdrawn">();
+  const writes = new Map<string, "waiting" | "queued" | "granted" | "written" | "withdrawn">();
   for (const part of parts) {
     const write = part.place.kind === "feature" ? deps.fixWrite(part.partId, part.revision) : undefined;
-    if (write !== undefined) writes.set(part.partId, write.state);
+    // A write waiting for its fork's turn shows as waiting, not as running.
+    if (write !== undefined) writes.set(part.partId, write.waitsFor == null ? write.state : "waiting");
   }
   const checkRuns = deps.tools.list(feature.id).filter((run) => run.tool === "check");
   const reported = checkRuns.filter((run) => run.outcome !== null);
@@ -119,6 +123,7 @@ function pipelineFacts(deps: DashboardViewDeps, feature: Feature, records: reado
     parts: parts.map(({ partId, ownerId, place, scopes, revision, state }) => ({ partId, owner: ownerId, place, scopes, revision, state })),
     reviews: deps.reviews.list(feature.id).map((review) => ({ reviewId: review.id, scope: review.scopeId, reviewer: review.reviewer, state: review.state })),
     writes,
+    incoming: deps.incomingWrites?.(feature.id) ?? [],
     checks: newest === undefined && !waiting ? null : { checks: newest?.outcome?.checks ?? [], waiting, checkpoint: newest?.checkpointSha ?? null },
     checkRuns: reported.map((run) => ({ checkpoint: run.checkpointSha, checks: run.outcome?.checks ?? [] })),
     protectedChanges: (deps.protectedChanges?.(feature.id) ?? []).map((change) => ({ owner: change.ownerId, state: change.state })),
@@ -511,7 +516,7 @@ export async function buildFeaturePage(deps: DashboardViewDeps, featureId: strin
           state: part.approvalState,
           approvedBy: part.approvedBy,
           revision: part.revision,
-          write: write === undefined ? null : { state: write.state, writer: write.writer, commit: write.commitSha, rebased: write.rebased },
+          write: write === undefined ? null : { state: write.state, writer: write.writer, commit: write.commitSha, rebased: write.rebased, waitsFor: write.waitsFor ?? null },
         },
       ];
     }),

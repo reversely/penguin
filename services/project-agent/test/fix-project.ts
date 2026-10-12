@@ -21,7 +21,7 @@ import {
 import { parseScopeMap, type ScopeMap } from "@penguin/scope-map";
 
 import type { FeatureRecord } from "../src/feature-store.ts";
-import { FixGrantStore, queueRunnerWrite, type FixWriteDeps, type ForkReading } from "../src/fix-write.ts";
+import { FixGrantStore, openFixWrite, type FixWriteDeps, type ForkReading } from "../src/fix-write.ts";
 import { announcePlan, approvePlanPart, PlanRouteStore, type PartDecisionOutcome, type PlanApprovalDeps } from "../src/plan-approval.ts";
 import { PlanCoverageStore } from "../src/plan-coverage.ts";
 import { lineHunks, splitLines } from "../src/repo-diff.ts";
@@ -177,7 +177,7 @@ export class FixProject {
       sign: (draft) => this.project.sign(draft),
       roundLimit: 3,
       notify: (person) => this.notified.push(person),
-      approved: (featureId, plan, part) => queueRunnerWrite(this.grants, featureId, plan, part),
+      approved: (featureId, plan, part) => openFixWrite(this.grants, featureId, plan, part),
       now: () => this.now,
     };
   }
@@ -225,11 +225,19 @@ export class FixProject {
 
   /** Stores the plan with the tax part's patch to `taxAfter`, after the runner's facts run. */
   async proposeWith(taxAfter: string): Promise<void> {
+    await this.proposeFor("money-minor", SESSIONS.ines, patch("tax/rounding.py", TAX_BEFORE, taxAfter));
+  }
+
+  /**
+   * Stores `feature`'s plan, proposed by session `session` of Ines, with the billing part and a part
+   * for the tax fork carrying `taxPatch` against main, after the runner's facts run.
+   */
+  async proposeFor(feature: string, session: string, taxPatch: string): Promise<void> {
     const parts = [
       { place: { scope: "billing" }, diff: { commit: this.billingFix } },
-      { place: { feature: "tax-rounding" }, patch: { base: this.main, diff: patch("tax/rounding.py", TAX_BEFORE, taxAfter) } },
+      { place: { feature: "tax-rounding" }, patch: { base: this.main, diff: taxPatch } },
     ];
-    assert.equal((await this.project.propose("ines", SESSIONS.ines, "money-minor", parts)).status, "missing");
+    assert.equal((await this.project.propose("ines", session, feature, parts)).status, "missing");
     const [request] = this.project.facts.pending();
     assert.ok(request);
     const facts: PlanFactsReport = {
@@ -242,7 +250,7 @@ export class FixProject {
       durationMs: 10,
     };
     assert.equal(this.project.facts.record(request.runId, "runner", JSON.parse(JSON.stringify(facts))).status, "recorded");
-    const stored = await this.project.propose("ines", SESSIONS.ines, "money-minor", parts);
+    const stored = await this.project.propose("ines", session, feature, parts);
     assert.equal(stored.status, "stored", JSON.stringify(stored));
   }
 

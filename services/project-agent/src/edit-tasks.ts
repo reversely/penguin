@@ -344,6 +344,15 @@ export class EditTaskStore {
     });
   }
 
+  /** Returns running task `id` to the queue undone, as if it had not been claimed. */
+  unclaim(id: number): void {
+    this.#db.exec(
+      `UPDATE EditTask SET state = 'queued', claimed_by = NULL, lease_until = NULL, attempts = MAX(attempts - 1, 0), updated_at = ? WHERE id = ? AND state = 'running'`,
+      this.#now(),
+      id,
+    );
+  }
+
   /**
    * The claiming bridge reports a run's end. `done` closes the task with its commit, or for a review
    * with no commit, which the caller checked first; `failed` and `timeout` release it to the person,
