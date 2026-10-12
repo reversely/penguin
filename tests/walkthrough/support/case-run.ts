@@ -7,7 +7,7 @@
  * frame names.
  */
 
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -31,7 +31,8 @@ const WAIT_MS = 20 * 60_000;
 /** How many agents commit at once. */
 const CONCURRENT_AGENTS = 6;
 
-const section = (id: string) => (page: Page) => page.locator(`section[aria-labelledby="feature-${id}"]`);
+/** One tab of the feature page (Changes, Pipeline, People, Record); `view` is the hash that opens it. */
+const section = (view: string) => Object.assign((page: Page) => page.locator(`section.view#${view}`), { view });
 
 async function inBatches<T>(items: readonly T[], size: number, step: (item: T) => Promise<void>): Promise<void> {
   for (let start = 0; start < items.length; start += size) await Promise.all(items.slice(start, start + size).map(step));
@@ -236,17 +237,28 @@ export class CaseRun {
    * Every feature that runs before the originating one opens, one at a time so the overlap check
    * sees them in the fixture's order, then publishes its first checkpoint, several agents at once.
    */
+  /**
+   * Moves main to the head of the last promotion before the originating feature, as setup. Larder
+   * runs PRD cases 1 to 3 before case 4 while the other features run; the walkthrough runs those
+   * cases on their own fixtures, so here main takes their result directly, as the preview seed does.
+   */
+  async #takePromotions(): Promise<void> {
+    const last = this.fixture.promotions.at(-1);
+    if (last === undefined) return;
+    const head = execFileSync("git", ["-C", this.#fixtureRepo, "rev-parse", "--verify", `refs/heads/feature-${last}^{commit}`], { encoding: "utf8" }).trim();
+    await this.stack.seedBase(this.#fixtureRepo, head, "main");
+  }
+
   async openRunning(): Promise<void> {
-    const early = this.fixture.features.filter((feature) => feature !== this.origin && feature.role !== "late-starter" && feature.start === "base");
+    const promoted = new Set(this.fixture.promotions);
+    const early = this.fixture.features.filter(
+      (feature) => feature !== this.origin && feature.role !== "late-starter" && feature.start === "base" && !promoted.has(feature.id),
+    );
     for (const feature of early) await this.openFeature(feature);
     await inBatches(early, CONCURRENT_AGENTS, async (feature) => {
       await this.publish(feature, this.fixture.checkpointsOf(feature)[0] as CaseCommit);
     });
-  }
-
-  /** Lands each feature the fixture promotes before the originating feature opens, as its agent asks. */
-  async landPromotions(): Promise<void> {
-    for (const id of this.fixture.promotions) await this.land(this.fixture.feature(id));
+    await this.#takePromotions();
   }
 
   /** The feature's agent lands it; every scope's tests then run on main's new head. */
@@ -415,6 +427,20 @@ export class CaseRun {
     return this.revisionsFor(scope).length > (this.#revisionsUsed.get(scope ?? "") ?? 0);
   }
 
+  /**
+   * Waits, with runner passes, until the part is decided by Penguin or waits on its author: Penguin
+   * approves a part whose every check is clean (PRD 0.5 section 4.3), and asks the author otherwise.
+   * Answers "penguin" for the first, the part as the author reads it in the inbox for the second.
+   */
+  async decidedPart(partId: string): Promise<PartRequest | "penguin"> {
+    const owner = (this.parts.get(partId) as StoredPart).owner;
+    return this.until(`${partId} approved by Penguin or waiting on ${owner}`, async () => {
+      const current = await this.dashboard.partState({ feature: this.origin.id, partId });
+      if (current.state === "approved") return "penguin" as const;
+      return (await this.dashboard.partsWaiting(owner)).find((each) => each.partId === partId && each.ask === "approve");
+    });
+  }
+
   /** The part as the person it waits on reads it in the inbox. */
   async waitingPart(partId: string): Promise<PartRequest> {
     const owner = (this.parts.get(partId) as StoredPart).owner;
@@ -556,6 +582,7 @@ export class CaseRun {
     const head = this.published.get(this.origin.id) as string;
     for (let attempt = 0; attempt < 3; attempt++) {
       const asked = await agent.answer("land_feature", { feature: this.origin.id, expand: true });
+      this.notes.push(`land_feature with expand answered: ${JSON.stringify(asked.value).slice(0, 500)}`);
       if (!asked.isError) break;
       if (asked.value["error"] !== "waiting_on_owner") throw new Error(`land_feature with expand was refused: ${JSON.stringify(asked.value).slice(0, 2_000)}`);
       for (const person of this.fixture.people.map((each) => each.id)) {
@@ -570,7 +597,12 @@ export class CaseRun {
       }
     }
     const mainBefore = await this.person(this.origin.owner).headOf("base");
-    await this.until("the expand's promotion", async () => ((await this.person(this.origin.owner).headOf("base")) === head ? true : undefined));
+    let last: unknown;
+    await this.until(() => `the expand's promotion (last landing read: ${JSON.stringify(last).slice(0, 3_000)})`, async () => {
+      if ((await this.person(this.origin.owner).headOf("base")) === head) return true;
+      last = (await agent.work())["landing"];
+      return undefined;
+    });
     this.promotions.push({ feature: this.origin.id, mainBefore, mainAfter: head, redScopes: await this.person(this.origin.owner).redScopes(head) });
     return head;
   }
@@ -688,5 +720,7 @@ export class CaseRun {
     return metrics;
   }
 
-  static readonly sections = { declaration: section("declaration"), plan: section("plan"), fixes: section("fixes"), checks: section("checks"), record: section("record") };
+  // The feature page's tab that answers each frame's question: the start and the checks are stages of
+  // the pipeline, the plan's parts and their fixes are changes.
+  static readonly sections = { declaration: section("pipeline"), plan: section("changes"), fixes: section("changes"), checks: section("pipeline"), record: section("record") };
 }

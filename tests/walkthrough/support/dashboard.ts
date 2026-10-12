@@ -1,8 +1,8 @@
 /**
  * The dashboard as a person uses it in the walkthrough's browser: sign-in through the GitHub OAuth
  * test double, the pages each frame shows, and every decision a person makes, made by pressing the
- * page's own buttons. Reads run as `fetch` inside the page, so they carry the page's session cookie
- * and Origin exactly as the React app's requests do.
+ * page's own buttons. Reads and posts carry the page's session cookie and the dashboard's Origin,
+ * as the React app's requests do.
  */
 
 import { expect, type Locator, type Page } from "@playwright/test";
@@ -43,9 +43,20 @@ export class Dashboard {
   async signIn(person: string): Promise<void> {
     if (this.person === person) return;
     await this.page.goto(`${this.url}/auth/github?login=${encodeURIComponent(loginOf(person))}`);
+    await this.park();
     const session = await this.get("/api/session");
     expect(session.owner, "the dashboard session's owner").toBe(person);
     this.person = person;
+  }
+
+  /**
+   * Leaves the app for a blank page. The app re-reads every view on each live message, and each view
+   * reads main through the Artifacts binding; under `wrangler dev` that many remote-binding calls drop
+   * the binding's connection and stall the agents' own calls. The page loads the app only for a frame
+   * or a decision.
+   */
+  async park(): Promise<void> {
+    await this.page.goto("about:blank");
   }
 
   /** Opens a dashboard page as `person` and waits for it to load. */
@@ -55,27 +66,35 @@ export class Dashboard {
     await this.page.waitForLoadState("networkidle");
   }
 
+  /**
+   * The context's cookies for the dashboard, as a Cookie header. The request client leaves out the
+   * `__Host-` session cookie on plain-HTTP loopback, which the browser itself treats as secure.
+   */
+  async #cookie(): Promise<string> {
+    // cookies(url) also drops Secure cookies for an http URL, so every cookie is read and matched by host.
+    const host = new URL(this.url).hostname;
+    return (await this.page.context().cookies())
+      .filter((cookie) => cookie.domain.replace(/^\./u, "") === host)
+      .map((cookie) => `${cookie.name}=${cookie.value}`)
+      .join("; ");
+  }
+
+  // Reads and posts go through the browser context's request client with the page's session cookie;
+  // each post names the dashboard's Origin as the app's own requests do.
   async get(path: string): Promise<any> {
-    const { status, body } = await this.page.evaluate(async (target) => {
-      const response = await fetch(target, { headers: { Accept: "application/json" } });
-      return { status: response.status, body: await response.text() };
-    }, path);
-    if (status !== 200) throw new Error(`GET ${path} answered HTTP ${status}: ${body}`);
+    const response = await this.page.context().request.get(`${this.url}${path}`, { headers: { Accept: "application/json", Cookie: await this.#cookie() } });
+    const body = await response.text();
+    if (response.status() !== 200) throw new Error(`GET ${path} answered HTTP ${response.status()}: ${body}`);
     return JSON.parse(body);
   }
 
   async post(path: string, payload: unknown): Promise<{ status: number; body: any }> {
-    const { status, body } = await this.page.evaluate(
-      async ({ target, json }) => {
-        const response = await fetch(target, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Accept: "application/json" },
-          body: json,
-        });
-        return { status: response.status, body: await response.text() };
-      },
-      { target: path, json: JSON.stringify(payload) },
-    );
+    const response = await this.page.context().request.post(`${this.url}${path}`, {
+      headers: { "Content-Type": "application/json", Accept: "application/json", Origin: this.url, Cookie: await this.#cookie() },
+      data: JSON.stringify(payload),
+    });
+    const status = response.status();
+    const body = await response.text();
     let parsed: unknown = body;
     try {
       parsed = body === "" ? null : JSON.parse(body);
@@ -89,8 +108,9 @@ export class Dashboard {
    * One frame of docs/demo-story.md: `person`'s screen at `path`, captured as `<n>-<name>.png`. With
    * `region` the shot holds that part of the page, the part the frame's question is answered in.
    */
-  async frame(name: string, question: string, person: string, path: string, region?: (page: Page) => Locator): Promise<string> {
-    await this.open(person, path);
+  async frame(name: string, question: string, person: string, path: string, region?: ((page: Page) => Locator) & { readonly view?: string }): Promise<string> {
+    // A region that is a tab of the feature page opens that tab through its hash.
+    await this.open(person, region?.view === undefined ? path : `${path}#${region.view}`);
     const file = join(this.outDir, `${String(this.frames.length + 1).padStart(2, "0")}-${name}.png`);
     if (region === undefined) await this.page.screenshot({ path: file, fullPage: true });
     else {
@@ -99,6 +119,7 @@ export class Dashboard {
       await target.first().screenshot({ path: file });
     }
     this.frames.push({ file, person, path, question });
+    await this.park();
     return file;
   }
 
@@ -124,11 +145,11 @@ export class Dashboard {
   }
 
   /** The part's state in its feature's newest plan, as the signed-in person reads it. */
-  async partState(part: { readonly feature: string; readonly partId: string }): Promise<{ state: string; revision: number }> {
+  async partState(part: { readonly feature: string; readonly partId: string }): Promise<{ state: string; revision: number; approvedBy: string | null }> {
     const plan = await this.get(`/api/features/${encodeURIComponent(part.feature)}/plan`);
-    const found = (plan.parts as { partId: string; approvalState: string; revision: number }[]).find((each) => each.partId === part.partId);
+    const found = (plan.parts as { partId: string; approvalState: string; revision: number; approvedBy?: string | null }[]).find((each) => each.partId === part.partId);
     if (found === undefined) throw new Error(`the plan of ${part.feature} has no part ${part.partId}`);
-    return { state: found.approvalState, revision: found.revision };
+    return { state: found.approvalState, revision: found.revision, approvedBy: found.approvedBy ?? null };
   }
 
   async #settled(part: PartRequest, state: string): Promise<void> {
@@ -142,6 +163,7 @@ export class Dashboard {
     await this.open(person, "/inbox");
     await this.partRow(part).getByRole("button", { name: `Approve revision ${part.revision}` }).click();
     await this.#settled(part, "approved");
+    await this.park();
   }
 
   /** `person` asks for a change to the part on the inbox page, typing `text` into the request field. */
@@ -152,6 +174,7 @@ export class Dashboard {
     await card.getByLabel("Change to ask for").fill(text);
     await card.getByRole("button", { name: "Send request" }).click();
     await this.#settled(part, "change_requested");
+    await this.park();
   }
 
   /** `person` approves the start of `blocked` beside their own `feature`, on the inbox's Overlapping starts card. */
@@ -163,10 +186,12 @@ export class Dashboard {
       .filter({ hasText: feature });
     await card.getByRole("button", { name: "Approve start" }).click();
     await expect
-      .poll(async () => ((await this.get("/api/overlaps")).requests as { blockedFeature: string }[]).some((each) => each.blockedFeature === blocked), {
+      // Only this pair: a person with two running features beside `blocked` approves each in turn.
+      .poll(async () => ((await this.get("/api/overlaps")).requests as { feature: string; blockedFeature: string }[]).some((each) => each.blockedFeature === blocked && each.feature === feature), {
         message: `${person}'s approval of ${blocked}'s start`,
         timeout: 30_000,
       })
       .toBe(false);
+    await this.park();
   }
 }

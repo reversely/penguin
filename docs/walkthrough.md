@@ -23,8 +23,10 @@ by folder name, separated by commas.
 - **Agents** are scripted MCP sessions, one per feature. Each registers as the feature's identity,
   opens the feature, pushes the fixture's commits to the feature's fork with the token Penguin minted
   and calls the tools a live agent calls.
-- **People** decide on the dashboard in Google Chrome. The walkthrough presses Approve start,
+- **People** decide on the dashboard in Playwright's Chromium. The walkthrough presses Approve start,
   Approve revision, Request change and Send request on the inbox page as the person a case names.
+  Between frames and decisions the page sits on `about:blank`, so the app's reads on each live
+  message do not add remote-binding calls to the agents' own.
 - **The check runner** is `penguin-bridge runner --once --combined`, run in-process between steps.
 
 ## What each case runs
@@ -95,8 +97,13 @@ named like a field, is left out of that check.
 ## Requirements
 
 - A Wrangler login for the account that holds the Artifacts namespace (`npx wrangler login`).
-- Google Chrome installed. Playwright drives it through `channel: "chrome"` and downloads no browser.
+- Playwright's Chromium (`npx playwright install chromium`).
 - The Python environment from `uv sync`. The runner's test commands use `.venv/bin/python`.
+
+`PENGUIN_WORKER_LOG_LEVEL=debug` passes `--log-level debug` to `wrangler dev`, which prints the
+workerd exception behind each remote-binding error. `scripts/remote-test.sh` does not run the
+walkthrough; on the test machine it runs from its own checkout with `npx playwright test -c
+tests/walkthrough/playwright.config.ts`.
 
 ## Output
 
@@ -117,20 +124,18 @@ notes. `test-results/walkthrough/report.json` holds each phase's result and dura
 
 ## Where the cases stop
 
+Results of the run on gn100 against real Artifacts on 2026-10-12:
+
 | Case | Result |
 |---|---|
-| 1 | Promoted. Jun asks for two changes on the part for analytics' code on main |
-| 2 | Promoted |
-| 3 | The block failed at land on a dependency diff that failed main and Ana's fork. The dependency diff is now a passing fact. `tests/cases/cases.test.ts` passes the block with Ana's fix in Ana's fork. The walkthrough has not run the case since |
-| 4 | The block run of the promotion the fixture makes before Ines opens stops on the check runner. The runner fetches the 38 forks into one repository with Git protocol version 1. Once that repository holds 14 forks, Artifacts answers each further fetch with `fetch-pack: protocol error: bad band #78`. The same fetches with protocol version 2 succeed |
+| 1 | Promoted in 6.3 minutes. Jun asks for two changes on the part for analytics' code on main |
+| 2 | Promoted. Priya's agent reports the checkpoint that adds `start_of_local_day()` before it proposes the plan |
+| 3 | Promoted. Penguin approves Ana's parts itself: every check is clean |
+| 4 | Stops at the expand. Tomas, the DRI of a scope the expand adds to, approves it. The expand is then accepted and main does not move within 20 minutes |
 
-Teardown deletes every repo under the case's prefix and lists the namespace again, up to five
-rounds, since one listing may not hold every repo. `cleanup.json` keeps the final listing in
-`remainingRepos`. The case fails unless it is empty.
-
-A check runner pass that stops a run partway reports it to Penguin, which frees it for the next
-pass ([bridge-and-runner.md](bridge-and-runner.md#failed-runs)). The walkthrough stops the case at
-the first such report and names it in the case's notes.
+Larder runs PRD cases 1 to 3 before case 4. The walkthrough runs those cases on their own fixtures,
+so for case 4 it opens the running features at the base, then moves main to the head of the last
+promotion before the split, as the preview seed does.
 
 ## Dashboard build per case
 

@@ -140,6 +140,8 @@ async function spawnWorker(
       "wrangler", "dev", "-c", "wrangler.jsonc", "--ip", "127.0.0.1", "--port", String(port),
       "--env-file", envFile, "--persist-to", join(tempDir, "state"), "--show-interactive-dev-session=false",
       "--assets", assets,
+      // PENGUIN_WORKER_LOG_LEVEL=debug shows the workerd detail behind an "internal error" reference.
+      ...(process.env.PENGUIN_WORKER_LOG_LEVEL === undefined ? [] : ["--log-level", process.env.PENGUIN_WORKER_LOG_LEVEL]),
     ],
     // From apps/worker, the build's `cwd: "../.."` is the repository root whichever directory Wrangler
     // resolves it against (gn100's Wrangler resolves it against the process's working directory).

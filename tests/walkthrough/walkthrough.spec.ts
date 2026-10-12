@@ -20,6 +20,7 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { PENGUIN_APPROVER } from "../../packages/protocol/src/plan.ts";
 import { CaseRun } from "./support/case-run.ts";
 import { bounded } from "./support/stack.ts";
 import { Dashboard } from "./support/dashboard.ts";
@@ -74,7 +75,6 @@ for (const [index, fixture] of CASES.entries()) {
       await run.phase("open", async () => {
         await run.openRunning();
         await dashboard.frame("team", "Who is working on what?", origin.owner, "/");
-        await run.landPromotions();
 
         const opened = await run.openFeature(origin, async (person) => {
           await dashboard.frame("start-waits", `Whose approval does ${display(origin.owner)}'s start wait for?`, person, "/inbox", (page) =>
@@ -101,9 +101,9 @@ for (const [index, fixture] of CASES.entries()) {
     test("2. plan: the originating agent proposes one fix per affected place", async () => {
       test.skip(fixture.split !== null, "a split case lands its expand instead of a merge plan");
       await run.phase("plan", async () => {
-        // The fixes for code on main go into the fork as commits; the plan's facts stay those of the
-        // reported checkpoint, the change itself, and the plan names each fix commit.
-        const planned = await run.publishOriginUpTo((commit) => commit.revises !== null, false);
+        // The agent reports its commits up to the plan, so the plan's checkpoint defines every symbol
+        // the parts import (PRD case 2: start_of_local_day() is checked in before the plan).
+        await run.publishOriginUpTo((commit) => commit.revises !== null);
         run.onReturned = async () => {
           await dashboard.frame("returned", `Why did the plan go back to ${display(origin.owner)}?`, origin.owner, "/inbox", (page) =>
             page.locator('section[aria-labelledby="approvals-returned"]'),
@@ -113,8 +113,6 @@ for (const [index, fixture] of CASES.entries()) {
         // A plan over the break limit goes back to its person: the case ends there, as the system leaves it.
         if (run.returned !== undefined) return;
         expect(plan["parts"].length, "one part per affected place").toBe(run.placesAtPlanTime);
-        // The agent then reports the fixes as its checkpoint, the commit the authors' agents review.
-        if (planned !== undefined && planned.sha !== run.published.get(origin.id)) await run.publish(origin, planned);
         await dashboard.frame("plan", "Whose work does the change break?", origin.owner, featurePath(origin.id), CaseRun.sections.plan);
       });
     });
@@ -138,7 +136,14 @@ for (const [index, fixture] of CASES.entries()) {
         const asking = new Set(parts.filter((part) => run.asksForChange(part)).map((part) => part.owner));
         let reviewShown = false;
         for (const part of parts.filter((each) => !asking.has(each.owner))) {
-          const waiting = await run.waitingPart(part.partId);
+          const decided = await run.decidedPart(part.partId);
+          if (decided === "penguin") {
+            const state = await dashboard.partState({ feature: origin.id, partId: part.partId });
+            expect(state.approvedBy, `${part.partId}: a part approved before its author acted is Penguin's approval`).toBe(PENGUIN_APPROVER);
+            run.notes.push(`Penguin approved ${part.partId} for ${part.owner}: every check was clean.`);
+            continue;
+          }
+          const waiting = decided;
           // With no change asked for in the case, the review frame shows the first reviewed part its author approves.
           if (asking.size === 0 && !reviewShown && waiting.reviews.length > 0) {
             await dashboard.frame("review", `What does ${display(part.owner)}'s review show?`, part.owner, "/inbox", () => dashboard.planCard(waiting.feature));

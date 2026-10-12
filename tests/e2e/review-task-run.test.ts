@@ -57,7 +57,6 @@ test("each author's review form is submitted headless by claude -p through Pengu
     await run.setUp(browser);
     // 1. The case up to the plan, as the walkthrough runs it.
     await run.openRunning();
-    await run.landPromotions();
     await run.openFeature(origin);
     // PRD case 2 orders it so: Priya's agent reports the checkpoint that adds start_of_local_day(),
     // then proposes the plan there, so each part's trial tree holds the helper.
