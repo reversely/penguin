@@ -55,7 +55,7 @@ stands, whose history holds the branch head. Ines's contract uses it.
 Every id, path, contract, tag, test ID, name and email address is checked before anything is
 written. Ids are lowercase words joined by `-`. Paths hold plain segments with no `..` and no
 leading `/`. Names and email addresses hold no `<`, `>` or line break, because they go into commit
-headers. `tests/test_money_fixture_builder.py` feeds hostile values such as `../money`,
+headers. `tests/test_fixtures.py` feeds hostile values such as `../money`,
 `money; rm -rf /`, `/etc/` and `--force` to the loader.
 
 ## Teams and scopes
@@ -180,7 +180,7 @@ when a block reaches main: `cart_total()` still returns dollars, computed in `Mo
 ## Expected failures and fixes
 
 `pins.json` maps each test a migration or revision makes pass to that commit. The slow suite
-(`tests/test_money_fixture_reproduction.py`) checks every row.
+(`tests/test_fixtures.py`) checks every row.
 
 - **Every commit.** Each commit passes every scope's tests, except the tests it names in
   `fails_alone` and those a later commit of its feature fixes.
@@ -256,7 +256,7 @@ rounding mode (`ROUND_HALF_UP`) states. The revision's tax equals exact decimal 
 ## The split on the preview seed
 
 `scripts/preview/seed.ts` runs the split on the fixture's data through the ProjectAgent's modules and
-the check runner's programs. `apps/worker/test/money-split.test.ts`, `money-retiring.test.ts` and
+the check runner's programs. `tests/cases/cases.test.ts`, `money-retiring.test.ts` and
 `contract-sort-fixtures.test.ts` check each step below. A seed run without the originating agent's
 `impact` and `check` took 336 seconds on a laptop running other test suites.
 
@@ -343,5 +343,5 @@ Run `uv run pre-commit run --all-files` first, because ruff can rewrite a fixtur
 top-level package goes into `known-first-party` in `examples/ruff.toml`, so ruff sorts its imports
 as it would in the built repository. Then
 run `python examples/money-minor-units/build.py <empty dir> --pins > examples/money-minor-units/pins.json`.
-`tests/test_money_fixture_builder.py` fails until `pins.json` matches a fresh build. Run
+`tests/test_fixtures.py` fails until `pins.json` matches a fresh build. Run
 `uv run detect-secrets scan --baseline .secrets.baseline` afterwards to record the new SHAs.

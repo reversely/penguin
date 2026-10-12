@@ -539,7 +539,7 @@ Ed25519 private JWK), `PENGUIN_REPO_PREFIX`, `PENGUIN_GITHUB_BASE_URL=http://127
 `PENGUIN_DASHBOARD_OWNERS=priya-gh:priya,jun-gh:jun,sam-gh:sam`.
 
 ```sh
-node apps/worker/test/github-double.ts --port 8788
+node tests/walkthrough/support/github-double.ts --port 8788
 npx wrangler dev -c apps/worker/wrangler.jsonc --ip 127.0.0.1 --port 8787 --env-file <env file>
 PENGUIN_E2E_URL=http://127.0.0.1:8787 PENGUIN_E2E_DEPLOYER_TOKEN_FILE=<file with the same deployer token> \
   node --test tests/e2e/exit-check.test.ts

@@ -132,8 +132,8 @@ import { ReviewStore, submitReview } from "../../services/project-agent/src/revi
 import { reviewDifferences } from "../../services/project-agent/src/review-view.ts";
 import { SessionStore } from "../../services/project-agent/src/session-store.ts";
 import { flushRecords, RecordRepoStore } from "../../services/project-agent/src/record-repo.ts";
-import { gitReader } from "../../services/project-agent/test/git-reader.ts";
-import { gitServer } from "../../services/project-agent/test/git-server.ts";
+import { gitReader } from "./git-reader.ts";
+import { gitServer } from "./git-server.ts";
 
 const ROOT = join(import.meta.dirname, "../..");
 const VENV_BIN = join(ROOT, ".venv", "bin");
@@ -1340,7 +1340,7 @@ export function fixtureScopeMap(repo: string, ref = "main"): ScopeMap {
   return parseScopeMap(JSON.parse(show("penguin/scopes.json") ?? "{}"), { ownerIds: owners, ...(teams === undefined ? {} : { teams }) });
 }
 
-async function project(fixture: FixtureName): Promise<PreviewProject> {
+async function project(fixture: ExampleName): Promise<PreviewProject> {
   const repo = await buildFixture(fixture);
   return new PreviewProject(fixture, repo, fixtureScopeMap(repo));
 }
@@ -1607,7 +1607,7 @@ async function moneyMinorUnits(preview: PreviewProject): Promise<void> {
 }
 
 /** Seeds `fixture`'s project through the ProjectAgent's modules and the check runner's programs. */
-export async function seed(fixture: FixtureName, options: { readonly runnerTools?: boolean } = {}): Promise<PreviewProject> {
+export async function seed(fixture: ExampleName, options: { readonly runnerTools?: boolean } = {}): Promise<PreviewProject> {
   const preview = await project(fixture);
   preview.runnerTools = options.runnerTools ?? true;
   if (fixture === "money-minor-units") await moneyMinorUnits(preview);

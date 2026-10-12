@@ -4,7 +4,7 @@
 system. It records what each person sees on the dashboard and the PRD section 11 metrics. Each case
 gets its own local Worker under `wrangler dev`. The Worker's Artifacts binding points at the real
 namespace under a repo prefix unique to the run. People sign in through the loopback GitHub OAuth
-test double (`apps/worker/test/github-double.ts`). The check runner runs in-process. The run deletes
+test double (`tests/walkthrough/support/github-double.ts`). The check runner runs in-process. The run deletes
 every repo under its prefix when the case ends.
 
 | Case | Fixture |
@@ -121,7 +121,7 @@ notes. `test-results/walkthrough/report.json` holds each phase's result and dura
 |---|---|
 | 1 | Promoted. Jun asks for two changes on the part for analytics' code on main |
 | 2 | Promoted |
-| 3 | The block failed at land on a dependency diff that failed main and Ana's fork. The dependency diff is now a passing fact. `tests/integration/dependency-bump-block.test.ts` passes the block with Ana's fix in Ana's fork. The walkthrough has not run the case since |
+| 3 | The block failed at land on a dependency diff that failed main and Ana's fork. The dependency diff is now a passing fact. `tests/cases/cases.test.ts` passes the block with Ana's fix in Ana's fork. The walkthrough has not run the case since |
 | 4 | The block run of the promotion the fixture makes before Ines opens stops on the check runner. The runner fetches the 38 forks into one repository with Git protocol version 1. Once that repository holds 14 forks, Artifacts answers each further fetch with `fetch-pack: protocol error: bad band #78`. The same fetches with protocol version 2 succeed |
 
 Teardown deletes every repo under the case's prefix and lists the namespace again, up to five

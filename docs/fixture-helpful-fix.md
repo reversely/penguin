@@ -227,7 +227,7 @@ from the root of the tree under test.
 
    Every command exits 0.
 
-`uv run pytest -m slow` runs the same steps in `tests/test_helpful_fix_reproduction.py`. It asserts
+`uv run pytest -m slow` runs the same steps in `tests/test_fixtures.py`. It asserts
 that every scope passes on each checkpoint alone and on `owner-priya` alone. It asserts that the
 merged checkpoints fail exactly the two tests above with the host timezone set to `UTC`,
 `Asia/Tokyo` and `America/Los_Angeles`. It asserts that `owner-priya` merged with Jun's or Sam's
@@ -242,7 +242,7 @@ from it. It also changes the SHA of every commit that starts from that commit. R
 `uv run pre-commit run --all-files` before rebuilding, because ruff can rewrite a fixture source
 file. Then rebuild into an empty directory and copy the printed SHAs into the `branches`, `tags` and
 `fixes` objects of `pins.json`. A new commit goes into `features.json`. `examples/ruff.toml` makes
-ruff in this repository sort the fixture's imports as ruff does in the built repository. `tests/test_helpful_fix_builder.py` fails until `pins.json` matches
+ruff in this repository sort the fixture's imports as ruff does in the built repository. `tests/test_fixtures.py` fails until `pins.json` matches
 a fresh build. The detect-secrets hook reads each SHA in `pins.json` as a possible secret. Run
 `uv run detect-secrets scan --baseline .secrets.baseline` after changing `pins.json` to record the
 new SHAs as known values.

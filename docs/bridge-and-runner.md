@@ -455,7 +455,7 @@ checked reports an `error` check on main, which never passes.
 On the helpful-fix fixture, the block of `owner-priya` with the switch to `start_of_local_day` written
 into Jun's and Sam's forks passes every check. All three scopes' tests pass on main's merged tree.
 Without the switch, Jun's and Sam's tests fail on their merged trees and each failure carries one next
-step (`services/local-bridge/test/block-run.test.ts`).
+step (no test yet (docs/testing.md)).
 
 ### Preview
 

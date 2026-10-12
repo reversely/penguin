@@ -166,7 +166,7 @@ lint and format on every merged tree. It fails `test_shared_device_split` and `t
 Jun's merged tree. It fails `test_unsubscribe_survives` on Sam's. On the three fixed heads every
 check passes.
 
-`services/local-bridge/test/review-harness.test.ts` replaces the fixture's invariants file on `main`
+`tests/rules/review.test.ts` replaces the fixture's invariants file on `main`
 with its own. It checks the same tablet differences, the refusals for missing evidence and the
 stored data rule for a scope that reads the changed shape and one that does not.
 
@@ -306,7 +306,7 @@ the tree under test.
 
    Every command exits 0.
 
-`uv run pytest -m slow` runs the same steps in `tests/test_fixture_reproduction.py`. It asserts that
+`uv run pytest -m slow` runs the same steps in `tests/test_fixtures.py`. It asserts that
 every scope passes on each commit alone and that the merged checkpoints fail exactly the three tests
 above. It asserts that each fix makes its own test pass, that `owner-priya-limit-five` still fails
 `test_shared_device_split`, and that the combined run on the fixed branches passes. It also asserts
@@ -321,7 +321,7 @@ built from it. It also changes the SHA of every commit that starts from that com
 rebuilding, because ruff can rewrite a fixture source file. Then rebuild into an empty directory and
 copy the printed SHAs into the `branches`, `tags` and `fixes` objects of `pins.json`. A new commit
 goes into `features.json`. `examples/ruff.toml` makes ruff in this repository sort the fixture's
-imports as ruff does in the built repository. `tests/test_fixture_builder.py` fails until `pins.json`
+imports as ruff does in the built repository. `tests/test_fixtures.py` fails until `pins.json`
 matches a fresh build. The detect-secrets hook reads each SHA in `pins.json` as a possible secret.
 Run `uv run detect-secrets scan --baseline .secrets.baseline` after changing `pins.json` to record
 the new SHAs as known values.

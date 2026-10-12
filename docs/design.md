@@ -260,7 +260,7 @@ The procedure moves conflict handling to the start of the work. Each step below 
   the money fixture a checkpoint that turns `tax.rates.RATES` into Decimal rates makes tax-filing,
   which reads RATES, the plan's one affected place. Its verify part's trial passes and Penguin
   approves it. The same checkpoint without Washington fails
-  `test_monthly_and_quarterly_regions` on the trial (`tests/integration/verify-part.test.ts`).
+  `test_monthly_and_quarterly_regions` on the trial (`tests/cases/cases.test.ts`).
 - **Symbols a patch imports.** A patch's trial tree is the fork head with the patch applied and the
   plan's checkpoint merged. Each `from <module> import <name>` on a patch's added lines must find the
   name in that tree: bound at module level in the patched module, or, for a module the patch leaves
@@ -521,7 +521,7 @@ Penguin sorts each feature checkpoint's contract diff and decides between a spli
   | `migration` | Each migration plan of the feature's retiring symbols, a `MigrationPlanView` ([Migration plans in the build](#migration-plans-in-the-build)) |
   | `nextStep` | The agent's next step in one paragraph |
 - **On the fixtures.** Each sort comes from the fixture's checkpoint against main
-  (`apps/worker/test/contract-sort-fixtures.test.ts`). On identity unification, Priya's checkpoint
+  (`tests/cases/cases.test.ts`). On identity unification, Priya's checkpoint
   adds `IdentityMap.person_id`, which sorts additive. The same checkpoint edits `resolve()` and
   `profile()` in place with the same signatures. Both sort as behaviour changes to the declared
   `IdentityMap` contract, so the feature keeps its merge plan and no old lookup retires from this
@@ -529,7 +529,7 @@ Penguin sorts each feature checkpoint's contract diff and decides between a spli
   change. On money in minor units, Ines's first checkpoint is the expand: its sort finds only
   additive entries. The plan Ines's agent proposes there declares the six float functions retiring,
   each passes the three checks, and Penguin records the split from the declaration
-  (`apps/worker/test/money-retiring.test.ts`).
+  (`tests/cases/cases.test.ts`).
 
 #### Migration plans in the build
 
@@ -1275,7 +1275,7 @@ On the three fixtures:
 |---|---|
 | Identity unification | Tests fail for Jun (two tests) and Sam (one test). The type check passes on both: no caller outside Priya's file calls `Profile.set`. Sam's one existing pyright error is already on Sam's checkpoint. Lint passes (`examples/ruff.toml` matches a built fixture's import sorting) |
 | Helpful fix | Tests fail for Jun and Sam, one test each. Lint passes |
-| Dependency bump | The dependency diff passes with the four places Ana imports `shared.http`. On Ana's checkpoint Ana's payment test fails. With Ana's fix in Ana's fork every check passes (`tests/integration/dependency-bump-block.test.ts`) |
+| Dependency bump | The dependency diff passes with the four places Ana imports `shared.http`. On Ana's checkpoint Ana's payment test fails. With Ana's fix in Ana's fork every check passes (`tests/cases/cases.test.ts`) |
 
 ### Tools for agents
 
@@ -1351,7 +1351,7 @@ and reports it with `pushed: false`. Plan-part fixes are written into the affect
 On the helpful-fix fixture, Priya's agent calls `check` on Priya's checkpoint with Jun's and Sam's
 features running. With no manual run, the session's next safe checkpoint brings the block checks
 on `main`, `weekly-report` and `reminder-scheduling`. Jun's and Sam's tests fail. Both failures go to
-step 5, to `@jun/steward` and `@sam/steward` (`apps/worker/test/tool-runner.test.ts`).
+step 5, to `@jun/steward` and `@sam/steward` (no test yet (docs/testing.md)).
 
 ### Routing and the resolution ladder
 
@@ -1556,7 +1556,7 @@ scope's invariants, examples and contracts at the base, so the examples a runnin
 declares in that feature's fork run. On the helpful-fix fixture main declares no examples for
 analytics and Jun's fork declares `analytics/examples/weekly_report.json`. A run on Priya's
 checkpoint against main ran 0 inputs; the trial of Jun's part runs every case of that file
-(`tests/integration/part-trial.test.ts`).
+(`tests/cases/cases.test.ts`).
 
 The record of a run names the base and fork commits and the scope. Each set in the record gives the
 contract, the examples file or the risky inputs, the invariants it bears on and every input's name.
@@ -1574,7 +1574,7 @@ analytics' protected invariant, the run on Priya's checkpoint shows `daily_activ
 3 people on main and 1 on the fork for three patrons on one tablet. A risky input of six patrons on
 one tablet still differs on Priya's limit of five and matches main on Priya's limit of one.
 In runner mode, Jun's review submitted on Priya's feature gets this record with no manual run. The
-tablet difference then reaches Jun's inbox (`apps/worker/test/review-runner.test.ts`).
+tablet difference then reaches Jun's inbox (`tests/rules/review.test.ts`).
 
 #### Part trials
 
@@ -1625,7 +1625,7 @@ trial until a new plan is proposed on it. On the helpful-fix fixture Jun's and S
 `start_of_local_day`, so Priya's agent proposes the plan at the checkpoint that adds it, as PRD case 2
 orders it. Both trials then pass and Penguin approves both parts. Proposed one checkpoint earlier,
 the plan is answered `missing` with `patch_missing_symbol` for each patch, naming
-`start_of_local_day` (`tests/integration/plan-from-fixture.test.ts`).
+`start_of_local_day` (`tests/cases/cases.test.ts`).
 
 On the identity-unification fixture Jun's form can cite
 `analytics/tests/test_identity.py::test_shared_device_split` and name the cutover marker
@@ -1633,12 +1633,12 @@ On the identity-unification fixture Jun's form can cite
 part. The review of Priya's checkpoint refuses the form with `evidence_not_found`. The review on the
 trial of Jun's part accepts it. Jun's patch adds a `cutover` field to the stored `RetentionDashboard`,
 which analytics owns, so the marker is required; without it the form is refused with
-`stored_data_without_marker` (`tests/integration/part-trial.test.ts`). The
+`stored_data_without_marker` (`tests/cases/cases.test.ts`). The
 fixture's own form names that marker, so on the trial of the analytics part on main, whose tree
 lacks Jun's file, it is refused with `evidence_not_found`. Sam's form names no marker and is
 accepted on both of Sam's trials: messaging only reads the reshaped `Profile`. Priya's checkpoint
 holds no migration or backfill. The fixture's plan declares no `storeMarker`. Both of Sam's
-parts therefore route to Priya with `stored_data_unmarked` (`apps/worker/test/preview-approvals.test.ts`).
+parts therefore route to Priya with `stored_data_unmarked` (`tests/cases/cases.test.ts`).
 
 ## Exceptions
 

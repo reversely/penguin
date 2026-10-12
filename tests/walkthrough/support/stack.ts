@@ -20,7 +20,7 @@ import { promisify } from "node:util";
 import { runGit } from "@penguin/git-analysis";
 import { ARTIFACTS_PUSH_OPTIONS, tokenEnvironment } from "@penguin/local-bridge";
 
-import { startGitHubDouble, DOUBLE_CLIENT, type GitHubDouble } from "../../../apps/worker/test/github-double.ts";
+import { startGitHubDouble, DOUBLE_CLIENT, type GitHubDouble } from "./github-double.ts";
 import { Deployer } from "../../e2e/support/deployer.ts";
 
 const run = promisify(execFile);

@@ -10,7 +10,7 @@ import { join } from "node:path";
 
 /** How the run signs in to the dashboard as a person. */
 export type SignIn =
-  /** Through the GitHub OAuth test double (apps/worker/test/github-double.ts); a loopback Worker only. */
+  /** Through the GitHub OAuth test double (tests/walkthrough/support/github-double.ts); a loopback Worker only. */
   | { readonly kind: "github-double"; readonly logins: Readonly<Record<"priya" | "jun", string>> }
   /** With session cookie values copied from a browser signed in to the deployed Worker. */
   | { readonly kind: "cookies"; readonly cookies: Readonly<Record<"priya" | "jun", string>> };
