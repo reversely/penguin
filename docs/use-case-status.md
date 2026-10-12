@@ -49,7 +49,8 @@ not work yet), **rule needed** (the procedure does not yet say what should happe
 | Migration edits run by each owner's steward or builder | gap | #128, #129 |
 | Rahul's tax part routes to Rahul | works | #107, #122 |
 | Jun confirms the protected revenue report | works | #112 |
-| Contract when no caller is left | gap | #117 |
+| Contract when no caller is left | partial | #117 counts callers after each promotion and proposes at zero; the money fixture still has 59 callers after the waves (14 on main, 45 in readers' own changes), moved by #131 |
+| Contract after the originating feature has landed | rule needed | #131 (steward of the defining scope's DRI) |
 | Runner fetches 40 forks | works | #119 live proof (20 forks) |
 
 ## Across cases
