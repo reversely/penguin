@@ -1,7 +1,10 @@
 // Where a feature's merge plans are kept (PRD 0.4 section 9, FeatureAgent storage):
-// `Plan(feature_id, version, state)` and `PlanPart(plan_id, target_feature_id or scope_id, kind,
-// proposed_diff_ref, approval_state, approved_by)`. Each plan's facts and each part's facts are kept
-// beside the row as JSON, as Penguin assembled them.
+// `Plan(feature_id, version, state)`, `PlanPart(plan_id, target_feature_id or scope_id, kind,
+// proposed_diff_ref, approval_state, approved_by)` and `FixWrite(plan_part_id, target_repo,
+// commit_sha)`. Each plan's facts and each part's facts are kept beside the row as JSON, as Penguin
+// assembled them. A part may be added to the newest plan later, for a running feature that started
+// touching the plan's area (plan-coverage.ts); a fix written into an affected fork is kept once per
+// part revision (fix-write.ts).
 //
 // The store runs on one SQL database. The per-feature Durable Object (the HuddleAgent class until
 // #96 renames it FeatureAgent) owns one instance per feature, so moving plans to the FeatureAgent
@@ -23,7 +26,26 @@ export const PLAN_STORE_SCHEMA: readonly string[] = [
     kind TEXT NOT NULL, proposed_diff_ref TEXT NOT NULL, approval_state TEXT NOT NULL,
     approved_by TEXT, part TEXT NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS PlanPart_plan ON PlanPart (plan_id)`,
+  `CREATE TABLE IF NOT EXISTS FixWrite (
+    plan_part_id TEXT NOT NULL, revision INTEGER NOT NULL, target_repo TEXT NOT NULL, commit_sha TEXT NOT NULL,
+    parent TEXT NOT NULL, record_id TEXT NOT NULL, written_at INTEGER NOT NULL, PRIMARY KEY (plan_part_id, revision))`,
 ];
+
+/**
+ * One approved fix written into an affected feature's fork (PRD 0.4 section 9, `FixWrite(plan_part_id,
+ * target_repo, commit_sha)`), with the revision it wrote, the fork head it fast-forwarded and its
+ * signed `fix_write` record.
+ */
+export interface FixWrite {
+  readonly partId: string;
+  readonly revision: number;
+  /** The fork as bridges name it: `feature-<id>`. */
+  readonly targetRepo: string;
+  readonly commitSha: string;
+  readonly parent: string;
+  readonly recordId: string;
+  readonly writtenAt: string;
+}
 
 /** What the ProjectAgent asks of a feature's plan store, over Durable Object RPC in the Worker. */
 export interface PlanKeeper {
@@ -39,6 +61,15 @@ export interface PlanKeeper {
    * newest plan or moved since it was read, so two decisions never both land.
    */
   replacePart(featureId: string, part: PlanPart, expected: PartVersion): boolean | Promise<boolean>;
+  /**
+   * Adds a part to the feature's newest plan, `planId`, as its next part. False, adding nothing, when
+   * that plan is no longer the newest or the part's id is not the next one.
+   */
+  addPart(featureId: string, planId: string, part: PlanPart): boolean | Promise<boolean>;
+  /** Keeps one written fix. False when that revision of the part already has one. */
+  keepFixWrite(write: FixWrite): boolean | Promise<boolean>;
+  /** The fixes written for the parts of the feature's plans, oldest first. */
+  fixWrites(featureId: string): FixWrite[] | Promise<FixWrite[]>;
 }
 
 /** The revision and approval state a part stood at when a decision on it was made. */
@@ -112,6 +143,45 @@ export class PlanStore implements PlanKeeper {
       );
       return true;
     });
+  }
+
+  addPart(featureId: string, planId: string, part: PlanPart): boolean {
+    return this.#db.transaction(() => {
+      const latest = this.latestPlan(featureId);
+      if (latest === undefined || latest.planId !== planId || part.partId !== `${planId}#${latest.parts.length + 1}`) return false;
+      this.#insertPart(planId, part);
+      return true;
+    });
+  }
+
+  keepFixWrite(write: FixWrite): boolean {
+    const kept = this.#db.exec(
+      `INSERT OR IGNORE INTO FixWrite (plan_part_id, revision, target_repo, commit_sha, parent, record_id, written_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING plan_part_id`,
+      write.partId,
+      write.revision,
+      write.targetRepo,
+      write.commitSha,
+      write.parent,
+      write.recordId,
+      Date.parse(write.writtenAt),
+    );
+    return kept.length > 0;
+  }
+
+  fixWrites(featureId: string): FixWrite[] {
+    // A part id starts with its feature id and `/v`, which no other feature's part id can.
+    return this.#db
+      .exec(`SELECT * FROM FixWrite WHERE substr(plan_part_id, 1, ?) = ? ORDER BY written_at, rowid`, featureId.length + 2, `${featureId}/v`)
+      .map((row: Record<string, SqlValue>) => ({
+        partId: row["plan_part_id"] as string,
+        revision: Number(row["revision"]),
+        targetRepo: row["target_repo"] as string,
+        commitSha: row["commit_sha"] as string,
+        parent: row["parent"] as string,
+        recordId: row["record_id"] as string,
+        writtenAt: new Date(Number(row["written_at"])).toISOString(),
+      }));
   }
 
   #withParts(plan: Plan): Plan {

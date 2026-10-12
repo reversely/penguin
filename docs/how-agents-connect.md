@@ -24,7 +24,7 @@ flowchart LR
 
 Each person adds Penguin to their agent as an MCP server: one server address and that person's own
 MCP token. Configuration for both products is in [mcp-setup.md](mcp-setup.md). The agent then has
-eight tools:
+these tools, among others:
 
 | Tool | What the agent uses it for |
 |---|---|
@@ -37,6 +37,8 @@ eight tools:
 | `feature_token` | Gets a fresh write token on its feature's fork once no overlap lock holds its start |
 | `declare_area` | Replaces its feature's declared scopes, paths and contracts |
 | `submit_review` | Submits the review form for its own scope on another feature's change; the answer keeps it pending for the check runner or lists every reason it is refused |
+| `fix_token` | Gets a short-lived write token on an affected feature's fork for one approved part of its own feature's merge plan |
+| `report_fix_write` | Reports the fix commit it pushed with that token; Penguin keeps it only when it is the approved patch |
 
 Penguin answers only when the agent calls a tool. The token decides whose identities the session may
 use: Sam's token cannot register as `@jun/reports`.

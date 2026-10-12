@@ -101,6 +101,20 @@ import {
 import { PlanFactsStore, type PlanFactsReportOutcome } from "./plan-facts.ts";
 import type { PlanKeeper } from "./plan-store.ts";
 import type { GitObjectReader } from "./repo-diff.ts";
+import {
+  agentFixGrant,
+  agentFixReport,
+  claimRunnerWrites,
+  FixGrantStore,
+  queueRunnerWrite,
+  runnerFixReport,
+  type FixGrantOutcome,
+  type FixPartInput,
+  type FixWriteDeps,
+  type FixWriteOutcome,
+  type ForkReader,
+} from "./fix-write.ts";
+import { coverMidway, handOver, PlanCoverageStore } from "./plan-coverage.ts";
 import { parseBreakLimit, proposePlan, type ProposePlanInput, type ProposePlanOutcome } from "./propose-plan.ts";
 import { claimToolRuns, recordToolResult, type ToolReportOutcome, type ToolRunClaim } from "./agent-tool-runner.ts";
 import {
@@ -294,7 +308,39 @@ export {
   type StoredFeatureRecord,
   type UnsignedFeatureRecord,
 } from "./feature-store.ts";
-export { PLAN_STORE_SCHEMA, PlanStore, type PartVersion, type Plan, type PlanKeeper, type PlanPart } from "./plan-store.ts";
+export { PLAN_STORE_SCHEMA, PlanStore, type FixWrite, type PartVersion, type Plan, type PlanKeeper, type PlanPart } from "./plan-store.ts";
+export {
+  agentFixGrant,
+  agentFixReport,
+  claimRunnerWrites,
+  commitProblem,
+  FIX_GRANT_SCHEMA,
+  FIX_WRITE_LEASE_MS,
+  FixGrantStore,
+  queueRunnerWrite,
+  runnerFixReport,
+  type FixGrant,
+  type FixGrantOutcome,
+  type FixPartInput,
+  type FixRejection,
+  type FixWriteDeps,
+  type FixWriteOutcome,
+  type ForkReader,
+  type ForkReading,
+} from "./fix-write.ts";
+export {
+  coverMidway,
+  handOver,
+  meeting,
+  PLAN_COVERAGE_SCHEMA,
+  planArea,
+  PlanCoverageStore,
+  type AnnouncedPlan,
+  type CoverageDeps,
+  type HandedPlan,
+  type JoinedPlan,
+  type PlanMeeting,
+} from "./plan-coverage.ts";
 export {
   announcePlan,
   approvePlanPart,
@@ -620,6 +666,8 @@ export class ProjectAgent extends Agent {
   #overlapRows: OverlapStore | undefined;
   #planFacts: PlanFactsStore | undefined;
   #planRoutes: PlanRouteStore | undefined;
+  #fixGrants: FixGrantStore | undefined;
+  #planCoverage: PlanCoverageStore | undefined;
   /** Plan proposals run one at a time, so no two take the same plan version or record sequence number. */
   #planSteps: Promise<unknown> = Promise.resolve();
   /** Overlap checks and approvals run one at a time, so no two race for a record's sequence number. */
@@ -1448,6 +1496,16 @@ export class ProjectAgent extends Agent {
         const delivery = this.#sessionStore().checkpoint(caller, session);
         return delivery.status === "ok" ? delivery : undefined;
       },
+      // A running feature that starts touching an announced plan's area gains a part in it (plan-coverage.ts).
+      joinPlans: (feature: Feature) =>
+        this.#planStep(async () => {
+          const approval = this.#planApprovalDeps(repos);
+          return coverMidway(
+            { ...approval, coverage: this.#planCoverageStore() },
+            this.#featureStore().get(feature.id) ?? feature,
+            await this.#scopeMap(repos),
+          );
+        }),
     };
     return reportFeatureCheckpoint(deps, owner, sessionId, featureId, sha);
   }
@@ -1511,6 +1569,8 @@ export class ProjectAgent extends Agent {
         // The area as stored when the check runs, which a later declaration may have replaced.
         this.#lockStep(() => checkOverlap(overlapDeps, this.#featureStore().get(feature.id) ?? feature)),
       overlapStatus: (featureId) => this.#overlapStore().status(featureId),
+      // A late starter receives every announced plan its area meets (plan-coverage.ts).
+      handOver: async (feature) => handOver(this.#planCoverageStore(), feature, await this.#scopeMap(repos)),
     };
   }
 
@@ -1706,8 +1766,12 @@ export class ProjectAgent extends Agent {
             this.#inboxStore().planReturned(personId, featureId);
             sendToOwner(this.getConnections<{ owner?: string }>(), personId, inboxChangedMessage());
           },
-          // Every author hears of their part at once (plan-approval.ts).
-          announce: (plan, scopeMap) => announcePlan(this.#planApprovalDeps(repos), plan, scopeMap),
+          // Every author hears of their part at once (plan-approval.ts); the plan is then announced to
+          // later features that meet its area (plan-coverage.ts).
+          announce: (plan, scopeMap) => {
+            announcePlan(this.#planApprovalDeps(repos), plan, scopeMap);
+            this.#planCoverageStore().announce(plan, this.#featureStore().list(), scopeMap);
+          },
         },
         owner,
         sessionId,
@@ -1791,7 +1855,57 @@ export class ProjectAgent extends Agent {
       sign: async (record) => signFeatureRecord(record, (await this.#loadServiceKey()).privateKey),
       roundLimit: this.#roundLimit(),
       notify: (personId) => sendToOwner(this.getConnections<{ owner?: string }>(), personId, inboxChangedMessage()),
+      // An approved mechanical part on a running feature waits for the check runner to write it (fix-write.ts).
+      approved: (featureId, plan, part) => queueRunnerWrite(this.#fixGrantStore(), featureId, plan, part),
     };
+  }
+
+  /**
+   * `fix_token`: a write on the affected fork for the originating agent's session, for the current
+   * approved revision of a behavioural part (fix-write.ts). The Worker mints the token on the grant's
+   * repo alone, so its plaintext never reaches this agent. Runs after the plan steps before it.
+   */
+  fixWriteGrant(owner: string, sessionId: string, input: FixPartInput, repos: ProjectRepos): Promise<FixGrantOutcome> {
+    return this.#planStep(() => agentFixGrant(this.#fixWriteDeps(repos), (caller, session) => this.sessionHeartbeat(caller, session), owner, sessionId, input));
+  }
+
+  /** `report_fix_write`: checks the commit the originating agent pushed and keeps it as a signed record. */
+  reportFixWrite(owner: string, sessionId: string, input: FixPartInput & { readonly commit: unknown }, repos: ProjectRepos): Promise<FixWriteOutcome> {
+    return this.#planStep(() => agentFixReport(this.#fixWriteDeps(repos), (caller, session) => this.sessionHeartbeat(caller, session), owner, sessionId, input));
+  }
+
+  /** The check runner's claim of the mechanical parts' writes; refused unless `caller` holds the runner role. */
+  claimFixWrites(caller: BridgeCaller, repos: ProjectRepos): ReturnType<typeof claimRunnerWrites> {
+    return this.#planStep(() => claimRunnerWrites(this.#fixWriteDeps(repos), caller));
+  }
+
+  /** The check runner reports the commit of write `writeId`, which it claimed. */
+  reportRunnerFixWrite(caller: BridgeCaller, writeId: number, body: unknown, repos: ProjectRepos): Promise<FixWriteOutcome> {
+    return this.#planStep(() => runnerFixReport(this.#fixWriteDeps(repos), caller, writeId, body));
+  }
+
+  #fixWriteDeps(repos: ProjectRepos): FixWriteDeps {
+    const approval = this.#planApprovalDeps(repos);
+    return {
+      features: approval.features,
+      routes: approval.routes,
+      keeper: approval.keeper,
+      sign: approval.sign,
+      notify: approval.notify,
+      grants: this.#fixGrantStore(),
+      scopeMap: () => this.#scopeMap(repos),
+      readFork: (repo, use) => withRepo(this.env.ARTIFACTS, repo, (opened) => use(opened as unknown as ForkReader)),
+    };
+  }
+
+  #fixGrantStore(): FixGrantStore {
+    this.#fixGrants ??= new FixGrantStore(this.#database());
+    return this.#fixGrants;
+  }
+
+  #planCoverageStore(): PlanCoverageStore {
+    this.#planCoverage ??= new PlanCoverageStore(this.#database());
+    return this.#planCoverage;
   }
 
   #roundLimit(): number | undefined {
@@ -1846,6 +1960,9 @@ export class ProjectAgent extends Agent {
       keepPlan: async (plan) => (await named).keepPlan(plan),
       latestPlan: async (id) => (await named).latestPlan(id),
       replacePart: async (id, part, expected) => (await named).replacePart(id, part, expected),
+      addPart: async (id, planId, part) => (await named).addPart(id, planId, part),
+      keepFixWrite: async (write) => (await named).keepFixWrite(write),
+      fixWrites: async (id) => (await named).fixWrites(id),
     };
   }
 

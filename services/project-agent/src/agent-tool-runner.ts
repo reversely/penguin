@@ -7,8 +7,9 @@
 // The report attaches the runner's result to the request. The first report wins. The result reaches
 // the requesting session at its next safe checkpoint (AgentToolStore.deliver).
 //
-// No bridge holds write on a feature's fork until a merge plan grants one (#91), so an `apply_fix`
-// result names a commit kept as a local ref on the runner and is never pushed.
+// The runner holds write on a feature's fork only for an approved mechanical plan part, minted for
+// that part alone (fix-write.ts), so an `apply_fix` result names a commit kept as a local ref on the
+// runner and is never pushed.
 
 import {
   FIX_COMMAND_IDS,

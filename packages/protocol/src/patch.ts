@@ -110,3 +110,49 @@ export function patchMismatch(file: PlanFileDiff, before: readonly string[] | nu
   }
   return null;
 }
+
+export type PatchApply = { readonly ok: true; readonly text: string | null } | { readonly ok: false; readonly message: string };
+
+/**
+ * The file's text once its hunks are applied to `before`, its text at the patch's base (null when the
+ * file is absent there), or null for a deletion. Every hunk must match at its stated line, as
+ * `patchMismatch` checks; nothing is applied with an offset or fuzz. Lines split at "\n", so a file's
+ * own line endings and its final newline are kept; an added file ends with a newline.
+ *
+ * The fix writer (the originating agent's bridge or the check runner) commits this text. Penguin
+ * compares the pushed commit with it, so both sides compute the approved fix the same way.
+ */
+export function applyPatchFile(file: PlanFileDiff, before: string | null): PatchApply {
+  if (file.status === "added") {
+    if (before !== null) return { ok: false, message: `${file.path} already exists at the base` };
+    const added = file.hunks.flatMap((hunk) => hunk.lines.filter((line) => line.startsWith("+")).map((line) => line.slice(1)));
+    return { ok: true, text: `${added.join("\n")}\n` };
+  }
+  if (before === null) return { ok: false, message: `${file.path} is not in the fork at the base` };
+  const endsWithNewline = before.endsWith("\n");
+  const lines = before.length === 0 ? [] : (endsWithNewline ? before.slice(0, -1) : before).split("\n");
+  // A line of a file with CRLF endings, read here as "text\r", matches the patch's "text".
+  const mismatch = patchMismatch(file, lines.map((line) => line.replace(/\r$/u, "")));
+  if (mismatch !== null) return { ok: false, message: mismatch };
+  if (file.status === "deleted") return { ok: true, text: null };
+  // A file whose every line ends in CRLF gets CRLF on the lines the patch adds too.
+  const end = lines.length > 0 && lines.every((line) => line.endsWith("\r")) ? "\r" : "";
+  const out: string[] = [];
+  let cursor = 0;
+  for (const hunk of file.hunks) {
+    const start = hunk.oldLines === 0 ? hunk.oldStart : hunk.oldStart - 1;
+    if (start < cursor) return { ok: false, message: `${file.path}: the hunk at line ${hunk.oldStart} overlaps the one before it` };
+    out.push(...lines.slice(cursor, start));
+    cursor = start;
+    for (const line of hunk.lines) {
+      if (line.startsWith("+")) {
+        out.push(`${line.slice(1)}${end}`);
+        continue;
+      }
+      if (line.startsWith(" ")) out.push(lines[cursor] as string);
+      cursor += 1;
+    }
+  }
+  out.push(...lines.slice(cursor));
+  return { ok: true, text: out.length === 0 ? "" : `${out.join("\n")}${endsWithNewline ? "\n" : ""}` };
+}

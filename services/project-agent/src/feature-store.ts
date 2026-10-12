@@ -66,7 +66,9 @@ export interface Feature {
  * an overlap check and an approval of a start, written by overlap-lock.ts, a merge plan and a plan
  * returned over the break limit, written by propose-plan.ts, and an author's approval of a part, a
  * requested change, the originating agent's revision and a part past the round limit, written by
- * plan-approval.ts.
+ * plan-approval.ts. A fix written into an affected fork, a pushed fix Penguin refused and a part sent
+ * back because its fork head moved are written by fix-write.ts. A part added for a feature that started
+ * touching the plan's area is written by plan-coverage.ts.
  */
 export type FeatureRecordType =
   | "open_feature"
@@ -79,7 +81,11 @@ export type FeatureRecordType =
   | "approve_plan_part"
   | "request_plan_change"
   | "revise_plan_part"
-  | "plan_round_limit";
+  | "plan_round_limit"
+  | "fix_write"
+  | "fix_write_refused"
+  | "plan_part_rebase"
+  | "plan_part_added";
 
 export interface FeatureRecord {
   readonly schema_version: 1;

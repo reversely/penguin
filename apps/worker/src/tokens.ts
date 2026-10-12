@@ -4,7 +4,10 @@
  * A bridge may hold `write` on its owner's fork and on the issues repo, and `read` on every other
  * project repo, a feature's fork included. A runner bridge also holds `write` on Huddle repos. A
  * feature's write token comes only from its own agent sessions (features.ts). Artifacts tokens only separate
- * read from write per repo, so the repo boundary is the push permission boundary.
+ * read from write per repo, so the repo boundary is the push permission boundary. A write token on
+ * another person's feature fork is minted only for one approved plan part (fix-write.ts in the
+ * ProjectAgent): to the originating agent through `fix_token`, or to the check runner's claim of a
+ * mechanical part, for PENGUIN_FIX_TOKEN_TTL_MINUTES.
  *
  * Token plaintext passes through this module into the response body only; it is never logged.
  */
@@ -93,6 +96,24 @@ export function parseFeatureTokenTtl(minutes: string | undefined): number | unde
   if (minutes === undefined || !/^\d{1,6}$/.test(minutes)) return undefined;
   const ttl = Number(minutes) * 60;
   return ttl >= MIN_TOKEN_TTL_SECONDS && ttl <= MAX_TOKEN_TTL_SECONDS ? ttl : undefined;
+}
+
+/** A fix writer's token lasts this many minutes unless PENGUIN_FIX_TOKEN_TTL_MINUTES says otherwise. */
+export const DEFAULT_FIX_TOKEN_TTL_MINUTES = 10;
+/** PRD 0.4 section 8: a token on another person's fork lasts minutes, so at most an hour. */
+export const MAX_FIX_TOKEN_TTL_MINUTES = 60;
+
+/**
+ * Parses PENGUIN_FIX_TOKEN_TTL_MINUTES, the lifetime of a write token on an affected feature's fork for
+ * one approved plan part, into seconds. Unset is DEFAULT_FIX_TOKEN_TTL_MINUTES; a whole number of
+ * minutes from 1 to MAX_FIX_TOKEN_TTL_MINUTES is taken; anything else is undefined, so no fix token is
+ * minted.
+ */
+export function parseFixTokenTtl(minutes: string | undefined): number | undefined {
+  if (minutes === undefined || minutes === "") return DEFAULT_FIX_TOKEN_TTL_MINUTES * 60;
+  if (!/^[1-9][0-9]?$/u.test(minutes)) return undefined;
+  const value = Number(minutes);
+  return value <= MAX_FIX_TOKEN_TTL_MINUTES ? value * 60 : undefined;
 }
 
 /** The subset of the binding's `ArtifactsRepo` capability that minting calls. */

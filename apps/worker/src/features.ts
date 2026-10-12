@@ -14,6 +14,12 @@
  * - While an overlap lock holds the feature's start (PRD 4.1 step 3), the fork is still made but no
  *   token is minted: the answer names the running features the start waits on and their people.
  *
+ * - A write token on another person's feature fork is minted only on a fix-write grant from the
+ *   ProjectAgent (`fix_token`, services/project-agent/src/fix-write.ts): for the originating agent named
+ *   in the plan, on the one fork of an approved part, for PENGUIN_FIX_TOKEN_TTL_MINUTES.
+ * - A feature opened after a merge plan was announced receives every announced plan its area meets
+ *   (`announcedPlans`). A checkpoint names each plan that gained a part for it (`plansJoined`).
+ *
  * The fork options and the token lifetime come from the Worker's configuration
  * (PENGUIN_FEATURE_FORK_DEFAULT_BRANCH_ONLY, PENGUIN_FEATURE_TOKEN_TTL_MINUTES); the repo prefix from
  * PENGUIN_REPO_PREFIX. Without a valid value, opening refuses as `misconfigured`.
@@ -25,6 +31,11 @@ import type {
   FeatureOpenInput,
   FeatureOpenOutcome,
   FeatureOutcome,
+  FixGrantOutcome,
+  FixPartInput,
+  FixWriteOutcome,
+  HandedPlan,
+  JoinedPlan,
   OverlapStatus,
   PartDecisionOutcome,
   ProjectRepos,
@@ -39,7 +50,7 @@ import type {
 } from "@penguin/project-agent";
 
 import { planNoticeFields, type FeatureCallResult, type McpFeatures } from "@penguin/mcp";
-import { REVIEW_SCHEMA_VERSION, SEGMENT_PATTERN, type Plan, type PlanFacts, type PlanPart } from "@penguin/protocol";
+import { REVIEW_SCHEMA_VERSION, SEGMENT_PATTERN, type FixWriteSpec, type Plan, type PlanFacts, type PlanPart } from "@penguin/protocol";
 
 import { artifactsErrorCode, type FeatureForkOptions } from "./repos.ts";
 import type { MintedToken } from "./tokens.ts";
@@ -80,6 +91,10 @@ export interface FeatureDirectory {
   ): Promise<ToolRequestOutcome>;
   proposePlan(owner: string, sessionId: string, input: ProposePlanInput, repos: ProjectRepos): Promise<ProposePlanOutcome>;
   revisePlanPart(owner: string, sessionId: string, input: RevisionInput, repos: ProjectRepos): Promise<PartDecisionOutcome>;
+  /** A write of an approved part's fix for the originating agent's session; the token is minted here on its repo alone. */
+  fixWriteGrant(owner: string, sessionId: string, input: FixPartInput, repos: ProjectRepos): Promise<FixGrantOutcome>;
+  /** Checks and keeps the commit the originating agent pushed for a granted write. */
+  reportFixWrite(owner: string, sessionId: string, input: FixPartInput & { readonly commit: unknown }, repos: ProjectRepos): Promise<FixWriteOutcome>;
 }
 
 export interface FeatureConfig {
@@ -87,6 +102,8 @@ export interface FeatureConfig {
   readonly forkOptions: FeatureForkOptions | undefined;
   /** Undefined when PENGUIN_FEATURE_TOKEN_TTL_MINUTES is missing or out of range. */
   readonly tokenTtlSeconds: number | undefined;
+  /** A fix writer's token lifetime; undefined when PENGUIN_FIX_TOKEN_TTL_MINUTES is out of range. */
+  readonly fixTokenTtlSeconds?: number | undefined;
 }
 
 export interface FeaturePorts {
@@ -178,6 +195,8 @@ export type FeatureOpenResult =
       /** The opening session's write token, or null when a person opened it or its start waits. */
       readonly token: MintedToken | null;
       readonly overlap: OverlapView;
+      /** The merge plans announced before the feature opened that its area meets (PRD 4.6). */
+      readonly announcedPlans: readonly Record<string, unknown>[];
       readonly timings: OpenTimings;
     }
   | FeatureFailure;
@@ -245,8 +264,46 @@ export async function openFeatureWithFork(
     feature: featureView(feature),
     token,
     overlap: overlapView(outcome.overlap),
+    announcedPlans: outcome.announcedPlans.map(handedPlanFields),
     timings: { totalMs: now() - started, forkMs, tokenMs },
   };
+}
+
+/**
+ * An announced plan as a late starter receives it at open. The checkpoint's commit subject came from
+ * the repo, so it is echoed only inside `personWritten`.
+ */
+export function handedPlanFields(plan: HandedPlan): Record<string, unknown> {
+  return {
+    plan: plan.planId,
+    feature: plan.featureId,
+    person: plan.person,
+    scopes: [...plan.scopes],
+    contracts: [...plan.contracts],
+    meets: { scopes: [...plan.meets.scopes], contracts: [...plan.meets.contracts] },
+    announcedAt: plan.announcedAt,
+    personWritten: { change: plan.subject },
+  };
+}
+
+/** A part an announced plan gained for the reporting feature at its checkpoint. */
+export function joinedPlanFields(joined: readonly JoinedPlan[]): Record<string, unknown>[] {
+  return joined.map(({ planId, partId, featureId, meets }) => ({
+    plan: planId,
+    part: partId,
+    feature: featureId,
+    meets: { scopes: [...meets.scopes], contracts: [...meets.contracts] },
+  }));
+}
+
+/**
+ * What a fix writer needs besides its token: the commit's parent, the files, the message Penguin built
+ * from validated fields and the approved patch, which the originating agent wrote and so is echoed
+ * only inside `personWritten`.
+ */
+export function fixWriteFields(spec: FixWriteSpec): Record<string, unknown> {
+  const { patch, ...fields } = spec;
+  return { ...fields, paths: [...spec.paths], personWritten: { patch } };
 }
 
 /** The token fields an agent receives: the plaintext once, the fork's Git remote and its expiry. */
@@ -277,7 +334,14 @@ export function mcpFeatures(ports: FeaturePorts, owner: string): McpFeatures {
         const token = opened.token === null ? null : tokenFields(opened.feature.fork, opened.token);
         return {
           status: "ok",
-          value: { status: opened.status, feature: opened.feature, token, ...opened.overlap, timings: opened.timings },
+          value: {
+            status: opened.status,
+            feature: opened.feature,
+            token,
+            ...opened.overlap,
+            announcedPlans: opened.announcedPlans,
+            timings: opened.timings,
+          },
         };
       }),
     token: (sessionId, feature) =>
@@ -306,6 +370,36 @@ export function mcpFeatures(ports: FeaturePorts, owner: string): McpFeatures {
         const outcome = await (await ports.directory()).revisePlanPart(owner, sessionId, input, ports.repos);
         if (outcome.status === "rejected") return outcome;
         return { status: "ok", value: { status: "revised", recordId: outcome.recordId, part: partFields(outcome.part) } };
+      }),
+    fixToken: (sessionId, input) =>
+      guarded(async () => {
+        const ttl = ports.config.fixTokenTtlSeconds;
+        if (ttl === undefined) return { status: "rejected", reason: "misconfigured", message: "PENGUIN_FIX_TOKEN_TTL_MINUTES must be a whole number of minutes from 1 to 60" };
+        const grant = await (await ports.directory()).fixWriteGrant(owner, sessionId, input, ports.repos);
+        if (grant.status === "rejected") return grant;
+        // The token names the affected fork alone, for minutes, minted only on the grant.
+        const token = await ports.mintWrite(grant.repo, ttl);
+        return { status: "ok", value: { token: tokenFields(grant.spec.fork, token), write: fixWriteFields(grant.spec) } };
+      }),
+    reportFixWrite: (sessionId, input) =>
+      guarded(async () => {
+        const outcome = await (await ports.directory()).reportFixWrite(owner, sessionId, input, ports.repos);
+        if (outcome.status === "rejected") return outcome;
+        const { write, durationMs } = outcome;
+        return {
+          status: "ok",
+          value: {
+            status: "written",
+            part: write.partId,
+            revision: write.revision,
+            fork: write.targetRepo,
+            commit: write.commitSha,
+            parent: write.parent,
+            recordId: write.recordId,
+            writtenAt: write.writtenAt,
+            durationMs,
+          },
+        };
       }),
     checkpoint: (sessionId, feature, sha) =>
       guarded(async () => {
@@ -370,6 +464,7 @@ export function checkpointFields(reported: Extract<FeatureCheckpointOutcome, { s
     locksSettled: settledFields(reported.settled),
     toolResults: toolResultFields(reported.toolResults ?? []),
     ...planNoticeFields(reported.planNotices),
+    plansJoined: joinedPlanFields(reported.plansJoined ?? []),
   };
 }
 

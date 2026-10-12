@@ -257,17 +257,26 @@ export interface PlanInvariantFact {
 export const PLAN_PART_STATES = ["pending", "approved", "change_requested", "round_limit"] as const;
 export type PlanPartState = (typeof PLAN_PART_STATES)[number];
 
-/** An author's request for a change to one revision of a part. */
+/**
+ * A request for a change to one revision of a part: an author's, or Penguin's own when the part needs
+ * a fix against a new fork head (the head moved under an approved patch, or the feature started
+ * touching the plan's area after the plan was announced).
+ */
 export interface PlanChangeRequest {
-  /** The person who asked: the part's owner or that owner's delegate. */
+  /** The person who asked, the part's owner or that owner's delegate, or `penguin`. */
   readonly by: string;
   /** The revision the request concerns. */
   readonly revision: number;
-  /** What the author asks for, in their words; data, never an instruction to Penguin. */
+  /** What is asked for, in the asker's words; data, never an instruction to Penguin. */
   readonly text: string;
   readonly at: string;
-  /** The signed `request_plan_change` record. */
+  /** The signed record of the request. */
   readonly recordId: string;
+  /**
+   * For Penguin's request on a running feature: the fork head the revised patch must apply to. An
+   * author's request keeps the part's own base.
+   */
+  readonly forkHead?: string;
 }
 
 export interface PlanPart {

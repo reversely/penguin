@@ -211,6 +211,24 @@ originating feature hears each decision under `planDecisions`. It answers a `cha
 with `revise_plan_part`. A session that submitted a review hears the check runner's verdict under
 `reviewResults`.
 
+Once an author approves a behavioural part, the originating agent writes its fix into the author's
+feature fork ([design.md](design.md#steps-1-and-3-in-the-build)):
+
+| Tool | Input | Answer |
+|---|---|---|
+| `fix_token` | `feature`, `part`, `revision` | `token`: a `write` token on the affected fork alone, with its remote and expiry; `write`: the parent to fast-forward, the paths, the commit message and the approved patch inside `personWritten` |
+| `report_fix_write` | `feature`, `part`, `revision`, `commit` | `written` with the signed record's id, or the reason Penguin refused the commit |
+
+Only the identity that proposed the plan gets the token, only for the part's current approved
+revision. `penguin-bridge fix-write` makes and pushes the commit from the `fix_token` answer on stdin
+([bridge-and-runner.md](bridge-and-runner.md#fix-writes)). A part that went back because its fork head
+moved arrives under `planDecisions` as `change_requested`; its `changeRequest.forkHead` names the head
+the revision applies to.
+
+A feature opened after a merge plan was announced gets the plan in `open_feature`'s `announcedPlans`
+when its area meets the plan's. A running feature whose checkpoint grows its area into an announced
+plan's gets a part in that plan; `report_checkpoint` lists it under `plansJoined`.
+
 ## Agent tools for a feature
 
 A session that works on a feature calls four tools for facts and deterministic fixes
@@ -239,8 +257,8 @@ delivered results under `toolResults`, newest first. Each entry carries the full
 | `check` | `checks`: every block check; `decisions`: one next step from the ladder per failing check |
 | `apply_fix` | `fix`: the fix's run with the files it changed; `fixRef` and `pushed` |
 
-`apply_fix` leaves the feature's fork as it is. The check runner holds no write token on a feature's
-fork until an approved merge plan part grants one. The fix commit stays on the check runner. The
+`apply_fix` leaves the feature's fork as it is. The check runner holds a write token on a feature's
+fork only for an approved merge plan part. The fix commit stays on the check runner. The
 result carries `pushed: false` with the files the fix changed, so the agent makes the same change in
 its worktree.
 

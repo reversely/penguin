@@ -187,6 +187,11 @@ export interface PlanApprovalDeps {
   readonly roundLimit: number | undefined;
   /** Tells a person's open dashboards that their inbox changed. */
   readonly notify: (personId: string) => void;
+  /**
+   * Called once a revision is approved, after its record is kept: queues the check runner's write of
+   * a mechanical part on a running feature (fix-write.ts). Absent, nothing is queued.
+   */
+  readonly approved?: (featureId: string, plan: Plan, part: PlanPart) => void;
   readonly now?: () => number;
 }
 
@@ -354,6 +359,7 @@ export async function approvePlanPart(deps: PlanApprovalDeps, caller: string, in
   deps.routes.set(featureId, next);
   deps.inbox.planPartSettled(part.owner, part.partId);
   deps.notify(part.owner);
+  deps.approved?.(featureId, plan, next);
   return { status: "ok", part: next, recordId: record.record_id, roundLimitRecordId: null };
 }
 
@@ -457,7 +463,8 @@ export async function revisePlanPart(deps: ReviseDeps, caller: string, sessionId
   const place: AffectedPlace = {
     place: part.place,
     owner: part.owner,
-    head: part.place.kind === "feature" ? part.diff.base : null,
+    // Penguin's own request names the fork head the revised patch applies to; an author's keeps the base.
+    head: part.place.kind === "feature" ? (part.changeRequest?.forkHead ?? part.diff.base) : null,
     scopes: new Set(part.scopes),
     callers: [...part.callers],
     breaks: [...part.breaks],

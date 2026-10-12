@@ -6,8 +6,9 @@
 // `impact` carries the impact graph and contract diff of the checkpoint against its baseline, with
 // each other running feature's fork. `check` carries the block checks of the checkpoint merged onto
 // main and onto each of those forks, with one ladder decision per failing check. `apply_fix` carries
-// the fix's tool run. Until a merge plan grants a write token on the fork (#91), the fix commit stays
-// a local ref on the runner and is never pushed: `pushed` is always false.
+// the fix's tool run. The runner gets a write token on a feature's fork only for an approved
+// mechanical plan part (fix-write.ts), so an `apply_fix` commit stays a local ref on the runner and is
+// never pushed: `pushed` is always false.
 
 import { BLOCK_CHECK_LIMITS, BLOCK_CHECK_NAMES, BLOCK_CHECK_SCHEMA, type BlockCheck } from "./block-check.ts";
 import { IMPACT_REPORT_SCHEMA, type ImpactReport } from "./impact.ts";
@@ -45,7 +46,7 @@ export interface AgentToolResult {
   readonly fix: ToolRunRecord | null;
   /** The runner's ref that keeps the fix commit, such as `refs/penguin/fixes/<commit>`; null without one. */
   readonly fixRef: string | null;
-  /** Always false until a plan grants a write token on the fork (#91). */
+  /** Always false: only an approved plan part's fix is pushed, through fix-write.ts. */
   readonly pushed: false;
   readonly durationMs: number;
 }

@@ -7,7 +7,7 @@ import { parseOwnerMap } from "./github-oauth.ts";
 import { consumePushEvents } from "./push-events.ts";
 import { featureView, mcpFeatures, openFeatureWithFork, type FeaturePorts } from "./features.ts";
 import { forkFeatureRepo, forkHuddleRepo, parseFeatureForkOptions, RepoNames, setUpProject } from "./repos.ts";
-import { artifactsRepoName, mintRepoToken, parseFeatureTokenTtl, parseProjectRepo, parseTokenTtl } from "./tokens.ts";
+import { artifactsRepoName, mintRepoToken, parseFeatureTokenTtl, parseFixTokenTtl, parseProjectRepo, parseTokenTtl } from "./tokens.ts";
 
 export { HuddleAgent } from "@penguin/huddle-agent";
 export { ProjectAgent } from "@penguin/project-agent";
@@ -35,6 +35,8 @@ type WorkerEnv = Env & {
   PENGUIN_FEATURE_FORK_DEFAULT_BRANCH_ONLY?: string;
   /** Lifetime in minutes of a feature agent's write token on the feature's fork. */
   PENGUIN_FEATURE_TOKEN_TTL_MINUTES?: string;
+  /** Lifetime in minutes of a write token on an affected fork for one approved plan part; 10 when unset. */
+  PENGUIN_FIX_TOKEN_TTL_MINUTES?: string;
 };
 
 /** Opening features: the ProjectAgent's records, the fork through the binding and token minting. */
@@ -47,6 +49,7 @@ function featurePorts(env: WorkerEnv, names: RepoNames): FeaturePorts {
     config: {
       forkOptions: parseFeatureForkOptions(env.PENGUIN_FEATURE_FORK_DEFAULT_BRANCH_ONLY),
       tokenTtlSeconds: parseFeatureTokenTtl(env.PENGUIN_FEATURE_TOKEN_TTL_MINUTES),
+      fixTokenTtlSeconds: parseFixTokenTtl(env.PENGUIN_FIX_TOKEN_TTL_MINUTES),
     },
   };
 }
@@ -67,6 +70,7 @@ export default {
         localDevUnauthenticated: env.PENGUIN_LOCAL_DEV_UNAUTHENTICATED,
         deployerToken: env.PENGUIN_DEPLOYER_TOKEN,
         tokenTtlSeconds: parseTokenTtl(env.PENGUIN_TOKEN_TTL_SECONDS),
+        fixTokenTtlSeconds: parseFixTokenTtl(env.PENGUIN_FIX_TOKEN_TTL_MINUTES),
         dashboard: {
           githubClientId: env.GITHUB_OAUTH_CLIENT_ID,
           githubClientSecret: env.GITHUB_OAUTH_CLIENT_SECRET,

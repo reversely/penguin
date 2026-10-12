@@ -284,6 +284,55 @@ The procedure moves conflict handling to the start of the work. Each step below 
 3. A running feature that starts touching the plan's area midway shows up at its next checkpoint.
    The plan gains a fix for it. Its author approves that fix the same way.
 
+#### Steps 1 and 3 in the build
+
+- **Who writes.** The originating agent named in the plan (`Plan.proposedBy`) writes a behavioural
+  part. Its session on the originating feature calls `fix_token` with the part and the revision. A
+  mechanical part is Penguin's codemod, so the check runner writes it: the approval queues the write
+  and the runner claims it at `POST /fix-writes/claim`
+  ([bridge-and-runner.md](bridge-and-runner.md#fix-writes)). A part for code on main gets no token on
+  another fork. Its fix is a commit in the originating fork already
+  (`services/project-agent/src/fix-write.ts`).
+- **The token.** The Worker mints a `write` token on the affected feature's fork alone, for
+  `PENGUIN_FIX_TOKEN_TTL_MINUTES` (default 10, at most 60). It mints one only on a grant from the
+  ProjectAgent. A grant needs the current revision of a part in the feature's newest plan, approved
+  and not yet written. Penguin refuses an unapproved part, another revision, another session or
+  identity, a part already written and a mechanical part asked for by an agent. The token's
+  plaintext goes to the writer once. Penguin keeps no copy.
+- **The paths.** Before any grant, Penguin parses the approved patch again. Every file it writes must
+  lie inside the part's scopes and in the part's approved diff. A patch that writes another path gets
+  no token.
+- **The fork head.** The commit must fast-forward the affected fork's `main`. When the head is still
+  the patch's base, the base is the parent. When the author's own agent moved the head, Penguin
+  applies the patch to the new head's files. If every hunk still matches at its line, the new head is
+  the parent. If a hunk does not match, the part goes back to the originating agent as
+  `change_requested` with Penguin's request naming the new head. That request counts no round.
+  `revise_plan_part` then takes a patch against the new head. The author approves the revision again.
+  A signed `plan_part_rebase` record states the move.
+- **The commit.** The grant names the parent, the files, the approved patch and the commit message.
+  Penguin builds the message from validated fields only: the part, the revision, the approver, the
+  fix's reference and the writer's handle (`fixCommitMessage`, `packages/protocol`).
+  `penguin-bridge fix-write` makes the commit from the `fix_token` answer without a checkout. It
+  applies the patch with `applyPatchFile`, checks that the commit changes exactly the patch's files
+  and pushes it with no force. A fork whose head moved refuses the push.
+- **The record.** The writer reports the commit: the agent with `report_fix_write`, the runner at
+  `POST /fix-writes/<write id>`. Penguin reads the commit through the Artifacts binding. It keeps the
+  write only when the commit has the granted head as its one parent, carries the built message,
+  changes exactly the patch's files with each file equal to the patch applied to the parent and sits
+  on the fork's `main`. A kept write is a signed `fix_write` record on the originating feature and a
+  `FixWrite(plan_part_id, target_repo, commit_sha)` row in the feature's plan store. A refused commit
+  gets a signed `fix_write_refused` record.
+- **Midway.** Each announced plan keeps its area: the scopes whose symbols its contract diff changes,
+  the scopes of its parts and the contracts it changes. It also keeps which running features it
+  accounts for: those with a part and those whose area already met it when it was announced
+  (`services/project-agent/src/plan-coverage.ts`). At each feature checkpoint Penguin compares the
+  feature's grown area with every announced plan that does not account for it. A plan the area now
+  meets gains a part for the feature, owned by the feature's person, with a signed `plan_part_added`
+  record. The part starts as `change_requested` with Penguin's request for a patch against the
+  feature's checkpoint. The originating agent answers it with `revise_plan_part`. The feature's
+  person approves the revision. The fix is then written as above. The checkpoint's answer lists the
+  part under `plansJoined`. The originating feature's sessions hear of it under `planDecisions`.
+
 ### Block promotion
 
 1. When the originating feature is ready, Penguin checks the block. It merges the originating fork
@@ -302,6 +351,14 @@ The procedure moves conflict handling to the start of the work. Each step below 
 A feature opened after a plan was announced receives the plan at open. Its agent writes against the
 planned change from the start. The agent resolves any remaining conflict itself before its own block
 reaches main.
+
+#### Late starters in the build
+
+`open_feature` and `POST /api/features` answer a newly opened feature with `announcedPlans`: every
+announced plan of another feature whose area the declared area meets. Each entry names the plan, its
+feature and person, its scopes and contracts and where the two areas meet. The checkpoint's commit
+subject sits inside `personWritten`. Each plan handed over this way then accounts for the feature, so
+a later checkpoint adds no part for it.
 
 ## Deterministic checks, tools and routing
 

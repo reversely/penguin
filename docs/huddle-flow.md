@@ -13,9 +13,9 @@
 > ([design.md](design.md#steps-1-to-5-in-the-build)). Each stored plan's parts then reach their
 > authors and the authors' running sessions at once. Each author approves a part or asks for a
 > change on the dashboard. The originating agent answers a requested change with
-> `revise_plan_part` ([design.md](design.md#advance-notice-in-the-build)). Until approved fixes are
-> written into the affected forks, a combined run on owner forks still opens a Huddle as described
-> below.
+> `revise_plan_part` ([design.md](design.md#advance-notice-in-the-build)). Each approved fix is then
+> written into the affected feature's fork ([design.md](design.md#steps-1-and-3-in-the-build)). A
+> combined run on owner forks still opens a Huddle as described below.
 
 A Huddle is the issue Penguin opens when one owner's checkpoint breaks another owner's tests before
 either change reaches the main branch. It brings in only the owners whose work is involved, hands

@@ -20,6 +20,11 @@
   // token on that fork for PENGUIN_FEATURE_TOKEN_TTL_MINUTES (src/features.ts). Opening refuses
   // without either.
   //
+  // Once an author approves a plan part on their running feature, the part's writer (the originating
+  // agent, or the check runner for a mechanical part) gets a write token on that one fork for
+  // PENGUIN_FIX_TOKEN_TTL_MINUTES (PRD 0.4 section 8). Unset means 10; a value other than a whole
+  // number from 1 to 60 refuses every fix token as misconfigured.
+  //
   // A merge plan that touches more running features than PENGUIN_PLAN_BREAK_LIMIT is returned to its
   // author (PRD 0.4 section 4.2 step 5). Unset means the PRD's default of 10; any value other than a
   // positive whole number refuses every plan as misconfigured.
@@ -32,6 +37,7 @@
     "PENGUIN_DASHBOARD_OWNERS": "reversely:priya",
     "PENGUIN_FEATURE_FORK_DEFAULT_BRANCH_ONLY": "true",
     "PENGUIN_FEATURE_TOKEN_TTL_MINUTES": "30",
+    "PENGUIN_FIX_TOKEN_TTL_MINUTES": "10",
     "PENGUIN_PLAN_BREAK_LIMIT": "10",
     "PENGUIN_PLAN_ROUND_LIMIT": "3"
   },

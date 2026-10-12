@@ -117,6 +117,19 @@ export function isAuthFailure(error: unknown): boolean {
 }
 
 /**
+ * An Artifacts repo reached with one token handed to the bridge, such as the write token Penguin mints
+ * for one approved plan part (fix-write.ts). The token stays in memory and reaches Git only through the
+ * command's environment; nothing refreshes it.
+ */
+export function tokenRemote(name: string, token: { readonly token: string; readonly remote: string }): GitRemote {
+  return {
+    name,
+    artifacts: true,
+    git: (cwd, args) => runGit(cwd, [...ARTIFACTS_GIT_OPTIONS, ...args(token.remote)], { env: tokenEnvironment(token.token) }),
+  };
+}
+
+/**
  * An Artifacts repo. Each command takes a token of `scope` from `tokens`; a command the server
  * refuses for authentication runs once more with a freshly fetched token, so a token that expired or
  * was revoked between fetch and use is replaced without the owner doing anything.

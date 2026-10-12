@@ -17,6 +17,7 @@ import {
   type ApprovalOutcome,
   type ApprovalSpec,
   type CloseOutcome,
+  type FixWrite,
   type Huddle,
   type HuddleCloseDeps,
   type HuddleClosePort,
@@ -53,7 +54,8 @@ import {
  * operations and the index validates them. A CryptoKey cannot cross Durable Object RPC, so the
  * signing stays on the ProjectAgent's side.
  *
- * An instance named for a feature instead keeps that feature's merge plans and their parts
+ * An instance named for a feature instead keeps that feature's merge plans, their parts and the fixes
+ * written for them into affected forks
  * (plan-store.ts, PRD 0.4 section 9), until the FeatureAgent takes them over (#96). The ProjectAgent
  * checks and signs each plan before this instance keeps it.
  */
@@ -189,6 +191,21 @@ export class HuddleAgent extends Agent implements HuddleVerifier, HuddleReviewer
   /** Replaces one part of the newest plan while it stands at `expected`; see plan-store.ts. */
   replacePart(featureId: string, part: PlanPart, expected: PartVersion): boolean {
     return this.#planStore().replacePart(featureId, part, expected);
+  }
+
+  /** Adds the next part to the newest plan, `planId`; see plan-store.ts. */
+  addPart(featureId: string, planId: string, part: PlanPart): boolean {
+    return this.#planStore().addPart(featureId, planId, part);
+  }
+
+  /** Keeps one fix written into an affected fork (`FixWrite`); false when that revision has one. */
+  keepFixWrite(write: FixWrite): boolean {
+    return this.#planStore().keepFixWrite(write);
+  }
+
+  /** The fixes written for the feature's plan parts, oldest first. */
+  fixWrites(featureId: string): FixWrite[] {
+    return this.#planStore().fixWrites(featureId);
   }
 
   #planStore(): PlanStore {

@@ -159,6 +159,25 @@ export function splitLines(text: string): string[] {
   return lines;
 }
 
+/** A file's text at a root tree, walking one directory at a time; null when it is absent or not a file. */
+export async function readFileText(reader: Pick<GitObjectReader, "readTree" | "readBlob">, tree: string, path: string): Promise<string | null> {
+  let current = tree;
+  const segments = path.split("/");
+  for (const [index, name] of segments.entries()) {
+    const entry = (await reader.readTree(current))?.find((each) => each.name === name);
+    if (entry === undefined) return null;
+    if (index < segments.length - 1) {
+      if (entry.type !== "tree") return null;
+      current = entry.hash;
+      continue;
+    }
+    if (entry.type === "tree") return null;
+    const blob = await reader.readBlob(entry.hash);
+    return blob === null ? null : blob.text();
+  }
+  return null;
+}
+
 type Edit = "=" | "-" | "+";
 
 /**

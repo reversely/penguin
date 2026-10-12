@@ -6,8 +6,10 @@ import { mkdir, open, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import {
+  checkFixWriteSpec,
   RUNNER_TOOLS,
   type AgentToolResult,
+  type FixWriteSpec,
   type ApprovalReport,
   type ApprovalSpec,
   type CombinedRunEvent,
@@ -30,6 +32,7 @@ import {
   type RepoToken,
   type TokenSource,
 } from "./git-remote.ts";
+import type { ClaimedFixWrite, FixWriteReply } from "./fix-write.ts";
 import { loadSigningKey, type KeyStore } from "./key-store.ts";
 
 /** What the bridge keeps about its registration. Nothing here is secret. */
@@ -757,6 +760,48 @@ export async function reportToolRun(
     throw new RemoteRefusedError(`Penguin refused the result of tool request ${runId} (HTTP ${status})${message}`);
   }
   throw new RemoteUnavailableError(`Penguin could not take the result of tool request ${runId} (HTTP ${status})${message}`);
+}
+
+export const FIX_WRITE_ROUTE = "/fix-writes";
+
+/**
+ * A fix write as Penguin's answers carry it, the runner's claim or the `fix_token` MCP tool's `write`:
+ * the spec's fields with the approved patch inside `personWritten`. Undefined when it is not a valid spec.
+ */
+export function fixWriteSpecOf(value: unknown): FixWriteSpec | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const { personWritten, token: _token, ...fields } = value as Record<string, unknown>;
+  const patch = typeof personWritten === "object" && personWritten !== null ? (personWritten as { patch?: unknown }).patch : undefined;
+  const spec = { ...fields, patch };
+  return checkFixWriteSpec(spec).length === 0 ? (spec as unknown as FixWriteSpec) : undefined;
+}
+
+/**
+ * Claims the writes of approved mechanical plan parts, each with a write token minted for that part on
+ * the affected fork alone. Penguin answers only a bridge registered with the runner role.
+ */
+export async function claimFixWrites(server: string, bridgeToken: string, fetchImpl: Fetch = fetch): Promise<ClaimedFixWrite[]> {
+  const { status, body } = await runnerRequest(server, bridgeToken, `${FIX_WRITE_ROUTE}/claim`, {}, fetchImpl);
+  if (status !== 200 || !Array.isArray(body["writes"])) {
+    throw new RemoteUnavailableError(`Penguin could not hand out fix writes (HTTP ${status})`);
+  }
+  return body["writes"].map((entry: unknown): ClaimedFixWrite => {
+    const spec = fixWriteSpecOf(entry);
+    const { token, remote, expiresAt } = ((entry as { token?: unknown } | null)?.token ?? {}) as Record<string, unknown>;
+    if (spec === undefined || spec.writer !== "runner" || typeof token !== "string" || typeof remote !== "string" || typeof expiresAt !== "string") {
+      throw new RemoteUnavailableError("Penguin listed a fix write without its spec and token");
+    }
+    return { spec, token: { token, remote, expiresAt } };
+  });
+}
+
+/** Reports the commit the runner pushed for write `writeId`; Penguin keeps it only when it is the approved fix. */
+export async function reportFixWrite(server: string, bridgeToken: string, writeId: number, commit: string, fetchImpl: Fetch = fetch): Promise<FixWriteReply> {
+  const { status, body } = await runnerRequest(server, bridgeToken, `${FIX_WRITE_ROUTE}/${writeId}`, { commit }, fetchImpl);
+  if (status === 200) return body as unknown as FixWriteReply;
+  const message = typeof body["message"] === "string" ? `: ${body["message"]}` : "";
+  if ([400, 404, 409].includes(status)) throw new RemoteRefusedError(`Penguin refused fix write ${writeId} (HTTP ${status})${message}`);
+  throw new RemoteUnavailableError(`Penguin could not take fix write ${writeId} (HTTP ${status})${message}`);
 }
 
 /** One runner request: GET without a body, else POST of `body` as JSON. Answers 401 and 403 throw. */

@@ -14,9 +14,9 @@
 //   check gets its one next step from the resolution ladder (`classifyCheck`). No fix is applied: a
 //   fix for steps 1 to 3 is the agent's `apply_fix`, or Penguin's once a merge plan grants it a fork.
 // - `apply_fix` applies the requested fix to the checkpoint inside the caller's charter
-//   (apply-fix.ts). No bridge holds write on a feature's fork until a merge plan grants a token (#91),
-//   so the commit stays at `refs/penguin/fixes/<commit>` in the runner's repository and is reported
-//   with `pushed: false`.
+//   (apply-fix.ts). The runner holds write on a feature's fork only for an approved mechanical plan
+//   part, with a token minted for that part (fix-write.ts), so the commit stays at
+//   `refs/penguin/fixes/<commit>` in the runner's repository and is reported with `pushed: false`.
 //
 // A request whose forks or commits cannot be fetched stays claimed until its lease runs out and is
 // then run again. A tool that runs and fails is reported as `error`.

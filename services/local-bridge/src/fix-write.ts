@@ -1,0 +1,182 @@
+// Writing an approved plan part's fix into the affected feature's fork (PRD 0.4 section 4.4 step 1).
+//
+// The writer is the originating agent's bridge, through `penguin-bridge fix-write` with the answer of
+// the `fix_token` MCP tool, or the check runner for a mechanical part, through the writes it claims at
+// POST /fix-writes/claim. Either way the writer holds a `FixWriteSpec` and a write token minted for that
+// one part on that one fork.
+//
+// The fix becomes one commit built without a checkout: the fork's `main` is fetched, its head must be
+// the spec's `parent`, each file the patch writes is read at the parent, patched with `applyPatchFile`
+// (the function Penguin checks the commit with), written as a blob into a scratch index over the
+// parent's tree. The tree is committed with the spec's message. The commit must change exactly the
+// spec's paths, which are the patch's own files; anything else stops the write before any push. The
+// push fast-forwards `main` with no force, so a fork whose head moved refuses it and nothing is
+// overwritten. No hook, editor or credential helper runs.
+
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { runGit } from "@penguin/git-analysis";
+import { applyPatchFile, checkFixWriteSpec, parsePatch, type FixWriteSpec } from "@penguin/protocol";
+
+import type { GitRemote } from "./git-remote.ts";
+
+export type FixWriteResult =
+  | { readonly status: "written"; readonly commit: string; readonly parent: string; readonly durationMs: number }
+  /** The fork's head is not the spec's parent: ask Penguin again, which rebases or sends the part back. */
+  | { readonly status: "moved"; readonly head: string; readonly durationMs: number }
+  /** The spec or the patch does not hold; nothing was pushed. */
+  | { readonly status: "refused"; readonly reason: string; readonly durationMs: number };
+
+export interface FixWriterOptions {
+  /** A Git repository the fork is fetched into; the commit is built from its objects. */
+  readonly repoPath: string;
+  /** The affected fork, reached with the token minted for this part. */
+  readonly remote: GitRemote;
+  readonly scratchDir?: string;
+}
+
+/** The commit's author and committer: the fix is the plan's, written for it. */
+const WRITER_ENV = {
+  GIT_AUTHOR_NAME: "Penguin",
+  GIT_AUTHOR_EMAIL: "penguin@penguin.invalid",
+  GIT_COMMITTER_NAME: "Penguin",
+  GIT_COMMITTER_EMAIL: "penguin@penguin.invalid",
+};
+const NO_HOOKS = ["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false"];
+const REGULAR_MODES = new Set(["100644", "100755"]);
+
+/** Writes `spec`'s fix as one commit on the fork's branch. */
+export async function writeFix(options: FixWriterOptions, spec: FixWriteSpec): Promise<FixWriteResult> {
+  const started = performance.now();
+  const elapsed = () => Math.round(performance.now() - started);
+  const refused = (reason: string): FixWriteResult => ({ status: "refused", reason, durationMs: elapsed() });
+
+  const problems = checkFixWriteSpec(spec);
+  if (problems.length > 0) return refused(`the write is malformed at ${problems[0]?.path || "the top"}: ${problems[0]?.message}`);
+  const parsed = parsePatch(spec.patch);
+  if (!parsed.ok) return refused(`the patch does not parse: ${parsed.message}`);
+  const paths = parsed.files.map((file) => file.path).sort();
+  if (paths.join("\n") !== [...spec.paths].sort().join("\n")) return refused("the spec's paths are not the patch's files");
+
+  const { repoPath, remote } = options;
+  const ref = `refs/penguin/fix-writes/${spec.writeId}`;
+  await remote.git(repoPath, (url) => ["fetch", "--quiet", "--no-tags", "--end-of-options", url, `+refs/heads/${spec.branch}:${ref}`]);
+  const head = (await runGit(repoPath, ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`])).trim();
+  if (head !== spec.parent) return { status: "moved", head, durationMs: elapsed() };
+
+  const scratch = await mkdtemp(join(options.scratchDir ?? tmpdir(), "penguin-fix-write-"));
+  try {
+    const env = { GIT_INDEX_FILE: join(scratch, "index") };
+    await runGit(repoPath, ["read-tree", spec.parent], { env });
+    for (const [index, file] of parsed.files.entries()) {
+      const entry = (await runGit(repoPath, ["ls-tree", "-z", "--end-of-options", spec.parent, "--", file.path])).split("\0")[0] ?? "";
+      const [meta = "", listed] = entry.split("\t");
+      const [mode, , blob] = meta.split(" ");
+      if (entry !== "" && (listed !== file.path || !REGULAR_MODES.has(mode ?? ""))) return refused(`${file.path} is not a regular file at the parent`);
+      const before = entry === "" ? null : await runGit(repoPath, ["cat-file", "blob", blob as string]);
+      const applied = applyPatchFile(file, before);
+      if (!applied.ok) return refused(applied.message);
+      if (applied.text === null) {
+        await runGit(repoPath, ["update-index", "--force-remove", "--", file.path], { env });
+        continue;
+      }
+      const content = join(scratch, `file-${index}`);
+      await writeFile(content, applied.text, { mode: 0o600 });
+      const written = (await runGit(repoPath, ["hash-object", "-w", "--", content])).trim();
+      await runGit(repoPath, ["update-index", "--add", "--cacheinfo", `${entry === "" ? "100644" : mode},${written},${file.path}`], { env });
+    }
+    const tree = (await runGit(repoPath, ["write-tree"], { env })).trim();
+    const changed = (await runGit(repoPath, ["diff-tree", "-r", "-z", "--name-only", "--no-renames", spec.parent, tree])).split("\0").filter(Boolean).sort();
+    if (changed.join("\n") !== paths.join("\n")) return refused(`the commit would change ${changed.join(", ") || "nothing"}, not exactly the patch's files`);
+    const message = join(scratch, "message");
+    await writeFile(message, spec.message, { mode: 0o600 });
+    const commit = (await runGit(repoPath, [...NO_HOOKS, "commit-tree", tree, "-p", spec.parent, "-F", message], { env: WRITER_ENV })).trim();
+    try {
+      // No force: a fork whose head moved since the fetch refuses the push and keeps its head.
+      await remote.git(repoPath, (url) => ["push", "--porcelain", "--end-of-options", url, `${commit}:refs/heads/${spec.branch}`]);
+    } catch (error) {
+      await remote.git(repoPath, (url) => ["fetch", "--quiet", "--no-tags", "--end-of-options", url, `+refs/heads/${spec.branch}:${ref}`]);
+      const now = (await runGit(repoPath, ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`])).trim();
+      if (now !== spec.parent && now !== commit) return { status: "moved", head: now, durationMs: elapsed() };
+      if (now !== commit) return refused(`the fork refused the push: ${(error as Error).message.trim().split("\n").at(-1) ?? ""}`);
+    }
+    return { status: "written", commit, parent: spec.parent, durationMs: elapsed() };
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+}
+
+/** One write the runner claimed: the spec and the token minted for that part on that fork. */
+export interface ClaimedFixWrite {
+  readonly spec: FixWriteSpec;
+  readonly token: { readonly token: string; readonly remote: string; readonly expiresAt: string };
+}
+
+/** Penguin's answer to a reported write. */
+export interface FixWriteReply {
+  readonly status: "written";
+  readonly commit: string;
+  readonly recordId: string;
+  readonly durationMs: number;
+}
+
+export interface FixWritePassOptions {
+  readonly claim: () => Promise<readonly ClaimedFixWrite[]>;
+  readonly write: (claimed: ClaimedFixWrite) => Promise<FixWriteResult>;
+  readonly report: (writeId: number, commit: string) => Promise<FixWriteReply>;
+}
+
+export interface FixWritePassEntry {
+  readonly writeId: number;
+  readonly partId: string;
+  readonly fork: string;
+  readonly result: FixWriteResult | null;
+  readonly reply: FixWriteReply | null;
+  /** Why the write stopped; its claim runs out and it is claimed again. */
+  readonly error: string | null;
+}
+
+export interface FixWritePassResult {
+  readonly claimed: number;
+  readonly writes: readonly FixWritePassEntry[];
+  readonly durationMs: number;
+}
+
+/** Claims, writes and reports every approved mechanical part's fix once (runner mode). */
+export async function fixWritePass(options: FixWritePassOptions): Promise<FixWritePassResult> {
+  const started = performance.now();
+  const claimed = await options.claim();
+  const writes: FixWritePassEntry[] = [];
+  for (const each of claimed) {
+    const base = { writeId: each.spec.writeId, partId: each.spec.partId, fork: each.spec.fork };
+    let result: FixWriteResult;
+    try {
+      result = await options.write(each);
+    } catch (error) {
+      writes.push({ ...base, result: null, reply: null, error: (error as Error).message });
+      continue;
+    }
+    if (result.status !== "written") {
+      writes.push({ ...base, result, reply: null, error: result.status === "moved" ? `the fork moved to ${result.head}` : result.reason });
+      continue;
+    }
+    try {
+      writes.push({ ...base, result, reply: await options.report(each.spec.writeId, result.commit), error: null });
+    } catch (error) {
+      writes.push({ ...base, result, reply: null, error: (error as Error).message });
+    }
+  }
+  return { claimed: claimed.length, writes, durationMs: Math.round(performance.now() - started) };
+}
+
+export function formatFixWritePass(result: FixWritePassResult): string {
+  const lines = result.writes.map(({ writeId, partId, fork, result: written, reply, error }) => {
+    const name = `Fix write ${writeId} (part ${partId}) on ${fork}`;
+    if (written?.status === "written" && reply !== null) return `${name}: ${written.commit.slice(0, 12)} kept as ${reply.recordId} (${written.durationMs} ms).`;
+    return `${name} stopped: ${error ?? "unknown"}`;
+  });
+  lines.push(`${result.claimed} fix write${result.claimed === 1 ? "" : "s"} claimed (${result.durationMs} ms).`);
+  return `${lines.join("\n")}\n`;
+}

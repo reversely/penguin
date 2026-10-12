@@ -53,6 +53,13 @@
  *   caller's charter and the other running features' forks.
  * - POST /tool-runs/<run id>, bridge token of a runner bridge: reports a claimed request's result. The
  *   requesting session hears of it at its next safe checkpoint. A request already completed answers 409.
+ * - POST /fix-writes/claim, bridge token of a runner bridge: claims the writes of approved mechanical
+ *   plan parts. Each names the affected feature's fork, the head to fast-forward, the patch, its paths
+ *   and the commit message, with a write token minted for that part alone on that fork alone, for
+ *   PENGUIN_FIX_TOKEN_TTL_MINUTES.
+ * - POST /fix-writes/<write id>, bridge token of the runner that claimed it: reports the pushed commit.
+ *   Penguin reads it from the fork and keeps it as a signed `fix_write` record only when it is the
+ *   approved patch applied to the granted head; anything else answers 400.
  *
  * Responses that carry a code or token are marked `Cache-Control: no-store`.
  */
@@ -65,6 +72,7 @@ import type {
   BridgeRole,
   CheckpointOutcome,
   ClaimListing,
+  FixWriteOutcome,
   Delivery,
   FeatureCheckpointOutcome,
   Huddle,
@@ -83,10 +91,10 @@ import type {
 
 import { planNoticeFields } from "@penguin/mcp";
 import { REVIEW_LIMITS, TOOL_RESULT_LIMITS } from "@penguin/protocol";
-import type { PlanFactsRequest } from "@penguin/protocol";
+import type { FixWriteSpec, PlanFactsRequest } from "@penguin/protocol";
 
 import { bearerToken, isDeployer } from "./auth.ts";
-import { checkpointFields, FEATURE_FORK, settledFields, toolResultFields } from "./features.ts";
+import { checkpointFields, FEATURE_FORK, fixWriteFields, settledFields, toolResultFields } from "./features.ts";
 import { artifactsErrorCode, huddleRepoId, isValidRepoName } from "./repos.ts";
 import {
   allowedScope,
@@ -141,6 +149,13 @@ export interface BridgeDirectory {
   claimToolRuns(caller: BridgeCaller): Promise<ToolRunClaim> | ToolRunClaim;
   /** Attaches the runner's result to tool request `runId`; refused unless `caller` holds the runner role. */
   reportToolRun(caller: BridgeCaller, runId: number, result: unknown): Promise<ToolReportOutcome> | ToolReportOutcome;
+  /** Claims the writes of approved mechanical plan parts; refused unless `caller` holds the runner role. */
+  claimFixWrites(
+    caller: BridgeCaller,
+    repos: ProjectRepos,
+  ): Promise<{ readonly status: "ok"; readonly writes: readonly { readonly spec: FixWriteSpec }[] } | { readonly status: "forbidden"; readonly message: string }>;
+  /** Checks and keeps the commit the runner pushed for write `writeId`, which it claimed. */
+  reportRunnerFixWrite(caller: BridgeCaller, writeId: number, body: unknown, repos: ProjectRepos): Promise<FixWriteOutcome>;
 }
 
 /** Opening Huddle issues: the ProjectAgent's side over Durable Object RPC, and the Huddle repo fork. */
@@ -178,6 +193,8 @@ export interface BridgeOptions {
   readonly deployerToken?: string;
   /** The parsed PENGUIN_TOKEN_TTL_SECONDS, or undefined when the configured value is invalid. */
   readonly tokenTtlSeconds: number | undefined;
+  /** The parsed PENGUIN_FIX_TOKEN_TTL_MINUTES in seconds, or undefined when the configured value is invalid. */
+  readonly fixTokenTtlSeconds?: number | undefined;
 }
 
 const NO_STORE = { "Cache-Control": "no-store" };
@@ -669,6 +686,39 @@ async function reportToolRun(request: Request, runId: number, handlers: BridgeHa
   return json({ status: outcome.status, runId: run.id, tool: run.tool, result: run.result, summary: run.summary }, 200);
 }
 
+async function claimFixWrites(request: Request, options: BridgeOptions, handlers: BridgeHandlers): Promise<Response> {
+  const bridge = await runnerBridge(request, handlers);
+  if (bridge instanceof Response) return bridge;
+  if (request.method !== "POST") return methodNotAllowed("POST");
+  const ttl = options.fixTokenTtlSeconds;
+  if (ttl === undefined) {
+    return json({ error: "misconfigured", message: "PENGUIN_FIX_TOKEN_TTL_MINUTES must be a whole number of minutes from 1 to 60" }, 500);
+  }
+  const listing = await (await handlers.bridges()).claimFixWrites({ bridgeId: bridge.bridgeId, role: bridge.role }, handlers.projectRepos);
+  if (listing.status === "forbidden") return json({ error: "forbidden", message: listing.message }, 403);
+  const writes = [];
+  for (const { spec } of listing.writes) {
+    // One token per part, on the affected fork alone; the plaintext goes to this answer only.
+    const token = await handlers.mintToken(spec.fork, "write", ttl);
+    writes.push({ ...fixWriteFields(spec), token: { token: token.token, remote: token.remote, scope: token.scope, expiresAt: token.expiresAt } });
+  }
+  return json({ writes }, 200, NO_STORE);
+}
+
+async function reportFixWrite(request: Request, writeId: number, handlers: BridgeHandlers): Promise<Response> {
+  const bridge = await runnerBridge(request, handlers);
+  if (bridge instanceof Response) return bridge;
+  if (request.method !== "POST") return methodNotAllowed("POST");
+  const body = await readObject(request);
+  if (body === undefined) return invalid("", "must be a JSON object");
+  const outcome = await (await handlers.bridges()).reportRunnerFixWrite({ bridgeId: bridge.bridgeId, role: bridge.role }, writeId, body, handlers.projectRepos);
+  if (outcome.status === "rejected") {
+    return json({ error: outcome.reason, message: outcome.message }, REVIEW_REJECTION_STATUS[outcome.reason] ?? 409);
+  }
+  const { write, durationMs } = outcome;
+  return json({ status: "written", writeId, part: write.partId, revision: write.revision, fork: write.targetRepo, commit: write.commitSha, recordId: write.recordId, durationMs }, 200);
+}
+
 function huddleBody(status: "opened" | "existing", huddle: Huddle): Record<string, unknown> {
   const { issueId, triggerCommit, baselineSha, huddleRepo, openedAt } = huddle;
   return { status, issueId, triggerCommit, baselineSha, huddleRepo, openedAt };
@@ -702,6 +752,9 @@ export async function handleBridgeRoute(
   if (url.pathname === "/tool-runs/claim") return claimToolRuns(request, handlers);
   const toolRunId = /^\/tool-runs\/([1-9][0-9]{0,14})$/.exec(url.pathname)?.[1];
   if (toolRunId !== undefined) return reportToolRun(request, Number(toolRunId), handlers);
+  if (url.pathname === "/fix-writes/claim") return claimFixWrites(request, options, handlers);
+  const fixWriteId = /^\/fix-writes\/([1-9][0-9]{0,14})$/.exec(url.pathname)?.[1];
+  if (fixWriteId !== undefined) return reportFixWrite(request, Number(fixWriteId), handlers);
   if (url.pathname === "/bridges/codes") return issueCode(request, options, handlers);
   if (url.pathname === "/bridges") return register(request, handlers);
   const bridgeId = /^\/bridges\/([A-Za-z0-9_-]+)$/.exec(url.pathname)?.[1];

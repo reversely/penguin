@@ -52,6 +52,8 @@ export interface GatewayOptions {
   deployerToken?: string;
   /** Lifetime of minted Artifacts tokens; undefined when PENGUIN_TOKEN_TTL_SECONDS is invalid. */
   tokenTtlSeconds?: number | undefined;
+  /** Lifetime of a fix writer's token; undefined when PENGUIN_FIX_TOKEN_TTL_MINUTES is invalid. */
+  fixTokenTtlSeconds?: number | undefined;
   /** GitHub sign-in and the dashboard owner map; without them, sign-in answers 503 and /api 401. */
   dashboard?: DashboardOptions;
 }
@@ -148,7 +150,7 @@ export async function handleRequest(
   const bridgeResponse = await handleBridgeRoute(
     request,
     url,
-    { deployerToken: options.deployerToken, tokenTtlSeconds: options.tokenTtlSeconds },
+    { deployerToken: options.deployerToken, tokenTtlSeconds: options.tokenTtlSeconds, fixTokenTtlSeconds: options.fixTokenTtlSeconds },
     handlers,
   );
   if (bridgeResponse) return bridgeResponse;

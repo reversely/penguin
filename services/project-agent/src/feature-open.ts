@@ -33,6 +33,7 @@ import {
 } from "./feature-store.ts";
 import type { OverlapStatus } from "./overlap-lock.ts";
 import { CHECKPOINT_SHA_PATTERN } from "./owner-forks.ts";
+import type { HandedPlan, JoinedPlan } from "./plan-coverage.ts";
 import type { Delivery, OverlapRef, SessionOutcome } from "./session-store.ts";
 
 export type FeatureRejectReason = "invalid" | "forbidden" | "not_found" | "offline" | "conflict" | "locked";
@@ -50,6 +51,8 @@ export type FeatureOpenOutcome =
       readonly joined: string | null;
       /** The locks the feature's start waits on, and its dependents. */
       readonly overlap: OverlapStatus;
+      /** The merge plans announced before the feature opened that its area meets (PRD 4.6); empty for `existing`. */
+      readonly announcedPlans: readonly HandedPlan[];
     }
   | FeatureRejection;
 
@@ -81,6 +84,11 @@ export interface FeatureDeps {
   readonly checkOverlap: (feature: Feature) => Promise<OverlapStatus>;
   /** The feature's stored locks and dependents. */
   readonly overlapStatus: (featureId: string) => OverlapStatus;
+  /**
+   * The announced merge plans a newly opened feature's area meets, which it receives at open
+   * (plan-coverage.ts handOver). Absent, none are handed over.
+   */
+  readonly handOver?: (feature: Feature) => Promise<readonly HandedPlan[]>;
 }
 
 export interface FeatureOpenInput {
@@ -138,7 +146,8 @@ export async function openFeature(
   const opened = deps.features.get(id) as Feature;
   const joined = joinExisting(deps, caller, opened, sessionId, "opened");
   if (joined.status === "rejected") return joined;
-  return { ...joined, overlap: await deps.checkOverlap(opened) };
+  const overlap = await deps.checkOverlap(opened);
+  return { ...joined, overlap, announcedPlans: (await deps.handOver?.(opened)) ?? [] };
 }
 
 function joinExisting(
@@ -150,10 +159,10 @@ function joinExisting(
 ): FeatureOpenOutcome {
   if (feature.personId !== caller) return rejected("forbidden", `feature ${feature.id} belongs to another person`);
   const overlap = deps.overlapStatus(feature.id);
-  if (sessionId === null) return { status, feature, joined: null, overlap };
+  if (sessionId === null) return { status, feature, joined: null, overlap, announcedPlans: [] };
   const joined = deps.features.join(feature.id, sessionId);
   if (!joined.joined) return rejected("conflict", `session ${sessionId} already works on feature ${joined.featureId}`);
-  return { status, feature, joined: sessionId, overlap };
+  return { status, feature, joined: sessionId, overlap, announcedPlans: [] };
 }
 
 /** Records the fork the Worker made for a feature. */
@@ -276,6 +285,8 @@ export type FeatureCheckpointOutcome =
       readonly settled: Delivery["settled"];
       readonly toolResults: Delivery["toolResults"];
       readonly planNotices: Delivery["planNotices"];
+      /** The announced plans that gained a part for this feature at this checkpoint (PRD 4.4 step 3). */
+      readonly plansJoined: readonly JoinedPlan[];
       readonly durationMs: number;
     })
   | FeatureRejection;
@@ -286,6 +297,11 @@ export interface FeatureCheckpointDeps extends FeatureDeps {
   readonly readChange: CheckpointReader;
   /** The session's safe checkpoint: the fix tasks, threads, overlapping starts, tool results and advance notice it delivers (SessionStore.checkpoint). */
   readonly deliver: (caller: string, sessionId: string) => Pick<Delivery, "delivered" | "threads" | "overlaps" | "settled" | "toolResults" | "planNotices"> | undefined;
+  /**
+   * Adds a part for the feature to each announced plan its grown area now meets (plan-coverage.ts
+   * coverMidway). Absent, no plan gains a part.
+   */
+  readonly joinPlans?: (feature: Feature) => Promise<readonly JoinedPlan[]>;
   readonly now?: () => number;
 }
 
@@ -322,6 +338,8 @@ export async function reportFeatureCheckpoint(
   }
   const outcome = await recordCheckpointArea(deps, feature, sha, author, deps.readChange);
   if (outcome.status === "rejected") return outcome;
+  // Joining plans runs before the delivery, so the originating sessions' notices already name the new part.
+  const plansJoined = (await deps.joinPlans?.(outcome.feature)) ?? [];
   const delivery = sessionId === null ? undefined : deps.deliver(caller, sessionId);
   return {
     ...outcome,
@@ -331,6 +349,7 @@ export async function reportFeatureCheckpoint(
     settled: delivery?.settled ?? [],
     toolResults: delivery?.toolResults ?? [],
     planNotices: delivery?.planNotices ?? NO_PLAN_NOTICES,
+    plansJoined,
     durationMs: now() - started,
   };
 }

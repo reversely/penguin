@@ -80,7 +80,7 @@ flowchart TB
 | `penguin-bridge` | `services/local-bridge/src/` | One owner on one machine | Checkpoint publishing with consent, the issue command line, the safe-checkpoint hook, the outbound spool |
 | Integration runner | `penguin-bridge runner` on a designated machine | The project | Pushing queued operations, combined runs, verification runs, the `approved` branch |
 | Dashboard | `apps/dashboard/src/` | People in a browser | The team map, the inbox with its overlapping starts to approve, the issue page, the identities page |
-| MCP tools | `services/mcp/src/tools.ts` | Agent sessions | `register_session`, `get_work`, `get_issue`, `post_update`, `report_checkpoint`, `open_feature`, `feature_token`, `declare_area`, `submit_review` |
+| MCP tools | `services/mcp/src/tools.ts` | Agent sessions | `register_session`, `get_work`, `get_issue`, `post_update`, `report_checkpoint`, `open_feature`, `feature_token`, `declare_area`, `submit_review`, `propose_plan`, `revise_plan_part`, `fix_token`, `report_fix_write` |
 
 Shared rules live in packages that both the Worker and the bridge import: the operation schema and
 wire formats in `packages/protocol`, the scope map in `packages/scope-map`, charters, review rights,
@@ -98,14 +98,17 @@ run's repos apart from production's; the prefix leads every name.
 | `owner-<id>` | `POST /setup`, one fork of `base` per owner | That owner's bridge only | The owner's published checkpoints, one branch per worktree branch |
 | `issues` | `POST /setup` | Every bridge and the runner | One signed file per issue operation, `issues/<issue>/ops/<op_id>.json` |
 | `huddle-<id>` | The Worker, when a Huddle issue opens; `<id>` is the issue number padded to three digits, as in `huddle-031` | The runner only | The `integration` branch of each verification run and the `approved` branch at close |
-| `feature-<id>` | The Worker, when a person or an agent session opens the feature (`apps/worker/src/features.ts`) | The feature's agent sessions, with tokens the Worker mints for them | The feature's work, forked from main's branch |
+| `feature-<id>` | The Worker, when a person or an agent session opens the feature (`apps/worker/src/features.ts`) | The feature's agent sessions, with tokens the Worker mints for them. For an approved merge plan part, also the plan's originating agent or the runner, with a token minted for that part | The feature's work, forked from main's branch, with each approved fix as one commit on `main` |
 
 The Worker mints short-lived Artifacts tokens per repo (`apps/worker/src/tokens.ts`). A bridge may
 hold `write` on its own fork and on `issues`. It holds `read` on every other repo, so the runner reads
 a feature's fork to run its submitted reviews. A runner bridge also holds `write` on Huddle repos. An agent session holds `write` on the fork of the feature it joined,
 for `PENGUIN_FEATURE_TOKEN_TTL_MINUTES`. It gets the token from `open_feature` or `feature_token`.
 The Worker mints it only after the ProjectAgent confirms that the session is running and has joined
-that feature. Artifacts tokens separate only read from write per repo, so the repo
+that feature. A `write` token on another person's feature fork comes only with an approved merge plan
+part, for `PENGUIN_FIX_TOKEN_TTL_MINUTES`: to the plan's originating agent through `fix_token`, or to
+the runner's claim of a mechanical part ([Writing an approved fix](#writing-an-approved-fix)).
+Artifacts tokens separate only read from write per repo, so the repo
 boundary is the push boundary. The validator then decides what each operation in `issues` may do.
 
 ## Who keeps which state
@@ -132,9 +135,15 @@ form that passed waits as `pending` until the check runner claims it and attache
 (`review-record.ts`). `AgentToolRun` (`agent-tools.ts`) holds each agent tool call. An `impact`,
 `check` or `apply_fix` request waits until the check runner claims it and reports its result
 (`agent-tool-runner.ts`). The row records when the requesting session's safe checkpoint delivered it.
+`PlanPartRoute` (`plan-approval.ts`) keeps which revision of which plan part waits on whom.
+`FixWriteGrant` (`fix-write.ts`) holds each write asked for, one per part revision, with its writer,
+the fork head it must fast-forward and the commit once kept. `AnnouncedPlan` and `PlanCoverage`
+(`plan-coverage.ts`) hold each feature's newest plan with its area and the running features the plan
+accounts for.
 
 Each HuddleAgent keeps the state of one Huddle in its own SQLite store: `VerificationRun`,
-`FixReview`, `HuddleThread` and `ApprovedBranch`. The ProjectAgent names the instance
+`FixReview`, `HuddleThread` and `ApprovedBranch`. An instance named for a feature keeps that feature's
+`Plan`, `PlanPart` and `FixWrite` rows (`plan-store.ts`). The ProjectAgent names the instance
 `<project>-huddle-<issue number>` and passes it the Huddle record with each call, together with a port
 back to itself. The HuddleAgent writes every issue operation through that port, so the service key
 stays in the ProjectAgent: a `CryptoKey` cannot cross Durable Object RPC.
@@ -178,6 +187,24 @@ matches a pending operation clears its `PendingOp` row.
 4. Each checkpoint on the fork, from `report_checkpoint` or the bridge's `POST /checkpoints`, must be
    in the fork. The ProjectAgent diffs it against its baseline on main and adds the changed paths
    and their scopes to the declared area.
+
+### Writing an approved fix
+
+1. An author approves a part of a merge plan on their running feature on the dashboard. A mechanical
+   part's approval queues a write for the runner.
+2. The plan's originating agent calls `fix_token`, or the runner claims the queued write at
+   `POST /fix-writes/claim`. The ProjectAgent checks that the part's current revision is approved and
+   unwritten and that the patch writes only paths inside the part. It reads the affected fork's head
+   through the Artifacts binding. A head that moved past the patch's base still takes the write when
+   the patch applies there unchanged. Otherwise the part goes back to the originating agent to revise.
+   The Worker then mints a `write` token on that one fork.
+3. The writer's bridge fetches the fork, makes one commit of the patch on the head with the message
+   Penguin built and pushes it to `main` with no force (`penguin-bridge fix-write`, or runner mode).
+4. The writer reports the commit with `report_fix_write` or `POST /fix-writes/<write id>`. The
+   ProjectAgent reads it back and keeps it as a signed `fix_write` record when it is exactly the
+   approved patch on the granted head. No branch or repo is made.
+
+[design.md](design.md#steps-1-and-3-in-the-build) has the rules.
 
 ### Checkpoints to Huddles
 

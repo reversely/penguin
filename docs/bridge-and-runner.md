@@ -223,7 +223,9 @@ penguin-bridge runner --combined
      then reports the record (`review-run.ts`, [design.md](design.md#reviews-on-the-runner));
    - claims the `impact`, `check` and `apply_fix` requests agents made. It fetches the feature's
      fork and the other running features' forks, runs the tool on the checkpoint and reports the
-     result (`tool-run.ts`, [Agent tools on the runner](#agent-tools-on-the-runner)).
+     result (`tool-run.ts`, [Agent tools on the runner](#agent-tools-on-the-runner));
+   - claims the writes of approved mechanical plan parts and writes each into the affected
+     feature's fork ([Fix writes](#fix-writes)).
 
 Passing `--combined` or `--repo` is the runner operator's consent to those runs and pushes. The test
 jobs loop on their own, so a long test run never holds up the operation pushes. `--once` runs a
@@ -231,7 +233,34 @@ single pass of each and exits 1 when anything was refused or failed.
 
 The runner fetches owner forks and feature forks with read tokens. It pushes Huddle repos with write
 tokens. The Worker grants a runner bridge `write` on `huddle-<id>` repos and an owner bridge only
-`read`. No bridge gets `write` on a `feature-<id>` repo, so the runner pushes no `apply_fix` commit.
+`read`. The runner gets `write` on a `feature-<id>` repo only with a claimed fix write, for that one
+part, so it pushes no `apply_fix` commit.
+
+### Fix writes
+
+Once an author approves a part of a merge plan, its fix becomes one commit on the affected feature's
+fork ([design.md](design.md#steps-1-and-3-in-the-build)). Two writers use the same code
+(`fix-write.ts`):
+
+- The originating agent pipes the answer of the `fix_token` MCP tool to `penguin-bridge fix-write`.
+  The command fetches the fork into `<state-dir>/fix-writes`, or `--repo <path>`, writes the fix and
+  prints the commit as JSON for `report_fix_write`.
+- Runner mode claims the writes of approved mechanical parts at `POST /fix-writes/claim` under a
+  10-minute lease. Each claim carries a `write` token minted for that part on that fork. The runner
+  writes each fix and reports the commit to `POST /fix-writes/<write id>`.
+
+The writer fetches the fork's `main` and stops with `moved` when its head is not the granted parent.
+It reads each file the patch writes at the parent and applies the patch with `applyPatchFile`
+(`packages/protocol`), the function Penguin checks the commit with. Every hunk must match at its line.
+The writer stores each new file as a blob in a scratch index over the parent's tree. It refuses when
+the tree changes anything but the patch's files. It commits with Penguin's message as author
+`Penguin` with no hook or signing. It pushes the commit to `main` with no force. The token reaches
+Git only in the push's environment. A fork whose head moved refuses the push; asking `fix_token`
+again rebases the write or sends the part back for revision.
+
+Building and pushing one fix commit took about 200 ms against a bare fork on local disk. Against
+Artifacts through local `wrangler dev` it took about 1 second; `fix_token` and `report_fix_write`
+took about 2 seconds each, most of it Artifacts reads.
 
 ### Plan facts runs
 
@@ -575,8 +604,9 @@ The runner reports each result to `POST /tool-runs/<id>`. Penguin hands it to th
 at its next safe checkpoint. A request whose forks cannot be fetched stays claimed and runs again
 after its lease. A tool that runs and fails is reported with the result `error`.
 
-A write token on another feature's fork comes only with an approved merge plan part. No plan grants
-one yet. The runner therefore pushes no fix. Each `apply_fix` commit stays at
+A write token on another feature's fork comes only with an approved merge plan part
+([Fix writes](#fix-writes)). An `apply_fix` request carries no plan part, so the runner pushes no
+`apply_fix` commit. Each one stays at
 `refs/penguin/fixes/<commit>` in the runner's repository. Its result carries `pushed: false` with
 the commit and the files it changed.
 

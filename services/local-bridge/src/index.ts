@@ -36,6 +36,9 @@ export { formatReviewPass, reviewPass } from "./review-run.ts";
 export type { ReviewPassOptions, ReviewPassResult, ReviewRunResult } from "./review-run.ts";
 export { formatToolPass, toolPass } from "./tool-run.ts";
 export type { ToolPassOptions, ToolPassResult, ToolRunResult } from "./tool-run.ts";
+export { fixWritePass, formatFixWritePass, writeFix } from "./fix-write.ts";
+export type { ClaimedFixWrite, FixWritePassOptions, FixWritePassResult, FixWriteReply, FixWriteResult, FixWriterOptions } from "./fix-write.ts";
+export { runFixWriteCommand } from "./fix-write-cli.ts";
 
 export {
   AGENT_TRAILER_KEY,
@@ -63,6 +66,7 @@ export {
   penguinRepoOf,
   RemoteRefusedError,
   tokenEnvironment,
+  tokenRemote,
   unregisteredRemotes,
 } from "./git-remote.ts";
 export type { GitRemote, RemoteResolver, RepoToken, TokenSource } from "./git-remote.ts";
@@ -74,6 +78,9 @@ export {
   claimCombinedRuns,
   claimReviews,
   claimToolRuns,
+  claimFixWrites,
+  fixWriteSpecOf,
+  reportFixWrite,
   COMBINED_RUN_CLAIM_ROUTE,
   COMBINED_RUN_ROUTE,
   fetchApprovals,
