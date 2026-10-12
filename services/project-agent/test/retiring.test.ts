@@ -217,7 +217,7 @@ describe("the retiring-calls check and the tools", () => {
     assert.equal(await requestRetiringCheck(deps, feature, "s-bea", CHECKPOINT), undefined);
     assert.equal(await requestRetiringCheck(deps, feature, "s-gone", "c".repeat(40)), undefined);
 
-    const claim = claimToolRuns({ runs, features: project.features, identity: deps.identity }, RUNNER);
+    const claim = await claimToolRuns({ runs, features: project.features, identity: deps.identity }, RUNNER);
     assert.equal(claim.status, "ok");
     const [claimed] = claim.status === "ok" ? claim.runs : [];
     assert.deepEqual([claimed?.tool, claimed?.base, claimed?.checkpoint, claimed?.input["search"]], ["impact", BASE, CHECKPOINT, "own"]);

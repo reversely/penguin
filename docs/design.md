@@ -381,24 +381,27 @@ reason too:
 
 | Check | Clean when | Read from |
 |---|---|---|
-| Tests | The plan's facts run reports each of the part's scopes as `passed` on the merged tree of the part's place. That tree holds the fix | `PlanPart.tests`, kept from the facts run when the plan is proposed |
-| Review | The newest review of each of the part's scopes was submitted on the plan's checkpoint. The check runner accepted it. Every row says the invariant holds | The feature's reviews (`review-submit.ts`) |
+| Tests | Each of the part's scopes is `passed` on the merged tree of the part's place. That tree holds the fix | The part revision's recorded [trial](#part-trials); without one, `PlanPart.tests`, kept from the facts run when the plan is proposed |
+| Review | The newest review of each of the part's scopes was submitted on the plan's checkpoint. The check runner accepted it. Every row says the invariant holds | The feature's reviews (`review-submit.ts`), each form the part's trial ran read from that trial |
 | Side by side | That review's run shows no difference on a protected invariant | The review's exceptions |
 | Protected paths | No file of the diff lies under a path a scope's owner protects in `penguin/scopes.json` | The scope map |
 | Place | Every changed file lies in the part's scopes and holds a caller of a changed contract symbol or a test the change breaks there | `PlanPart.diff.files`, `diff.outside`, `callers` and `breaks` |
 
-- **Which fixes a run has tested.** The facts run merges the originating checkpoint onto main and
-  onto each running feature's fork head. A fix for code on main is a commit in the originating fork.
-  The run tested it only when that commit is the checkpoint or one of its ancestors, which Penguin
-  checks by walking up to 500 commits back from the checkpoint. A fix for a running feature is a
-  patch written into that fork only after approval, so no run has tested it. Its part always
-  goes to its author.
+- **Which fixes a run has tested.** Each part revision's trial builds the tree with the fix in place
+  and runs the part's scopes' tests and reviews on it ([Part trials](#part-trials)). Once the trial
+  is recorded, its results replace the facts run's for that revision. While the trial runs, each
+  form it carries counts as pending, so Penguin waits for it. Before any trial, the checks read the
+  facts run, which merges the originating checkpoint onto main and onto each running feature's fork
+  head. A fix commit for code on main counts as tested there only when that commit is the checkpoint
+  or one of its ancestors, which Penguin checks by walking up to 500 commits back from the
+  checkpoint. A patch for a running feature is in no facts-run tree.
 - **When Penguin looks.** `approveCleanParts` (`services/project-agent/src/plan-approval.ts`) runs
-  after a plan is stored and announced, after the check runner records a review of the feature and
-  after the originating agent revises a part. It approves each pending part with no reason.
+  after a plan is stored and announced, after the check runner records a review of the feature or a
+  part trial, and after the originating agent revises a part. It approves each pending part with no reason.
 - **The approval.** Each approval is a signed `approve_plan_part` record authored by Penguin, with
-  `approved_by: "penguin"` and a `checks` field naming the checkpoint, the facts run, each test
-  result and each review it read. The part's `approvedBy` is `penguin`. The author's `plan_part`
+  `approved_by: "penguin"` and a `checks` field naming the checkpoint, the run its tests came from
+  (`trial-<id>` or the facts run), the trial tree when a trial ran, each test result and each review
+  it read. The part's `approvedBy` is `penguin`. The author's `plan_part`
   item gives way to a `penguin_approved` item. An approved mechanical part on a running feature
   queues the check runner's write as an author's approval does.
 - **Reversal.** The part's owner or that owner's delegate may reverse Penguin's approval until the
@@ -425,6 +428,14 @@ reason too:
   older plan's items. Every item and record names the part it concerns as `<feature>/v<version>#<n>`.
 - **Review.** The author's agent reviews the part with `submit_review` for each scope the part
   touches ([Review harness](#review-harness)). An agent never approves: no MCP tool approves a part.
+- **Trials.** Each revision of a part is tested on the tree it would reach main as, before anyone
+  approves it (`services/project-agent/src/part-trial.ts`, [Part trials](#part-trials)). Penguin asks
+  for a trial of every part when it stores a plan and of a part when it is revised. It asks again for
+  each part covering a scope when that scope's agent submits a form. The check runner builds the
+  trial tree and runs the part's scopes' tests and the review harness for the newest form of each
+  scope on it. Penguin keeps the report against the part revision. A newer trial of the part, or a
+  newer plan of the feature, supersedes the older trial, so only the newest trial of the current
+  revision counts.
 - **Decision.** Penguin approves each part whose checks are clean
   ([Penguin's approval in the build](#penguins-approval-in-the-build)). For any other part the author
   approves it or asks for a change on the dashboard inbox, which
@@ -800,8 +811,11 @@ Runner mode claims waiting requests with `POST /tool-runs/claim`, as it claims r
 out up to 8 requests and holds them for 30 minutes. An unreported request is handed out again after
 that. Each claimed request names the feature's fork `feature-<id>`, the checkpoint, its baseline, the
 caller's charter and the other running features' forks. Each of those forks comes with its person
-and latest checkpoint. Every running feature is listed, so a person who runs several features has
-each one merged and checked.
+and its head: the commit at the top of its `main` branch, with every fix written into it, or its
+latest checkpoint while the fork has no head. A land merges onto the same heads
+(`blockTargets` in `services/project-agent/src/block-land.ts`), so `check` and `land` test the same
+trees. Penguin reads the heads only when a claim hands out a request. Every running feature is
+listed, so a person who runs several features has each one merged and checked.
 The runner fetches every fork with a read token and runs the tool (`tool-run.ts`):
 
 | Tool | What the runner does | Result |
@@ -967,8 +981,12 @@ runs evidence. `validateReviewForm` (`packages/protocol`) refuses a form with ea
 
 An agent submits the form with the MCP tool `submit_review`, naming the feature under review and its
 own scope. Penguin checks that the session's person owns the scope and that the feature's fork has a
-checkpoint. It reads the invariants from main and each evidence file from the fork at that
-checkpoint. It answers at once with `accepted` or `refused` and every reason. A refused answer is
+checkpoint. It reads the invariants from main. It reads each evidence file where the trial tree of
+the part covering the scope has it, as far as the Worker can tell without building the tree: the
+file the part's patch writes, or the file at the part's fix commit when the fix changes it, then the
+file at the checkpoint, then the file at the affected fork's head. A running feature's part is
+preferred when two parts cover the scope. Without a plan on that checkpoint, Penguin reads the
+checkpoint alone. The check runner checks the form again on the real trial tree. It answers at once with `accepted` or `refused` and every reason. A refused answer is
 marked as a tool error so the agent fixes the form. The ProjectAgent keeps every well-formed form in
 `FeatureReview`, keyed by feature and scope until merge plans give it a plan part. The form's text,
 the reviewer's invariant names and the owner's statements come back inside `personWritten`.
@@ -982,7 +1000,10 @@ submission never reaches the runner.
 
 Runner mode claims pending reviews with `POST /reviews/claim`, as it claims combined runs. A claim
 hands out up to 8 reviews and holds them for 30 minutes. An unreported review is handed out again
-after that. Each claimed review names the feature's fork `feature-<id>`, the checkpoint, its
+after that. A pending form that a part trial carries is left to that trial: the claim skips it
+while the trial runs. The trial's report completes it ([Part trials](#part-trials)). A trial
+whose tree does not build runs no review, so its forms go back to the claim. Each claimed review
+names the feature's fork `feature-<id>`, the checkpoint, its
 baseline, the scope and the form. The runner fetches the fork with a read token and runs the review
 harness below on the baseline and the checkpoint. It reports the record to `POST /reviews/<id>`
 (`review-run.ts`).
@@ -1006,6 +1027,14 @@ the scope's examples files and the form's risky inputs on main and on the fork t
 `analysis:side-by-side`. Inputs reach the scope's code as JSON data built into the parameter types.
 Each input is checked against the function's signature before any input runs.
 
+In a part trial the base is the trial's target: main at the plan's baseline for a scope on main, or
+the affected fork's head for a running feature. The fork is the trial tree. The harness reads the
+scope's invariants, examples and contracts at the base, so the examples a running feature's owner
+declares in that feature's fork run. On the helpful-fix fixture main declares no examples for
+analytics and Jun's fork declares `analytics/examples/weekly_report.json`. A run on Priya's
+checkpoint against main ran 0 inputs; the trial of Jun's part runs every case of that file
+(`tests/integration/part-trial.test.ts`).
+
 The record of a run names the base and fork commits and the scope. Each set in the record gives the
 contract, the examples file or the risky inputs, the invariants it bears on and every input's name.
 It lists each input whose outcome differs, with its arguments and both outcomes. It lists each input
@@ -1023,6 +1052,53 @@ analytics' protected invariant, the run on Priya's checkpoint shows `daily_activ
 one tablet still differs on Priya's limit of five and matches main on Priya's limit of one.
 In runner mode, Jun's review submitted on Priya's feature gets this record with no manual run. The
 tablet difference then reaches Jun's inbox (`apps/worker/test/review-runner.test.ts`).
+
+#### Part trials
+
+A part trial tests one revision of a plan part on the tree it would reach main as
+(`packages/protocol/src/part-trial.ts`). The check runner claims trials with `POST /part-trials/claim`
+under a 30-minute lease, up to 8 at a time. It fetches the originating fork, the target's repo and
+the fix's repo with read tokens (`services/local-bridge/src/part-trial-run.ts`). It builds the trial
+tree from Git objects alone, with no checkout and no ref (`trial-tree.ts`):
+
+1. The target. A part for a running feature starts at the fork head its patch was written against,
+   which is the head Penguin writes the fix onto once the part is approved. A part for a scope on
+   main starts at main at the plan's baseline.
+2. A patch is applied to that head, as the fix write applies it (`patch-tree.ts`).
+3. The plan's originating checkpoint is merged in with `git merge-tree --write-tree`, as a land
+   merges it.
+4. A fix commit in the originating fork is applied on top as its own change against its base, with
+   `git merge-tree --merge-base`: a cherry-pick of the fix without the rest of the fork.
+
+Each commit is written with fixed identities and dates, so one trial gives one tree commit. A step
+that does not apply makes the trial a `conflict`, with the reason and no tree. On a built tree the
+runner runs `test:<scope>` for each of the part's scopes and the review harness for each form the
+trial carries: the newest form of each of the part's scopes submitted on the plan's checkpoint that
+passed its check at submission. The review compares the target with the trial tree.
+
+The runner reports to `POST /part-trials/<id>`. Penguin keeps the report when it names its trial's
+part, revision, checkpoint and target. The report must run each of the trial's test commands once
+and review each of its forms once on the trial tree against the target. The first report wins; a second answers 409.
+A report of a superseded trial answers 200 with `superseded` and is not kept. Each form the trial ran
+that still waits as pending is completed with the trial's record. The exceptions are derived from the
+stored form, the invariants checked at submission and the trial's side-by-side run. An exception
+reaches the scope's owner as a `review_exception` item.
+
+The recorded trial is the part revision's evidence for the checks of PRD 4.3 step 3
+(`trialEvidence`). Its tests take the shape of the plan's facts-run results for the part, with
+`fixInTree` true only for a built tree. Its reviews take the shape of the routing's review results.
+A trial still running, one of another revision, or none gives no evidence.
+
+The trial uses the plan's checkpoint. A later checkpoint of the originating feature is outside the
+trial until a new plan is proposed on it. On the helpful-fix fixture Jun's and Sam's fixes import
+`start_of_local_day`, which Priya adds in the commit after her plan's checkpoint, so their trials on
+that checkpoint fail.
+
+On the identity-unification fixture Jun's form can cite
+`analytics/tests/test_identity.py::test_shared_device_split` and name the cutover marker
+`analytics/retention.py::person_id_cutover`. Both exist only in Jun's fork with the fix of Jun's
+part. The review of Priya's checkpoint refuses the form with `evidence_not_found`. The review on the
+trial of Jun's part accepts it, with the stored data rule satisfied by the marker (`tests/integration/part-trial.test.ts`).
 
 ## Exceptions
 

@@ -221,6 +221,8 @@ penguin-bridge runner --combined
    - claims the reviews agents submitted with `submit_review`. It fetches each feature's fork,
      runs the [review harness](#side-by-side-runs) on the checkpoint's baseline and the checkpoint,
      then reports the record (`review-run.ts`, [design.md](design.md#reviews-on-the-runner));
+   - claims the trials of plan part revisions, builds each part's trial tree and runs the part's
+     scopes' tests and the review harness on it ([Part trials](#part-trials));
    - claims the `impact`, `check` and `apply_fix` requests agents made. It fetches the feature's
      fork and the other running features' forks, runs the tool on the checkpoint and reports the
      result (`tool-run.ts`, [Agent tools on the runner](#agent-tools-on-the-runner));
@@ -403,6 +405,27 @@ pending run. A report of a superseded run answers 409.
 
 On the helpful-fix fixture the facts run of Priya's checkpoint against Jun's and Sam's checkpoints
 takes between 1 and 3 seconds of wall time on an Apple silicon laptop, analysis and three merged trees included.
+
+### Part trials
+
+Each revision of a merge plan's part is tested on the tree it would reach main as
+([design.md](design.md#part-trials)). Each pass claims the waiting trials from
+`POST /part-trials/claim` under a 30-minute lease. A claimed trial names the originating fork and the
+plan's checkpoint, the target (main at the plan's baseline, or the affected feature's fork head), the
+part's fix (a commit in the originating fork with its base, or a patch), `test:<scope>` command IDs
+and the forms to review. For each trial the runner (`part-trial-run.ts`):
+
+1. refuses a claim that names a repo other than `base` or a `feature-<id>` fork, a commit that is not
+   a full SHA or a command that is not a test command, then fetches each repo it names;
+2. builds the trial tree without a checkout (`trial-tree.ts`): the patch applied to the fork head,
+   the checkpoint merged in with `git merge-tree --write-tree`. A fix commit is applied on top with
+   `git merge-tree --merge-base`. A step that does not apply reports a conflict and runs nothing;
+3. runs each test command on the tree in a throwaway worktree;
+4. runs the [review harness](#side-by-side-runs) for each form with the target as base and the tree
+   as fork.
+
+The runner reports to `POST /part-trials/<id>`. A trial whose repos cannot be fetched stays claimed
+and runs again after its lease. A report of a trial a newer one replaced answers `superseded`.
 
 ## Allowlisted commands
 
@@ -730,7 +753,8 @@ and every other running feature's fork with read tokens into the runner's reposi
   rewrite rules to each file that uses a retiring symbol in a throwaway worktree and reports one
   ladder step per file and symbol under `decisions`.
 - `check` runs the [block checks](#block-checks) on the checkpoint merged onto its baseline and onto
-  each other running feature's fork. Each merged tree is named by its feature id, so a person with
+  each other running feature's fork at its head, with every fix written into it, as a land merges
+  onto it. Each merged tree is named by its feature id, so a person with
   several running features has each one checked. The feature's person decides which scopes' tests
   run and receives the routed failures. Each failed or erred check gets
   one decision from the [resolution ladder](#resolution-ladder). No fix runs.

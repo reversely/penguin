@@ -90,6 +90,17 @@ import { OWNERS_PATH, parseOwnersFile, parseScopeFile, SCOPE_MAP_PATH } from "./
 import { ReviewStore, submitReview, type ReviewInput, type ReviewOutcome, type StoredReview } from "./review-submit.ts";
 import { buildFeaturePage, buildFeaturePlan, buildTeamView, type DashboardViewDeps } from "./dashboard-views.ts";
 import { claimReviews, recordReview, type ReviewClaim, type ReviewReportOutcome } from "./review-record.ts";
+import {
+  claimPartTrials,
+  PartTrialStore,
+  queueTrials,
+  queueTrialsForReview,
+  recordPartTrial,
+  trialHolds,
+  trialStanding,
+  type PartTrialClaim,
+  type PartTrialOutcome,
+} from "./part-trial.ts";
 import { reviewDifferences } from "./review-view.ts";
 import {
   AgentToolStore,
@@ -133,6 +144,7 @@ import { contractWork, ContractSplitStore, recordSplit, retireSplit, scheduleSor
 import type { BlockRun } from "./block-store.ts";
 import {
   BlockQueueStore,
+  blockTargets,
   claimBlockRuns,
   featureLanded,
   landFailed,
@@ -219,6 +231,7 @@ import {
   type FeaturePage,
   type IssuePage,
   type OverlapRequests,
+  type PlanPart,
   type PlanInbox,
   type PlanFactsRequest,
   type ReviewDifferences,
@@ -368,6 +381,7 @@ export {
   BLOCK_QUEUE_SCHEMA,
   BLOCK_RECORD_TYPES,
   BlockQueueStore,
+  blockTargets,
   claimBlockRuns,
   featureLanded,
   landFailed,
@@ -557,6 +571,27 @@ export {
   type ReviewState,
   type StoredReview,
 } from "./review-submit.ts";
+export {
+  claimPartTrials,
+  PART_TRIAL_CLAIM_LIMIT,
+  PART_TRIAL_LEASE_MS,
+  PART_TRIAL_TABLE_SCHEMA,
+  PartTrialStore,
+  queueTrials,
+  queueTrialsForReview,
+  recordPartTrial,
+  trialEvidence,
+  trialForms,
+  trialHolds,
+  trialSpec,
+  trialStanding,
+  type PartTrialClaim,
+  type PartTrialOutcome,
+  type PartTrialRecordDeps,
+  type StoredPartTrial,
+  type TrialQueueDeps,
+  type TrialSpec,
+} from "./part-trial.ts";
 export {
   claimReviews,
   recordReview,
@@ -812,6 +847,7 @@ export class ProjectAgent extends Agent {
   #forks: OwnerForkStore | undefined;
   #featureRows: FeatureStore | undefined;
   #reviewRows: ReviewStore | undefined;
+  #trialRows: PartTrialStore | undefined;
   #toolRows: AgentToolStore | undefined;
   #overlapRows: OverlapStore | undefined;
   #planFacts: PlanFactsStore | undefined;
@@ -1858,19 +1894,80 @@ export class ProjectAgent extends Agent {
         baseline: (repo, sha) =>
           withRepo(this.env.ARTIFACTS, repo, (fork) => withRepo(this.env.ARTIFACTS, repos.base, (base) => checkpointBaseline(fork, base, sha))),
         heartbeat: (caller, session) => this.sessionHeartbeat(caller, session),
+        coveringPart: (featureId, scopeId, checkpoint) => this.#coveringPart(featureId, scopeId, checkpoint),
       },
       owner,
       sessionId,
       input,
-    ));
+    ).then(async (outcome) => {
+      // A form that waits for the runner asks again for a trial of each part covering its scope.
+      if (outcome.status === "ok" && outcome.state === "pending") {
+        const plan = await this.#planKeeper(outcome.featureId).latestPlan(outcome.featureId);
+        queueTrialsForReview(this.#trialDeps(), plan, outcome.scopeId, outcome.forkSha);
+      }
+      return outcome;
+    }));
+  }
+
+  /** The part of the feature's newest plan on `checkpoint` covering `scopeId`, a running feature's first. */
+  async #coveringPart(featureId: string, scopeId: string, checkpoint: string): Promise<PlanPart | undefined> {
+    const plan = await this.#planKeeper(featureId).latestPlan(featureId);
+    if (plan === undefined || plan.facts.change.checkpoint !== checkpoint) return undefined;
+    const covering = plan.parts.filter((part) => part.scopes.includes(scopeId));
+    return covering.find((part) => part.place.kind === "feature") ?? covering[0];
   }
 
   /**
    * For the integration runner only: claims the pending reviews, each with its form, baseline and
-   * checkpoint (review-record.ts). Any other role is refused.
+   * checkpoint (review-record.ts). A review whose form a part trial runs waits for that trial. Any
+   * other role is refused.
    */
   claimReviews(caller: BridgeCaller): ReviewClaim {
-    return claimReviews(this.#reviewStore(), caller);
+    const trials = this.#partTrialStore();
+    return claimReviews(this.#reviewStore(), caller, (review) => trialHolds(trials, review));
+  }
+
+  /**
+   * For the integration runner only: claims the waiting trials of plan part revisions (part-trial.ts),
+   * each with its target, fix, test commands and forms. Any other role is refused.
+   */
+  claimPartTrials(caller: BridgeCaller): PartTrialClaim {
+    return claimPartTrials(this.#partTrialStore(), caller);
+  }
+
+  /**
+   * Keeps the runner's report of trial `trialId` against its part revision and completes each form it
+   * ran that still waits; an exception goes to the scope's owner. Penguin then approves each part of
+   * the feature's plan whose checks are clean.
+   */
+  async reportPartTrial(caller: BridgeCaller, trialId: number, report: unknown, repos: ProjectRepos): Promise<PartTrialOutcome> {
+    const outcome = await this.#featuresChanging(recordPartTrial(
+      {
+        trials: this.#partTrialStore(),
+        reviews: this.#reviewStore(),
+        routeToOwner: (ownerId, review) => {
+          this.#inboxStore().reviewException(ownerId, review.featureId, review.scopeId);
+          sendToOwner(this.getConnections<{ owner?: string }>(), ownerId, inboxChangedMessage());
+        },
+      },
+      caller,
+      trialId,
+      report,
+    ));
+    if (outcome.status === "recorded") {
+      const featureId = outcome.trial.featureId;
+      await this.#featuresChanging(this.#planStep(() => approveCleanParts(this.#planApprovalDeps(repos), featureId)));
+    }
+    return outcome;
+  }
+
+  #partTrialStore(): PartTrialStore {
+    this.#trialRows ??= new PartTrialStore(this.#database());
+    return this.#trialRows;
+  }
+
+  #trialDeps(): { readonly trials: PartTrialStore; readonly reviews: ReviewStore } {
+    return { trials: this.#partTrialStore(), reviews: this.#reviewStore() };
   }
 
   /**
@@ -1968,9 +2065,17 @@ export class ProjectAgent extends Agent {
    * each with its fork, checkpoint, baseline, charter and the other running features' forks
    * (agent-tool-runner.ts). Any other role is refused.
    */
-  claimToolRuns(caller: BridgeCaller): ToolRunClaim {
+  claimToolRuns(caller: BridgeCaller): Promise<ToolRunClaim> {
+    const features = this.#featureStore();
+    const readRepo: LandDeps["readRepo"] = (repo, use) => withRepo(this.env.ARTIFACTS, repo, (opened) => use(opened as unknown as ForkReader));
     return claimToolRuns(
-      { runs: this.#toolStore(), features: this.#featureStore(), identity: (identityId) => this.readIdentity(identityId) },
+      {
+        runs: this.#toolStore(),
+        features,
+        identity: (identityId) => this.readIdentity(identityId),
+        // `check` merges onto each fork's head with its written fixes, as a land does.
+        targets: (own) => blockTargets({ features, readRepo }, own),
+      },
       caller,
     );
   }
@@ -2029,6 +2134,8 @@ export class ProjectAgent extends Agent {
           // later features that meet its area (plan-coverage.ts).
           announce: (plan, scopeMap) => {
             announcePlan(this.#planApprovalDeps(repos), plan, scopeMap);
+            // Each part revision is tested on the tree it would land as (part-trial.ts).
+            queueTrials(this.#trialDeps(), plan);
             this.#planCoverageStore().announce(plan, this.#featureStore().list(), scopeMap);
           },
         },
@@ -2064,6 +2171,7 @@ export class ProjectAgent extends Agent {
         roundLimit: this.#roundLimit(),
         adminMode: this.#adminMode(),
         landed: (featureId) => this.#featureStore().get(featureId)?.state === "landed",
+        trial: (featureId, part) => trialStanding(this.#partTrialStore(), this.#reviewStore(), featureId, part),
         records: (featureId) => this.#featureStore().records(featureId),
         protectedChanges: (owners, items, delegates) =>
           protectedChangeRequests(this.#protectedChangeStore(), this.#featureStore(), items, owners, caller, delegates),
@@ -2146,6 +2254,9 @@ export class ProjectAgent extends Agent {
         );
         if (outcome.status !== "ok") return outcome;
         const featureId = this.#featureStore().featureOfSession(sessionId) as string;
+        // The revision gets its own trial; the older revision's no longer counts.
+        const plan = await this.#planKeeper(featureId).latestPlan(featureId);
+        if (plan !== undefined) queueTrials(this.#trialDeps(), plan, plan.parts.filter((part) => part.partId === outcome.part.partId));
         const approved = (await approveCleanParts(deps, featureId)).find((part) => part.partId === outcome.part.partId);
         return approved === undefined ? outcome : { ...outcome, part: approved };
       }),
@@ -2183,6 +2294,7 @@ export class ProjectAgent extends Agent {
         reviews: (featureId) => this.#reviewStore().list(featureId),
         scopeMap: () => this.#scopeMap(repos),
         adminMode: this.#adminMode(),
+        trial: (featureId, part) => trialStanding(this.#partTrialStore(), this.#reviewStore(), featureId, part),
       },
     };
   }

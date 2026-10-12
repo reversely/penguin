@@ -62,7 +62,7 @@ import type { FeatureRejection } from "./feature-open.ts";
 import { parseFeatureId, type FeatureRecord, type FeatureStore, type StoredFeatureRecord, type UnsignedFeatureRecord } from "./feature-store.ts";
 import { parsePartRef, type InboxItem, type InboxStore } from "./inbox-store.ts";
 import type { SqlDatabase, SqlValue } from "./issue-index.ts";
-import { protectedLookup, reviewResult } from "./part-checks.ts";
+import { protectedLookup, reviewResult, trialPart, trialReviews, type PartTrialStanding } from "./part-checks.ts";
 import type { PlanFactsStore } from "./plan-facts.ts";
 import type { PlanKeeper } from "./plan-store.ts";
 import { classifyPart, parseFixFields, readFix, type AffectedPlace, type RepoReading } from "./propose-plan.ts";
@@ -239,6 +239,8 @@ export interface PartCheckDeps {
   readonly scopeMap: () => Promise<ScopeMap>;
   /** PENGUIN_PLAN_ADMIN_MODE: a person approves every part. */
   readonly adminMode: boolean;
+  /** The trial of a part's current revision (part-trial.ts `trialStanding`); absent, none is read. */
+  readonly trial?: (featureId: string, part: PlanPart) => PartTrialStanding | undefined;
 }
 
 export interface ReviseDeps extends PlanApprovalDeps {
@@ -289,9 +291,23 @@ const PART_ID_MAX_LENGTH = 128;
 
 export { protectedLookup };
 
-/** One part's routing against the plan it belongs to (PRD 4.3): every reason it needs a person. */
-export function routePart(plan: Plan, part: PlanPart, reviews: readonly StoredReview[], scopeMap: ScopeMap, adminMode: boolean): PartRouting {
-  return partRouting(part, { reviews: reviews.map(reviewResult), checkpoint: plan.facts.change.checkpoint, adminMode }, protectedLookup(scopeMap));
+/**
+ * One part's routing against the plan it belongs to (PRD 4.3): every reason it needs a person. With
+ * `trial`, the part revision's trial supplies the tests and the reviews it ran (part-checks.ts).
+ */
+export function routePart(
+  plan: Plan,
+  part: PlanPart,
+  reviews: readonly StoredReview[],
+  scopeMap: ScopeMap,
+  adminMode: boolean,
+  trial?: PartTrialStanding,
+): PartRouting {
+  return partRouting(
+    trialPart(part, trial),
+    { reviews: trialReviews(reviews.map(reviewResult), trial), checkpoint: plan.facts.change.checkpoint, adminMode },
+    protectedLookup(scopeMap),
+  );
 }
 
 /** The people who protect a path the part's fix writes. */
@@ -482,7 +498,9 @@ export async function approveCleanParts(deps: PlanApprovalDeps, featureId: strin
   const reviews = checks.reviews(featureId);
   const approved: PlanPart[] = [];
   for (const part of pending) {
-    if (routePart(plan, part, reviews, scopeMap, false).inPerson) continue;
+    const trial = checks.trial?.(featureId, part);
+    if (routePart(plan, part, reviews, scopeMap, false, trial).inPerson) continue;
+    const tests = trialPart(part, trial).tests;
     const record = await deps.sign(
       deps.features.draftRecord(featureId, "approve_plan_part", { penguin: true }, {
         plan_id: plan.planId,
@@ -492,11 +510,13 @@ export async function approveCleanParts(deps: PlanApprovalDeps, featureId: strin
         diff: part.diff.ref,
         owner: part.owner,
         approved_by: PENGUIN_APPROVER,
-        // The evidence of each clean check: the facts run's tests on the tree holding the fix and the reviews.
+        // The evidence of each clean check: the tests on the tree holding the fix (the part's trial, or the
+        // facts run when the fix is under the checkpoint) and the reviews.
         checks: {
           checkpoint: plan.facts.change.checkpoint,
-          facts_run: part.tests?.runId ?? null,
-          tests: (part.tests?.results ?? []).map(({ scopeId, commandId, status }) => ({ scope: scopeId, command: commandId, status })),
+          facts_run: tests?.runId ?? null,
+          ...(trial?.state === "recorded" ? { trial_tree: trial.evidence.tree } : {}),
+          tests: (tests?.results ?? []).map(({ scopeId, commandId, status }) => ({ scope: scopeId, command: commandId, status })),
           reviews: newestReviews(reviews, part.scopes).map((review) => review.id),
         },
       }),
@@ -746,6 +766,8 @@ export interface PlanInboxDeps {
   readonly roundLimit: number | undefined;
   /** PENGUIN_PLAN_ADMIN_MODE, which each part's routing names; off when absent. */
   readonly adminMode?: boolean;
+  /** The trial of a part's current revision, which the routing reads (part-trial.ts `trialStanding`). */
+  readonly trial?: (featureId: string, part: PlanPart) => PartTrialStanding | undefined;
   /** Whether a feature's block has landed, after which Penguin's approvals stand; never when absent. */
   readonly landed?: (featureId: string) => boolean;
   /** The feature's signed records, which hold each returned plan (FeatureStore.records). */
@@ -823,7 +845,7 @@ export async function buildPlanInbox(deps: PlanInboxDeps, caller: string): Promi
       files: partFiles(part),
       breaks: part.breaks.map(breakView),
       reviews: newestReviews(stored, part.scopes).map(reviewView),
-      routing: routePart(plan, part, stored, scopeMap, deps.adminMode ?? false),
+      routing: routePart(plan, part, stored, scopeMap, deps.adminMode ?? false, deps.trial?.(plan.featureId, part)),
       changeRequest:
         part.changeRequest === null ? null : { by: part.changeRequest.by, revision: part.changeRequest.revision, text: part.changeRequest.text },
       read: item?.read ?? false,

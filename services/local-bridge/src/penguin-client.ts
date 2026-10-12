@@ -20,6 +20,8 @@ import {
   type ApprovalReport,
   type ApprovalSpec,
   type CombinedRunEvent,
+  type PartTrialReport,
+  type PartTrialRequest,
   type PlanFactsReport,
   type PlanFactsRequest,
   type ReviewException,
@@ -650,6 +652,44 @@ export async function reportReview(
     throw new RemoteRefusedError(`Penguin refused the record of review ${reviewId} (HTTP ${status})${message}`);
   }
   throw new RemoteUnavailableError(`Penguin could not take the record of review ${reviewId} (HTTP ${status})${message}`);
+}
+
+/** The route a runner claims part trials from, and reports each one to under `/<trial id>`. */
+export const PART_TRIAL_ROUTE = "/part-trials";
+
+/** Penguin's answer to a trial report: the part revision it was kept against. */
+export interface PartTrialReply {
+  readonly status: "recorded" | "superseded";
+  readonly trialId: number;
+  readonly partId: string;
+  readonly revision: number;
+}
+
+/**
+ * Claims the part trials Penguin asks for, which marks them as this runner's until they are reported
+ * or their lease runs out. The runner checks each request again before anything runs.
+ */
+export async function claimPartTrials(server: string, bridgeToken: string, fetchImpl: Fetch = fetch): Promise<PartTrialRequest[]> {
+  const { status, body } = await runnerRequest(server, bridgeToken, `${PART_TRIAL_ROUTE}/claim`, {}, fetchImpl);
+  if (status !== 200 || !Array.isArray(body["trials"])) {
+    throw new RemoteUnavailableError(`Penguin could not hand out part trials (HTTP ${status})`);
+  }
+  return body["trials"] as PartTrialRequest[];
+}
+
+/** Reports one trial; Penguin keeps it against the part revision, unless a newer trial replaced it. */
+export async function reportPartTrial(
+  server: string,
+  bridgeToken: string,
+  trialId: number,
+  report: PartTrialReport,
+  fetchImpl: Fetch = fetch,
+): Promise<PartTrialReply> {
+  const { status, body } = await runnerRequest(server, bridgeToken, `${PART_TRIAL_ROUTE}/${trialId}`, report, fetchImpl);
+  if (status === 200) return body as unknown as PartTrialReply;
+  const message = typeof body["message"] === "string" ? `: ${body["message"]}` : "";
+  if ([400, 404, 409, 413].includes(status)) throw new RemoteRefusedError(`Penguin refused part trial ${trialId} (HTTP ${status})${message}`);
+  throw new RemoteUnavailableError(`Penguin could not take part trial ${trialId} (HTTP ${status})${message}`);
 }
 
 /** The route a runner claims agent tool requests from, and reports each one's result to under `/<run id>`. */

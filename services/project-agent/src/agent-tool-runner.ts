@@ -2,7 +2,9 @@
 // A request waits in AgentToolRun with the checkpoint's baseline on main. The integration runner
 // claims waiting requests under a lease, as it claims reviews (review-record.ts): an unreported claim
 // is handed out again after the lease. Each claim names the feature's fork, the checkpoint, its
-// baseline, the caller's charter and the other running features' forks the checks merge with.
+// baseline, the caller's charter and the other running features' forks the checks merge with. Each
+// fork is named at its head, with every fix written into it, as a land names it (block-land.ts
+// `blockTargets`), so `check` and `land` merge onto the same commits.
 //
 // The report attaches the runner's result to the request. The first report wins. The result reaches
 // the requesting session at its next safe checkpoint (AgentToolStore.deliver).
@@ -23,6 +25,8 @@ import {
 import type { CharterIdentity } from "@penguin/policies";
 
 import type { AgentToolRun, AgentToolStore } from "./agent-tools.ts";
+import type { BlockRunTarget } from "@penguin/protocol";
+
 import type { Feature, FeatureStore } from "./feature-store.ts";
 import type { BridgeCaller } from "./issue-index.ts";
 import { RUNNING_STATES } from "./overlap-lock.ts";
@@ -33,6 +37,7 @@ export interface ClaimedFork {
   readonly person: string;
   /** The fork as a bridge names it, `feature-<id>`, without the deployment's prefix. */
   readonly fork: string;
+  /** The fork's head, with every fix written into it; its latest checkpoint while it has no head. */
   readonly checkpoint: string;
 }
 
@@ -62,6 +67,11 @@ export interface ToolRunnerDeps {
   readonly features: FeatureStore;
   /** The charter of an identity, by its id. */
   readonly identity: (identityId: string) => CharterIdentity | undefined;
+  /**
+   * The other running features' fork heads, as a land of feature `own` would merge onto them
+   * (block-land.ts `blockTargets`). Absent, each fork counts at its latest checkpoint.
+   */
+  readonly targets?: (own: string) => Promise<readonly BlockRunTarget[]>;
 }
 
 /**
@@ -79,35 +89,48 @@ export function otherForks(features: readonly Feature[], own: string): ClaimedFo
 
 const isRunnerTool = (tool: AgentToolName): tool is RunnerToolName => tool !== "whats_near";
 
-/** Claims the waiting tool requests for a runner bridge; any other role is refused. */
-export function claimToolRuns(deps: ToolRunnerDeps, caller: BridgeCaller): ToolRunClaim {
+/**
+ * Claims the waiting tool requests for a runner bridge; any other role is refused. The fork heads are
+ * read only when a request was claimed, once per feature.
+ */
+export async function claimToolRuns(deps: ToolRunnerDeps, caller: BridgeCaller): Promise<ToolRunClaim> {
   const listing = deps.runs.claim(caller);
   if (listing.status === "forbidden") return listing;
   const features = deps.features.list();
-  const runs = listing.runs.flatMap((run): ClaimedToolRun[] => {
+  const forksOf = new Map<string, ClaimedFork[]>();
+  const forks = async (own: string): Promise<ClaimedFork[]> => {
+    const known = forksOf.get(own);
+    if (known !== undefined) return known;
+    const read =
+      deps.targets === undefined
+        ? otherForks(features, own)
+        : (await deps.targets(own)).map(({ feature, person, fork, sha }) => ({ feature, person, fork, checkpoint: sha }));
+    forksOf.set(own, read);
+    return read;
+  };
+  const runs: ClaimedToolRun[] = [];
+  for (const run of listing.runs) {
     const feature = features.find((item) => item.id === run.featureId);
     const identity = run.identityId === null ? undefined : deps.identity(run.identityId);
-    if (feature === undefined || identity === undefined || !isRunnerTool(run.tool)) return [];
-    return [
-      {
-        runId: run.id,
-        tool: run.tool,
-        feature: feature.id,
-        fork: `feature-${feature.id}`,
-        base: run.baseSha as string,
-        checkpoint: run.checkpointSha as string,
-        input: run.input,
-        charter: {
-          handle: identity.handle,
-          // A team identity has no one owner; the feature's person then receives its exceptions.
-          person: identity.ownerId ?? feature.personId,
-          scopes: [...identity.charterScopes],
-          paths: [...identity.charterPaths],
-        },
-        forks: otherForks(features, feature.id),
+    if (feature === undefined || identity === undefined || !isRunnerTool(run.tool)) continue;
+    runs.push({
+      runId: run.id,
+      tool: run.tool,
+      feature: feature.id,
+      fork: `feature-${feature.id}`,
+      base: run.baseSha as string,
+      checkpoint: run.checkpointSha as string,
+      input: run.input,
+      charter: {
+        handle: identity.handle,
+        // A team identity has no one owner; the feature's person then receives its exceptions.
+        person: identity.ownerId ?? feature.personId,
+        scopes: [...identity.charterScopes],
+        paths: [...identity.charterPaths],
       },
-    ];
-  });
+      forks: await forks(feature.id),
+    });
+  }
   return { status: "ok", runs };
 }
 

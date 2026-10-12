@@ -7,14 +7,20 @@
 // `pending` with the checkpoint's baseline on main, until a runner claims it, runs the review harness
 // and reports the record (review-record.ts).
 //
-// Until merge plans exist (#89), a review is keyed by the feature under review and the reviewing
-// scope, not by a plan part. Every form string is length-limited and stored as data, never run.
+// A review is keyed by the feature under review and the reviewing scope. Once the feature's plan has a
+// part covering the scope, the evidence is looked up where that part's trial tree has it (PRD 0.5
+// section 4.3): in the part's fix, then the checkpoint, then the affected fork's head. The runner checks
+// the form again on the trial tree itself (part-trial.ts). Every form string is length-limited and
+// stored as data, never run.
 
 import {
+  applyPatchFile,
   evidencePaths,
+  parsePatch,
   parseReviewForm,
   validateReviewForm,
   type InvariantView,
+  type PlanPart,
   type ReviewException,
   type ReviewForm,
   type ReviewRecord,
@@ -209,25 +215,27 @@ export class ReviewStore {
   /**
    * Hands the runner up to REVIEW_CLAIM_LIMIT pending reviews, oldest first, and marks them claimed
    * by `caller`. A review is claimable while pending and unclaimed, or when its claim's lease ran out
-   * without a report. Only a bridge with the runner role may claim.
+   * without a report. A review `held` names waits for a part trial instead, which runs its form on the
+   * part's trial tree (part-trial.ts). Only a bridge with the runner role may claim.
    */
-  claim(caller: BridgeCaller): ReviewClaimListing {
+  claim(caller: BridgeCaller, held: (review: StoredReview) => boolean = () => false): ReviewClaimListing {
     if (caller.role !== "runner") {
       return { status: "forbidden", message: `bridge ${caller.bridgeId} does not hold the runner role` };
     }
     const now = this.#now();
     return this.#db.transaction((): ReviewClaimListing => {
       const rows = this.#db.exec(
-        `SELECT id FROM FeatureReview WHERE validation_state = 'pending' AND base_sha IS NOT NULL
-           AND (claimed_at IS NULL OR claimed_at <= ?) ORDER BY id LIMIT ?`,
+        `SELECT * FROM FeatureReview WHERE validation_state = 'pending' AND base_sha IS NOT NULL
+           AND (claimed_at IS NULL OR claimed_at <= ?) ORDER BY id`,
         now - this.#leaseMs,
-        REVIEW_CLAIM_LIMIT,
       );
       const reviews: StoredReview[] = [];
       for (const row of rows) {
-        const id = Number(row["id"]);
-        this.#db.exec(`UPDATE FeatureReview SET claimed_by = ?, claimed_at = ? WHERE id = ?`, caller.bridgeId, now, id);
-        reviews.push(this.get(id) as StoredReview);
+        if (reviews.length >= REVIEW_CLAIM_LIMIT) break;
+        const pending = review(row);
+        if (held(pending)) continue;
+        this.#db.exec(`UPDATE FeatureReview SET claimed_by = ?, claimed_at = ? WHERE id = ?`, caller.bridgeId, now, pending.id);
+        reviews.push(this.get(pending.id) as StoredReview);
       }
       return { status: "ok", reviews };
     });
@@ -266,6 +274,11 @@ export interface ReviewDeps {
   /** The checkpoint `sha` of fork `repo`'s baseline on main (`checkpointBaseline`). */
   readonly baseline: (repo: string, sha: string) => Promise<string>;
   readonly heartbeat: (caller: string, sessionId: string) => SessionOutcome;
+  /**
+   * The part of the feature's newest plan covering scope `scopeId` on checkpoint `checkpoint`, or
+   * undefined. Absent, evidence is looked up in the checkpoint alone.
+   */
+  readonly coveringPart?: (featureId: string, scopeId: string, checkpoint: string) => Promise<PlanPart | undefined>;
 }
 
 export interface ReviewInput {
@@ -298,6 +311,30 @@ async function forkText(deps: ReviewDeps, repo: string, sha: string, path: strin
   const blob = await deps.readForkFile(repo, sha, path);
   if (blob === null || blob.size > MAX_EVIDENCE_FILE_BYTES) return null;
   return blob.text();
+}
+
+/**
+ * A file as the part's trial tree has it, as far as Penguin can tell without building the tree: the
+ * part's fix (the patched file, or the file at the fix commit when the fix changes it), then the
+ * checkpoint, then the affected fork's head. Null when none has it.
+ */
+async function trialText(deps: ReviewDeps, originRepo: string, checkpoint: string, part: PlanPart | undefined, path: string): Promise<string | null> {
+  const { diff, place } = part ?? { diff: undefined, place: undefined };
+  const forkRepo = place?.kind === "feature" ? (deps.features.get(place.feature)?.repo ?? null) : null;
+  if (diff?.source === "patch" && diff.patch !== null && diff.base !== null && forkRepo !== null) {
+    const parsed = parsePatch(diff.patch);
+    const file = parsed.ok ? parsed.files.find((each) => each.path === path) : undefined;
+    if (file !== undefined) {
+      const applied = applyPatchFile(file, await forkText(deps, forkRepo, diff.base, path));
+      return applied.ok ? applied.text : null;
+    }
+  }
+  if (diff?.source === "commit" && diff.commit !== null && diff.files.some((file) => file.path === path)) {
+    return forkText(deps, originRepo, diff.commit, path);
+  }
+  const atCheckpoint = await forkText(deps, originRepo, checkpoint, path);
+  if (atCheckpoint !== null || forkRepo === null || diff?.base == null) return atCheckpoint;
+  return forkText(deps, forkRepo, diff.base, path);
 }
 
 /**
@@ -336,9 +373,10 @@ export async function submitReview(deps: ReviewDeps, caller: string, sessionId: 
   // A form that breaks the format is refused without being kept: it is not a form.
   if (!parsed.ok) return { status: "ok", reviewId: null, state: "refused", refusals: parsed.refusals, ...checked };
 
+  const part = await deps.coveringPart?.(feature.id, scope.id, feature.latestCheckpointSha);
   const files = new Map<string, string | null>();
   for (const path of evidencePaths(parsed.form)) {
-    files.set(path, await forkText(deps, feature.repo, feature.latestCheckpointSha, path));
+    files.set(path, await trialText(deps, feature.repo, feature.latestCheckpointSha, part, path));
   }
   const validation = validateReviewForm({ form: parsed.form, invariants, files, storedShapes: null });
   // Only a form that passed waits for the runner, which compares the checkpoint with its baseline.

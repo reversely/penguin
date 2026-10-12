@@ -322,12 +322,14 @@ approval of each part whose checks are clean and each person's decision on the r
 
 On identity unification the plan is stored with four parts: Priya's fix commits for analytics' and
 messaging's code on main, and the patches for Jun's and Sam's forks. Jun's and Sam's agents submit
-the fixture's review forms from `examples/identity-unification/reviews/`. Penguin approves none of the four: both
-reviews are refused for a stored data change with no marker. No run has tested any fix. Sam
-approves both of Sam's parts. Jun's review raises the tablet invariant, so Jun's two parts wait on
-Jun. On the helpful fix the plan holds the patches for Jun's weekly report and Sam's reminders. Both
-reviews hold. No run has tested either patch, and each feature's tests fail on its merged tree
-before the patch, so Penguin approves neither. Jun and Sam each approve their own part. On money in minor units the one-block plan is returned
+the fixture's review forms from `examples/identity-unification/reviews/`. Each part's trial runs the
+forms on its trial tree ([design.md](design.md#part-trials)). Penguin approves none of the four:
+both reviews are refused for a stored data change with no marker. Sam approves both of Sam's parts.
+Jun's review raises the tablet invariant, so Jun's two parts wait on Jun. On the helpful fix the plan
+holds the patches for Jun's weekly report and Sam's reminders. Both reviews hold on the trial trees,
+with no difference on the 2 recorded examples each fork declares. Each feature's tests fail on its
+trial tree: each patch imports `start_of_local_day`, which Priya adds after the plan's checkpoint.
+Penguin approves neither. Jun and Sam each approve their own part. On money in minor units the one-block plan is returned
 over the default break limit of 10 and stays in Ines's inbox. The seed then runs the seven waves of
 [case-study-money.md](case-study-money.md): each wave opens from main as the wave before left it. The
 seed approves each overlapping start. Penguin approves no stored part, so Lena and Mei approve

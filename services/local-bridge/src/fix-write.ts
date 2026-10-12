@@ -18,9 +18,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { runGit } from "@penguin/git-analysis";
-import { applyPatchFile, checkFixWriteSpec, parsePatch, type FixWriteSpec } from "@penguin/protocol";
+import { checkFixWriteSpec, parsePatch, type FixWriteSpec } from "@penguin/protocol";
 
 import type { GitRemote } from "./git-remote.ts";
+import { patchedTree } from "./patch-tree.ts";
 
 export type FixWriteResult =
   | { readonly status: "written"; readonly commit: string; readonly parent: string; readonly durationMs: number }
@@ -45,7 +46,6 @@ const WRITER_ENV = {
   GIT_COMMITTER_EMAIL: "penguin@penguin.invalid",
 };
 const NO_HOOKS = ["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false"];
-const REGULAR_MODES = new Set(["100644", "100755"]);
 
 /** Writes `spec`'s fix as one commit on the fork's branch. */
 export async function writeFix(options: FixWriterOptions, spec: FixWriteSpec): Promise<FixWriteResult> {
@@ -68,26 +68,9 @@ export async function writeFix(options: FixWriterOptions, spec: FixWriteSpec): P
 
   const scratch = await mkdtemp(join(options.scratchDir ?? tmpdir(), "penguin-fix-write-"));
   try {
-    const env = { GIT_INDEX_FILE: join(scratch, "index") };
-    await runGit(repoPath, ["read-tree", spec.parent], { env });
-    for (const [index, file] of parsed.files.entries()) {
-      const entry = (await runGit(repoPath, ["ls-tree", "-z", "--end-of-options", spec.parent, "--", file.path])).split("\0")[0] ?? "";
-      const [meta = "", listed] = entry.split("\t");
-      const [mode, , blob] = meta.split(" ");
-      if (entry !== "" && (listed !== file.path || !REGULAR_MODES.has(mode ?? ""))) return refused(`${file.path} is not a regular file at the parent`);
-      const before = entry === "" ? null : await runGit(repoPath, ["cat-file", "blob", blob as string]);
-      const applied = applyPatchFile(file, before);
-      if (!applied.ok) return refused(applied.message);
-      if (applied.text === null) {
-        await runGit(repoPath, ["update-index", "--force-remove", "--", file.path], { env });
-        continue;
-      }
-      const content = join(scratch, `file-${index}`);
-      await writeFile(content, applied.text, { mode: 0o600 });
-      const written = (await runGit(repoPath, ["hash-object", "-w", "--", content])).trim();
-      await runGit(repoPath, ["update-index", "--add", "--cacheinfo", `${entry === "" ? "100644" : mode},${written},${file.path}`], { env });
-    }
-    const tree = (await runGit(repoPath, ["write-tree"], { env })).trim();
+    const patched = await patchedTree(repoPath, spec.parent, parsed.files, scratch);
+    if (!patched.ok) return refused(patched.message);
+    const { tree } = patched;
     const changed = (await runGit(repoPath, ["diff-tree", "-r", "-z", "--name-only", "--no-renames", spec.parent, tree])).split("\0").filter(Boolean).sort();
     if (changed.join("\n") !== paths.join("\n")) return refused(`the commit would change ${changed.join(", ") || "nothing"}, not exactly the patch's files`);
     const message = join(scratch, "message");

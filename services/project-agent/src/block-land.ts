@@ -220,13 +220,17 @@ export async function mainState(deps: LandDeps): Promise<{ readonly head: string
 }
 
 /** The head of a fork's main branch, where its feature's work and every fix written into it sit. */
-async function forkHead(deps: LandDeps, repo: string): Promise<string | null> {
+async function forkHead(deps: Pick<LandDeps, "readRepo">, repo: string): Promise<string | null> {
   const [head] = await deps.readRepo(repo, (reader) => reader.log({ ref: FIX_WRITE_BRANCH, limit: 1 }));
   return head?.hash ?? null;
 }
 
-/** Every other running feature's fork head, in feature id order: the block's targets besides main. */
-export async function blockTargets(deps: LandDeps, own: string): Promise<BlockRunTarget[]> {
+/**
+ * Every other running feature's fork head, in feature id order: the block's targets besides main. A
+ * fork head holds every fix written into the fork; a fork with no head yet counts at its latest
+ * checkpoint. `check` merges onto the same targets (agent-tool-runner.ts), so check and land agree.
+ */
+export async function blockTargets(deps: Pick<LandDeps, "features" | "readRepo">, own: string): Promise<BlockRunTarget[]> {
   const running = deps.features
     .list()
     .filter((feature) => feature.id !== own && RUNNING_STATES.has(feature.state) && feature.repo !== null)

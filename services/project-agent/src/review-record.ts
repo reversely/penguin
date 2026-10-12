@@ -31,9 +31,12 @@ export type ReviewClaim =
   | { readonly status: "ok"; readonly reviews: readonly ClaimedReview[] }
   | { readonly status: "forbidden"; readonly message: string };
 
-/** Claims the pending reviews for a runner bridge; any other role is refused. */
-export function claimReviews(reviews: ReviewStore, caller: BridgeCaller): ReviewClaim {
-  const listing = reviews.claim(caller);
+/**
+ * Claims the pending reviews for a runner bridge; any other role is refused. A review `held` names
+ * waits for the part trial that runs its form (part-trial.ts `trialHolds`).
+ */
+export function claimReviews(reviews: ReviewStore, caller: BridgeCaller, held?: (review: StoredReview) => boolean): ReviewClaim {
+  const listing = reviews.claim(caller, held);
   if (listing.status === "forbidden") return listing;
   return {
     status: "ok",

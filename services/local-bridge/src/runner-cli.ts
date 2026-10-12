@@ -3,10 +3,11 @@
 // runs it claims (combined-run-pass.ts), the merge-plan facts runs it lists (plan-facts-run.ts), the
 // Huddle verification runs it lists (verification-run.ts), the approved branches it records in Huddle
 // repos (approval-run.ts), the submitted reviews it claims and runs the review harness on
-// (review-run.ts), the agents' `impact`, `check` and `apply_fix` requests it claims and runs on
-// feature forks (tool-run.ts), the approved mechanical plan parts it writes into affected features'
-// forks (fix-write.ts) and the block runs that check a feature merged onto main and every running
-// fork before Penguin promotes it (block-run.ts).
+// (review-run.ts), the trials of each plan part revision it claims (part-trial-run.ts), the agents'
+// `impact`, `check` and `apply_fix` requests it claims and runs on feature forks (tool-run.ts), the
+// approved mechanical plan parts it writes into affected features' forks (fix-write.ts) and the block
+// runs that check a feature merged onto main and every running fork before Penguin promotes it
+// (block-run.ts).
 
 import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
@@ -27,6 +28,7 @@ import { CombinedRunner } from "./combined-run.ts";
 import { fixWritePass, formatFixWritePass, writeFix, type FixWritePassResult } from "./fix-write.ts";
 import { penguinRemote, tokenRemote } from "./git-remote.ts";
 import { pythonImpactAnalyzer } from "./impact-analysis.ts";
+import { formatPartTrialPass, partTrialPass, PartTrialRunner, trialFetcher, type PartTrialPassResult } from "./part-trial-run.ts";
 import { factsFetcher, formatPlanFactsPass, planFactsPass, PlanFactsRunner, type PlanFactsPassResult } from "./plan-facts-run.ts";
 import { defaultClonePath } from "./issue-cli.ts";
 import { IssuesClone } from "./issues-clone.ts";
@@ -36,6 +38,7 @@ import {
   claimBlockRuns,
   claimCombinedRuns,
   claimFixWrites,
+  claimPartTrials,
   claimReviews,
   claimToolRuns,
   fetchApprovals,
@@ -47,6 +50,7 @@ import {
   reportBlockRun,
   reportCombinedRun,
   reportFixWrite,
+  reportPartTrial,
   reportPlanFacts,
   reportReview,
   reportToolRun,
@@ -80,7 +84,10 @@ export const RUNNER_USAGE = `       penguin-bridge runner [--once] [--interval <
          <python> (default python3), lint and format with <ruff> (default ruff on PATH) and the
          type check with the pyright package installed beside the bridge. Each review submitted with
          submit_review is claimed too: the feature's fork is fetched and the review harness runs
-         the scope's public functions on the checkpoint's baseline and on the checkpoint. A merge
+         the scope's public functions on the checkpoint's baseline and on the checkpoint. Each
+         part trial of a merge plan is claimed too: the part's trial tree is built (the affected
+         fork head or main, the patch or fix commit, the feature's checkpoint merged in) and the
+         part's scopes' tests and the review harness run on it. A merge
          plan's facts run fetches the feature forks it names, runs the impact graph and each
          listed scope's tests on the feature checkpoint merged onto main and onto each running
          feature.
@@ -103,6 +110,7 @@ interface TestJobsResult {
   readonly verification: VerificationPassResult | Error;
   readonly approval: ApprovalPassResult | Error;
   readonly review: ReviewPassResult | Error;
+  readonly trials: PartTrialPassResult | Error;
   readonly tools: ToolPassResult | Error;
   readonly fixWrites: FixWritePassResult | Error;
   readonly blocks: BlockPassResult | Error;
@@ -253,6 +261,7 @@ async function testJobsPass(
   const fixes = new FixApplier({ repoPath: repo, ruff: programs.ruff });
   const facts = new PlanFactsRunner({ repoPath: repo, runner, impact, fixes });
   const combined = new CombinedRunner({ repoPath: repo, runner, impact, checks });
+  const trials = new PartTrialRunner({ repoPath: repo, runner, review: (request) => runReview({ repoPath: repo, python: programs.python, analyzer: impact }, request) });
   const settle = <T>(job: () => Promise<T>): Promise<T | Error> => job().catch((error: unknown) => error as Error);
   return async () => ({
     combined: await settle(() =>
@@ -297,6 +306,14 @@ async function testJobsPass(
         repoPath: repo,
       }),
     ),
+    trials: await settle(() =>
+      partTrialPass({
+        claim: () => claimPartTrials(server, bridgeToken, fetchImpl),
+        fetch: trialFetcher(readRemotes, repo),
+        run: (request) => trials.run(request),
+        report: (trialId, report) => reportPartTrial(server, bridgeToken, trialId, report, fetchImpl),
+      }),
+    ),
     tools: await settle(() =>
       toolPass({
         claim: () => claimToolRuns(server, bridgeToken, fetchImpl),
@@ -329,7 +346,7 @@ async function testJobsPass(
 }
 
 /** True when every job ran and nothing in them was refused or stopped. */
-function testJobsClean({ combined, planFacts, verification, approval, review, tools, fixWrites, blocks }: TestJobsResult): boolean {
+function testJobsClean({ combined, planFacts, verification, approval, review, trials, tools, fixWrites, blocks }: TestJobsResult): boolean {
   if (
     blocks instanceof Error ||
     fixWrites instanceof Error ||
@@ -338,6 +355,7 @@ function testJobsClean({ combined, planFacts, verification, approval, review, to
     verification instanceof Error ||
     approval instanceof Error ||
     review instanceof Error ||
+    trials instanceof Error ||
     tools instanceof Error
   ) {
     return false;
@@ -347,11 +365,11 @@ function testJobsClean({ combined, planFacts, verification, approval, review, to
   const toolsClean = tools.runs.every((entry) => entry.error === null);
   const fixWritesClean = fixWrites.writes.every((entry) => entry.error === null);
   const blocksClean = blocks.runs.every((entry) => entry.error === null);
-  return blocksClean && fixWritesClean && combinedClean && reviewClean && toolsClean && planFacts.failed.length === 0 && verification.failed.length === 0 && approval.failed.length === 0;
+  return blocksClean && fixWritesClean && combinedClean && reviewClean && trials.failed.length === 0 && toolsClean && planFacts.failed.length === 0 && verification.failed.length === 0 && approval.failed.length === 0;
 }
 
 /** The pass's lines; `always` writes a job's summary even when it found no work. */
-function formatTestJobs({ combined, planFacts, verification, approval, review, tools, fixWrites, blocks }: TestJobsResult, always: boolean): string {
+function formatTestJobs({ combined, planFacts, verification, approval, review, trials, tools, fixWrites, blocks }: TestJobsResult, always: boolean): string {
   let text = "";
   if (combined instanceof Error) text += `No combined runs were claimed: ${combined.message}\n`;
   else if (always || combined.claimed > 0) text += formatCombinedPass(combined);
@@ -363,6 +381,8 @@ function formatTestJobs({ combined, planFacts, verification, approval, review, t
   else if (always || approval.listed > 0) text += formatApprovalPass(approval);
   if (review instanceof Error) text += `No reviews were claimed: ${review.message}\n`;
   else if (always || review.claimed > 0) text += formatReviewPass(review);
+  if (trials instanceof Error) text += `No part trials were claimed: ${trials.message}\n`;
+  else if (always || trials.claimed > 0) text += formatPartTrialPass(trials);
   if (tools instanceof Error) text += `No tool requests were claimed: ${tools.message}\n`;
   else if (always || tools.claimed > 0) text += formatToolPass(tools);
   if (fixWrites instanceof Error) text += `No fix writes were claimed: ${fixWrites.message}\n`;

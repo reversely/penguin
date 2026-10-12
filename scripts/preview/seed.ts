@@ -25,6 +25,7 @@ import {
   fetchRepoBranches,
   FixApplier,
   localRemote,
+  PartTrialRunner,
   PlanFactsRunner,
   pythonDependencyAnalyzer,
   pythonImpactAnalyzer,
@@ -53,6 +54,7 @@ import { IssueIndex, type BridgeCaller, type SqlDatabase } from "../../services/
 import { approveOverlap, checkOverlap, OverlapStore, type OverlapDeps } from "../../services/project-agent/src/overlap-lock.ts";
 import { OwnerForkStore } from "../../services/project-agent/src/owner-forks.ts";
 import { reviewResult } from "../../services/project-agent/src/part-checks.ts";
+import { claimPartTrials, PartTrialStore, queueTrials, queueTrialsForReview, recordPartTrial, trialHolds, trialStanding } from "../../services/project-agent/src/part-trial.ts";
 import {
   announcePlan,
   approveCleanParts,
@@ -125,6 +127,7 @@ export class PreviewProject {
   readonly routes: PlanRouteStore;
   readonly protectedChanges: ProtectedChangeStore;
   readonly reviews: ReviewStore;
+  readonly trials: PartTrialStore;
   readonly tools: AgentToolStore;
   readonly index: IssueIndex;
   readonly forks: OwnerForkStore;
@@ -172,6 +175,7 @@ export class PreviewProject {
     this.routes = new PlanRouteStore(this.sql, now);
     this.protectedChanges = new ProtectedChangeStore(this.sql, now);
     this.reviews = new ReviewStore(this.sql);
+    this.trials = new PartTrialStore(this.sql, now);
     this.tools = new AgentToolStore(this.sql);
     this.forks = new OwnerForkStore(this.sql, now);
     this.retiring = new RetiringStore(this.sql, now);
@@ -263,7 +267,12 @@ export class PreviewProject {
       sign: (record) => this.#sign(record),
       roundLimit: this.roundLimit,
       notify: this.#notify,
-      checks: { reviews: (featureId) => this.reviews.list(featureId), scopeMap: async () => this.scopeMap, adminMode: this.adminMode },
+      checks: {
+        reviews: (featureId) => this.reviews.list(featureId),
+        scopeMap: async () => this.scopeMap,
+        adminMode: this.adminMode,
+        trial: (featureId, part) => trialStanding(this.trials, this.reviews, featureId, part),
+      },
     };
   }
 
@@ -467,7 +476,7 @@ export class PreviewProject {
     const impact = pythonImpactAnalyzer({ repoPath: repo, python: PYTHON, env: ENV });
     const pass = await toolPass({
       claim: async () => {
-        const claimed = claimToolRuns({ runs: this.tools, features: this.features, identity: (id) => this.identities.get(id) }, RUNNER);
+        const claimed = await claimToolRuns({ runs: this.tools, features: this.features, identity: (id) => this.identities.get(id) }, RUNNER);
         return claimed.status === "ok" ? claimed.runs : [];
       },
       report: async (runId, result) => {
@@ -538,16 +547,21 @@ export class PreviewProject {
             this.inbox.planReturned(person, id);
             this.#notify(person);
           },
-          announce: (plan, scopeMap) => announcePlan(this.approvalDeps(), plan, scopeMap),
+          announce: (plan, scopeMap) => {
+            announcePlan(this.approvalDeps(), plan, scopeMap);
+            queueTrials({ trials: this.trials, reviews: this.reviews }, plan);
+          },
           retiring: this.retiring,
         },
         feature.personId,
         this.sessionOf.get(featureId) as string,
         { feature: featureId, parts, ...(rules.length === 0 ? {} : { rules }), ...(retiring.length === 0 ? {} : { retiring }) },
       );
-    // Penguin approves each part whose checks are already clean once the plan is stored.
+    // The check runner tests each part revision of a stored plan on its trial tree; Penguin then
+    // approves each part whose checks are clean.
     const settled = async (outcome: ProposePlanOutcome): Promise<ProposePlanOutcome> => {
       if (outcome.status !== "stored") return outcome;
+      await this.trialPass();
       await this.penguinApproves(featureId);
       return { ...outcome, plan: (await this.plan(featureId)) ?? outcome.plan };
     };
@@ -555,6 +569,41 @@ export class PreviewProject {
     if (first.status !== "missing" || !first.missing.some((item) => item.code === "waiting_for_runner")) return settled(first);
     await this.factsPass();
     return settled(await call());
+  }
+
+  /**
+   * The check runner claims every waiting part trial (part-trial.ts), builds each part revision's trial
+   * tree in its own repository and runs the part's scopes' tests and the review harness for each form
+   * on it, then reports, as runner mode does.
+   */
+  async trialPass(): Promise<void> {
+    const claimed = claimPartTrials(this.trials, RUNNER);
+    if (claimed.status !== "ok") return;
+    const scratch = await mkdtemp(join(tmpdir(), "penguin-preview-trial-"));
+    const runner = new PartTrialRunner({
+      repoPath: this.repo,
+      runner: new TestRunner({ repoPath: this.repo, env: ENV, scratchDir: scratch, consent: () => true }),
+      review: (request) =>
+        runReview({ repoPath: this.repo, python: PYTHON, env: ENV, scratchDir: scratch, analyzer: pythonImpactAnalyzer({ repoPath: this.repo, python: PYTHON, env: ENV }) }, request),
+      scratchDir: scratch,
+    });
+    for (const request of claimed.trials) {
+      const report = JSON.parse(JSON.stringify(await runner.run(request)));
+      const recorded = await recordPartTrial(
+        {
+          trials: this.trials,
+          reviews: this.reviews,
+          routeToOwner: (ownerId, stored) => {
+            this.inbox.reviewException(ownerId, stored.featureId, stored.scopeId);
+            this.#notify(ownerId);
+          },
+        },
+        RUNNER,
+        request.trialId,
+        report,
+      );
+      if (recorded.status === "rejected") throw new Error(`trial ${request.trialId}: ${recorded.message}`);
+    }
   }
 
   /** The newest plan of a feature, or undefined. */
@@ -586,13 +635,24 @@ export class PreviewProject {
         },
         baseline: (_repo, sha) => checkpointBaseline(history, history, sha),
         heartbeat: (caller, id) => this.sessions.heartbeat(caller, id),
+        coveringPart: async (id, scopeId, checkpoint) => {
+          const plan = await this.plan(id);
+          const covering = plan?.facts.change.checkpoint === checkpoint ? plan.parts.filter((part) => part.scopes.includes(scopeId)) : [];
+          return covering.find((part) => part.place.kind === "feature") ?? covering[0];
+        },
       },
       reviewer.personId,
       this.sessionOf.get(reviewerFeature) as string,
       { feature: featureId, scope, form },
     );
     if (submitted.status === "rejected") throw new Error(`review ${scope} on ${featureId}: ${submitted.message}`);
-    const claimed = claimReviews(this.reviews, RUNNER);
+    // A form that waits for the runner asks again for a trial of each part covering its scope; the
+    // trial runs the form on the part's trial tree, and the review claim leaves it to the trial.
+    if (submitted.state === "pending") {
+      queueTrialsForReview({ trials: this.trials, reviews: this.reviews }, await this.plan(featureId), submitted.scopeId, submitted.forkSha);
+      await this.trialPass();
+    }
+    const claimed = claimReviews(this.reviews, RUNNER, (review) => trialHolds(this.trials, review));
     if (claimed.status !== "ok") return;
     const scratch = await mkdtemp(join(tmpdir(), "penguin-preview-review-"));
     for (const request of claimed.reviews) {
@@ -718,6 +778,7 @@ export class PreviewProject {
             roundLimit: this.roundLimit,
             adminMode: this.adminMode,
             landed: (featureId) => this.features.get(featureId)?.state === "landed",
+            trial: (featureId, part) => trialStanding(this.trials, this.reviews, featureId, part),
             records: (featureId) => this.features.records(featureId),
             protectedChanges: (owners, items, delegates) => protectedChangeRequests(this.protectedChanges, this.features, items, owners, owner, delegates),
           },

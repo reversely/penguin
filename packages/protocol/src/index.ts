@@ -11,6 +11,7 @@ export * from "./rewrite-rule.ts";
 export * from "./retiring.ts";
 export * from "./contract-sort.ts";
 export * from "./plan-approval.ts";
+export * from "./part-trial.ts";
 export * from "./dashboard.ts";
 export * from "./patch.ts";
 export * from "./fix-write.ts";

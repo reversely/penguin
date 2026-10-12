@@ -182,11 +182,11 @@ check of its own changes.
 | Callers of the float API left on main before the contract wave | 1 scope: orders |
 
 Penguin approves a part only when each of its checks is clean ([design.md](design.md#penguins-approval-in-the-build)).
-Neither stored part passes. Lena's promotions part names a fix commit after the checkpoint the facts
-run tested. The run has no test result for promotions on main. The fix also edits
-`promotions/tests/test_stacking.py`, which holds no caller of a changed symbol and no break. No
-agent reviewed the part. Mei's invoicing part names a fix commit after the checkpoint as well. Its
-tests fail on that tree with 2 breaks. No agent reviewed it. Rahul's tax review is a review of
+Neither stored part passes. Each part's trial applies its fix commit to main merged with the wave's
+checkpoint ([design.md](design.md#part-trials)). Promotions' tests and invoicing's tests pass on
+those trees. No agent reviewed either part, since the fixture holds no review form for promotions or
+invoicing. Lena's fix also edits `promotions/tests/test_stacking.py`, which holds no caller of a
+changed symbol and no break. Rahul's tax review is a review of
 the tax wave's own change, so its broken invariant still reaches Rahul as a review exception.
 
 The waves moved the nine scopes on main one or two at a time, with at most one part needing a person

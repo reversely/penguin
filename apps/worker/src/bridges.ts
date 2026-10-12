@@ -48,9 +48,17 @@
  * - POST /reviews/<review id>, bridge token of a runner bridge: reports a claimed review's record from
  *   the review harness. The review becomes accepted or refused with the record attached; an exception
  *   goes to the scope's owner. A review already completed answers 409.
+ * - POST /part-trials/claim, bridge token of a runner bridge: claims the waiting trials of plan part
+ *   revisions. Each names the originating fork and checkpoint, main at the plan's baseline, the target
+ *   (main or the affected feature's fork head), the part's patch or fix commit, its test commands and
+ *   the newest form of each of its scopes.
+ * - POST /part-trials/<trial id>, bridge token of a runner bridge: reports a claimed trial: the trial
+ *   tree, each test command's result and each form's review record on that tree. Penguin keeps it
+ *   against the part revision; a trial a newer one replaced answers 200 with `superseded`, and one
+ *   already recorded answers 409.
  * - POST /tool-runs/claim, bridge token of a runner bridge: claims the waiting `impact`, `check` and
  *   `apply_fix` requests. Each names its feature's fork, the checkpoint, its baseline on main, the
- *   caller's charter and the other running features' forks.
+ *   caller's charter and the other running features' forks at their heads, as a land merges onto them.
  * - POST /tool-runs/<run id>, bridge token of a runner bridge: reports a claimed request's result. The
  *   requesting session hears of it at its next safe checkpoint. A request already completed answers 409.
  * - POST /fix-writes/claim, bridge token of a runner bridge: claims the writes of approved mechanical
@@ -83,6 +91,8 @@ import type {
   CheckpointOutcome,
   ClaimListing,
   FixWriteOutcome,
+  PartTrialClaim,
+  PartTrialOutcome,
   Delivery,
   FeatureCheckpointOutcome,
   Huddle,
@@ -100,7 +110,7 @@ import type {
 } from "@penguin/project-agent";
 
 import { planNoticeFields } from "@penguin/mcp";
-import { BLOCK_LIMITS, REVIEW_LIMITS, SEGMENT_PATTERN, TOOL_RESULT_LIMITS } from "@penguin/protocol";
+import { BLOCK_LIMITS, PART_TRIAL_LIMITS, REVIEW_LIMITS, SEGMENT_PATTERN, TOOL_RESULT_LIMITS } from "@penguin/protocol";
 import type { BlockRunRequest, FixWriteSpec, PlanFactsRequest } from "@penguin/protocol";
 
 import { bearerToken, isDeployer } from "./auth.ts";
@@ -155,6 +165,13 @@ export interface BridgeDirectory {
    * Penguin then approves each part of the feature's plan whose checks are clean.
    */
   reportReview(caller: BridgeCaller, reviewId: number, record: unknown, repos: ProjectRepos): Promise<ReviewReportOutcome>;
+  /** Claims the waiting part trials; refused unless `caller` holds the runner role. */
+  claimPartTrials(caller: BridgeCaller): Promise<PartTrialClaim> | PartTrialClaim;
+  /**
+   * Keeps the runner's report of part trial `trialId`; refused unless `caller` holds the runner role.
+   * Penguin then approves each part of the feature's plan whose checks are clean.
+   */
+  reportPartTrial(caller: BridgeCaller, trialId: number, report: unknown, repos: ProjectRepos): Promise<PartTrialOutcome>;
   /** The merge-plan facts runs waiting for the runner; refused unless `caller` holds the runner role. */
   planFactsRuns(
     caller: BridgeCaller,
@@ -635,6 +652,34 @@ async function claimReviews(request: Request, handlers: BridgeHandlers): Promise
   return json({ reviews }, 200, NO_STORE);
 }
 
+/** Hands a runner bridge the waiting part trials, each marked claimed by that bridge. */
+async function claimPartTrials(request: Request, handlers: BridgeHandlers): Promise<Response> {
+  const bridge = await runnerBridge(request, handlers);
+  if (bridge instanceof Response) return bridge;
+  if (request.method !== "POST") return methodNotAllowed("POST");
+  // The role comes from the registry record the token authenticated, never from the request.
+  const listing = await (await handlers.bridges()).claimPartTrials({ bridgeId: bridge.bridgeId, role: bridge.role });
+  if (listing.status === "forbidden") return json({ error: "forbidden", message: listing.message }, 403);
+  return json({ trials: listing.trials }, 200, NO_STORE);
+}
+
+async function reportPartTrial(request: Request, trialId: number, handlers: BridgeHandlers): Promise<Response> {
+  const bridge = await runnerBridge(request, handlers);
+  if (bridge instanceof Response) return bridge;
+  if (request.method !== "POST") return methodNotAllowed("POST");
+  if (Number(request.headers.get("Content-Length") ?? 0) > PART_TRIAL_LIMITS.reportBytes) {
+    return json({ error: "too large", message: `the report is over ${PART_TRIAL_LIMITS.reportBytes} bytes` }, 413);
+  }
+  const body = await readObject(request);
+  if (body === undefined) return invalid("", "must be a JSON object");
+  const outcome = await (await handlers.bridges()).reportPartTrial({ bridgeId: bridge.bridgeId, role: bridge.role }, trialId, body, handlers.projectRepos);
+  if (outcome.status === "rejected") {
+    return json({ error: outcome.reason, message: outcome.message }, REVIEW_REJECTION_STATUS[outcome.reason] ?? 409);
+  }
+  const { trial } = outcome;
+  return json({ status: outcome.status, trialId: trial.id, partId: trial.partId, revision: trial.revision }, 200);
+}
+
 /** A review record body over twice the record cap is refused before it is parsed. */
 const MAX_REVIEW_BODY_BYTES = 2 * REVIEW_LIMITS.recordBytes;
 
@@ -855,6 +900,9 @@ export async function handleBridgeRoute(
   if (url.pathname === "/reviews/claim") return claimReviews(request, handlers);
   const reviewId = /^\/reviews\/([1-9][0-9]{0,14})$/.exec(url.pathname)?.[1];
   if (reviewId !== undefined) return reportReview(request, Number(reviewId), handlers);
+  if (url.pathname === "/part-trials/claim") return claimPartTrials(request, handlers);
+  const trialId = /^\/part-trials\/([1-9][0-9]{0,14})$/.exec(url.pathname)?.[1];
+  if (trialId !== undefined) return reportPartTrial(request, Number(trialId), handlers);
   if (url.pathname === "/tool-runs/claim") return claimToolRuns(request, handlers);
   const toolRunId = /^\/tool-runs\/([1-9][0-9]{0,14})$/.exec(url.pathname)?.[1];
   if (toolRunId !== undefined) return reportToolRun(request, Number(toolRunId), handlers);
