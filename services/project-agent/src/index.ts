@@ -173,6 +173,7 @@ import {
   claimBlockRuns,
   featureLanded,
   landFailed,
+  ancestorsFound,
   mainState,
   requestLand,
   requestPenguinLand,
@@ -200,6 +201,7 @@ import {
   type MigrationDeps,
 } from "./migration-plans.ts";
 import { landPenguinFeatures, PenguinLandStore, type PenguinLandAttempt } from "./penguin-land.ts";
+import { rebuildPenguinFeature } from "./penguin-rebuild.ts";
 import { checkpointRecord, parseBreakLimit, proposePlan, type ProposePlanInput, type ProposePlanOutcome } from "./propose-plan.ts";
 import { claimToolRuns, recordToolResult, type ToolReportOutcome, type ToolRunClaim } from "./agent-tool-runner.ts";
 import { reviewResult } from "./part-checks.ts";
@@ -2346,6 +2348,23 @@ export class ProjectAgent extends Agent {
     }
   }
 
+  /**
+   * Opens a feature Penguin opened again from main's head: its fork is deleted and forked from the base
+   * repo under the same name (penguin-rebuild.ts). Null when the fork cannot be made again; a fork that
+   * could not be deleted is kept as it is.
+   */
+  async #reforkFromMain(repos: ProjectRepos, featureId: string): Promise<string | null> {
+    const prefix = repos.base.endsWith("base") ? repos.base.slice(0, -"base".length) : "";
+    const name = `${prefix}feature-${featureId}`;
+    try {
+      if (!(await this.env.ARTIFACTS.delete(name))) return null;
+    } catch (error) {
+      console.error(JSON.stringify({ event: "penguin_refork_failed", feature: featureId, error: String(error).slice(0, 200) }));
+      return null;
+    }
+    return this.#forkFromMain(repos, featureId);
+  }
+
   #migrationStore(): MigrationStore {
     this.#migrations ??= new MigrationStore(this.#database());
     return this.#migrations;
@@ -2786,6 +2805,23 @@ export class ProjectAgent extends Agent {
           land: (featureId, charter) => this.#planStep(() => requestPenguinLand(land, featureId, charter)),
           sign: land.sign,
           notify: land.notify,
+          // A fork main moved past is rebuilt from main, never merged (penguin-rebuild.ts, #143).
+          rebuild: {
+            holdsMain: async (repo, head, main) => {
+              const { history } = await mainState(land);
+              return (await land.readRepo(repo, (reader) => ancestorsFound(reader, head, new Set([main]), history))).has(main);
+            },
+            run: (feature, kind, head, main) =>
+              this.#planStep(() =>
+                rebuildPenguinFeature(
+                  { ...this.#migrationDeps(repos), readFork: land.readRepo, refork: (featureId) => this.#reforkFromMain(repos, featureId) },
+                  feature,
+                  kind,
+                  head,
+                  main,
+                ),
+              ),
+          },
         });
         if (attempts.length > 0) this.#liveFeed().featuresChanged();
         return attempts;

@@ -120,7 +120,8 @@ export type FeatureRecordType =
   | "migration_part_decided"
   | "migration_part_written"
   | "migration_closed"
-  | "migration_landed";
+  | "migration_landed"
+  | "block_rebuilt";
 
 export interface FeatureRecord {
   readonly schema_version: 1;

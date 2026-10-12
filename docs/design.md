@@ -979,8 +979,32 @@ No view carries an agent's transcript. A task's `outcome` is one line the bridge
   table). A failed block waits for a new head, which the steward's kept next-step commit makes. A land
   refused before its run, such as `behind_main` or `protected_path_unconfirmed`, is kept with its
   reason under one signed `land_returned` record per head and reason. Penguin asks for it again at
-  the next sweep. No agent works in such a fork, so nobody merges main into it yet: a block whose fork does
-  not hold main's head waits (#143).
+  the next sweep.
+- **Rebuilding a feature Penguin opened.** Penguin never merges main into a fork it opened: no agent
+  works there, and an edit task's commit has one parent. When a ready feature's fork head does not
+  hold main's head, Penguin rebuilds the feature from main's head instead of asking for the land
+  (`services/project-agent/src/penguin-rebuild.ts`):
+  - It reads what each `written` part on main put in the fork: the rules' patch kept on the part, or
+    the edit task's kept commit, read through the Artifacts binding as a patch against its parent
+    (`commitPatch` in `repo-diff.ts`). A commit is only taken when the patch, applied as the fix
+    writer applies it, gives back exactly the commit's files.
+  - It deletes the fork and forks main's head again under the same name, so every reader of
+    `feature-<id>` keeps working. A commit that wrote no part, such as a kept next-step fix of a
+    failed block run, is not carried; the next block run asks for it again.
+  - Each part with a patch goes back to `trial` against main's head and is tried as a rule-written
+    part is ([Migration plans in the build](#migration-plans-in-the-build)). A passing trial approves
+    it and the check runner writes it into the new fork, one write at a time. A failing trial, or a
+    kept commit that is no plain text patch, makes it a `migration` edit task for the steward of the
+    plan owner, with the failing checks attached. Once every part is written again, Penguin lands the
+    block.
+  - A contract carrier's removal has no part trial, so its `contract` task opens again for the
+    steward on the new fork, naming the earlier removal's commit.
+
+  One signed `block_rebuilt` record on the feature names the old head, main's head and each part with
+  where it came from (`patch`, `commit` or `removal`) and its new state. The timeline shows it as
+  "Rebuilt from main". Load: one rebuild per fork head behind main (the `PenguinLand` table keeps it
+  as `rebuilt`); each rebuilt part has the one trial it had before. The fork is only ever forked from
+  main; no write token reaches main.
 - **Plan checks.** A checkpoint of a running feature whose area meets another feature's announced plan
   asks for a `plan_check` run of that plan's block (Build step 3). It runs the same checks, keeps its
   record and never moves main. A land run supersedes a waiting plan check; a plan check waits while a

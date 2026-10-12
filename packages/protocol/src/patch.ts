@@ -91,6 +91,20 @@ export function parsePatch(text: string): PatchParse {
 }
 
 /**
+ * Files and hunks as a unified diff that `parsePatch` reads back: `a/` and `b/` paths, `/dev/null` for
+ * an added or a deleted file's missing side, and every hunk header with both line counts.
+ */
+export function formatPatch(files: readonly PlanFileDiff[]): string {
+  const blocks = files.map((file) => {
+    const before = file.status === "added" ? "/dev/null" : `a/${file.path}`;
+    const after = file.status === "deleted" ? "/dev/null" : `b/${file.path}`;
+    const hunks = file.hunks.flatMap((hunk) => [`@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`, ...hunk.lines]);
+    return [`--- ${before}`, `+++ ${after}`, ...hunks].join("\n");
+  });
+  return `${blocks.join("\n")}\n`;
+}
+
+/**
  * Where the file's hunks do not apply to `before`, the file's lines at the patch's base (null when the
  * file is absent there), or null when every hunk applies at its stated line.
  */

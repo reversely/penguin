@@ -3,6 +3,8 @@
 // removal is done and its checkpoint's facts are in. Penguin records the fork's head as the feature's
 // checkpoint and asks for the land itself with the steward's charter; a failed block's next steps go to
 // that steward; a head is landed once; a carrier's promotion closes the symbols it removed (#117).
+// A fork main moved past is never merged: Penguin rebuilds it from main, re-applies each written part
+// and tries it again; a part that no longer applies or fails its trial becomes an edit task (#143).
 
 import assert from "node:assert/strict";
 import { beforeEach, describe, test } from "node:test";
@@ -35,11 +37,22 @@ import { blockReported, editRouting, type EditWorkDeps } from "../src/edit-work.
 import { recordPenguinCheckpoint, type FeatureCheckpointDeps } from "../src/feature-open.ts";
 import type { Feature } from "../src/feature-store.ts";
 import { FixGrantStore } from "../src/fix-write.ts";
+import { gitReader } from "./git-reader.ts";
+import { GitRepo } from "./issues-repo.ts";
 import { IdentityStore } from "../src/identity-store.ts";
-import { carryContract, migrationsCounted, migrationTasksSettled, MigrationStore, stewardsFor, type MigrationDeps } from "../src/migration-plans.ts";
+import {
+  carryContract,
+  migrationsCounted,
+  migrationTasksSettled,
+  migrationTrialReported,
+  MigrationStore,
+  stewardsFor,
+  type MigrationDeps,
+} from "../src/migration-plans.ts";
 import { checkOverlap } from "../src/overlap-lock.ts";
-import { PartTrialStore } from "../src/part-trial.ts";
+import { PartTrialStore, type StoredPartTrial } from "../src/part-trial.ts";
 import { landPenguinFeatures, PenguinLandStore, type PenguinLandDeps } from "../src/penguin-land.ts";
+import { rebuildPenguinFeature } from "../src/penguin-rebuild.ts";
 import { closeRemoved, countReported, requestRetiringCount, type RetiringCountDeps } from "../src/retiring-count.ts";
 import { ReviewStore } from "../src/review-submit.ts";
 import { PlanProject } from "./plan-project.ts";
@@ -99,6 +112,8 @@ describe("Penguin lands the features it opened once every part is written", () =
   let roster: EditRoster;
   let identities: IdentityStore;
   let deps: MigrationDeps;
+  let trials: PartTrialStore;
+  let grants: FixGrantStore;
   let count: RetiringCountDeps;
   let lands: PenguinLandStore;
   /** Each fork's head as the land reads it, by repo name; main's head under "base". */
@@ -123,12 +138,14 @@ describe("Penguin lands the features it opened once every part is written", () =
       project.features.setState(featureId, ["building"], "landing");
       return { status: "checking", run: { runId: `${featureId}/1` } as BlockRun, recordId: "land" };
     };
+    trials = new PartTrialStore(project.sql);
+    grants = new FixGrantStore(project.sql);
     deps = {
       store,
       features: project.features,
       runs,
       retiring: project.retiring,
-      trials: new PartTrialStore(project.sql),
+      trials,
       reviews: new ReviewStore(project.sql),
       scopeMap: async () => scopeMap,
       sign: (draft) => project.sign(draft),
@@ -137,7 +154,7 @@ describe("Penguin lands the features it opened once every part is written", () =
         return tasks.open(source, adjust(editRouting({ roster, features: project.features }, scopeMap, () => true)));
       },
       tasks,
-      grants: new FixGrantStore(project.sql),
+      grants,
       invariants: async () => [],
       checkOverlap: (feature) => checkOverlap({ db: project.sql, features: project.features, overlaps: project.overlaps, scopeMap: async () => scopeMap, sign: (draft) => project.sign(draft) }, feature),
       adminMode: false,
@@ -307,5 +324,131 @@ describe("Penguin lands the features it opened once every part is written", () =
     // The block passed and main moved to the carrier's checkpoint: the symbol closes as removed.
     assert.deepEqual(await closeRemoved(count, CARRIER, REMOVED), [PRICE.contract]);
     assert.deepEqual(project.retiring.list().map((each) => each.contract), [LINE.contract]);
+  });
+
+  /**
+   * The land deps with Penguin's rebuild: every fork head counts as behind main, kept commits are read
+   * from `repo`, and a fork opened again starts at main's head. `reforked` lists each fork made again.
+   */
+  const rebuildingDeps = (repo: GitRepo, reforked: string[]): PenguinLandDeps => ({
+    ...landDeps(),
+    rebuild: {
+      holdsMain: async () => false,
+      run: (feature, kind, head, main) =>
+        rebuildPenguinFeature(
+          {
+            ...deps,
+            readFork: async (_repo, read) => read({ ...gitReader(repo.dir), log: async () => [] }),
+            refork: async (featureId) => {
+              reforked.push(featureId);
+              heads.set(`feature-${featureId}`, heads.get("base") as string);
+              return `feature-${featureId}`;
+            },
+          },
+          feature,
+          kind,
+          head,
+          main,
+        ),
+    },
+  });
+
+  /** Tomas's block with its one part written by the steward's kept commit `after`, on a fork main then moved past. */
+  async function writtenBehindMain(repo: GitRepo, after: string): Promise<{ partId: string; kept: string }> {
+    const partId = await blockWithOnePart();
+    repo.commit({ "orders/report.py": "total = line_total(order)\n" });
+    const kept = repo.commit({ "orders/report.py": after }, "orders: move the report to line_total_minor");
+    tasks.close(`migrate:${partId}`, "done", "the steward moved orders/report.py", kept);
+    await migrationTasksSettled(deps);
+    assert.equal(store.part(partId)?.state, "written");
+    heads.set(`feature-${BLOCK}`, kept);
+    // Five promotions later, main is at sha(7), which the block's fork does not hold.
+    heads.set("base", sha(7));
+    return { partId, kept };
+  }
+
+  /** The runner's report of a rebuilt part's trial: orders' tests with `status`. */
+  const trialReport = (trial: StoredPartTrial, status: "passed" | "failed") => ({
+    schemaVersion: 1 as const,
+    trialId: trial.id,
+    partId: trial.partId,
+    revision: 1,
+    checkpoint: trial.request.checkpoint,
+    target: trial.request.target.sha,
+    status: "built" as const,
+    tree: sha(8),
+    reason: null,
+    tests: [{ scopeId: "orders", commandId: "test:orders", status, breaks: status === "failed" ? ["orders/tests/test_report.py::test_total"] : [], reason: null, durationMs: 3 }],
+    reviews: [],
+    sideBySide: [],
+    durationMs: 9,
+  });
+
+  test("a ready block behind main is rebuilt from main, never merged: its kept commit is re-applied and tried again, and a passing trial asks for its write", async () => {
+    const repo = new GitRepo();
+    const reforked: string[] = [];
+    const { partId, kept } = await writtenBehindMain(repo, "total = line_total_minor(order)\n");
+    const attempts = await landPenguinFeatures(rebuildingDeps(repo, reforked));
+    assert.deepEqual(attempts, [{ feature: BLOCK, checkpoint: kept, status: "rebuilt", runId: null, reason: "behind_main" }]);
+    // No land was asked and no merge made: the fork was opened again from main.
+    assert.deepEqual([asked.length, reforked], [0, [BLOCK]]);
+    // The kept commit is re-applied as its patch against main's head and tried there.
+    const part = store.part(partId);
+    assert.deepEqual([part?.state, part?.targetSha], ["trial", sha(7)]);
+    const trial = trials.ofPart(BLOCK, partId) as StoredPartTrial;
+    assert.deepEqual([trial.request.target, trial.request.fix], [
+      { id: "main", repo: "base", sha: sha(7) },
+      { kind: "patch", patch: "--- a/orders/report.py\n+++ b/orders/report.py\n@@ -1,1 +1,1 @@\n-total = line_total(order)\n+total = line_total_minor(order)\n" },
+    ]);
+    assert.deepEqual(records(BLOCK, "block_rebuilt").map((each) => [each.author, each.payload["from_head"], each.payload["main"], each.payload["parts"]]), [
+      [{ penguin: true }, kept, sha(7), [{ part: partId, from: "commit", state: "trial" }]],
+    ]);
+    // The new fork is at main's head: a second sweep neither rebuilds nor lands.
+    assert.deepEqual(await landPenguinFeatures(rebuildingDeps(repo, reforked)), []);
+    assert.deepEqual(reforked, [BLOCK]);
+    // The trial passes: Penguin approves the part and the check runner's write into the new fork waits.
+    assert.equal(await migrationTrialReported(deps, trials.record(trial.id, trialReport(trial, "passed")) as StoredPartTrial), "approved");
+    assert.deepEqual(grants.allOpen().map((grant) => [grant.targetFeatureId, grant.partId, grant.writer]), [[BLOCK, partId, "runner"]]);
+  });
+
+  test("a rebuilt part that fails its trial becomes an edit task for the steward with the failing check", async () => {
+    const repo = new GitRepo();
+    const { partId } = await writtenBehindMain(repo, "total = line_total_minor(order)\n");
+    await landPenguinFeatures(rebuildingDeps(repo, []));
+    const trial = trials.ofPart(BLOCK, partId) as StoredPartTrial;
+    assert.equal(await migrationTrialReported(deps, trials.record(trial.id, trialReport(trial, "failed")) as StoredPartTrial), "task");
+    assert.match(store.part(partId)?.reason ?? "", /^the kept commit, re-applied on the rebuilt block, failed its trial: test:orders failed/u);
+    const [task] = tasks.forSource(`migrate:${partId}`);
+    assert.deepEqual([task?.state, task?.handle, task?.target], ["queued", "@tomas/steward", BLOCK]);
+    assert.ok(task?.evidence.includes("test:orders fails orders/tests/test_report.py::test_total"));
+  });
+
+  test("a kept commit that is no plain text patch makes the rebuilt part an edit task at once", async () => {
+    const repo = new GitRepo();
+    const { partId } = await writtenBehindMain(repo, "total = line_total_minor(order)");
+    const [attempt] = await landPenguinFeatures(rebuildingDeps(repo, []));
+    assert.equal(attempt?.status, "rebuilt");
+    assert.equal(trials.ofPart(BLOCK, partId), undefined);
+    assert.deepEqual([store.part(partId)?.state, tasks.forSource(`migrate:${partId}`)[0]?.state], ["task", "queued"]);
+    assert.match(store.part(partId)?.reason ?? "", /the kept commit cannot be re-applied: orders\/report\.py: the change is not a plain text patch/u);
+  });
+
+  test("a ready contract carrier behind main is rebuilt and its removal is asked again on the new fork", async () => {
+    project.features.setState("money-minor", ["opening", "building", "landing"], "landed");
+    const runId = requestRetiringCount(count, "money-minor", sha(4));
+    assert.ok(runId !== undefined);
+    const recorded = recordToolResult(runs, RUNNER, runId, result(sha(4), { impact: impact(sha(4), {}) }));
+    assert.ok(recorded.status === "recorded");
+    await countReported(count, recorded.run);
+    tasks.close(`contract:${CARRIER}`, "done", "removed price", sha(5));
+    heads.set(`feature-${CARRIER}`, sha(5));
+    heads.set("base", sha(7));
+    const reforked: string[] = [];
+    const [attempt] = await landPenguinFeatures(rebuildingDeps(new GitRepo(), reforked));
+    assert.deepEqual([attempt?.status, reforked, asked.length], ["rebuilt", [CARRIER], 0]);
+    const [task] = tasks.forSource(`contract:${CARRIER}`);
+    assert.deepEqual([task?.state, task?.handle], ["queued", "@ines/steward"]);
+    assert.ok(task?.evidence.includes(`the earlier removal was commit ${sha(5).slice(0, 12)} on fork head ${sha(5).slice(0, 12)}`));
+    assert.deepEqual(records(CARRIER, "block_rebuilt").map((each) => each.payload["parts"]), [[{ part: `contract:${CARRIER}`, from: "removal", state: "task" }]]);
   });
 });

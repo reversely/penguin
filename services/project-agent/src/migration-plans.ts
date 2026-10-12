@@ -672,7 +672,7 @@ async function writeTarget(deps: MigrationDeps, plan: MigrationPlanView, part: M
  * A part an agent writes: an edit task for the place's builder or the steward of its scope's DRI.
  * `failing` lists the failing checks of a rule-written part's trial, attached to the task.
  */
-async function routeToTask(
+export async function routeToTask(
   deps: MigrationDeps,
   plan: MigrationPlanView,
   part: MigrationPart,
@@ -711,7 +711,7 @@ async function routeToTask(
  * count. It carries no form: a rule-written part needs none, so each of its scopes gets the
  * side-by-side run alone in the same trial.
  */
-function queueMigrationTrial(deps: MigrationDeps, plan: MigrationPlanView, part: MigrationPart, on?: PartTrialTarget): StoredPartTrial | undefined {
+export function queueMigrationTrial(deps: MigrationDeps, plan: MigrationPlanView, part: MigrationPart, on?: PartTrialTarget): StoredPartTrial | undefined {
   if (part.patch === null || part.targetSha === null) return undefined;
   const target =
     on ??
@@ -824,7 +824,12 @@ export async function migrationTrialReported(deps: MigrationDeps, trial: StoredP
   const decided = ruleWrittenRouting([...routing.reasons, ...protectedDifferences(trial, await deps.invariants())]);
   const words = decided.reasons.map(reasonWords);
   const state: MigrationPartState = decided.route === "approve" ? "approved" : decided.route === "task" ? "task" : "in_person";
-  const reason = words.length === 0 ? "the trial's tests pass and no protected invariant differs; a rule-written part needs no review form" : words.join("; ");
+  // A part rebuilt from an edit task's kept commit (penguin-rebuild.ts) is tried the same way.
+  const rebuilt = part.writer === "task";
+  const passed = rebuilt
+    ? "re-applied on the rebuilt block, the trial's tests pass and no protected invariant differs"
+    : "the trial's tests pass and no protected invariant differs; a rule-written part needs no review form";
+  const reason = words.length === 0 ? passed : words.join("; ");
   const record = await deps.sign(
     deps.features.draftRecord(plan.feature, "migration_part_decided", { penguin: true }, {
       plan: plan.planId,
@@ -841,7 +846,8 @@ export async function migrationTrialReported(deps: MigrationDeps, trial: StoredP
     const target = await writeTarget(deps, plan, part);
     if (target !== undefined) deps.grants.open(plan.feature, plan.planId, { partId: part.partId, revision: 1 }, target.id, "runner");
   } else if (state === "task") {
-    await routeToTask(deps, plan, part, `the rules' patch failed its trial: ${reason}`, plan.promotion, failingChecks(trial, decided.reasons));
+    const what = rebuilt ? "the kept commit, re-applied on the rebuilt block," : "the rules' patch";
+    await routeToTask(deps, plan, part, `${what} failed its trial: ${reason}`, plan.promotion, failingChecks(trial, decided.reasons));
   } else {
     deps.store.updatePart(part.partId, { state, reason, approvedBy: null });
   }
@@ -983,7 +989,7 @@ export function migrationWrites(deps: MigrationDeps): MigrationWrites {
  * one waits. A plan with no code on main whose live parts are all written is `closed` under a signed
  * `migration_closed` record: every fix is in its running feature's fork, and nothing is promoted.
  */
-async function settlePlan(deps: MigrationDeps, planId: string): Promise<void> {
+export async function settlePlan(deps: MigrationDeps, planId: string): Promise<void> {
   const plan = deps.store.plan(planId);
   if (plan === undefined || plan.state === "landed" || plan.state === "closed") return;
   const live = plan.parts.filter((part) => LIVE.includes(part.state));
@@ -1024,6 +1030,38 @@ export async function migrationBlockLanded(deps: MigrationDeps, featureId: strin
   deps.store.setPlan(plan.planId, "landed", promotion, record.record_id);
   deps.notify?.(plan.owner);
   return plan.planId;
+}
+
+/**
+ * The `contract` edit task of carrier `carrierId`: remove `owned` with their own uses in `own`, for the
+ * steward of `owner`. `earlier` adds evidence, such as a removal made before a rebuild (penguin-rebuild.ts).
+ */
+export function contractTask(
+  carrierId: string,
+  origin: string,
+  owner: string,
+  scopes: readonly string[],
+  owned: readonly RetiringSymbol[],
+  own: readonly string[],
+  promotion: string,
+  earlier: readonly string[] = [],
+): EditSource {
+  return {
+    key: `contract:${carrierId}`,
+    kind: "contract",
+    feature: origin,
+    target: carrierId,
+    targetPerson: owner,
+    places: scopes.map((scope) => ({ scope })),
+    instructions:
+      `Remove ${owned.map((each) => each.contract).join(", ")} from feature ${carrierId}'s fork: no caller is left on main or in any running feature's own changes (counted after promotion ${short(promotion)}), ` +
+      `and feature ${origin}, which retired them, no longer runs. ` +
+      (own.length === 0 ? "" : `Remove their own uses with them, in their defining module and its scope's tests: ${own.join(", ")}. `) +
+      "Commit the removal in one commit; Penguin approved it, and once Penguin keeps the commit it lands the block itself.",
+    verifier: "The removal's facts run shows each symbol removed; the block checks run every scope's tests on the merged trees before main moves.",
+    evidence: [...earlier, ...owned.map(({ contract, replacement }) => `${contract}, replaced by ${replacement}`), ...own.map((path) => `${path}: the defining scope's own use, removed with the symbol`)],
+    ref: { origin, carrier: carrierId },
+  };
 }
 
 /**
@@ -1084,26 +1122,7 @@ export async function carryContract(
     );
     deps.features.addRecord(record);
     deps.retiring.approveRemoval(origin, owned, record.record_id, count.runId, count.promotion, carrierId);
-    const listed = contracts.join(", ");
-    await deps.openTask(
-      {
-        key: `contract:${carrierId}`,
-        kind: "contract",
-        feature: origin,
-        target: carrierId,
-        targetPerson: owner,
-        places: scopeList.map((scope) => ({ scope })),
-        instructions:
-          `Remove ${listed} from feature ${carrierId}'s fork: no caller is left on main or in any running feature's own changes (counted after promotion ${short(count.promotion)}), ` +
-          `and feature ${origin}, which retired them, no longer runs. ` +
-          (own.length === 0 ? "" : `Remove their own uses with them, in their defining module and its scope's tests: ${own.join(", ")}. `) +
-          "Commit the removal in one commit; Penguin approved it, and once Penguin keeps the commit it lands the block itself.",
-        verifier: "The removal's facts run shows each symbol removed; the block checks run every scope's tests on the merged trees before main moves.",
-        evidence: [...owned.map(({ contract, replacement }) => `${contract}, replaced by ${replacement}`), ...own.map((path) => `${path}: the defining scope's own use, removed with the symbol`)],
-        ref: { origin, carrier: carrierId },
-      },
-      stewardsFor(deps.store),
-    );
+    await deps.openTask(contractTask(carrierId, origin, owner, scopeList, owned, own, count.promotion), stewardsFor(deps.store));
     carried.push({ feature: carrierId, contracts, recordId: record.record_id });
     deps.notify?.(owner);
   }

@@ -24,6 +24,7 @@ import { claimEditTasks, type EditWorkDeps } from "../../../services/project-age
 import type { FixWriteDeps } from "../../../services/project-agent/src/fix-write.ts";
 import { buildFixture, PreviewProject } from "../../../scripts/preview/seed.ts";
 import { migrationTasksSettled, migrationWrites } from "../../../services/project-agent/src/migration-plans.ts";
+import { carriedUnwritten } from "../../../services/project-agent/src/penguin-land.ts";
 
 const ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 
@@ -351,6 +352,17 @@ test("each plan's block feature lands once its parts on main are written, from t
       .every((part) => part.state === "written");
   const mainBefore = preview.git("rev-parse", "main");
   const attempts = await preview.landPenguinFeatures();
+  // A feature Penguin opened that main moved past is rebuilt once it is ready, never merged (#143).
+  for (const { featureId, kind } of preview.migrations.penguinFeatures()) {
+    const head = preview.git("rev-parse", `feature-${featureId}`);
+    const behind = preview.git("merge-base", head, "main") !== preview.git("rev-parse", "main");
+    const waiting = carriedUnwritten({ migrations: preview.migrations, tasks: preview.editTasks }, featureId, kind);
+    t.diagnostic(`${featureId} (${kind}): ${behind ? "behind main" : "holds main"}; ${waiting === null ? "ready" : `not ready: ${waiting}`}`);
+  }
+  for (const rebuilt of attempts.filter((each) => each.status === "rebuilt")) {
+    const [record] = preview.features.records(rebuilt.feature).map((stored) => JSON.parse(stored.file) as { type: string; payload: { parts?: unknown } }).filter((each) => each.type === "block_rebuilt");
+    t.diagnostic(`${rebuilt.feature} rebuilt from main: ${JSON.stringify(record?.payload.parts)}`);
+  }
   // Penguin asks to land exactly the blocks whose parts on main are all written, each once.
   assert.deepEqual(attempts.map((each) => each.feature).sort(), plans.filter(written).map((plan) => plan.block).sort());
   for (const attempt of attempts) {

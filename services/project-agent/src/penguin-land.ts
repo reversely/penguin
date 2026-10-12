@@ -7,7 +7,9 @@
 // - **Block feature:** every live part of its plan whose place is a scope on main is `written`.
 // - **Contract carrier:** its `contract` edit task is done and none of its tasks is still open.
 //
-// Penguin then reads the fork's head. A head that main already holds has nothing to land. Otherwise
+// Penguin then reads the fork's head. A head that main already holds has nothing to land. A head that
+// does not hold main's head is never merged with main: Penguin rebuilds the feature from main's head
+// instead (penguin-rebuild.ts), and lands it once its parts are written again. Otherwise
 // Penguin records the head as the feature's checkpoint under a signed `checkpoint_area` record of its
 // own, through the same steps an agent's checkpoint takes: the protected-path confirmations it asks
 // for and its contract diff's facts run. A carrier waits until that facts run reports, so the
@@ -30,6 +32,7 @@ import type { EditTaskStore } from "./edit-tasks.ts";
 import type { Feature, FeatureRecord, FeatureStore, UnsignedFeatureRecord } from "./feature-store.ts";
 import type { SqlDatabase } from "./issue-index.ts";
 import type { MigrationStore } from "./migration-plans.ts";
+import type { RebuildOutcome } from "./penguin-rebuild.ts";
 
 export const PENGUIN_LAND_SCHEMA: readonly string[] = [
   // Each land Penguin asked for: `checking` once a block run opened, else the reason it was refused.
@@ -85,13 +88,22 @@ export interface PenguinLandDeps {
   readonly land: (featureId: string, charter: CharterView) => Promise<LandOutcome>;
   readonly sign: (record: UnsignedFeatureRecord) => Promise<FeatureRecord>;
   readonly notify?: (person: string) => void;
+  /**
+   * A fork head behind main is rebuilt from main's head (penguin-rebuild.ts): `holdsMain` reads
+   * whether the fork's head holds main's head, `run` rebuilds. Absent, such a land is asked as it is
+   * and refused `behind_main`.
+   */
+  readonly rebuild?: {
+    readonly holdsMain: (repo: string, head: string, main: string) => Promise<boolean>;
+    readonly run: (feature: Feature & { readonly repo: string }, kind: "block" | "contract", head: string, main: string) => Promise<RebuildOutcome | undefined>;
+  };
 }
 
-/** One land Penguin asked for at a sweep. */
+/** One land Penguin asked for at a sweep, or the rebuild it made instead. */
 export interface PenguinLandAttempt {
   readonly feature: string;
   readonly checkpoint: string;
-  readonly status: "checking" | "rejected";
+  readonly status: "checking" | "rejected" | "rebuilt";
   readonly runId: string | null;
   readonly reason: string | null;
 }
@@ -129,10 +141,18 @@ export async function landPenguinFeatures(deps: PenguinLandDeps): Promise<Pengui
 
 async function landOne(deps: PenguinLandDeps, found: Feature & { readonly repo: string }, kind: "block" | "contract"): Promise<PenguinLandAttempt | undefined> {
   const head = await deps.forkHead(found.repo);
-  if (head === null || head === (await deps.mainHead())) return undefined;
+  const main = await deps.mainHead();
+  if (head === null || head === main) return undefined;
   // A head that had its block run waits for a new head: a failed block is not checked again as it is.
   const before = deps.lands.outcome(found.id, head);
-  if (before === "checking") return undefined;
+  if (before === "checking" || before === "rebuilt") return undefined;
+  // Main moved past the fork: Penguin rebuilds it from main rather than merging (#143).
+  if (main !== null && deps.rebuild !== undefined && !(await deps.rebuild.holdsMain(found.repo, head, main))) {
+    const rebuilt = await deps.rebuild.run(found, kind, head, main);
+    if (rebuilt === undefined) return undefined;
+    deps.lands.keep(found.id, head, "rebuilt", null);
+    return { feature: found.id, checkpoint: head, status: "rebuilt", runId: null, reason: "behind_main" };
+  }
   const feature = found.latestCheckpointSha === head ? found : await deps.checkpoint(found, head);
   if (feature === undefined || feature.latestCheckpointSha !== head) return undefined;
   // A carrier's promotion closes its symbols from the facts run of the landed checkpoint.

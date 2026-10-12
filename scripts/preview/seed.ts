@@ -112,6 +112,7 @@ import {
 } from "../../services/project-agent/src/block-land.ts";
 import { BlockStore } from "../../services/project-agent/src/block-store.ts";
 import { landPenguinFeatures, PenguinLandStore, type PenguinLandAttempt } from "../../services/project-agent/src/penguin-land.ts";
+import { rebuildPenguinFeature } from "../../services/project-agent/src/penguin-rebuild.ts";
 import {
   carryContract,
   migrationBlockLanded,
@@ -850,6 +851,26 @@ export class PreviewProject {
       land: (featureId, charter) => requestPenguinLand(land, featureId, charter),
       sign: (record) => this.#sign(record),
       notify: this.#notify,
+      // A fork main moved past is rebuilt from main. Its branch moves to main's head, as a new fork of
+      // main would start; the old commits stay readable in the fixture's repository.
+      rebuild: {
+        holdsMain: async (_repo, head, main) => this.git("merge-base", head, main) === main,
+        run: (feature, kind, head, main) =>
+          rebuildPenguinFeature(
+            {
+              ...this.migrationDeps(),
+              readFork: async (_repo, read) => read({ ...gitReader(this.repo), log: async () => [] }),
+              refork: async (featureId) => {
+                this.git("update-ref", `refs/heads/feature-${featureId}`, this.git("rev-parse", "main"));
+                return `feature-${featureId}`;
+              },
+            },
+            feature,
+            kind,
+            head,
+            main,
+          ),
+      },
     });
   }
 

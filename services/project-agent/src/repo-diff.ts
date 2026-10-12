@@ -4,7 +4,7 @@
 // hash did not change, and each file's changed lines from a line diff of its two blobs (Myers' O(ND)
 // algorithm, with the common head and tail trimmed first). Nothing here runs Git or calls a model.
 
-import { PLAN_LIMITS, type PlanFileDiff, type PlanHunk } from "@penguin/protocol";
+import { applyPatchFile, formatPatch, parsePatch, PATCH_LIMITS, PLAN_LIMITS, type PlanFileDiff, type PlanHunk } from "@penguin/protocol";
 
 /** The subset of `ArtifactsCommitMetadata` read here. */
 export interface CommitObject {
@@ -149,6 +149,51 @@ async function blobLines(repo: Pick<GitObjectReader, "readBlob">, hash: string |
   const bytes = new Uint8Array(await blob.arrayBuffer());
   if (bytes.subarray(0, 8_000).includes(0)) return { lines: [], omitted: "binary" };
   return { lines: splitLines(new TextDecoder().decode(bytes)), omitted: null };
+}
+
+/** A blob's text, or undefined for a binary blob or one over DIFF_LIMITS.blobBytes. A null hash is an absent file. */
+async function blobText(repo: Pick<GitObjectReader, "readBlob">, hash: string | null): Promise<string | null | undefined> {
+  if (hash === null) return null;
+  const blob = await repo.readBlob(hash);
+  if (blob === null || blob.size > DIFF_LIMITS.blobBytes) return undefined;
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  return bytes.includes(0) ? undefined : new TextDecoder().decode(bytes);
+}
+
+/**
+ * A one-parent commit's change as a unified patch against its parent, which `applyPatchFile` turns
+ * back into exactly the commit's files; otherwise why it cannot be one: a merge, a binary or oversized
+ * file, an empty file, or a change only line ends or a final newline carry. Penguin re-applies a kept
+ * commit this way when it rebuilds a feature it opened (penguin-rebuild.ts).
+ */
+export async function commitPatch(repo: GitObjectReader, commit: string): Promise<{ readonly patch: string } | { readonly problem: string }> {
+  const short = commit.slice(0, 12);
+  const object = await repo.readCommit(commit);
+  if (object === null) return { problem: `commit ${short} is not in the fork` };
+  if (object.parents.length !== 1) return { problem: `commit ${short} has ${object.parents.length} parents` };
+  const parent = await repo.readCommit(object.parents[0] as string);
+  if (parent === null) return { problem: `the parent of commit ${short} is not in the fork` };
+  const changed = await changedFiles(repo, parent.treeHash, object.treeHash);
+  if (changed.length === 0) return { problem: `commit ${short} changes no file` };
+  if (changed.length > PATCH_LIMITS.files) return { problem: `commit ${short} changes more than ${PATCH_LIMITS.files} files` };
+  const texts: { before: string | null; after: string | null }[] = [];
+  const files: PlanFileDiff[] = [];
+  for (const file of changed) {
+    const [before, after] = await Promise.all([blobText(repo, file.oldHash), blobText(repo, file.newHash)]);
+    if (before === undefined || after === undefined) return { problem: `${file.path} is binary or over ${DIFF_LIMITS.blobBytes} bytes` };
+    texts.push({ before, after });
+    const status = before === null ? "added" : after === null ? "deleted" : "modified";
+    files.push({ path: file.path, scopeId: null, status, hunks: lineHunks(splitLines(before ?? ""), splitLines(after ?? "")), omitted: null });
+  }
+  const patch = formatPatch(files);
+  const parsed = parsePatch(patch);
+  if (!parsed.ok) return { problem: `commit ${short} is no plain text patch: ${parsed.message}` };
+  // The patch must give back the commit's files exactly, as the fix writer applies it.
+  for (const [index, file] of parsed.files.entries()) {
+    const applied = applyPatchFile(file, texts[index]?.before ?? null);
+    if (!applied.ok || applied.text !== (texts[index]?.after ?? null)) return { problem: `${file.path}: the change is not a plain text patch (line ends or a final newline)` };
+  }
+  return { patch };
 }
 
 /** A text's lines without their line ends; a final line end adds no empty line. */

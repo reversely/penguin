@@ -151,6 +151,7 @@ const RECORD_LABEL: Readonly<Record<string, string>> = {
   migration_part_written: "Migration part written",
   migration_closed: "Migration plan closed",
   migration_landed: "Migration plan landed",
+  block_rebuilt: "Rebuilt from main",
   approve_plan_part: "Part approved",
   reverse_penguin_approval: "Penguin's approval reversed",
   request_plan_change: "Change requested",

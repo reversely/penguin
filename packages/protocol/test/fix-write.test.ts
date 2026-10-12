@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
-import { applyPatchFile, checkFixWriteSpec, fixCommitMessage, parsePatch, type FixWriteSpec, type PlanFileDiff } from "../src/index.ts";
+import { applyPatchFile, checkFixWriteSpec, fixCommitMessage, formatPatch, parsePatch, type FixWriteSpec, type PlanFileDiff } from "../src/index.ts";
 
 function onlyFile(text: string): PlanFileDiff {
   const parsed = parsePatch(text);
@@ -101,5 +101,30 @@ describe("the fix commit", () => {
     assert.notDeepEqual(checkFixWriteSpec({ ...spec, branch: "feature" }), []);
     assert.notDeepEqual(checkFixWriteSpec({ ...spec, parent: "HEAD" }), []);
     assert.notDeepEqual(checkFixWriteSpec({ ...spec, extra: true }), []);
+  });
+});
+
+describe("formatPatch", () => {
+  test("writes added, modified and deleted files as a unified diff that parsePatch reads back", () => {
+    const text = [
+      "--- /dev/null",
+      "+++ b/a/new.py",
+      "@@ -0,0 +1,1 @@",
+      "+x = 1",
+      "--- a/a/old.py",
+      "+++ b/a/old.py",
+      "@@ -1,2 +1,2 @@",
+      " keep",
+      "-y = 1",
+      "+y = 2",
+      "--- a/a/gone.py",
+      "+++ /dev/null",
+      "@@ -1,1 +0,0 @@",
+      "-z = 1",
+      "",
+    ].join("\n");
+    const parsed = parsePatch(text);
+    assert.ok(parsed.ok);
+    assert.equal(formatPatch(parsed.files), text);
   });
 });
