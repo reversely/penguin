@@ -70,8 +70,10 @@ export type PlanResultStatus = (typeof PLAN_RESULT_STATUSES)[number];
 
 /** One place a facts run merges the originating checkpoint onto. */
 export interface PlanFactsTarget {
-  /** `main`, or the running feature's id. */
+  /** `main`, or the running feature's id: each running feature is a target of its own. */
   readonly id: string;
+  /** The feature's person, who approves the feature's plan part; null for main. */
+  readonly person: string | null;
   /** The fork the target's commit is fetched from, without the deployment's prefix: `feature-<id>`. */
   readonly repo: string;
   readonly sha: string;

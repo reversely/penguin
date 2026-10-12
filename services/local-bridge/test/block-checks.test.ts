@@ -23,6 +23,7 @@ import {
   runProgram,
   TestRunner,
   type CombinedRunReport,
+  ownerForkTargets,
 } from "@penguin/local-bridge";
 
 const REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
@@ -129,7 +130,7 @@ describe("the section 5.1 checks on a block", () => {
     report = await runner().run({
       checkpointSha: commits.ana as string,
       baselineSha: commits.main as string,
-      latestCheckpoints: { bob: commits.bob as string, cy: commits.cy as string, dan: commits.dan as string },
+      targets: ownerForkTargets({ bob: commits.bob as string, cy: commits.cy as string, dan: commits.dan as string }),
     });
     t.diagnostic(formatBlockChecks(report.checks ?? []));
     const checks = report.checks ?? [];
@@ -201,6 +202,7 @@ describe("the section 5.1 checks on a block", () => {
     assert.deepEqual(
       event.results.find((result) => result.ownerId === "dan"),
       {
+        target: "dan",
         ownerId: "dan",
         scopeId: "docs",
         commandId: "test:docs",
@@ -221,7 +223,7 @@ describe("the section 5.1 checks on a block", () => {
     const bumped = await runner().run({
       checkpointSha: commits.bump as string,
       baselineSha: commits.main as string,
-      latestCheckpoints: { bob: commits.bob as string, dan: commits.dan as string },
+      targets: ownerForkTargets({ bob: commits.bob as string, dan: commits.dan as string }),
     });
     assert.deepEqual(checkDependencyReport(bumped.dependencies), []);
     const checks = bumped.checks ?? [];
@@ -243,7 +245,7 @@ describe("the section 5.1 checks on a block", () => {
     const plain = await runner(false).run({
       checkpointSha: commits.ana as string,
       baselineSha: commits.main as string,
-      latestCheckpoints: { dan: commits.dan as string },
+      targets: ownerForkTargets({ dan: commits.dan as string }),
     });
     assert.equal(plain.checks, undefined);
     assert.deepEqual(

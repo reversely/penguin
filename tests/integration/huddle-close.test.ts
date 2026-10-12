@@ -28,6 +28,7 @@ import {
   type ApprovalReply,
   type RemoteResolver,
   type VerificationReply,
+  ownerForkTargets,
 } from "@penguin/local-bridge";
 import { buildIssuePage } from "../../services/project-agent/src/issue-page.ts";
 import { HuddleProject } from "../../services/project-agent/test/huddle-project.ts";
@@ -59,7 +60,7 @@ before(async () => {
   const report = await new CombinedRunner({ repoPath: fixture, runner: testRunner(fixture) }).run({
     checkpointSha: pins.tags["owner-priya-checkpoint"] as string,
     baselineSha: pins.branches.main as string,
-    latestCheckpoints: { jun: pins.tags["owner-jun-checkpoint"] as string, sam: pins.tags["owner-sam-checkpoint"] as string },
+    targets: ownerForkTargets({ jun: pins.tags["owner-jun-checkpoint"] as string, sam: pins.tags["owner-sam-checkpoint"] as string }),
   });
   opening = JSON.parse(JSON.stringify(combinedRunEvent(report, "priya")));
 });

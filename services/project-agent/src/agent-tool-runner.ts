@@ -26,7 +26,7 @@ import type { Feature, FeatureStore } from "./feature-store.ts";
 import type { BridgeCaller } from "./issue-index.ts";
 import { RUNNING_STATES } from "./overlap-lock.ts";
 
-/** Another running feature's fork the checks merge the checkpoint onto, named by its person. */
+/** Another running feature's fork the checks merge the checkpoint onto, a target of its own. */
 export interface ClaimedFork {
   readonly feature: string;
   readonly person: string;
@@ -48,7 +48,7 @@ export interface ClaimedToolRun {
   readonly input: Readonly<Record<string, unknown>>;
   /** The calling identity's charter: where a fix may write, and whose step a failure is. */
   readonly charter: { readonly handle: string; readonly person: string; readonly scopes: readonly string[]; readonly paths: readonly string[] };
-  /** The other running features' forks with a checkpoint, one per person. */
+  /** The other running features' forks with a checkpoint, one per feature. */
   readonly forks: readonly ClaimedFork[];
 }
 
@@ -64,19 +64,15 @@ export interface ToolRunnerDeps {
 }
 
 /**
- * The running features other than `own` with a checkpoint, one per person: when a person runs
- * several, the one updated last. The block checks key each merged tree by its person, whose scopes
- * decide which tests run.
+ * Every running feature other than `own` with a checkpoint, in feature id order. Each is a target
+ * of its own (PRD 0.4 section 1): a person with several running features has each one checked. The
+ * block checks key each merged tree by the feature id; the feature's person decides which scopes'
+ * tests run and who is routed a failure.
  */
 export function otherForks(features: readonly Feature[], own: string): ClaimedFork[] {
-  const latest = new Map<string, Feature>();
-  for (const feature of features) {
-    if (feature.id === own || !RUNNING_STATES.has(feature.state) || feature.latestCheckpointSha === null) continue;
-    const known = latest.get(feature.personId);
-    if (known === undefined || known.updatedAt < feature.updatedAt) latest.set(feature.personId, feature);
-  }
-  return [...latest.values()]
-    .sort((a, b) => a.personId.localeCompare(b.personId))
+  return features
+    .filter((feature) => feature.id !== own && RUNNING_STATES.has(feature.state) && feature.latestCheckpointSha !== null)
+    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
     .map((feature) => ({ feature: feature.id, person: feature.personId, fork: `feature-${feature.id}`, checkpoint: feature.latestCheckpointSha as string }));
 }
 

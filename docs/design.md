@@ -361,12 +361,14 @@ of `Profile.set`. It lists every analytics and messaging file that imports the i
 
 #### The checks on merged trees
 
-The check runner merges the originating checkpoint onto main and onto each affected owner's
-checkpoint. It runs every check in the table above on each merged tree, except the contract diff,
+The check runner merges the originating checkpoint onto main and onto each running feature's
+checkpoint. Each feature is a target of its own, keyed by its feature id: PRD 0.4 section 1 gives a
+person any number of features, each its own fork. A pre-0.4 owner fork is a target keyed by its
+owner. It runs every check in the table above on each merged tree, except the contract diff,
 which comes from the impact report. Overlap, merge and the dependency diff read Git objects. Lint
 and format run ruff (T18). The type check runs pyright 1.1.414 (T19). Tests run each affected
 scope's own test command. The type check and the tests run only for the targets the impact graph
-selects. An owner left out gets a `not-affected` result, which completes that owner's run.
+selects. A target left out gets a `not-affected` result, which completes that target's run.
 [bridge-and-runner.md](bridge-and-runner.md#block-checks) describes each command and its limits.
 
 Lint, format and type findings count only when the merged tree has them and the target's own tree
@@ -429,12 +431,13 @@ Runner mode claims waiting requests with `POST /tool-runs/claim`, as it claims r
 out up to 8 requests and holds them for 30 minutes. An unreported request is handed out again after
 that. Each claimed request names the feature's fork `feature-<id>`, the checkpoint, its baseline, the
 caller's charter and the other running features' forks. Each of those forks comes with its person
-and latest checkpoint. When one person runs several features, the claim names the one updated last.
+and latest checkpoint. Every running feature is listed, so a person who runs several features has
+each one merged and checked.
 The runner fetches every fork with a read token and runs the tool (`tool-run.ts`):
 
 | Tool | What the runner does | Result |
 |---|---|---|
-| `impact` | `analysis:python-impact` on the baseline and the checkpoint, searching each other fork in its person's scopes | The impact report and the people whose forks use the change |
+| `impact` | `analysis:python-impact` on the baseline and the checkpoint, searching each other fork in its person's scopes | The impact report and the features whose forks use the change |
 | `check` | A combined run with the [checks](#checks): the checkpoint merged onto its baseline (`main`) and onto each other fork | Every block check, plus one ladder decision per failed or erred check |
 | `apply_fix` | The requested fix on the checkpoint, allowed only inside the caller's charter | The fix's tool run with the files it changed |
 
@@ -458,8 +461,8 @@ reports the commit with `pushed: false`. The feature's fork keeps its commits.
 
 On the helpful-fix fixture, Priya's agent calls `check` on Priya's checkpoint with Jun's and Sam's
 features running. With no manual run, the session's next safe checkpoint brings the block checks
-on `main`, `jun` and `sam`. Jun's and Sam's tests fail. Both failures go to step 5, to
-`@jun/reports` and `@sam/reminders` (`apps/worker/test/tool-runner.test.ts`).
+on `main`, `weekly-report` and `reminder-scheduling`. Jun's and Sam's tests fail. Both failures go to
+step 5, to `@jun/reports` and `@sam/reminders` (`apps/worker/test/tool-runner.test.ts`).
 
 ### Routing and the resolution ladder
 

@@ -8,7 +8,8 @@
 //
 // A run's targets are main, at the checkpoint's baseline, and each running feature that may read what
 // the checkpoint changes: one whose area falls in a scope that depends on a scope the feature touches,
-// or that the overlap check stored as a dependent. Each target runs the tests of those dependent
+// or that the overlap check stored as a dependent. Each feature is a target of its own, keyed by its
+// id and carrying its person, so a person with two such features gets two targets. Each target runs the tests of those dependent
 // scopes, by command ID only; the runner resolves each ID from `penguin/scopes.json` itself.
 
 import {
@@ -181,6 +182,7 @@ export function factsRequest(
   const fork = `feature-${feature.id}`;
   const main: PlanFactsTarget = {
     id: PLAN_MAIN_TARGET,
+    person: null,
     repo: fork,
     sha: baseline,
     scopes: [],
@@ -199,7 +201,14 @@ export function factsRequest(
     for (const scope of stored.get(other.id) ?? []) if (scopeMap.scopes.has(scope)) scopes.add(scope);
     if (scopes.size === 0) continue;
     const sorted = [...scopes].sort().slice(0, PLAN_LIMITS.commandsPerTarget);
-    targets.push({ id: other.id, repo: `feature-${other.id}`, sha: other.latestCheckpointSha, scopes: sorted, commandIds: sorted.map(testCommand) });
+    targets.push({
+      id: other.id,
+      person: other.personId,
+      repo: `feature-${other.id}`,
+      sha: other.latestCheckpointSha,
+      scopes: sorted,
+      commandIds: sorted.map(testCommand),
+    });
     if (targets.length >= PLAN_LIMITS.targets) break;
   }
   return { feature: feature.id, fork, checkpoint: feature.latestCheckpointSha as string, baseline, targets };

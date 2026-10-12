@@ -9,18 +9,18 @@ import { runGit } from "@penguin/git-analysis";
 import { BlockChecker, formatBlockChecks, pythonDependencyAnalyzer } from "./block-checks.ts";
 import { checkTools } from "./check-tools.ts";
 import type { CliIo } from "./cli.ts";
-import { CombinedRunner } from "./combined-run.ts";
+import { CombinedRunner, parseCheckpointArgument, type ForkTarget } from "./combined-run.ts";
 import { pythonImpactAnalyzer } from "./impact-analysis.ts";
 import { TestRunner } from "./test-runner.ts";
 
 export const CHECK_USAGE = `       penguin-bridge check --base <commit> --head <commit> [--checkpoint <owner>=<commit>]...
+                      [--checkpoint <person>/<feature>=<commit>]...
                       [--main <commit>] [--repo <path>] [--python <path>] [--ruff <path>] [--yes] [--json]
-         Merges the head checkpoint onto main and onto each owner's checkpoint, runs overlap, merge,
-         lint, format, dependency diff and type check on every merged tree, and runs the tests of
+         Merges the head checkpoint onto main and onto each checkpoint, one target per owner fork or
+         feature, runs overlap, merge, lint, format, dependency diff and type check on every merged
+         tree, and runs the tests of
          each dependent scope the impact graph selects. Asks before each test run unless --yes.
 `;
-
-const CHECKPOINT_ARGUMENT = /^([^=]+)=(.+)$/;
 
 /** Resolves a revision to a full commit ID; the revision is never read as an option. */
 async function commitOf(repo: string, revision: string): Promise<string> {
@@ -44,15 +44,15 @@ export async function runCheckCommand(args: readonly string[], io: CliIo): Promi
     },
     strict: true,
   });
-  const parsed = values.checkpoint.map((text) => CHECKPOINT_ARGUMENT.exec(text));
-  if (!values.base || !values.head || parsed.some((match) => match === null)) {
+  const parsed = values.checkpoint.map(parseCheckpointArgument);
+  if (!values.base || !values.head || parsed.some((match) => match === undefined)) {
     io.write(CHECK_USAGE);
     return 2;
   }
   const repo = resolve(values.repo);
-  const latestCheckpoints: Record<string, string> = {};
-  for (const match of parsed as RegExpExecArray[]) {
-    latestCheckpoints[match[1] as string] = await commitOf(repo, match[2] as string);
+  const targets: ForkTarget[] = [];
+  for (const { id, person, revision } of parsed as NonNullable<(typeof parsed)[number]>[]) {
+    targets.push({ id, person, checkpoint: await commitOf(repo, revision) });
   }
   const baselineSha = await commitOf(repo, values.base);
   const runner = new TestRunner({
@@ -75,7 +75,7 @@ export async function runCheckCommand(args: readonly string[], io: CliIo): Promi
   }).run({
     checkpointSha: await commitOf(repo, values.head),
     baselineSha,
-    latestCheckpoints,
+    targets,
     mainSha: values.main === undefined ? baselineSha : await commitOf(repo, values.main),
   });
   const checks = report.checks ?? [];

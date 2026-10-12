@@ -58,6 +58,7 @@ function failingRun(): CombinedRunEvent {
     unmapped: [],
     results: [
       {
+        target: "jun",
         ownerId: "jun",
         scopeId: "analytics",
         commandId: "test:analytics",

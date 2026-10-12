@@ -418,9 +418,11 @@ async function claimCombinedRuns(request: Request, handlers: BridgeHandlers): Pr
   // The role comes from the registry record the token authenticated, never from the request.
   const listing = await directory.claimCombinedRuns({ bridgeId: bridge.bridgeId, role: bridge.role });
   if (listing.status === "forbidden") return json({ error: "forbidden", message: listing.message }, 403);
-  const runs = listing.runs.map(({ runId, trigger, ownerId, ownerCheckpoint, commandIds }) => ({
+  const runs = listing.runs.map(({ runId, trigger, target, fork, ownerId, ownerCheckpoint, commandIds }) => ({
     runId,
     trigger,
+    target,
+    fork,
     ownerId,
     ownerCheckpoint,
     commandIds,

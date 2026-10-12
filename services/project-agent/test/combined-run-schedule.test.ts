@@ -50,7 +50,7 @@ function result(ownerId: string, scopeId: string, ownerCheckpoint: string, statu
   const fingerprint = { id: "1".repeat(64), commit: "e".repeat(40), lockfileHash: "f".repeat(64), commandId: `test:${scopeId}` };
   const failingTests =
     status === "failed" ? [{ nodeId: `${scopeId}/tests/test_x.py::test_y`, testId: "test_x::y" }] : [];
-  return { ownerId, scopeId, commandId: `test:${scopeId}`, status, ownerCheckpoint, fingerprint, failingTests };
+  return { target: ownerId, ownerId, scopeId, commandId: `test:${scopeId}`, status, ownerCheckpoint, fingerprint, failingTests };
 }
 
 describe("scheduling on a recorded checkpoint", () => {
@@ -225,6 +225,7 @@ describe("claiming and completing runs", () => {
     const project = await scheduled();
     project.runs.claim({ bridgeId: "bridge-runner", role: "runner" });
     const notAffected = {
+      target: "sam",
       ownerId: "sam",
       scopeId: "messaging",
       commandId: "test:messaging",
@@ -287,7 +288,7 @@ describe("claiming and completing runs", () => {
       changedScopes: ["identity-map"],
       unmapped: [],
       results: [
-        { ...notAffected, ownerId: "jun", scopeId: "reports", commandId: "test:reports", ownerCheckpoint },
+        { ...notAffected, target: "jun", ownerId: "jun", scopeId: "reports", commandId: "test:reports", ownerCheckpoint },
         result("jun", "analytics", ownerCheckpoint, "passed"),
       ],
     });

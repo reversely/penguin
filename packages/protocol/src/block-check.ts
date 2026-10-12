@@ -2,7 +2,8 @@
 // dependency diff its Python analysis writes (`services/local-bridge/analysis/python_dependencies.py`).
 //
 // One `BlockCheck` is one check on one target: the originating checkpoint merged onto main or onto
-// one affected owner's checkpoint. It records the tool that ran, what it ran on and what it found,
+// one affected fork's checkpoint. Each running feature's fork is a target of its own, keyed by the
+// feature id, so one person's two features are two targets (PRD 0.4 section 1). It records the tool that ran, what it ran on and what it found,
 // so a feature page or a walkthrough can show the facts behind each result. A check never carries a
 // raw log; `logRef` names the log the runner kept by its SHA-256.
 
@@ -59,7 +60,10 @@ export interface BlockCheckFingerprint {
 export interface BlockCheck {
   /** The merge plan the block belongs to; null for a combined run that no plan scheduled. */
   readonly planId: string | null;
-  /** `main` or the affected owner whose checkpoint the originating checkpoint was merged onto. */
+  /**
+   * `main`, or the fork the originating checkpoint was merged onto: a running feature's id, or a
+   * person's id for their owner fork.
+   */
   readonly target: string;
   readonly check: BlockCheckName;
   readonly result: BlockCheckResult;
@@ -105,7 +109,7 @@ export const BLOCK_CHECK_SCHEMA: JsonSchema = {
   title: "Penguin block check",
   ...record({
     planId: nullable(SHORT),
-    target: { type: "string", pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$", maxLength: 64 },
+    target: { type: "string", pattern: "^[a-z0-9]+(?:[.-][a-z0-9]+)*$", maxLength: 64 },
     check: { type: "string", enum: [...BLOCK_CHECK_NAMES] },
     result: { type: "string", enum: [...BLOCK_CHECK_RESULTS] },
     tool: record({ name: SHORT, version: nullable(SHORT), commandId: COMMAND_ID }),

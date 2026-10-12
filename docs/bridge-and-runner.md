@@ -239,7 +239,7 @@ A merge plan needs facts that only running the code can give ([design.md](design
 `propose_plan` schedules one facts run per feature checkpoint. `GET /plan-facts` lists each pending
 run. The listing names the originating fork, the checkpoint, its baseline on main and the targets.
 `main` is one target, at the baseline. Each running feature that may read the change is another, at
-its latest checkpoint. Every target lists `test:<scope>` command IDs only. For each run the runner:
+its latest checkpoint, keyed by its feature id and naming its person. Every target lists `test:<scope>` command IDs only. For each run the runner:
 
 1. refuses a listing that names a repo other than a `feature-<id>` fork or a commit that is not a
    full SHA, then fetches each fork it names;
@@ -301,13 +301,16 @@ The script reads only Git objects. It never checks out a tree or imports the cod
 | A list past 2,000 entries | Cut; the report sets `truncated` and counts as incomplete |
 | Missing commit or malformed request | Exit status 2 with one line on standard error |
 
-A combined run (`CombinedRunner`) given an analyzer runs the analysis first, with one fork per
-dependent owner that has a checkpoint. It merges every owner's checkpoint, then runs tests only for
-the owners the report selects. Each skipped scope gets a `not-affected` result with its owner's
-checkpoint and is listed under `notAffected` in the run's report. Penguin accepts a `not-affected`
-result as the end of that owner's claimed run (`combined-run-schedule.ts`), so the run is never
-claimed again. A merge conflict outranks the impact graph: an unaffected owner whose merge
-conflicts gets `conflict`. A failed analysis is recorded as `impactError`. Every dependent scope's
+A combined run (`CombinedRunner`) takes its targets as forks, each with an id, a person and a
+checkpoint. A running feature's fork is a target keyed by its feature id, so one person's two
+features are two targets. An owner fork is a target keyed by its owner's id. A target is tested in
+the dependent scopes it names, or in its person's dependent scopes when it names none. Given an
+analyzer, the run analyses first, with one fork per target that covers a dependent scope. It merges
+every target's checkpoint, then runs tests only for the targets the report selects. Each skipped
+scope gets a `not-affected` result with its target's checkpoint and is listed under `notAffected`
+in the run's report. Penguin accepts a `not-affected` result as the end of that target's claimed
+run (`combined-run-schedule.ts`), so the run is never claimed again. A merge conflict outranks the
+impact graph: an unaffected target whose merge conflicts gets `conflict`. A failed analysis is recorded as `impactError`. Every dependent scope's
 tests then run. Runner mode passes the analyzer to every combined run.
 
 To see the report for any two commits:
@@ -373,7 +376,9 @@ of wall time on an Apple silicon laptop, worktree included. The two calls take u
 
 Runner mode runs the checks of [design.md](design.md#checks) on every merged tree of each combined
 run (`block-checks.ts`). The targets are `main`, which is the checkpoint merged onto main's commit,
-plus each dependent owner's checkpoint merged with the trigger. Each check names a command ID that
+plus every listed fork's checkpoint merged with the trigger, one target per running feature. A fork
+that covers no dependent scope still gets the overlap, merge, lint, format and dependency checks.
+Its type check reports `not-affected`. Each check names a command ID that
 maps to a fixed program in the bridge. No program or argument comes from the repository.
 
 | Check | Command ID | What runs | Fails when |
@@ -411,7 +416,7 @@ Each check is a `BlockCheck` record (`packages/protocol/src/block-check.ts`) wit
 | Field | Holds |
 |---|---|
 | `planId` | The merge plan, or null for a combined run |
-| `target`, `check`, `result` | `main` or the owner, the check and `passed`, `failed`, `not-affected`, `not-run` or `error` |
+| `target`, `check`, `result` | `main`, the feature id or the owner fork's owner, the check and `passed`, `failed`, `not-affected`, `not-run` or `error` |
 | `tool` | The program's name, the version it reports and the command ID |
 | `input` | The trigger checkpoint, the target's commit, the merged commit and the files read |
 | `findings`, `findingCount` | The first 20 findings with file, line, rule and message; the total count |
@@ -432,6 +437,11 @@ penguin-bridge check --repo <path> --base main --head owner-priya-checkpoint \
   --checkpoint jun=owner-jun-checkpoint --checkpoint sam=owner-sam-checkpoint \
   [--main <commit>] [--python <path>] [--ruff <path>] [--yes] [--json]
 ```
+
+`--checkpoint <owner>=<commit>` names an owner fork. `--checkpoint <person>/<feature>=<commit>` names
+one of a person's features, a target of its own: `--checkpoint jun/weekly-report=<commit>
+--checkpoint jun/cohort-ltv=<commit>` checks two merged trees for Jun. `resolve` takes the same
+forms.
 
 The command asks before each test run unless `--yes`. It exits 1 when any check fails or errs. On
 the dependency bump it prints, for Ana's checkpoint:
@@ -552,9 +562,11 @@ Runner mode answers the `impact`, `check` and `apply_fix` calls agents make thro
 and every other running feature's fork with read tokens into the runner's repository:
 
 - `impact` runs the [impact analysis](#impact-analysis) on the checkpoint's baseline and the
-  checkpoint, with each other fork searched in its person's scopes.
+  checkpoint, with each other fork, keyed by its feature id, searched in its person's scopes.
 - `check` runs the [block checks](#block-checks) on the checkpoint merged onto its baseline and onto
-  each other fork. Each fork's merged tree is named by its person. Each failed or erred check gets
+  each other running feature's fork. Each merged tree is named by its feature id, so a person with
+  several running features has each one checked. The feature's person decides which scopes' tests
+  run and receives the routed failures. Each failed or erred check gets
   one decision from the [resolution ladder](#resolution-ladder). No fix runs.
 - `apply_fix` runs the [fix](#resolution-ladder) the agent asked for on the checkpoint. The fix may
   change only the named files inside the caller identity's charter.

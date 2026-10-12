@@ -20,6 +20,7 @@ import {
   runProgram,
   TestRunner,
   type ResolveResult,
+  ownerForkTargets,
 } from "@penguin/local-bridge";
 
 const REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
@@ -229,7 +230,7 @@ describe("the phase C exit check on the helpful-fix fixture", () => {
     result = await ladder.resolve({
       checkpointSha: commits["priya-rename"] as string,
       baselineSha: commits.main as string,
-      latestCheckpoints: { jun: commits["owner-jun-checkpoint"] as string, sam: commits["owner-sam-checkpoint"] as string },
+      targets: ownerForkTargets({ jun: commits["owner-jun-checkpoint"] as string, sam: commits["owner-sam-checkpoint"] as string }),
       identity: "@priya/batches",
     });
   });

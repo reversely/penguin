@@ -172,7 +172,14 @@ export {
 } from "./key-store.ts";
 export type { BridgeSigningKey, KeyStore } from "./key-store.ts";
 export { hashPath, worktreeId, WorktreeRegistry } from "./registry.ts";
-export { combinedRunEvent, CombinedRunner, parseFailingTests, testChecks } from "./combined-run.ts";
+export {
+  combinedRunEvent,
+  CombinedRunner,
+  ownerForkTargets,
+  parseCheckpointArgument,
+  parseFailingTests,
+  testChecks,
+} from "./combined-run.ts";
 export {
   BlockChecker,
   formatBlockChecks,
@@ -232,6 +239,7 @@ export type {
   CombinedRunRequest,
   ConflictResult,
   FailingTest,
+  ForkTarget,
   MissingCheckpointResult,
   NotAffectedResult,
   TestedResult,

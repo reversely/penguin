@@ -55,6 +55,8 @@ function run(runId: string, ownerId: string, commandIds: string[], trigger = "pr
   return {
     runId,
     trigger: { ownerId: trigger, sha: tags[`owner-${trigger}-checkpoint`] as string, baselineSha: main },
+    target: ownerId,
+    fork: `owner-${ownerId}`,
     ownerId,
     ownerCheckpoint: tags[`owner-${ownerId}-checkpoint`] as string,
     commandIds,
@@ -190,8 +192,8 @@ test("the runner fetches another owner's fork with a read token", async () => {
     await runGit(runnerRepo, ["init", "--quiet"]);
 
     // A write token on another owner's fork is refused; the runner asks for read.
-    await assert.rejects(forkFetcher(bridgeRemotes(stateDir, store), runnerRepo)(["jun"]), /write to owner-jun/);
-    await forkFetcher(bridgeRemotes(stateDir, store, undefined, "read"), runnerRepo)(["jun"]);
+    await assert.rejects(forkFetcher(bridgeRemotes(stateDir, store), runnerRepo)(["owner-jun"]), /write to owner-jun/);
+    await forkFetcher(bridgeRemotes(stateDir, store, undefined, "read"), runnerRepo)(["owner-jun"]);
     assert.equal((await runGit(runnerRepo, ["rev-parse", "refs/penguin/owner-jun/main"])).trim(), checkpoint);
   } finally {
     await penguin.stop();

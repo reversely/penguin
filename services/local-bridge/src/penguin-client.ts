@@ -366,7 +366,11 @@ export interface ClaimedCombinedRun {
   readonly runId: string;
   /** The published checkpoint that changed a depended-on scope, and the commit it was made from. */
   readonly trigger: { readonly ownerId: string; readonly sha: string; readonly baselineSha: string };
-  /** The dependent owner and the latest checkpoint of theirs to merge with the trigger. */
+  /** The target merged with the trigger: a running feature's id, or the person's id for an owner fork. */
+  readonly target: string;
+  /** The target's fork, `feature-<id>` or `owner-<id>`, without the deployment's prefix. */
+  readonly fork: string;
+  /** The target's person and the target's latest checkpoint, merged with the trigger. */
   readonly ownerId: string;
   readonly ownerCheckpoint: string;
   /** Allowlisted command IDs, `test:<scope id>`; the runner resolves each from the repository config. */
@@ -374,6 +378,10 @@ export interface ClaimedCombinedRun {
 }
 
 const OWNER_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/u;
+/** A combined run's target: a feature id or an owner id. */
+const TARGET_ID = /^[a-z0-9]+(?:[.-][a-z0-9]+)*$/u;
+/** The fork a combined run names: `owner-<id>` or `feature-<id>`. */
+const COMBINED_RUN_FORK = /^(?:owner-[A-Za-z0-9][A-Za-z0-9._-]*|feature-[a-z0-9]+(?:[.-][a-z0-9]+)*)$/u;
 const COMMIT = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
 
 /**
@@ -410,12 +418,18 @@ function claimedRun(entry: unknown): ClaimedCombinedRun {
   const { ownerId: triggerOwner, sha, baselineSha } = (trigger ?? {}) as Record<string, unknown>;
   const owner = (value: unknown) => typeof value === "string" && OWNER_ID.test(value);
   const commit = (value: unknown) => typeof value === "string" && COMMIT.test(value);
+  // A server from before #104 names no target: the run is the owner fork of `ownerId`.
+  const { target = ownerId, fork = `owner-${String(ownerId)}` } = (entry ?? {}) as Record<string, unknown>;
   if (
     typeof runId !== "string" ||
     !owner(triggerOwner) ||
     !commit(sha) ||
     !commit(baselineSha) ||
     !owner(ownerId) ||
+    typeof target !== "string" ||
+    !TARGET_ID.test(target) ||
+    typeof fork !== "string" ||
+    !COMBINED_RUN_FORK.test(fork) ||
     !commit(ownerCheckpoint) ||
     !Array.isArray(commandIds) ||
     !commandIds.every((id) => typeof id === "string")
@@ -425,6 +439,8 @@ function claimedRun(entry: unknown): ClaimedCombinedRun {
   return {
     runId,
     trigger: { ownerId: triggerOwner as string, sha: sha as string, baselineSha: baselineSha as string },
+    target,
+    fork,
     ownerId: ownerId as string,
     ownerCheckpoint: ownerCheckpoint as string,
     commandIds: commandIds as string[],
@@ -652,7 +668,7 @@ export interface ClaimedToolRun {
   readonly input: Readonly<Record<string, unknown>>;
   /** The calling identity's charter. */
   readonly charter: { readonly handle: string; readonly person: string; readonly scopes: readonly string[]; readonly paths: readonly string[] };
-  /** The other running features' forks, one per person. */
+  /** The other running features' forks, one per feature. */
   readonly forks: readonly ClaimedFork[];
 }
 

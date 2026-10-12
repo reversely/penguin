@@ -9,7 +9,8 @@
 // - `impact` runs `analysis:python-impact` on the baseline and the checkpoint, searching each other
 //   fork for uses of the change.
 // - `check` runs a combined run with the block checks (combined-run.ts): the checkpoint merged onto
-//   its baseline (`main`) and onto each other fork, keyed by that fork's person. Each failed or erred
+//   its baseline (`main`) and onto each other running feature's fork, keyed by the feature id. A
+//   person with two running features gets two merged trees, each tested in that person's scopes. Each failed or erred
 //   check gets its one next step from the resolution ladder (`classifyCheck`). No fix is applied: a
 //   fix for steps 1 to 3 is the agent's `apply_fix`, or Penguin's once a merge plan grants it a fork.
 // - `apply_fix` applies the requested fix to the checkpoint inside the caller's charter
@@ -153,7 +154,7 @@ function ownedScopes(scopeMap: ScopeMap, person: string): string[] {
 
 async function runImpact(options: ToolPassOptions, claim: ClaimedToolRun): Promise<AgentToolResult> {
   const scopeMap = await loadScopeMap(options.repoPath, claim.checkpoint);
-  const forks = claim.forks.map((other) => ({ id: other.person, sha: other.checkpoint, scopes: ownedScopes(scopeMap, other.person) }));
+  const forks = claim.forks.map((other) => ({ id: other.feature, sha: other.checkpoint, scopes: ownedScopes(scopeMap, other.person) }));
   const impact: ImpactReport = await options.impact({ base: claim.base, head: claim.checkpoint, forks });
   const using = selectAffectedForks(impact);
   const summary =
@@ -174,7 +175,7 @@ async function runCheck(options: ToolPassOptions, claim: ClaimedToolRun): Promis
   const report = await options.combined.run({
     checkpointSha: claim.checkpoint,
     baselineSha: claim.base,
-    latestCheckpoints: Object.fromEntries(claim.forks.map((other) => [other.person, other.checkpoint])),
+    targets: claim.forks.map((other) => ({ id: other.feature, person: other.person, checkpoint: other.checkpoint })),
     mainSha: claim.base,
   });
   const checks = report.checks ?? [];

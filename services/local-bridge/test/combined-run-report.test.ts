@@ -19,6 +19,7 @@ const REPORT: CombinedRunReport = {
   unmapped: ["scripts/backfill.py"],
   results: [
     {
+      target: "jun",
       ownerId: "jun",
       scopeId: "analytics",
       commandId: "test:analytics",
@@ -33,8 +34,8 @@ const REPORT: CombinedRunReport = {
       log: "FAILED analytics/tests/test_retention.py::test_dau_stable - assert 1 == 2",
       durationMs: 0,
     },
-    { ownerId: "sam", scopeId: "messaging", commandId: "test:messaging", status: "conflict", ownerCheckpoint: sha("9"), conflictedPaths: ["x"] },
-    { ownerId: "lee", scopeId: "billing", commandId: "test:billing", status: "no-checkpoint" },
+    { target: "sam", ownerId: "sam", scopeId: "messaging", commandId: "test:messaging", status: "conflict", ownerCheckpoint: sha("9"), conflictedPaths: ["x"] },
+    { target: "lee", ownerId: "lee", scopeId: "billing", commandId: "test:billing", status: "no-checkpoint" },
   ],
 };
 

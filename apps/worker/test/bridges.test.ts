@@ -422,7 +422,14 @@ test("only a runner bridge claims scheduled combined runs, which carry command I
   assert.equal(claimed.length, 1);
   const { runId, ...run } = claimed[0] as Record<string, unknown>;
   assert.equal(typeof runId, "string");
-  assert.deepEqual(run, { trigger, ownerId: "jun", ownerCheckpoint: "c".repeat(40), commandIds: ["test:analytics"] });
+  assert.deepEqual(run, {
+    trigger,
+    target: "jun",
+    fork: "owner-jun",
+    ownerId: "jun",
+    ownerCheckpoint: "c".repeat(40),
+    commandIds: ["test:analytics"],
+  });
   assert.equal(runs.get(runId as string)?.claimedBy, runner.bridgeId);
   // Claimed runs are not handed out twice.
   assert.deepEqual(await (await claim(runner.bridgeToken)).json(), { runs: [] });

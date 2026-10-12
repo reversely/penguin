@@ -25,6 +25,7 @@ const event: CombinedRunEvent = {
   unmapped: [],
   results: [
     {
+      target: "jun",
       ownerId: "jun",
       scopeId: "analytics",
       commandId: "test:analytics",

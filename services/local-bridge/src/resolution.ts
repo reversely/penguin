@@ -1,5 +1,6 @@
 // The resolution ladder on the check runner (PRD section 5.3). A combined run checks the originating
-// checkpoint merged onto main and onto each affected owner's checkpoint. Each failed or erred check is
+// checkpoint merged onto main and onto each affected fork's checkpoint, one target per running
+// feature. Each failed or erred check is
 // classified into one next step for one actor (`classifyFailure`, @penguin/protocol). Penguin applies
 // the fixes of steps 1 to 3 itself, each into the fork that holds the failing files, and runs the
 // checks again: a fix counts only once the next round's checks no longer show its failure. A failure
@@ -27,7 +28,7 @@ import { scopeForPath, type ScopeMap } from "@penguin/scope-map";
 
 import type { FixApplier, FixRequest } from "./apply-fix.ts";
 import { loadScopeMap } from "./command-allowlist.ts";
-import type { CombinedRunner, CombinedRunReport } from "./combined-run.ts";
+import type { CombinedRunner, CombinedRunReport, ForkTarget } from "./combined-run.ts";
 
 /** The identity registry the originating agent's charter is read from. */
 export const IDENTITIES_FILE = "penguin/identities.json";
@@ -40,8 +41,8 @@ export interface ResolveRequest {
   readonly checkpointSha: string;
   /** The commit the checkpoint was made from. */
   readonly baselineSha: string;
-  /** Each affected owner's latest checkpoint, keyed by owner ID. */
-  readonly latestCheckpoints: Readonly<Record<string, string>>;
+  /** The affected forks, each with its latest checkpoint and its person. */
+  readonly targets: readonly ForkTarget[];
   /** Main's commit; defaults to the baseline. */
   readonly mainSha?: string;
   /** The handle of the agent identity whose session made the checkpoint. */
@@ -53,7 +54,7 @@ export interface ResolveResult {
   readonly record: ResolutionRecord;
   /** The originating checkpoint after Penguin's fixes. */
   readonly checkpointSha: string;
-  /** Each owner's checkpoint after Penguin's fixes. */
+  /** Each target's checkpoint after Penguin's fixes, keyed by target id. */
   readonly latestCheckpoints: Readonly<Record<string, string>>;
   /** The combined run of each round, the last one on the fixed commits. */
   readonly reports: readonly CombinedRunReport[];
@@ -114,7 +115,7 @@ export function charterPaths(scopeMap: ScopeMap, charter: CharterView): string[]
   return [...new Set([...paths, ...charter.paths])].filter((path) => path !== "");
 }
 
-/** The paths of every scope an owner owns: where Penguin may write a fix into that owner's fork. */
+/** The paths of every scope a person owns: where Penguin may write a fix into that person's fork. */
 function ownerPaths(scopeMap: ScopeMap, ownerId: string): string[] {
   return [...scopeMap.scopes.values()].filter((scope) => scope.ownerId === ownerId).flatMap((scope) => [...scope.paths]);
 }
@@ -144,7 +145,9 @@ export class ResolutionLadder {
     const { repoPath, combined, fixes } = this.#options;
     const roundLimit = request.roundLimit ?? DEFAULT_ROUND_LIMIT;
     let origin = request.checkpointSha;
-    const checkpoints: Record<string, string> = { ...request.latestCheckpoints };
+    const initial = Object.fromEntries(request.targets.map((target) => [target.id, target.checkpoint]));
+    const checkpoints: Record<string, string> = { ...initial };
+    const personOf = new Map(request.targets.map((target) => [target.id, target.person]));
     const decisions: RecordedDecision[] = [];
     const toolRuns: ToolRunRecord[] = [];
     const reports: CombinedRunReport[] = [];
@@ -156,9 +159,9 @@ export class ResolutionLadder {
       const report = await combined.run({
         checkpointSha: origin,
         baselineSha: request.baselineSha,
-        latestCheckpoints: checkpoints,
+        targets: request.targets.map((target) => ({ ...target, checkpoint: checkpoints[target.id] as string })),
         // A fork Penguin fixed runs its tests and type check again, whatever the impact graph says.
-        recheck: Object.keys(checkpoints).filter((owner) => checkpoints[owner] !== request.latestCheckpoints[owner]),
+        recheck: Object.keys(checkpoints).filter((id) => checkpoints[id] !== initial[id]),
         ...(request.mainSha === undefined ? {} : { mainSha: request.mainSha }),
       });
       reports.push(report);
@@ -183,7 +186,7 @@ export class ResolutionLadder {
       applied = [];
       for (const fix of planned) {
         const sideCommit = fix.side === ORIGIN ? origin : (checkpoints[fix.side] as string);
-        const allowed = fix.side === ORIGIN ? charterPaths(scopeMap, context.charter) : ownerPaths(scopeMap, fix.side);
+        const allowed = fix.side === ORIGIN ? charterPaths(scopeMap, context.charter) : ownerPaths(scopeMap, personOf.get(fix.side) ?? fix.side);
         const run = await fixes.apply(
           {
             kind: fix.kind,
@@ -275,9 +278,9 @@ export class ResolutionLadder {
 
 /** One failed or erred check of a combined run classified into its next step (`classifyFailure`). */
 export function classifyCheck(check: BlockCheck, report: CombinedRunReport, context: RoutingContext, failedFixes = 0, round = 0): LadderDecision {
-  const owner = check.target === MAIN_TARGET ? null : check.target;
-  const targetScopes = owner === null ? [] : report.results.filter((result) => result.ownerId === owner).map((result) => result.scopeId);
-  const codemod = report.impact === undefined || report.impact === null ? null : codemodPlan(report.impact, owner);
+  const target = check.target === MAIN_TARGET ? null : check.target;
+  const targetScopes = target === null ? [] : report.results.filter((result) => result.target === target).map((result) => result.scopeId);
+  const codemod = report.impact === undefined || report.impact === null ? null : codemodPlan(report.impact, target);
   return classifyFailure({ check, targetScopes, codemod, failedFixes, round }, context);
 }
 

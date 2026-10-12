@@ -27,6 +27,31 @@ test("a check names an allowlisted test:<scope> command and may carry its finger
   assert.equal(attachCheck({ ...check, command_id: "rm -rf" }).ok, false);
 });
 
+test("a combined-run result names its target, a feature id, and keeps the person for routing", () => {
+  const result = {
+    target: "weekly-report",
+    ownerId: "jun",
+    scopeId: "analytics",
+    commandId: "test:analytics",
+    status: "not-affected",
+    ownerCheckpoint: sha("c"),
+    fingerprint: null,
+    failingTests: [],
+  };
+  const event = { trigger: { ownerId: "priya", sha: sha("a"), baselineSha: sha("b") }, changedScopes: [], unmapped: [], results: [result] };
+  const parsed = parseCombinedRunEvent(event);
+  assert.ok(parsed.ok);
+  assert.deepEqual([parsed.event.results[0]?.target, parsed.event.results[0]?.ownerId], ["weekly-report", "jun"]);
+  // A runner from before #104 sends no target: the result is the person's owner fork.
+  const { target: _target, ...untargeted } = result;
+  const legacy = parseCombinedRunEvent({ ...event, results: [untargeted] });
+  assert.ok(legacy.ok);
+  assert.equal(legacy.event.results[0]?.target, "jun");
+  for (const target of ["Weekly", "../x", "a".repeat(64), 7]) {
+    assert.equal(parseCombinedRunEvent({ ...event, results: [{ ...result, target }] }).ok, false, String(target));
+  }
+});
+
 test("a combined-run event is checked field by field", () => {
   const event = {
     trigger: { ownerId: "priya", sha: sha("a"), baselineSha: sha("b") },

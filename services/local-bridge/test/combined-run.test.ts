@@ -18,6 +18,7 @@ import {
   TestRunner,
   type CombinedRunReport,
   type ConsentRequest,
+  ownerForkTargets,
 } from "@penguin/local-bridge";
 
 import { createFixtureRepo, type FixtureRepo } from "../../../tests/fixtures/git-repo.ts";
@@ -116,7 +117,7 @@ describe("on the identity-unification fixture", () => {
     }).run({
       checkpointSha: pins["owner-priya"] as string,
       baselineSha: pins.main as string,
-      latestCheckpoints: { jun: pins["owner-jun"] as string, sam: pins["owner-sam"] as string },
+      targets: ownerForkTargets({ jun: pins["owner-jun"] as string, sam: pins["owner-sam"] as string }),
     });
 
   test("Priya's checkpoint with Jun's and Sam's fails exactly the three fixture tests", async (t) => {
@@ -234,18 +235,18 @@ describe("on a scratch repository", () => {
 
   test("a merge with conflicting edits is a conflict and runs no tests", async () => {
     const asked: ConsentRequest[] = [];
-    const report = await runner(asked).run({ checkpointSha: provider, baselineSha: base, latestCheckpoints: { ben: clash } });
+    const report = await runner(asked).run({ checkpointSha: provider, baselineSha: base, targets: ownerForkTargets({ ben: clash }) });
 
     assert.deepEqual(report.results, [
-      { ownerId: "ben", scopeId: "app", commandId: "test:app", status: "conflict", ownerCheckpoint: clash, conflictedPaths: ["core/lib.txt"] },
-      { ownerId: "cy", scopeId: "web", commandId: "test:web", status: "no-checkpoint" },
+      { target: "ben", ownerId: "ben", scopeId: "app", commandId: "test:app", status: "conflict", ownerCheckpoint: clash, conflictedPaths: ["core/lib.txt"] },
+      { target: "cy", ownerId: "cy", scopeId: "web", commandId: "test:web", status: "no-checkpoint" },
     ]);
     assert.deepEqual(asked, []);
     assert.deepEqual(await readdir(scratch), []);
   });
 
   test("a clean merge whose tests exit 0 is a pass with a fingerprint", async () => {
-    const report = await runner([]).run({ checkpointSha: provider, baselineSha: base, latestCheckpoints: { ben: clean } });
+    const report = await runner([]).run({ checkpointSha: provider, baselineSha: base, targets: ownerForkTargets({ ben: clean }) });
     const [app] = report.results;
     assert.equal(app?.status, "passed");
     assert.ok(app?.status === "passed");

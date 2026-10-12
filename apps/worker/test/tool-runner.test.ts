@@ -281,16 +281,17 @@ describe("the check runner's agent tools", () => {
     const outcome = recorded?.outcome;
     assert.equal(recorded?.result, "found");
     const checks = outcome?.checks ?? [];
-    assert.deepEqual([...new Set(checks.map((check) => check.target))].sort(), ["jun", "main", "sam"]);
+    // Each running feature is a target of its own, keyed by its id.
+    assert.deepEqual([...new Set(checks.map((check) => check.target))].sort(), ["main", "reminder-scheduling", "weekly-report"]);
     assert.ok(checks.every((check) => check.input.origin === checkpoints[PRIYA.id]));
     const failing = checks.filter((check) => check.result === "failed").map((check) => `${check.target} ${check.check}`);
-    assert.deepEqual(failing.sort(), ["jun tests", "sam tests"]);
+    assert.deepEqual(failing.sort(), ["reminder-scheduling tests", "weekly-report tests"]);
     // The failing tests lie outside @priya/batches's charter: step 5, to the scope owners' agents.
     assert.deepEqual(
       outcome?.decisions.map((decision) => [decision.target, decision.check, decision.step, decision.actor.id]).sort(),
       [
-        ["jun", "tests", 5, "@jun/reports"],
-        ["sam", "tests", 5, "@sam/reminders"],
+        ["reminder-scheduling", "tests", 5, "@sam/reminders"],
+        ["weekly-report", "tests", 5, "@jun/reports"],
       ],
     );
     assert.match(recorded?.summary ?? "", /^\d+ checks, 2 failing: /);
@@ -318,7 +319,7 @@ describe("the check runner's agent tools", () => {
     const [recorded] = deployment.runs.list(PRIYA.id);
     assert.equal(recorded?.outcome?.impact?.head, checkpoints[PRIYA.id]);
     assert.ok(recorded?.outcome?.impact?.contracts.includes("shared/dates.py::start_of_day"));
-    assert.match(recorded?.summary ?? "", /used by jun, sam$/);
+    assert.match(recorded?.summary ?? "", /used by reminder-scheduling, weekly-report$/);
   });
 
   test("apply_fix makes the fix commit on the runner and reports it unpushed", async () => {
@@ -355,8 +356,8 @@ describe("the check runner's agent tools", () => {
     assert.deepEqual(
       claimed?.forks.map(({ person, fork, checkpoint }) => [person, fork, checkpoint]),
       [
-        ["jun", "feature-weekly-report", checkpoints["weekly-report"]],
         ["sam", "feature-reminder-scheduling", checkpoints["reminder-scheduling"]],
+        ["jun", "feature-weekly-report", checkpoints["weekly-report"]],
       ],
     );
     // Claimed and within its lease, the request is not handed out again.

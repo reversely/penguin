@@ -699,6 +699,7 @@ export class ProjectAgent extends Agent {
       const rules = await this.#reviewRules(repos);
       const index = this.#index();
       const sessions = this.#sessionStore();
+      const parsedEvent = parseCombinedRunEvent(event);
       const outcome = await openHuddle(
         {
           huddles: this.#huddleStore(),
@@ -712,9 +713,10 @@ export class ProjectAgent extends Agent {
           triggerPublished: ({ trigger }) =>
             withRepo(this.env.ARTIFACTS, triggerFork, async (repo) => (await repo.readCommit(trigger.sha)) !== null),
         },
-        event,
+        // A feature fork's failures are not a Huddle's: Huddles fix owner forks only.
+        parsedEvent.ok ? this.#combinedRunStore().ownerForkResults(parsedEvent.event) : event,
       );
-      const parsed = parseCombinedRunEvent(event);
+      const parsed = parsedEvent;
       if (outcome.status !== "rejected" && parsed.ok) this.#combinedRunStore().complete(parsed.event);
       return outcome;
     });
@@ -1368,6 +1370,7 @@ export class ProjectAgent extends Agent {
               fork: forkRepo,
               base: baseRepo,
               latestCheckpoint: (ownerId) => forks.get(ownerId)?.latestCheckpointSha ?? undefined,
+              features: () => this.#featureStore().list(),
               runs: this.#combinedRunStore(),
             },
             owner,

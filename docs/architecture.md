@@ -185,8 +185,8 @@ matches a pending operation clears its `PendingOp` row.
    on `POST /checkpoints`. An agent session can report the same checkpoint through
    `report_checkpoint`.
 2. The ProjectAgent confirms the commit exists in that fork, records it as the fork's latest
-   checkpoint and schedules a combined run for each owner whose scope depends on a scope the
-   checkpoint changed.
+   checkpoint and schedules a combined run for each running feature, or owner fork, that reads a
+   scope the checkpoint changed. Each of a person's features is a run of its own.
 3. The runner claims the runs, merges the checkpoints, runs the allowlisted tests and reports the
    results. A failure opens a Huddle issue with one fix sub-issue per failing test.
 4. Fix tasks reach agent sessions at safe checkpoints. Each newer checkpoint of an owner in the Huddle

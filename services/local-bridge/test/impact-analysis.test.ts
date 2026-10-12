@@ -17,6 +17,7 @@ import {
   resolveAnalysisCommand,
   TestRunner,
   UnknownCommandError,
+  ownerForkTargets,
 } from "@penguin/local-bridge";
 
 import { runCli } from "../src/cli.ts";
@@ -86,7 +87,7 @@ describe("on the helpful-fix fixture", () => {
       checkpointSha: checkpoint("priya"),
       baselineSha: pins.branches.main as string,
       // One owner is still on main, where nothing in the owner's scope calls the changed helper.
-      latestCheckpoints: { jun: checkpoint("jun"), sam: pins.branches.main as string },
+      targets: ownerForkTargets({ jun: checkpoint("jun"), sam: pins.branches.main as string }),
     });
     assert.equal(report.impactError, null);
     assert.deepEqual(report.notAffected, scopesOf("sam"));
@@ -109,7 +110,7 @@ describe("on the helpful-fix fixture", () => {
     }).run({
       checkpointSha: checkpoint("priya"),
       baselineSha: pins.branches.main as string,
-      latestCheckpoints: { jun: checkpoint("jun"), sam: checkpoint("sam") },
+      targets: ownerForkTargets({ jun: checkpoint("jun"), sam: checkpoint("sam") }),
     });
     assert.match(report.impactError ?? "", /could not start/);
     assert.deepEqual(report.notAffected, []);

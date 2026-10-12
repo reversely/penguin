@@ -23,7 +23,7 @@ const REQUEST: PlanFactsRequest = {
   fork: "feature-money",
   checkpoint: SHA,
   baseline: SHA,
-  targets: [{ id: "main", repo: "feature-money", sha: SHA, scopes: [], commandIds: ["test:tax"] }],
+  targets: [{ id: "main", person: null, repo: "feature-money", sha: SHA, scopes: [], commandIds: ["test:tax"] }],
 };
 const REPORT: PlanFactsReport = { impact: null, impactError: null, results: [], durationMs: 1 };
 

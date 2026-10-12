@@ -14,7 +14,7 @@ import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { combinedRunEvent, CombinedRunner, hookAnswer, TestRunner, worktreeAt } from "@penguin/local-bridge";
+import { combinedRunEvent, CombinedRunner, ownerForkTargets, hookAnswer, TestRunner, worktreeAt } from "@penguin/local-bridge";
 import { serveMcp, type McpProject } from "@penguin/mcp";
 
 import { fixTask } from "../../services/project-agent/src/fix-task.ts";
@@ -50,7 +50,7 @@ before(async () => {
   }).run({
     checkpointSha: tags["owner-priya-checkpoint"] as string,
     baselineSha: tags.main as string,
-    latestCheckpoints: { jun: tags["owner-jun-checkpoint"] as string, sam: tags["owner-sam-checkpoint"] as string },
+    targets: ownerForkTargets({ jun: tags["owner-jun-checkpoint"] as string, sam: tags["owner-sam-checkpoint"] as string }),
   });
   event = JSON.parse(JSON.stringify(combinedRunEvent(report, "priya")));
 });

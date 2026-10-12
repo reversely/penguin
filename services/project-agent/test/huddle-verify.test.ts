@@ -26,6 +26,7 @@ function failingRun(): CombinedRunEvent {
     unmapped: [],
     results: [
       {
+        target: "jun",
         ownerId: "jun",
         scopeId: "analytics",
         commandId: "test:analytics",
@@ -35,6 +36,7 @@ function failingRun(): CombinedRunEvent {
         failingTests: [{ nodeId: "analytics/tests/test_retention.py::test_dau_stable", testId: "test_retention::dau_stable" }],
       },
       {
+        target: "sam",
         ownerId: "sam",
         scopeId: "messaging",
         commandId: "test:messaging",

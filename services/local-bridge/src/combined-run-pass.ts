@@ -1,6 +1,7 @@
 // Runner mode's combined runs (PRD section 4, Layer 1): claim the combined runs Penguin scheduled
 // when a checkpoint changed a depended-on scope, run them with `CombinedRunner`, and report each
-// trigger's results to POST /combined-runs, which opens a Huddle issue when tests failed.
+// trigger's results to POST /combined-runs, which opens a Huddle issue when tests failed. Each run
+// names one target fork: a running feature's fork, or a person's owner fork.
 //
 // A claimed run names commands by ID only. Each ID must resolve in `penguin/scopes.json` as
 // committed at the trigger checkpoint; an ID that does not is refused and never runs. Every step is
@@ -10,7 +11,7 @@ import { MAIN_TARGET, type CombinedRunEvent } from "@penguin/protocol";
 
 import type { BlockChecker } from "./block-checks.ts";
 import { resolveCommand } from "./command-allowlist.ts";
-import { combinedRunEvent, CombinedRunner, type CombinedResult } from "./combined-run.ts";
+import { combinedRunEvent, CombinedRunner, type CombinedResult, type ForkTarget } from "./combined-run.ts";
 import type { RemoteResolver } from "./git-remote.ts";
 import type { ImpactAnalyzer } from "./impact-analysis.ts";
 import type { ClaimedCombinedRun, CombinedRunReply } from "./penguin-client.ts";
@@ -22,8 +23,8 @@ export interface CombinedPassOptions {
   readonly claim: () => Promise<readonly ClaimedCombinedRun[]>;
   /** Reports one trigger's results, such as `reportCombinedRun` bound to the bridge token. */
   readonly report: (event: CombinedRunEvent) => Promise<CombinedRunReply>;
-  /** Makes every commit of these owners' forks available in `repoPath`. */
-  readonly fetchForks: (ownerIds: readonly string[]) => Promise<void>;
+  /** Makes every commit of these forks (`owner-<id>`, `feature-<id>`) available in `repoPath`. */
+  readonly fetchForks: (forks: readonly string[]) => Promise<void>;
   /** The runner's repository, where checkpoints are merged and tests run in throwaway worktrees. */
   readonly repoPath: string;
   readonly runner: TestRunner;
@@ -45,7 +46,7 @@ export interface CombinedBatchResult {
   readonly runIds: readonly string[];
   /** Command IDs that did not resolve in the repository config; none of them ran. */
   readonly refused: readonly RefusedCommand[];
-  readonly results: readonly { readonly ownerId: string; readonly scopeId: string; readonly status: string }[];
+  readonly results: readonly { readonly target: string; readonly ownerId: string; readonly scopeId: string; readonly status: string }[];
   /** The block checks that failed or could not run, by target. */
   readonly failedChecks: readonly {
     readonly target: string;
@@ -66,16 +67,16 @@ export interface CombinedPassResult {
 }
 
 /**
- * Splits claimed runs into batches with one trigger and at most one run per dependent owner, since a
- * combined run merges the trigger with one checkpoint per owner. Every run of a trigger lands in a
- * batch together when it can, so one report covers every owner the trigger affects.
+ * Splits claimed runs into batches with one trigger and at most one run per target, since a combined
+ * run merges the trigger with one checkpoint per target. Every run of a trigger lands in a batch
+ * together when it can, so one report covers every target the trigger affects.
  */
 export function batchRuns(runs: readonly ClaimedCombinedRun[]): ClaimedCombinedRun[][] {
   const batches: ClaimedCombinedRun[][] = [];
   for (const run of runs) {
     const batch = batches.find(
       (candidate) =>
-        sameTrigger(candidate[0] as ClaimedCombinedRun, run) && !candidate.some((other) => other.ownerId === run.ownerId),
+        sameTrigger(candidate[0] as ClaimedCombinedRun, run) && !candidate.some((other) => other.target === run.target),
     );
     if (batch === undefined) batches.push([run]);
     else batch.push(run);
@@ -101,30 +102,30 @@ async function runBatch(options: CombinedPassOptions, runs: readonly ClaimedComb
   const base = { trigger, runIds: runs.map((run) => run.runId) };
   const refused: RefusedCommand[] = [];
   try {
-    await options.fetchForks([...new Set([trigger.ownerId, ...runs.map((run) => run.ownerId)])]);
-    const latestCheckpoints: Record<string, string> = {};
-    const commandIds: string[] = [];
+    await options.fetchForks([...new Set([`owner-${trigger.ownerId}`, ...runs.map((run) => run.fork)])]);
+    // Each run is one target; its scopes are those of its allowlisted commands, so two targets of
+    // one person can run different scopes.
+    const targets: ForkTarget[] = [];
     for (const run of runs) {
       const allowed = await allowlisted(options.repoPath, trigger.sha, run, refused);
       if (allowed.length === 0) continue;
-      latestCheckpoints[run.ownerId] = run.ownerCheckpoint;
-      commandIds.push(...allowed);
+      const scopes = allowed.map((commandId) => commandId.slice("test:".length));
+      targets.push({ id: run.target, person: run.ownerId, checkpoint: run.ownerCheckpoint, scopes });
     }
-    if (commandIds.length === 0) return { ...base, refused, results: [], failedChecks: [], reply: null, error: null };
+    if (targets.length === 0) return { ...base, refused, results: [], failedChecks: [], reply: null, error: null };
 
     const { repoPath, runner, impact, checks: checker } = options;
     const report = await new CombinedRunner({ repoPath, runner, impact, checks: checker }).run({
       checkpointSha: trigger.sha,
       baselineSha: trigger.baselineSha,
-      latestCheckpoints,
-      commandIds,
+      targets,
     });
-    // Only the claimed owners' results: another dependent owner has a run of their own, or none.
-    const claimed = (ownerId: string) => Object.hasOwn(latestCheckpoints, ownerId);
-    const results = report.results.filter((result: CombinedResult) => claimed(result.ownerId));
-    const checks = report.checks?.filter((check) => check.target === MAIN_TARGET || claimed(check.target));
+    // Only the claimed targets' results: another target has a run of its own, or none.
+    const ids = new Set(targets.map((target) => target.id));
+    const results = report.results.filter((result: CombinedResult) => result.status !== "no-checkpoint" && ids.has(result.target));
+    const checks = report.checks?.filter((check) => check.target === MAIN_TARGET || ids.has(check.target));
     const reply = await options.report(combinedRunEvent({ ...report, results, checks }, trigger.ownerId));
-    const summary = results.map(({ ownerId, scopeId, status }) => ({ ownerId, scopeId, status }));
+    const summary = results.map(({ target, ownerId, scopeId, status }) => ({ target, ownerId, scopeId, status }));
     const failedChecks = (checks ?? [])
       .filter((check) => check.result === "failed" || check.result === "error")
       .map(({ target, check, result, summary: text }) => ({ target, check, result, summary: text }));
@@ -162,7 +163,7 @@ export function formatCombinedPass(result: CombinedPassResult): string {
       lines.push(`Combined run of ${trigger} stopped; it runs again after its lease: ${batch.error}`);
       continue;
     }
-    const results = batch.results.map(({ scopeId, status }) => `${scopeId} ${status}`).join(", ");
+    const results = batch.results.map(({ target, scopeId, status }) => `${scopeId} on ${target} ${status}`).join(", ");
     const reply = batch.reply === null ? "not reported" : `Penguin: ${batch.reply.status}`;
     const issue = batch.reply?.issueId === undefined ? "" : ` #${batch.reply.issueId}`;
     lines.push(`Combined run of ${trigger}: ${results || "nothing ran"} (${reply}${issue}).`);
@@ -174,13 +175,19 @@ export function formatCombinedPass(result: CombinedPassResult): string {
   return `${lines.join("\n")}\n`;
 }
 
+/** A fork a combined run fetches: an owner fork or a running feature's fork. */
+export const COMBINED_RUN_FORK = /^(?:owner-[a-z0-9]+(?:-[a-z0-9]+)*|feature-[a-z0-9]+(?:[.-][a-z0-9]+)*)$/u;
+
 /**
- * Fetches each owner's fork, `penguin:owner-<id>`, into `repoPath` under `refs/penguin/owner-<id>/`,
- * so the trigger, its baseline and each dependent checkpoint are local objects. The runner reads
- * other owners' forks, so `remotes` must hand out read tokens.
+ * Fetches each fork, `penguin:owner-<id>` or `penguin:feature-<id>`, into `repoPath` under
+ * `refs/penguin/<fork>/`, so the trigger, its baseline and each target's checkpoint are local
+ * objects. The runner reads other people's forks, so `remotes` must hand out read tokens.
  */
-export function forkFetcher(remotes: RemoteResolver, repoPath: string): (ownerIds: readonly string[]) => Promise<void> {
-  return async (ownerIds) => {
-    for (const ownerId of ownerIds) await fetchRepoBranches(repoPath, remotes, `owner-${ownerId}`);
+export function forkFetcher(remotes: RemoteResolver, repoPath: string): (forks: readonly string[]) => Promise<void> {
+  return async (forks) => {
+    for (const fork of forks) {
+      if (!COMBINED_RUN_FORK.test(fork)) throw new Error(`${JSON.stringify(fork)} is not an owner or feature fork`);
+      await fetchRepoBranches(repoPath, remotes, fork);
+    }
   };
 }

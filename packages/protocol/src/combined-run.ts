@@ -10,10 +10,11 @@ import {
   FINGERPRINT_PATTERN,
   PERSON_ID_MAX_LENGTH,
   PERSON_ID_PATTERN,
+  SEGMENT_PATTERN,
 } from "./operation-schema.ts";
 
-// `not-affected`: the impact graph shows the owner's checkpoint uses nothing the change touches,
-// so the scope's tests did not run. The result still completes the owner's claimed run.
+// `not-affected`: the impact graph shows the target's checkpoint uses nothing the change touches,
+// so the scope's tests did not run. The result still completes the target's claimed run.
 export const COMBINED_RESULT_STATUSES = ["passed", "failed", "conflict", "no-checkpoint", "not-affected"] as const;
 export type CombinedResultStatus = (typeof COMBINED_RESULT_STATUSES)[number];
 
@@ -25,6 +26,7 @@ export const COMBINED_RUN_LIMITS = {
   pathLength: 1_024,
   testLength: 256,
   scopeIdLength: 128,
+  targetLength: 63,
 } as const;
 
 export interface CombinedRunFailingTest {
@@ -43,13 +45,20 @@ export interface CombinedRunFingerprint {
 }
 
 export interface CombinedRunResult {
-  /** The owner of the dependent scope, whose latest checkpoint was merged with the trigger. */
+  /**
+   * The merged tree the result is for: the id of the running feature whose fork's checkpoint was
+   * merged with the trigger, or the person's id for their owner fork (`owner-<id>`). A person with
+   * several running features has one target per feature (PRD 0.4 section 1). An event that leaves
+   * it out means the owner fork, `ownerId`.
+   */
+  readonly target: string;
+  /** The target's person: the dependent scope's owner, who is routed its failures. */
   readonly ownerId: string;
   readonly scopeId: string;
   /** The allowlisted command the runner ran, `test:<scope id>`. */
   readonly commandId: string;
   readonly status: CombinedResultStatus;
-  /** The dependent owner's checkpoint, or null when the owner has published none. */
+  /** The target's checkpoint, or null when the dependent scope's owner has published none. */
   readonly ownerCheckpoint: string | null;
   /** Present when tests ran: a passed or failed result. */
   readonly fingerprint: CombinedRunFingerprint | null;
@@ -83,6 +92,7 @@ const SHA = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u;
 const FINGERPRINT = new RegExp(`^${FINGERPRINT_PATTERN}$`, "u");
 const COMMAND_ID = new RegExp(`^${COMMAND_ID_PATTERN}$`, "u");
 const PERSON = new RegExp(PERSON_ID_PATTERN, "u");
+const TARGET = new RegExp(`^${SEGMENT_PATTERN}$`, "u");
 const STATUSES: ReadonlySet<string> = new Set(COMBINED_RESULT_STATUSES);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -164,6 +174,7 @@ function result(raw: unknown, at: string, report: Report): CombinedRunResult | u
     report(field, message);
   };
   const ownerId = person(raw.ownerId, `${at}.ownerId`, fail);
+  const target = raw.target === undefined ? ownerId : targetId(raw.target, `${at}.target`, fail);
   const scope = typeof raw.scopeId === "string" && scopeId(raw.scopeId) === undefined ? raw.scopeId : undefined;
   if (scope === undefined) fail(`${at}.scopeId`, "must be a scope id");
   const commandId = typeof raw.commandId === "string" && COMMAND_ID.test(raw.commandId) ? raw.commandId : undefined;
@@ -187,6 +198,7 @@ function result(raw: unknown, at: string, report: Report): CombinedRunResult | u
   if (status !== "failed" && failingTests.length > 0) fail(`${at}.failingTests`, "only a failed result lists failing tests");
   if (!valid) return undefined;
   return {
+    target: target as string,
     ownerId: ownerId as string,
     scopeId: scope as string,
     commandId: commandId as string,
@@ -225,6 +237,12 @@ function scopeId(value: string): string | undefined {
 function person(value: unknown, field: string, report: Report): string | undefined {
   if (typeof value === "string" && value.length <= PERSON_ID_MAX_LENGTH && PERSON.test(value)) return value;
   report(field, "must be an owner id");
+  return undefined;
+}
+
+function targetId(value: unknown, field: string, report: Report): string | undefined {
+  if (typeof value === "string" && value.length <= COMBINED_RUN_LIMITS.targetLength && TARGET.test(value)) return value;
+  report(field, "must be a feature id or an owner id");
   return undefined;
 }
 

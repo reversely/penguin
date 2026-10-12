@@ -1,5 +1,5 @@
 // The section 5.1 checks on each merged tree of a block (PRD section 4.5): the originating checkpoint
-// merged onto main and onto each affected owner's checkpoint. Overlap and merge read Git objects;
+// merged onto main and onto each affected fork's checkpoint, one target per running feature. Overlap and merge read Git objects;
 // lint, format and the type check run ruff and pyright in throwaway worktrees; the dependency diff
 // runs the bridge's `analysis:python-dependencies`. Tests are the combined run's own
 // (combined-run.ts). Every check is a mechanical fact about code; none calls a model.
@@ -44,9 +44,9 @@ export type TargetMerge =
 
 /** One merged tree of the block. */
 export interface BlockTarget {
-  /** `main` or the affected owner's id. */
+  /** `main`, or the affected fork's target id: a running feature's id, or a person's for an owner fork. */
   readonly id: string;
-  /** The target's own commit: main's, or the owner's latest checkpoint. */
+  /** The target's own commit: main's, or the fork's latest checkpoint. */
   readonly commit: string;
   /** The target's scopes, searched for uses of a changed library; empty searches the whole tree. */
   readonly scopes: readonly string[];

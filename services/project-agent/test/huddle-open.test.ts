@@ -27,6 +27,7 @@ function failingRun(overrides: Partial<CombinedRunEvent> = {}): CombinedRunEvent
     unmapped: [],
     results: [
       {
+        target: "jun",
         ownerId: "jun",
         scopeId: "analytics",
         commandId: "test:analytics",
@@ -39,6 +40,7 @@ function failingRun(overrides: Partial<CombinedRunEvent> = {}): CombinedRunEvent
         ],
       },
       {
+        target: "sam",
         ownerId: "sam",
         scopeId: "messaging",
         commandId: "test:messaging",
@@ -276,6 +278,7 @@ describe("opening a Huddle issue from a failing combined run", () => {
     const passing = failingRun({
       results: [
         {
+          target: "jun",
           ownerId: "jun",
           scopeId: "analytics",
           commandId: "test:analytics",

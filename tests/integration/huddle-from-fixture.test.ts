@@ -12,7 +12,7 @@ import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { combinedRunEvent, CombinedRunner, TestRunner } from "@penguin/local-bridge";
+import { combinedRunEvent, CombinedRunner, ownerForkTargets, TestRunner } from "@penguin/local-bridge";
 import { parseCombinedRunEvent } from "@penguin/protocol";
 
 import { HuddleProject } from "../../services/project-agent/test/huddle-project.ts";
@@ -49,7 +49,7 @@ async function combinedRun() {
   }).run({
     checkpointSha: tags["owner-priya-checkpoint"] as string,
     baselineSha: tags.main as string,
-    latestCheckpoints: { jun: tags["owner-jun-checkpoint"] as string, sam: tags["owner-sam-checkpoint"] as string },
+    targets: ownerForkTargets({ jun: tags["owner-jun-checkpoint"] as string, sam: tags["owner-sam-checkpoint"] as string }),
   });
   // The event crosses the network as JSON, without the test logs.
   const wire = JSON.parse(JSON.stringify(combinedRunEvent(report, "priya")));

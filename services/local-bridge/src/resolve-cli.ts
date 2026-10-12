@@ -13,15 +13,16 @@ import { FixApplier } from "./apply-fix.ts";
 import { BlockChecker, pythonDependencyAnalyzer } from "./block-checks.ts";
 import { checkTools } from "./check-tools.ts";
 import type { CliIo } from "./cli.ts";
-import { CombinedRunner } from "./combined-run.ts";
+import { CombinedRunner, parseCheckpointArgument, type ForkTarget } from "./combined-run.ts";
 import { pythonImpactAnalyzer } from "./impact-analysis.ts";
 import { DEFAULT_ROUND_LIMIT, formatResolution, ResolutionLadder } from "./resolution.ts";
 import { TestRunner } from "./test-runner.ts";
 
 export const RESOLVE_USAGE = `       penguin-bridge resolve --base <commit> --head <commit> --identity @<owner>/<name>
-                      [--checkpoint <owner>=<commit>]... [--main <commit>] [--round-limit <n>] [--repo <path>]
+                      [--checkpoint <owner>=<commit> | <person>/<feature>=<commit>]... [--main <commit>]
+                      [--round-limit <n>] [--repo <path>]
                       [--python <path>] [--ruff <path>] [--uv <path>] [--codemod-python <path>] [--yes] [--write] [--json]
-         Checks the head checkpoint merged onto main and onto each owner's checkpoint, routes each failure
+         Checks the head checkpoint merged onto main and onto each fork's checkpoint, routes each failure
          through the resolution ladder, applies Penguin's format, lint, lockfile and codemod fixes, and checks
          again. --write moves each branch named by --head or --checkpoint to its fixed commit.
        penguin-bridge apply-fix --kind format|lint|lockfile|codemod --commit <commit> --allow <path>...
@@ -70,18 +71,20 @@ export async function runResolveCommand(args: readonly string[], io: CliIo): Pro
     },
     strict: true,
   });
-  const parsed = values.checkpoint.map((text) => PAIR.exec(text));
+  const parsed = values.checkpoint.map(parseCheckpointArgument);
   const roundLimit = Number(values["round-limit"]);
-  if (!values.base || !values.head || !values.identity || parsed.some((match) => match === null) || !Number.isInteger(roundLimit) || roundLimit < 1) {
+  if (!values.base || !values.head || !values.identity || parsed.some((match) => match === undefined) || !Number.isInteger(roundLimit) || roundLimit < 1) {
     io.write(RESOLVE_USAGE);
     return 2;
   }
   const repo = resolvePath(values.repo);
   const named: Record<string, string> = {};
   const latestCheckpoints: Record<string, string> = {};
-  for (const match of parsed as RegExpExecArray[]) {
-    named[match[1] as string] = match[2] as string;
-    latestCheckpoints[match[1] as string] = await commitOf(repo, match[2] as string);
+  const targets: ForkTarget[] = [];
+  for (const { id, person, revision } of parsed as NonNullable<(typeof parsed)[number]>[]) {
+    named[id] = revision;
+    latestCheckpoints[id] = await commitOf(repo, revision);
+    targets.push({ id, person, checkpoint: latestCheckpoints[id] });
   }
   const baselineSha = await commitOf(repo, values.base);
   const headSha = await commitOf(repo, values.head);
@@ -110,7 +113,7 @@ export async function runResolveCommand(args: readonly string[], io: CliIo): Pro
   const result = await ladder.resolve({
     checkpointSha: headSha,
     baselineSha,
-    latestCheckpoints,
+    targets,
     mainSha: values.main === undefined ? baselineSha : await commitOf(repo, values.main),
     identity: values.identity,
     roundLimit,
@@ -118,8 +121,8 @@ export async function runResolveCommand(args: readonly string[], io: CliIo): Pro
   const moved: string[] = [];
   if (values.write) {
     const updates: [string, string, string][] = [[values.head, headSha, result.checkpointSha]];
-    for (const [owner, revision] of Object.entries(named)) {
-      updates.push([revision, latestCheckpoints[owner] as string, result.latestCheckpoints[owner] as string]);
+    for (const [id, revision] of Object.entries(named)) {
+      updates.push([revision, latestCheckpoints[id] as string, result.latestCheckpoints[id] as string]);
     }
     for (const [revision, before, after] of updates) {
       const ref = before === after ? undefined : await branchOf(repo, revision);
