@@ -33,8 +33,8 @@ not work yet), **rule needed** (the procedure does not yet say what should happe
 | Step | State | Evidence or ticket |
 |---|---|---|
 | Dependency diff finds Ana's imports; side-by-side shows the double charge | works | #93, #98 |
-| Ana's part approved | partial | Needs a trial pass (#122 merged; not yet run on case 3) |
-| Land as one block | gap | The dependency check never passes (#121) |
+| Ana's part approved by Penguin; Ana told | works | Preview seed of case 3: the trial passes `test:payments` and accepts Ana's form, Penguin approves the part and Ana gets a `penguin_approved` item |
+| Land as one block | works | `tests/integration/dependency-bump-block.test.ts`: with Ana's fix in Ana's fork every check passes; the dependency diff is a passing fact. Without the fix the block fails on Ana's test alone. Not yet run in the walkthrough |
 
 ## Case 4: money in minor units (split)
 

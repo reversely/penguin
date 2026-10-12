@@ -460,12 +460,10 @@ function ChecksView({ run }: { readonly run: ToolRunView }) {
               {group.failing > 0 ? <span className="tag tag-failure">{counted(group.failing, "failing", "failing")}</span> : null}
             </p>
             <ul className="target-rows">
-              {group.checks
-                .filter((check) => check.result === "failed" || check.result === "error")
-                .map((check, index) => (
-                  <CheckRow key={`${check.target} ${index}`} check={check} />
-                ))}
-              {group.failing === group.checks.length ? null : <li className="muted target-others">{otherResults(group.checks)}</li>}
+              {group.checks.filter(shownAsRow).map((check, index) => (
+                <CheckRow key={`${check.target} ${index}`} check={check} />
+              ))}
+              {group.checks.every(shownAsRow) ? null : <li className="muted target-others">{otherResults(group.checks.filter((check) => !shownAsRow(check)))}</li>}
             </ul>
           </li>
         ))}
@@ -486,10 +484,18 @@ function ChecksView({ run }: { readonly run: ToolRunView }) {
   );
 }
 
-/** The targets a tool did not fail on, counted by result: `passed on 3 targets, not-affected on 1`. */
+/**
+ * A check gets a row of its own when it failed or erred, or when it passed with findings: the
+ * dependency diff passes and still names the changed library and each place the target imports it.
+ */
+function shownAsRow(check: BlockCheck): boolean {
+  return check.result === "failed" || check.result === "error" || check.findingCount > 0;
+}
+
+/** The targets left without a row, counted by result: `passed on 3 targets, not-affected on 1`. */
 function otherResults(checks: readonly BlockCheck[]): string {
   const counts = new Map<string, number>();
-  for (const check of checks) if (check.result !== "failed" && check.result !== "error") counts.set(check.result, (counts.get(check.result) ?? 0) + 1);
+  for (const check of checks) counts.set(check.result, (counts.get(check.result) ?? 0) + 1);
   return [...counts].map(([result, count]) => `${result} on ${counted(count, "target")}`).join(", ");
 }
 

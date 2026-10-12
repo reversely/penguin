@@ -106,7 +106,7 @@ notes. `test-results/walkthrough/report.json` holds each phase's result and dura
 |---|---|
 | 1 | Promoted. Jun asks for two changes on the part for analytics' code on main |
 | 2 | Promoted |
-| 3 | The block fails at land. The dependency diff fails on main and on Ana's fork because `shared.http` changes version, the change the plan exists for. No step of the ladder clears that failure |
+| 3 | The block failed at land on a dependency diff that failed main and Ana's fork. The dependency diff is now a passing fact. `tests/integration/dependency-bump-block.test.ts` passes the block with Ana's fix in Ana's fork. The walkthrough has not run the case since |
 | 4 | The block run of the promotion the fixture makes before Ines opens stops on the check runner. The runner fetches the 38 forks into one repository with Git protocol version 1. Once that repository holds 14 forks, Artifacts answers each further fetch with `fetch-pack: protocol error: bad band #78`. The same fetches with protocol version 2 succeed |
 
 In case 4 the walkthrough plays the one-block attempt only. It reads the wave features (role `wave`)

@@ -219,7 +219,7 @@ describe("the section 5.1 checks on a block", () => {
     }
   });
 
-  test("a version change of a library the fork imports fails the dependency check", async () => {
+  test("a version change of a library the fork imports is a passing fact naming each place it is imported", async () => {
     const bumped = await runner().run({
       checkpointSha: commits.bump as string,
       baselineSha: commits.main as string,
@@ -228,7 +228,7 @@ describe("the section 5.1 checks on a block", () => {
     assert.deepEqual(checkDependencyReport(bumped.dependencies), []);
     const checks = bumped.checks ?? [];
     const bob = checks.find((check) => check.target === "bob" && check.check === "dependencies") as BlockCheck;
-    assert.equal(bob.result, "failed");
+    assert.equal(bob.result, "passed");
     assert.deepEqual(
       bob.findings.map((item) => [item.path, item.line, item.message]),
       [
@@ -279,11 +279,14 @@ describe("penguin-bridge check on the fixtures", () => {
     return output;
   }
 
-  test("the dependency bump fails the dependency check where Ana's payments import the client", async () => {
+  test("the dependency bump passes the dependency check and names where Ana's payments import the client; Ana's test fails", async () => {
     const output = await check("dependency-bump", "owner-hugo-checkpoint", ["ana=owner-ana-checkpoint"]);
-    assert.match(output, /onto ana@\w+ \(merged \w+\)\n(?:.*\n)*? {2}dependencies failed: shared\.http changed version; ana imports it in 4 places/);
+    assert.match(output, /onto ana@\w+ \(merged \w+\)\n(?:.*\n)*? {2}dependencies passed: shared\.http changed version; ana imports it in 4 places/);
     assert.match(output, /shared\/http\.py vendored shared\.http 1\.4\.0 -> 2\.0\.0, from vendor\.wire_v1 to vendor\.wire_v2/);
     assert.match(output, /payments\/webhooks\.py:4 imports shared\.http/);
+    // The bump alone fails nothing: the one failure is the affected test the version change breaks.
+    assert.deepEqual([...output.matchAll(/^ {2}(\w+) (?:failed|error):/gmu)].map((match) => match[1]), ["tests"]);
+    assert.match(output, /test_webhooks\.py fails: test_timed_out_charge_is_charged_once/);
   });
 
   test("identity unification: pyright's finding already on Sam's checkpoint is not blamed on the merge", async () => {

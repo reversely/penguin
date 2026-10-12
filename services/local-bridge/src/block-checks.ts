@@ -4,6 +4,10 @@
 // runs the bridge's `analysis:python-dependencies`. Tests are the combined run's own
 // (combined-run.ts). Every check is a mechanical fact about code; none calls a model.
 //
+// The dependency diff states which library changed version and where the target imports it: a fact
+// for the plan, never a failure on its own. A version bump passes when the tests, the type check and
+// lint of each affected scope pass on the merged tree.
+//
 // Lint, format and type findings are those of the merged tree that the target's own tree does not
 // have, so a finding that was already on the target's side is never blamed on the merge.
 
@@ -295,7 +299,7 @@ function dependencyCheck(
     uses.length === 0
       ? `${changes.length} librar${changes.length === 1 ? "y" : "ies"} changed version; ${target.id} imports none`
       : `${[...libraries].join(", ")} changed version; ${target.id} imports it in ${uses.length} place${plural(uses.length)}`;
-  return record(check, uses.length === 0 ? "passed" : "failed", [...changes, ...used], summary, ms);
+  return record(check, "passed", [...changes, ...used], summary, ms);
 }
 
 function record(

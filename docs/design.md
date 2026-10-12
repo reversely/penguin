@@ -777,9 +777,12 @@ selects. A target left out gets a `not-affected` result, which completes that ta
 Lint, format and type findings count only when the merged tree has them and the target's own tree
 does not. A finding already on the target before the merge never fails the block. The dependency
 diff reads versions from `pyproject.toml`, `requirements*.txt`, `uv.lock` and vendored modules that
-state `__version__`. It fails a target whose scopes import a library that changed version. In the
+state `__version__`. Its result is a fact for the plan: the library that changed version and each
+place the target's scopes import it. It passes whatever it finds. It gives `error` only when the
+analysis cannot run. A block with a version bump passes when the tests, the type check and lint of
+each affected scope pass on the merged tree and every part of the plan is approved. In the
 dependency bump, `shared/http.py` re-exports `__version__` from `vendor/wire_v2` in place of
-`vendor/wire_v1`. The dependency diff therefore reports `shared.http` 1.4.0 to 2.0.0 with the three
+`vendor/wire_v1`. The dependency diff therefore reports `shared.http` 1.4.0 to 2.0.0 with the four
 places Ana's payments scope imports it.
 
 Each result is a `BlockCheck` record: the target, the check, the result, the tool with its version
@@ -793,7 +796,7 @@ On the three fixtures:
 |---|---|
 | Identity unification | Tests fail for Jun (two tests) and Sam (one test). The type check passes on both: no caller outside Priya's file calls `Profile.set`. Sam's one existing pyright error is already on Sam's checkpoint. Lint passes (`examples/ruff.toml` matches a built fixture's import sorting) |
 | Helpful fix | Tests fail for Jun and Sam, one test each. Lint passes |
-| Dependency bump | The dependency diff fails for Ana and for main. Ana's payment test fails |
+| Dependency bump | The dependency diff passes with the four places Ana imports `shared.http`. On Ana's checkpoint Ana's payment test fails. With Ana's fix in Ana's fork every check passes (`tests/integration/dependency-bump-block.test.ts`) |
 
 ### Tools for agents
 

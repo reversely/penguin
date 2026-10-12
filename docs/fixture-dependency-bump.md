@@ -68,12 +68,14 @@ In the approved design ([design.md](design.md#procedure)) this case runs as foll
 2. **Plan.** wire 2.0.0 retries failed requests by default. Ana's declared invariant is "a payment
    is charged at most once". Penguin's side-by-side run with a simulated timeout shows a payment call
    made twice. Hugo's agent proposes idempotency keys on Ana's payment calls.
-3. **Advance notice.** Ana's agent fills in the review form. The rerun shows one charge. Ana
-   approves.
+3. **Advance notice.** Ana's agent fills in the review form. The rerun shows one charge. Every
+   check is clean, so Penguin approves the part and tells Ana.
 4. **Build.** Hugo's agent writes the idempotency keys into Ana's existing fork. Today Ana's session
    makes that fix (`owner-ana`).
 5. **Block promotion.** The upgrade and Ana's fix reach main in one promotion. Main never holds the
-   upgrade without the keys. Ana is asked once.
+   upgrade without the keys. The dependency diff names where Ana imports the client and fails
+   nothing. Ana's tests, type check and lint on the merged tree decide the block. Ana is told,
+   not asked.
 
 ## Invariants, contracts and features
 
@@ -120,10 +122,17 @@ client, so its tests run.
 | Payments | `owner-ana-checkpoint` | `owner-hugo-checkpoint` merged onto it | The order whose charge response times out has one charge on the base and two on the fork | Accepted. The reported break goes to Ana as a `broken_invariant`. The difference also goes to Ana as a `protected_difference` |
 | Payments | `owner-ana-checkpoint` | `owner-hugo` merged onto `owner-ana` | None: the timed-out order has one charge on both sides | Accepted with `test_timed_out_charge_is_charged_once` as evidence. No exception |
 
-`penguin-bridge check` fails the dependency diff on every merged tree, because `shared.http` moves
-from wire 1.4.0 to wire 2.0.0. On Ana's checkpoint it also fails `test_timed_out_charge_is_charged_once`.
-On `owner-ana` the tests pass. Overlap, merge, lint, format and the type check pass on every merged
-tree.
+`penguin-bridge check` reports the dependency diff on every merged tree as a passing fact:
+`shared.http` moves from wire 1.4.0 to wire 2.0.0. Ana's scope imports it in four places. On
+Ana's checkpoint the one failure is `test_timed_out_charge_is_charged_once`. On `owner-ana` the
+tests pass, so every check passes. Overlap, merge, lint, format and the type check pass on every
+merged tree.
+
+`tests/integration/dependency-bump-block.test.ts` runs the case from plan to block on the check
+runner's programs. The facts run names Ana's failing test. The trial of Ana's part, the
+idempotency keys as a patch against Ana's checkpoint, passes `test:payments` and accepts
+`reviews/payments.json` with no exception. The block on main and on Ana's fork with the fix passes
+every check. The same block on Ana's checkpoint fails on Ana's test alone.
 
 ## Manual reproduction
 

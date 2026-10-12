@@ -564,7 +564,7 @@ maps to a fixed program in the bridge. No program or argument comes from the rep
 |---|---|---|---|
 | Overlap | `git:diff-hunks` | `git diff -U0` from the merge base to each side, per file both sides change, with `--literal-pathspecs` | Both sides change the same hunk of one file |
 | Merge | `git:merge-tree` | `git merge-tree --write-tree` | A path conflicts. Lint, format, type check and tests then report `not-run` |
-| Dependency diff | `analysis:python-dependencies` | `python3 -I python_dependencies.py`, reading Git objects only | A library changed version and the target's scopes import it |
+| Dependency diff | `analysis:python-dependencies` | `python3 -I python_dependencies.py`, reading Git objects only | Never. It names each changed library and each place the target's scopes import it. It gives `error` when the analysis cannot run |
 | Lint | `check:ruff-lint` | `ruff check --output-format json` on the Python files the merge changes | The merged tree has a finding the target's own tree lacks |
 | Format | `check:ruff-format` | `ruff format --check` on the same files | A file would be reformatted that the target's own tree leaves alone |
 | Type check | `check:pyright` | pyright 1.1.414 with `--outputjson` on the whole merged tree | The merged tree has an error the target's own tree lacks |
@@ -623,13 +623,14 @@ one of a person's features, a target of its own: `--checkpoint jun/weekly-report
 forms.
 
 The command asks before each test run unless `--yes`. It exits 1 when any check fails or errs. On
-the dependency bump it prints, for Ana's checkpoint:
+the dependency bump it prints, for Ana's checkpoint without Ana's fix. The dependency diff passes
+with the places Ana imports the client. The one failure is Ana's payment test:
 
 ```text
 4a56f11d9f6c onto ana@e6994519dd70 (merged dad2a2dfc816)
   overlap passed: no file changed in both [git diff, git:diff-hunks, 35 ms]
   merge passed: merges cleanly [git merge-tree, git:merge-tree, 26 ms]
-  dependencies failed: shared.http changed version; ana imports it in 4 places [python-dependencies, analysis:python-dependencies, 262 ms]
+  dependencies passed: shared.http changed version; ana imports it in 4 places [python-dependencies, analysis:python-dependencies, 262 ms]
     shared/http.py vendored shared.http 1.4.0 -> 2.0.0, from vendor.wire_v1 to vendor.wire_v2
     payments/tests/charge_replay.py:6 imports shared.http (shared.http)
     payments/tests/fake_processor.py:3 imports shared.http (shared.http)
