@@ -68,7 +68,7 @@ async function retried<T>(step: () => Promise<T>): Promise<T> {
 
 /**
  * Builds the dashboard and copies the build to `target`, which the Worker then serves instead of
- * apps/dashboard/dist. Any other build of the dashboard in this checkout while `wrangler dev` runs
+ * apps/dashboard/dist. Any other build of the dashboard in this working tree while `wrangler dev` runs
  * (another `wrangler dev` starting, `wrangler deploy`, `npm run build -w @penguin/dashboard`)
  * deletes and rewrites dist. Every ASSETS fetch of that `wrangler dev` then answers 500 with an
  * empty body (issue #74, docs/walkthrough.md). Nothing else writes the copy.
@@ -96,33 +96,67 @@ export interface StackOptions {
   readonly logFile: string;
 }
 
+/** The Worker's settings and secrets as the env file wrangler dev reads holds them, and the secrets to redact. */
+interface WorkerEnv {
+  readonly values: Readonly<Record<string, string>>;
+  readonly secrets: readonly string[];
+}
+
+/** Writes the env file and starts `wrangler dev`, its console going to `log` with the secrets removed. */
+async function spawnWorker(
+  options: StackOptions,
+  tempDir: string,
+  assets: string,
+  port: number,
+  env: WorkerEnv,
+  log: WriteStream,
+): Promise<ChildProcess> {
+  const envFile = join(tempDir, "worker.env");
+  // Single quotes keep a value literal in the env file: the signing key is JSON with double quotes.
+  const lines = Object.entries(env.values).map(([key, value]) => `${key}='${value}'`);
+  await writeFile(envFile, `${lines.join("\n")}\n`, { mode: 0o600 });
+  const redact = (chunk: Buffer) => env.secrets.reduce((text, secret) => text.split(secret).join("[redacted]"), chunk.toString());
+  const worker = spawn(
+    "npx",
+    [
+      "wrangler", "dev", "-c", "apps/worker/wrangler.jsonc", "--ip", "127.0.0.1", "--port", String(port),
+      "--env-file", envFile, "--persist-to", join(tempDir, "state"), "--show-interactive-dev-session=false",
+      "--assets", assets,
+    ],
+    { cwd: options.repoRoot, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, CI: "1" }, detached: true },
+  );
+  worker.stdout?.on("data", (chunk: Buffer) => log.write(redact(chunk)));
+  worker.stderr?.on("data", (chunk: Buffer) => log.write(redact(chunk)));
+  return worker;
+}
+
 export class LocalStack {
   readonly url: string;
   readonly prefix: string;
   readonly deployer: Deployer;
-  readonly #repoRoot: string;
+  readonly #options: StackOptions;
   readonly #double: GitHubDouble;
-  readonly #worker: ChildProcess;
   readonly #log: WriteStream;
   readonly #tempDir: string;
+  readonly #worker: ChildProcess;
 
-  private constructor(
-    url: string,
-    options: StackOptions,
-    deployerToken: string,
-    double: GitHubDouble,
-    worker: ChildProcess,
-    log: WriteStream,
-    tempDir: string,
-  ) {
-    this.url = url;
-    this.prefix = options.prefix;
-    this.#repoRoot = options.repoRoot;
-    this.deployer = new Deployer(url, deployerToken);
-    this.#double = double;
-    this.#worker = worker;
-    this.#log = log;
-    this.#tempDir = tempDir;
+  private constructor(fields: {
+    readonly url: string;
+    readonly options: StackOptions;
+    readonly deployerToken: string;
+    readonly double: GitHubDouble;
+    readonly worker: ChildProcess;
+    readonly log: WriteStream;
+    readonly tempDir: string;
+  }) {
+    this.url = fields.url;
+    this.prefix = fields.options.prefix;
+    this.deployer = new Deployer(fields.url, fields.deployerToken);
+    this.#options = fields.options;
+    this.#double = fields.double;
+    this.#worker = fields.worker;
+    this.#log = fields.log;
+    this.#tempDir = fields.tempDir;
   }
 
   /** Starts the double and `wrangler dev`, and resolves once the Worker answers /health. */
@@ -132,51 +166,50 @@ export class LocalStack {
     const double = await startGitHubDouble(options.login(options.owners[0] as string));
     const port = await freePort();
     const deployerToken = randomBytes(32).toString("base64url");
-    const envFile = join(tempDir, "worker.env");
-    const env: Record<string, string> = {
-      PENGUIN_DEPLOYER_TOKEN: deployerToken,
-      PENGUIN_OP_SIGNING_KEY: await signingKey(),
-      PENGUIN_REPO_PREFIX: options.prefix,
-      PENGUIN_GITHUB_BASE_URL: double.url,
-      GITHUB_OAUTH_CLIENT_ID: DOUBLE_CLIENT.clientId,
-      GITHUB_OAUTH_CLIENT_SECRET: DOUBLE_CLIENT.clientSecret,
-      PENGUIN_DASHBOARD_OWNERS: options.owners.map((owner) => `${options.login(owner)}:${owner}`).join(","),
+    const signing = await signingKey();
+    const env: WorkerEnv = {
+      values: {
+        PENGUIN_DEPLOYER_TOKEN: deployerToken,
+        PENGUIN_OP_SIGNING_KEY: signing,
+        PENGUIN_REPO_PREFIX: options.prefix,
+        PENGUIN_GITHUB_BASE_URL: double.url,
+        GITHUB_OAUTH_CLIENT_ID: DOUBLE_CLIENT.clientId,
+        GITHUB_OAUTH_CLIENT_SECRET: DOUBLE_CLIENT.clientSecret,
+        PENGUIN_DASHBOARD_OWNERS: options.owners.map((owner) => `${options.login(owner)}:${owner}`).join(","),
+      },
+      secrets: [deployerToken, signing],
     };
-    // Single quotes keep a value literal in the env file: the signing key is JSON with double quotes.
-    const lines = Object.entries(env).map(([key, value]) => `${key}='${value}'`);
-    await writeFile(envFile, `${lines.join("\n")}\n`, { mode: 0o600 });
-
     const log = createWriteStream(options.logFile);
-    const secrets = [deployerToken, env.PENGUIN_OP_SIGNING_KEY as string];
-    const redact = (chunk: Buffer) => secrets.reduce((text, secret) => text.split(secret).join("[redacted]"), chunk.toString());
-    const worker = spawn(
-      "npx",
-      [
-        "wrangler", "dev", "-c", "apps/worker/wrangler.jsonc", "--ip", "127.0.0.1", "--port", String(port),
-        "--env-file", envFile, "--persist-to", join(tempDir, "state"), "--show-interactive-dev-session=false",
-        "--assets", assets,
-      ],
-      { cwd: options.repoRoot, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, CI: "1" }, detached: true },
-    );
-    worker.stdout?.on("data", (chunk: Buffer) => log.write(redact(chunk)));
-    worker.stderr?.on("data", (chunk: Buffer) => log.write(redact(chunk)));
+    const worker = await spawnWorker(options, tempDir, assets, port, env, log);
+    const stack = new LocalStack({ url: `http://127.0.0.1:${port}`, options, deployerToken, double, worker, log, tempDir });
+    await stack.#healthy();
+    return stack;
+  }
 
-    const url = `http://127.0.0.1:${port}`;
-    const stack = new LocalStack(url, options, deployerToken, double, worker, log, tempDir);
+  async #healthy(): Promise<void> {
     const deadline = Date.now() + 180_000;
     for (;;) {
-      if (worker.exitCode !== null) {
-        await stack.stop();
-        throw new Error(`wrangler dev exited with ${worker.exitCode}; see ${options.logFile}`);
+      if (this.#worker.exitCode !== null) {
+        await this.stop();
+        throw new Error(`wrangler dev exited with ${this.#worker.exitCode}; see ${this.#options.logFile}`);
       }
-      const healthy = await fetch(`${url}/health`).then((response) => response.status === 200, () => false);
-      if (healthy) return stack;
+      const healthy = await fetch(`${this.url}/health`).then((response) => response.status === 200, () => false);
+      if (healthy) return;
       if (Date.now() > deadline) {
-        await stack.stop();
-        throw new Error(`the Worker did not answer /health within 180 s; see ${options.logFile}`);
+        await this.stop();
+        throw new Error(`the Worker did not answer /health within 180 s; see ${this.#options.logFile}`);
       }
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }
+  }
+
+  async #stopWorker(): Promise<void> {
+    const worker = this.#worker;
+    if (worker.exitCode !== null || worker.pid === undefined) return;
+    const exited = new Promise((resolve) => worker.once("exit", resolve));
+    process.kill(-worker.pid, "SIGTERM");
+    await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 10_000))]);
+    if (worker.exitCode === null) process.kill(-worker.pid, "SIGKILL");
   }
 
   /**
@@ -185,8 +218,8 @@ export class LocalStack {
    */
   async seedBase(source: string, sha: string, branch: string): Promise<void> {
     const name = `${this.prefix}base`;
-    const repo = await wranglerJson(this.#repoRoot, ["artifacts", "repos", "get", name, "--namespace", NAMESPACE]);
-    const issued = await wranglerJson(this.#repoRoot, [
+    const repo = await wranglerJson(this.#options.repoRoot, ["artifacts", "repos", "get", name, "--namespace", NAMESPACE]);
+    const issued = await wranglerJson(this.#options.repoRoot, [
       "artifacts", "repos", "issue-token", name, "--namespace", NAMESPACE, "--scope", "write", "--ttl", "600",
     ]);
     const token: string | undefined = issued.plaintext ?? issued.token ?? issued.result?.plaintext;
@@ -198,17 +231,12 @@ export class LocalStack {
 
   /** Stops the Worker and the double, deletes every repo under the prefix and the temporary folder. */
   async stop(): Promise<string[]> {
-    if (this.#worker.exitCode === null && this.#worker.pid !== undefined) {
-      const exited = new Promise((resolve) => this.#worker.once("exit", resolve));
-      process.kill(-this.#worker.pid, "SIGTERM");
-      await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 10_000))]);
-      if (this.#worker.exitCode === null) process.kill(-this.#worker.pid, "SIGKILL");
-    }
+    await this.#stopWorker();
     this.#log.end();
     await this.#double.close();
     await rm(this.#tempDir, { recursive: true, force: true });
-    const repos = await retried(() => reposWithPrefix(this.#repoRoot, this.prefix));
-    for (const name of repos) await retried(() => deleteRepo(this.#repoRoot, name));
+    const repos = await retried(() => reposWithPrefix(this.#options.repoRoot, this.prefix));
+    for (const name of repos) await retried(() => deleteRepo(this.#options.repoRoot, name));
     return repos;
   }
 }

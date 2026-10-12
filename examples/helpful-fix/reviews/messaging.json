@@ -1,0 +1,12 @@
+{
+  "rows": [
+    {
+      "invariant": "reminder-local-hour",
+      "verdict": "holds",
+      "evidence": ["messaging/contacts.py::local_timezone"],
+      "storedData": ""
+    }
+  ],
+  "riskyInputs": [],
+  "storedDataMarker": null
+}

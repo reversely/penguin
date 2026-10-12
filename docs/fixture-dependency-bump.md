@@ -98,6 +98,11 @@ types `Client`, `Request`, `Response` and `Timeout` in `shared/http.py`. Payment
 `features.json` lists Hugo's feature "Upgrade the HTTP client" as the originating feature on the
 fork `owner-hugo`. Ana's order-placed webhook (`owner-ana`) is the running feature.
 
+`reviews/payments.json` holds the review form Ana's agent submits on Hugo's feature. It reports
+`charged-at-most-once` as holding. Penguin checks a form's evidence in Hugo's fork, where the
+webhook's test does not exist, so the row cites the contract `payments/orders.py::charge_body` on
+main. The builder does not commit the form.
+
 ## Impact and review on this fixture
 
 The results below come from `penguin-bridge impact`, `penguin-bridge review` and

@@ -1,0 +1,12 @@
+{
+  "rows": [
+    {
+      "invariant": "evening-activity-local-day",
+      "verdict": "holds",
+      "evidence": ["analytics/totals.py::events_per_user"],
+      "storedData": ""
+    }
+  ],
+  "riskyInputs": [],
+  "storedDataMarker": null
+}

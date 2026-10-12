@@ -1,0 +1,12 @@
+{
+  "rows": [
+    {
+      "invariant": "charged-at-most-once",
+      "verdict": "holds",
+      "evidence": ["payments/orders.py::charge_body"],
+      "storedData": ""
+    }
+  ],
+  "riskyInputs": [],
+  "storedDataMarker": null
+}

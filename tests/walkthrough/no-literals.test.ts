@@ -1,7 +1,7 @@
-// The walkthrough reads every owner, handle, scope, SHA and test ID from the fixtures at runtime.
-// These tests grep its source (the specs, its support modules and every test helper they import) for
-// any of those values, with the forbidden strings derived from the fixtures' own files, and check
-// that renaming an owner in a fixture changes what the walkthrough derives.
+// The walkthrough reads every person, handle, scope, feature, SHA and test ID from the fixtures at
+// runtime. These tests grep its source (the spec, its support modules and every test helper they
+// import) for any of those values, with the forbidden strings derived from the fixtures' own files,
+// and check that renaming a person in a fixture changes what the walkthrough derives.
 
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
@@ -11,21 +11,15 @@ import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { UseCaseFixture } from "./support/fixture.ts";
+import { CaseFixture } from "./support/fixture.ts";
 
 const REPO_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const WALKTHROUGH = fileURLToPath(new URL(".", import.meta.url));
 const TESTS = resolve(WALKTHROUGH, "..");
 
-/**
- * The fixtures the walkthrough plays: those that commit their owners under `base/penguin/`. The
- * money-minor-units fixture generates its penguin files from its data file and is not played yet.
- */
-async function useCases(root: string): Promise<UseCaseFixture[]> {
-  const entries = await readdir(join(root, "examples"), { withFileTypes: true });
-  return entries
-    .filter((entry) => entry.isDirectory() && existsSync(join(root, "examples", entry.name, "base", "penguin", "owners.json")))
-    .map((entry) => new UseCaseFixture(root, entry.name));
+/** The cases the walkthrough plays. */
+async function cases(root: string): Promise<CaseFixture[]> {
+  return CaseFixture.all(root);
 }
 
 /** The walkthrough's TypeScript files, and every module under tests/ that they import, transitively. */
@@ -47,6 +41,35 @@ async function walkthroughSources(): Promise<string[]> {
   return [...seen].sort();
 }
 
+/** Every object key of a case's data files: the format's own words, such as a field name. */
+async function formatKeys(fixture: CaseFixture): Promise<Set<string>> {
+  const keys = new Set<string>();
+  const walk = (value: unknown): void => {
+    if (Array.isArray(value)) value.forEach(walk);
+    else if (value !== null && typeof value === "object") {
+      for (const [key, inner] of Object.entries(value)) {
+        keys.add(key);
+        walk(inner);
+      }
+    }
+  };
+  for (const file of ["features.json", "larder.json"]) {
+    const path = join(fixture.dir, file);
+    if (existsSync(path)) walk(JSON.parse(await readFile(path, "utf8")));
+  }
+  return keys;
+}
+
+/**
+ * The values the walkthrough must not name. A value that is also a key of the data files' format,
+ * such as a scope named like a field, reads as the format's word in the source, so it is left out.
+ */
+async function forbiddenValues(fixtures: readonly CaseFixture[]): Promise<string[]> {
+  const keys = new Set<string>();
+  for (const fixture of fixtures) for (const key of await formatKeys(fixture)) keys.add(key);
+  return fixtures.flatMap((fixture) => fixture.forbiddenLiterals()).filter((value) => !keys.has(value));
+}
+
 function escape(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\/]/gu, "\\$&");
 }
@@ -57,16 +80,18 @@ function literalsIn(text: string, forbidden: readonly string[]): string[] {
   return [...new Set(variants)].filter((value) => new RegExp(`(?<![\\w@/-])${escape(value)}(?![\\w-])`, "u").test(text));
 }
 
-test("the walkthrough source names no owner, handle, scope, SHA or test ID from the fixtures", async () => {
-  const fixtures = await useCases(REPO_ROOT);
-  assert.ok(fixtures.length >= 3, "the three use-case fixtures");
-  const forbidden = fixtures.flatMap((fixture) => fixture.forbiddenLiterals());
+test("the walkthrough source names no person, handle, scope, feature, SHA or test ID from the fixtures", async () => {
+  const fixtures = await cases(REPO_ROOT);
+  assert.equal(fixtures.length, 4, "the four cases");
+  const forbidden = await forbiddenValues(fixtures);
   for (const fixture of fixtures) {
-    for (const owner of fixture.owners) assert.ok(forbidden.includes(owner.id));
+    for (const person of fixture.people) assert.ok(forbidden.includes(person.id));
+    for (const feature of fixture.features) assert.ok(forbidden.includes(feature.id));
     for (const sha of Object.values(fixture.pins.branches)) assert.ok(forbidden.includes(sha));
   }
   const sources = await walkthroughSources();
   assert.ok(sources.some((path) => path.endsWith("walkthrough.spec.ts")), "the spec is checked");
+  assert.ok(sources.some((path) => path.endsWith("case-run.ts")), "the case run is checked");
   const found = [];
   for (const path of sources) {
     const hits = literalsIn(await readFile(path, "utf8"), forbidden);
@@ -76,55 +101,52 @@ test("the walkthrough source names no owner, handle, scope, SHA or test ID from 
 });
 
 test("the grep finds a fixture value written into a source", async () => {
-  const [fixture] = await useCases(REPO_ROOT);
+  const [fixture] = await cases(REPO_ROOT);
   assert.ok(fixture);
-  const owner = fixture.owners[0]!;
+  const person = fixture.people[0]!;
   const sha = Object.values(fixture.pins.branches)[0]!;
   const handle = fixture.identities[0]!.handle;
-  const source = `await signIn("${owner.id}"); expect(head).toBe("${sha.slice(0, 7)}"); register("${handle}");`;
-  assert.deepEqual(literalsIn(source, fixture.forbiddenLiterals()).sort(), [owner.id, sha.slice(0, 7), handle].sort());
-  assert.deepEqual(literalsIn(`const ${owner.id}ish = 1; // a ${owner.id}-gh-like word`, [owner.id]), []);
+  const source = `await signIn("${person.id}"); expect(head).toBe("${sha.slice(0, 7)}"); register("${handle}");`;
+  assert.deepEqual(literalsIn(source, fixture.forbiddenLiterals()).sort(), [person.id, sha.slice(0, 7), handle].sort());
+  assert.deepEqual(literalsIn(`const ${person.id}ish = 1; // a ${person.id}-gh-like word`, [person.id]), []);
 });
 
-test("renaming an owner in a fixture changes what the walkthrough derives", async () => {
+test("renaming the originating person in a fixture changes what the walkthrough derives", async () => {
   const root = await mkdtemp(join(tmpdir(), "penguin-walkthrough-rename-"));
   try {
-    for (const fixture of await useCases(REPO_ROOT)) {
+    for (const fixture of (await cases(REPO_ROOT)).filter((each) => existsSync(join(each.dir, "features.json")))) {
       const copy = join(root, "examples", fixture.name);
       await cp(join(fixture.dir, "pins.json"), join(copy, "pins.json"));
+      await cp(join(fixture.dir, "features.json"), join(copy, "features.json"));
       await cp(join(fixture.dir, "base", "penguin"), join(copy, "base", "penguin"), { recursive: true });
-      const old = fixture.triggerOwner.id;
+      const old = fixture.origin.owner;
       const renamed = `${old}x`;
-      for (const file of ["owners.json", "scopes.json", "identities.json"]) {
-        const path = join(copy, "base", "penguin", file);
-        const text = (await readFile(path, "utf8"))
-          .replaceAll(`"${old}"`, `"${renamed}"`)
-          .replaceAll(`"@${old}/`, `"@${renamed}/`);
+      for (const path of [...["owners.json", "scopes.json", "identities.json"].map((file) => join(copy, "base", "penguin", file)), join(copy, "features.json")]) {
+        const text = (await readFile(path, "utf8")).replaceAll(`"${old}"`, `"${renamed}"`).replaceAll(`"@${old}/`, `"@${renamed}/`);
         await writeFile(path, text);
       }
-      const pinsPath = join(copy, "pins.json");
-      await writeFile(pinsPath, (await readFile(pinsPath, "utf8")).replaceAll(`"owner-${old}`, `"owner-${renamed}`));
-
-      const before = fixture;
-      const after = new UseCaseFixture(root, fixture.name);
-      assert.equal(after.triggerOwner.id, renamed, fixture.name);
-      assert.ok(after.identities.filter((identity) => identity.owner === renamed).every((identity) => identity.handle.startsWith(`@${renamed}/`)));
-      assert.deepEqual(
-        after.expectedFixes.map((fix) => [fix.nodeId, fix.finalAssignee.handle.replace(`@${renamed}/`, `@${old}/`), fix.upstream]),
-        before.expectedFixes.map((fix) => [fix.nodeId, fix.finalAssignee.handle, fix.upstream]),
-      );
-      assert.ok(!JSON.stringify(after.expectedFixes).includes(`"${old}"`), `${fixture.name} still names ${old}`);
+      const after = CaseFixture.load(root, fixture.name);
+      assert.equal(after.origin.owner, renamed, fixture.name);
+      assert.ok(after.origin.handle.startsWith(`@${renamed}/`), `${fixture.name}: ${after.origin.handle}`);
+      assert.deepEqual(after.origin.commits, fixture.origin.commits);
     }
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("the fixtures give the walkthrough one trigger per use case and one upstream fix in all", async () => {
-  const fixtures = await useCases(REPO_ROOT);
-  for (const fixture of fixtures) {
-    assert.ok(fixture.checkpointOf(fixture.triggerOwner.id), `${fixture.name} has a trigger checkpoint`);
-    assert.ok(fixture.expectedFixes.length > 0, `${fixture.name} has failing tests`);
+test("each case has one originating feature, pinned commits and review forms for single scopes", async () => {
+  for (const fixture of await cases(REPO_ROOT)) {
+    assert.ok(fixture.origin.commits.length > 0, fixture.name);
+    for (const feature of fixture.features) {
+      for (const commit of feature.commits) assert.match(commit.sha, /^[0-9a-f]{40}$/u, `${fixture.name}/${feature.id}`);
+      if (fixture.fixOf(feature) !== undefined) assert.ok(fixture.checkpointsOf(feature).length > 0, `${feature.id} has a checkpoint before its fix`);
+    }
+    const scopes = new Set(fixture.scopes.map((scope) => scope.id));
+    const reviewed = [...scopes].flatMap((scope) => fixture.formsFor(scope));
+    assert.equal(reviewed.length, fixture.reviewForms.length, `${fixture.name}: every review form names the invariants of one scope`);
+    for (const commit of fixture.origin.commits.filter((each) => each.revises !== null)) {
+      assert.ok(scopes.has(commit.revises?.scope as string), `${fixture.name}: a revision names a scope`);
+    }
   }
-  assert.equal(fixtures.flatMap((fixture) => fixture.expectedFixes).filter((fix) => fix.upstream).length, 1);
 });

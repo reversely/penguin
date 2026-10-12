@@ -110,6 +110,13 @@ with its examples file. Sam's checkpoint adds `next_reminder` and `reminder_time
 examples entry goes first in `penguin/invariants.json` and Sam's goes last, so the two forks merge
 without a conflict.
 
+`reviews/analytics.json` and `reviews/messaging.json` hold the review forms Jun's and Sam's agents
+submit on Priya's feature. Each reports its scope's invariant as holding. Penguin checks a form's
+evidence in the reviewed feature's fork, which is Priya's. The tests that state the two invariants
+live in Jun's and Sam's forks, so each row cites its scope's contract on main as evidence:
+`analytics/totals.py::events_per_user` and `messaging/contacts.py::local_timezone`. The builder does
+not commit the forms.
+
 ## Impact and review on this fixture
 
 The results below come from `penguin-bridge impact`, `penguin-bridge review` and

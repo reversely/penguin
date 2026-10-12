@@ -24,7 +24,9 @@ id, owner, role, fork branch, declared area and commits. Every build produces th
 Each feature is a fork of `main`: its first commit starts from `main` and each later commit from the
 fork's previous commit. Each fix commit for a feature changes only paths in its owner's scope. Each
 of Priya's fixes for code on main changes only the scope it fixes. `features.json` marks such a
-commit with `fix` and the scope's id. A running feature's checkpoint also declares its new contract
+commit with `fix` and the scope's id. It marks the limit of five and the limit of one with `revises`
+and `analytics`: each answers one change Jun asks for on the plan's part for analytics' code on main.
+The walkthrough has Jun ask once per such commit ([walkthrough.md](walkthrough.md)). A running feature's checkpoint also declares its new contract
 in its own scope's entry of the penguin files. Every scope's tests pass on each commit alone.
 `pins.json` records the SHA of every branch head and tag. It also maps each failing test to the
 commit that fixes it.
