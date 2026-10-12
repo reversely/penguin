@@ -1,6 +1,7 @@
 // The feature page (PRD section 10, #124): one feature, the unit of work, in three levels.
 //
-// 1. The header stays in view: the breadcrumb (Team, the person, the feature), the feature with its
+// 1. The header stays in view: the breadcrumb (Org, the person's team, the person, the feature, then
+//    the part and the file an anchor opened), the feature with its
 //    person and its scopes, the timeline bar with the branches to other people, and at most three
 //    summary lines, each opening the place it sums up.
 // 2. Four views below it, each a tab with its own anchor: Changes (the contract change, then each place
@@ -42,7 +43,9 @@ import {
 import { PersonPill, ScopePill, TonePill } from "./pills.tsx";
 import { partAnchor, STAGE_LABEL, stageCount, STATUS_LABEL } from "./pipeline-view.ts";
 import { ReviewCard } from "./review-card.tsx";
-import { featurePath, personPath } from "./routes.ts";
+import { Breadcrumb, hierarchyCrumbs, type Crumb } from "./hierarchy-parts.tsx";
+import { partCrumbs } from "./hierarchy-view.ts";
+import { featurePath } from "./routes.ts";
 import { StageBody, Timeline } from "./timeline.tsx";
 import type { Live } from "./use-live.ts";
 
@@ -69,7 +72,7 @@ export function FeaturePageView({ featureId, viewer, team, live, navigate, onSig
           Team
         </a>
         <h1>{page.kind === "failed" ? "Feature" : "Feature not found"}</h1>
-        <p className="muted">{page.kind === "failed" ? "Please reload the page" : "Please choose a feature on the team view"}</p>
+        <p className="muted">{page.kind === "failed" ? "Please reload the page" : "Please choose a feature on the team page"}</p>
       </div>
     );
   }
@@ -107,8 +110,11 @@ export function FeatureView({ page, viewer, team, navigate, open = [], view: fir
   const folds = useFolds(() => [...initialFolds(page, viewer), ...ownStages, ...colleague, ...open], foldParents);
   const todos = useMemo(() => viewerToDos(page, viewer), [page, viewer]);
   const [view, setView] = useState<View>(firstView);
+  // The part and file the page last opened by anchor, which the breadcrumb names under the feature.
+  const [anchor, setAnchor] = useState("");
   const reveal = useCallback(
     (id: string) => {
+      setAnchor(id);
       const target = viewOf(id) ?? foldParents(id).map(viewOf).find((each) => each !== undefined);
       if (target !== undefined) setView(target);
       if (!(VIEWS as readonly string[]).includes(id)) folds.reveal(id);
@@ -124,29 +130,15 @@ export function FeatureView({ page, viewer, team, navigate, open = [], view: fir
   }, []);
   const facts = useMemo(() => teamFacts(team), [team]);
   const lines = useMemo(() => summaryLines(page), [page]);
-  const personLink = personPath(feature.person);
   const choose = (next: View) => {
     setView(next);
+    setAnchor("");
     window.history.replaceState(null, "", `#${next}`);
   };
   return (
     <FoldProvider value={folds.value}>
       <article className="feature" aria-labelledby="feature-heading">
-        <nav className="breadcrumb" aria-label="Breadcrumb">
-          <ol>
-            <li>
-              <a href="/" onClick={linkHandler(navigate, "/")}>
-                Team
-              </a>
-            </li>
-            <li>
-              <a href={personLink} onClick={linkHandler(navigate, personLink)}>
-                {feature.person}
-              </a>
-            </li>
-            <li aria-current="page">{feature.id}</li>
-          </ol>
-        </nav>
+        <Breadcrumb crumbs={[...hierarchyCrumbs(team?.teams ?? [], { person: feature.person, feature: feature.id }), ...partCrumbs(page.plan, anchor).map((crumb): Crumb => ({ label: crumb.label, path: `#${crumb.anchor}`, onOpen: () => reveal(crumb.anchor) }))]} navigate={navigate} />
         <header className="feature-head">
           <h1 id="feature-heading">{feature.id}</h1>
           <PersonPill id={feature.person} navigate={navigate} />

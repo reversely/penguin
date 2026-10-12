@@ -118,11 +118,14 @@ test("markup and long strings in a team's people, scopes, features and agents re
   const { render } = await load<{ render: (view: unknown) => string }>(`
     import { renderToStaticMarkup } from "react-dom/server";
     import { createElement, Fragment } from "react";
-    import { PersonView, TeamMapView } from "./src/team-page.tsx";
+    import { OrgView } from "./src/org-page.tsx";
+    import { PersonView } from "./src/person-page.tsx";
+    import { TeamPageView } from "./src/team-page.tsx";
     export function render(view) {
       const navigate = () => {};
       return renderToStaticMarkup(createElement(Fragment, null,
-        createElement(TeamMapView, { view, navigate }),
+        createElement(OrgView, { view, navigate }),
+        createElement(TeamPageView, { view, team: view.teams[0].id, viewer: "rahul", navigate }),
         createElement(PersonView, { view, board: undefined, person: view.people[0].id, navigate, scopes: { person: view.people[0].id, role: view.people[0].role } })));
     }`);
   const scope = {
@@ -146,10 +149,23 @@ test("markup and long strings in a team's people, scopes, features and agents re
         role: { scopes: [scope], dependents: [scope], dependencies: [], counts: { owns: 1, reads: 0, readBy: 1 }, derivation: { promotion: "c".repeat(40), derivedAt: "2026-10-11T09:00:00.000Z", complete: true } },
         features: [{ id: UNBROKEN, person: "rahul", state: "planning", strip: { path: "plan", current: 1, stages: [{ key: "open", status: "passed", passed: 0, jobs: 0 }, { key: "plan", status: "person", passed: 0, jobs: 1 }] }, exceptions: [{ kind: "broken_invariant", scope: "tax", invariant: MARKUP }], agents: [agent], openedAt: "2026-10-11T09:00:00.000Z" }],
         idleAgents: [agent],
+        waiting: [{ feature: SCRIPT, kind: "part", count: 2 }],
+      },
+    ],
+    teams: [
+      {
+        id: "payments",
+        name: SCRIPT,
+        lead: "<s>rahul</s>",
+        members: ["<s>rahul</s>"],
+        implicit: false,
+        scopes: [{ id: "tax", name: MARKUP, dri: "<b>rahul</b>", fallback: [], reads: 1, readBy: 2, health: { waiting: 1, notInCode: 0 } }],
       },
     ],
   };
   const html = render(view);
+  // The team's name shows in the org table, the team page's heading and every breadcrumb as text.
+  assert.ok((html.match(/&lt;script&gt;globalThis\.pwned = 2&lt;\/script&gt;/g)?.length ?? 0) >= 4);
   assert.match(html, /&lt;img src=x onerror=&quot;globalThis\.pwned = 1&quot;&gt; reported broken in tax/);
   assert.match(html, /&lt;script&gt;globalThis\.pwned = 2&lt;\/script&gt;/);
   assert.match(html, /&lt;s&gt;rahul&lt;\/s&gt;/);

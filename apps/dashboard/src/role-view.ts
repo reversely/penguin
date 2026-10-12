@@ -22,6 +22,15 @@ export function roleScopes(role: PersonRole, key: RoleKey): readonly RoleScope[]
   return key === "owns" ? role.scopes : key === "reads" ? role.dependencies : role.dependents;
 }
 
+/**
+ * Whether a table names each row's `via`: only when its rows run through more than one of the
+ * person's own scopes (#136). A DRI of one scope, or of several whose dependencies all run through
+ * one of them, would read the same `via` on every row.
+ */
+export function viaShown(scopes: readonly RoleScope[]): boolean {
+  return new Set(scopes.flatMap((scope) => scope.via)).size > 1;
+}
+
 /** A role row's full size: `counts` when the answer carries it, else the scopes it lists. */
 export function roleCount(role: PersonRole, key: RoleKey): number {
   return role.counts?.[key] ?? roleScopes(role, key).length;

@@ -1,7 +1,9 @@
 // The person page's role (#134): every scope the person owns, reads and is read by, one table per row
 // of the role, read from GET /api/people/<id>/scopes. Each table sorts by any column and the filters
-// above them narrow all three by text and by where the dependency comes from (role-view.ts). Every
-// value renders as React text.
+// above them narrow all three by text and by where the dependency comes from (role-view.ts). A row
+// names its Updated commit only when it differs from the commit the page reads main at, and its `via`
+// only when the table's rows run through more than one of the person's own scopes (#136). Every value
+// renders as React text.
 
 import type { PersonRole, RoleDerivation, RoleScope, TeamSummary } from "@penguin/protocol";
 import { useMemo, useState } from "react";
@@ -24,11 +26,12 @@ import {
   type RoleSort,
   type RoleSortKey,
   type SourceFilter,
+  viaShown,
 } from "./role-view.ts";
 
 const COLUMNS: readonly { readonly key: RoleSortKey; readonly label: string }[] = [
   { key: "scope", label: "Scope" },
-  { key: "owner", label: "Owner" },
+  { key: "owner", label: "DRI" },
   { key: "calls", label: "Call sites" },
   { key: "source", label: "Source" },
   { key: "updated", label: "Updated" },
@@ -57,7 +60,7 @@ export function RoleTables({ role, teams, navigate }: Props) {
           type="search"
           className="role-search"
           aria-label="Filter scopes"
-          placeholder="Scope or owner"
+          placeholder="Scope or DRI"
           value={query}
           autoComplete="off"
           spellCheck={false}
@@ -83,7 +86,8 @@ export function RoleTables({ role, teams, navigate }: Props) {
           // Ownership comes from penguin/scopes.json alone, so the source filter leaves Owns whole.
           filter={row.key === "owns" ? null : filter}
           teamNames={teamNames}
-          ownNames={ownNames}
+          // Rows that all run through one of the person's scopes would repeat the same `via`.
+          ownNames={viaShown(roleScopes(role, row.key)) ? ownNames : null}
           navigate={navigate}
         />
       ))}
@@ -111,14 +115,22 @@ interface TableProps {
   readonly query: string;
   readonly filter: SourceFilter;
   readonly teamNames: ReadonlyMap<string, string>;
-  readonly ownNames: ReadonlyMap<string, string>;
+  /** The person's own scopes by id, or null when `via` is left out. */
+  readonly ownNames: ReadonlyMap<string, string> | null;
   readonly navigate: (path: string) => void;
 }
+
+/** Whether a row's counts last changed at another commit than the one the page reads main at. */
+const updatedElsewhere = (scope: RoleScope, derivation: RoleDerivation | null): boolean =>
+  scope.updatedPromotion !== null && scope.updatedPromotion !== derivation?.promotion;
 
 function RoleTable({ kind, label, count, scopes, derivation, query, filter, teamNames, ownNames, navigate }: TableProps) {
   const [sort, setSort] = useState<RoleSort>(DEFAULT_SORT);
   const rows = useMemo(() => roleRows(scopes, derivation, query, filter, sort), [scopes, derivation, query, filter, sort]);
   const id = `role-${kind}`;
+  // The Updated column shows only when a row's commit differs from the page's.
+  const updated = scopes.some((scope) => updatedElsewhere(scope, derivation));
+  const columns = updated ? COLUMNS : COLUMNS.filter((column) => column.key !== "updated");
   return (
     <section className="role-table-section" id={id} aria-labelledby={`${id}-heading`}>
       <h3 id={`${id}-heading`} className="role-table-heading">
@@ -133,7 +145,7 @@ function RoleTable({ kind, label, count, scopes, derivation, query, filter, team
           <table className="people-table role-table">
             <thead>
               <tr>
-                {COLUMNS.map((column) => (
+                {columns.map((column) => (
                   <th key={column.key} scope="col" aria-sort={sort.key === column.key ? (sort.descending ? "descending" : "ascending") : undefined}>
                     <button type="button" className="sort-button" onClick={() => setSort(nextSort(sort, column.key))}>
                       {column.label}
@@ -147,7 +159,7 @@ function RoleTable({ kind, label, count, scopes, derivation, query, filter, team
             </thead>
             <tbody>
               {rows.map((scope) => (
-                <RoleLine key={scope.id} scope={scope} kind={kind} derivation={derivation} teamNames={teamNames} ownNames={ownNames} navigate={navigate} />
+                <RoleLine key={scope.id} scope={scope} kind={kind} derivation={derivation} updated={updated} teamNames={teamNames} ownNames={ownNames} navigate={navigate} />
               ))}
             </tbody>
           </table>
@@ -161,12 +173,14 @@ interface LineProps {
   readonly scope: RoleScope;
   readonly kind: RoleKey;
   readonly derivation: RoleDerivation | null;
+  /** Whether the table shows the Updated column. */
+  readonly updated: boolean;
   readonly teamNames: ReadonlyMap<string, string>;
-  readonly ownNames: ReadonlyMap<string, string>;
+  readonly ownNames: ReadonlyMap<string, string> | null;
   readonly navigate: (path: string) => void;
 }
 
-function RoleLine({ scope, kind, derivation, teamNames, ownNames, navigate }: LineProps) {
+function RoleLine({ scope, kind, derivation, updated: column, teamNames, ownNames, navigate }: LineProps) {
   const source = roleSource(scope, derivation);
   const team = teamNames.get(scope.teamId ?? "");
   const updated = scope.updatedAt === null ? undefined : Date.parse(scope.updatedAt);
@@ -176,7 +190,7 @@ function RoleLine({ scope, kind, derivation, teamNames, ownNames, navigate }: Li
         <span className="role-scope-name" title={scope.id}>
           {scope.name}
         </span>
-        {kind === "owns" || scope.via.length === 0 ? null : (
+        {kind === "owns" || ownNames === null || scope.via.length === 0 ? null : (
           <span className="role-via">
             via
             {scope.via.map((own) => (
@@ -203,13 +217,13 @@ function RoleLine({ scope, kind, derivation, teamNames, ownNames, navigate }: Li
           ))}
         </span>
       </td>
-      <td>
-        {scope.updatedPromotion === null ? (
-          <span className="muted">None</span>
-        ) : (
-          <code title={updated === undefined || Number.isNaN(updated) ? scope.updatedPromotion : `${scope.updatedPromotion} ${TIME.format(updated)}`}>{shortSha(scope.updatedPromotion)}</code>
-        )}
-      </td>
+      {column ? (
+        <td>
+          {scope.updatedPromotion === null || !updatedElsewhere(scope, derivation) ? null : (
+            <code title={updated === undefined || Number.isNaN(updated) ? scope.updatedPromotion : `${scope.updatedPromotion} ${TIME.format(updated)}`}>{shortSha(scope.updatedPromotion)}</code>
+          )}
+        </td>
+      ) : null}
     </tr>
   );
 }

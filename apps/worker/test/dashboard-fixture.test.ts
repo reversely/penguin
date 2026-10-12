@@ -94,4 +94,21 @@ test("the team view states each feature's one word and highlights only exception
   // The team view carries the top scopes of each row and every row's full count (#134).
   assert.ok((tomas?.role.counts?.readBy ?? 0) > 3);
   assert.equal(tomas?.role.dependents.length, ROLE_TOP);
+  // The org, team and person pages (#136): each scope's Reads, Read by and health, what waits on
+  // each person and no finished builder among the agents on no feature.
+  const scopes = new Map((team.teams ?? []).flatMap((each) => each.scopes).map((scope) => [scope.id, scope]));
+  assert.deepEqual([scopes.get("money")?.readBy, scopes.get("money")?.health], [10, { waiting: 0, notInCode: 0 }]);
+  assert.deepEqual(scopes.get("messaging")?.health, { waiting: 0, notInCode: 1 }, "messaging declares a dependency on money the code no longer shows");
+  const noor = team.people.find((person) => person.id === "noor");
+  assert.deepEqual(
+    noor?.waiting?.map((item) => [item.feature, item.kind, item.count]),
+    [
+      ["dependency-audit", "start", 1],
+      ["retry-budget", "start", 1],
+      ["structured-logs", "start", 1],
+    ],
+  );
+  for (const person of team.people) {
+    for (const agent of person.idleAgents) assert.doesNotMatch(agent.handle, /\/migrate-/u, `${agent.handle} built a block that reached main`);
+  }
 });

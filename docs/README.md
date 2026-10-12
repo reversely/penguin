@@ -17,7 +17,7 @@ the design section that replaces it.
 | [how-agents-connect.md](how-agents-connect.md) | The three ways Penguin reaches each person's agents |
 | [mcp-setup.md](mcp-setup.md) | Connecting Claude Code and Codex sessions; the agent-session exit check |
 | [bridge-and-runner.md](bridge-and-runner.md) | Installing `penguin-bridge`, checkpoints, the issue command line, runner mode |
-| [dashboard.md](dashboard.md) | Sign-in, the team view, feature pages, the approvals inbox, agent cards, the issue page, the local preview |
+| [dashboard.md](dashboard.md) | Sign-in, the org, team and person pages, feature pages, the approvals inbox, agent cards, the issue page, the local preview |
 | [deploy.md](deploy.md) | Cloudflare resources, secrets, variables, deploying and project setup |
 | [walkthrough.md](walkthrough.md) | The Playwright run of the four use cases |
 | [fixture.md](fixture.md) | The identity-unification fixture |

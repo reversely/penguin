@@ -1,7 +1,9 @@
 # Dashboard
 
-The dashboard is where people on the team see who is working on what and what waits on them. The
-team view shows each person's features with their agents and one-word states. The approvals inbox
+The dashboard is where people on the team see who is working on what and what waits on them. Its
+pages follow the hierarchy of PRD 0.5: org, team, person, feature, part, file. The team page is an
+engineering manager's home: each member's features by stage, their agents and what waits on them,
+then the scopes the team owns. The approvals inbox
 holds what waits on the signed-in person with the facts behind each item. A feature page tells one
 feature's story from its declaration to its record. People also act on issues there: open and
 assign issues, review fixes, answer threads and manage their agent identities. The issue pages stay
@@ -14,8 +16,10 @@ routes for it are in `apps/worker/src/dashboard.ts`.
 
 | Path | Page |
 |---|---|
-| `/` | The team view |
-| `/?person=<id>` | One person's view |
+| `/` | The signed-in person's team page; the org page for a person in no team |
+| `/org` | The org page |
+| `/teams/<id>` | One team's page; a one-person team's id is `person:<id>` |
+| `/people/<id>`, `/?person=<id>` | One person's page |
 | `/features/<id>` | One feature's page |
 | `/inbox` | The signed-in person's approvals |
 | `/identities`, `/identities?identity=<id>` | Every identity, with the chosen one's agent card |
@@ -23,7 +27,7 @@ routes for it are in `apps/worker/src/dashboard.ts`.
 | `/issues/new` | The New issue form |
 | `/board` | Redirects to `/` |
 
-The shell has three panes: a sidebar with the navigation (Team, Inbox with the count of approvals
+The shell has three panes: a sidebar with the navigation (Org, Team, Inbox with the count of approvals
 waiting, Identities), the page's list and the signed-in person's account menu; the centre; and a
 details panel for the issue page. From 1100px the panel docks beside the centre; below that it opens
 as a drawer. Below 760px the sidebar becomes a phone header. No page in the navigation links to the
@@ -49,30 +53,108 @@ Every write is authored as the owner id the cookie names; an operation that name
 refused. Every POST also requires a same-origin `Origin` header. Account menu, Sign out sends
 `POST /auth/signout`. [deploy.md](deploy.md#dashboard-sign-in) covers setting up the OAuth app.
 
-## Team view
+## Org, team and person pages
 
-The home page shows one square per person, the signed-in person first (`team-page.tsx`, read from
-`GET /api/team`). The people are every owner in the scope map, every person with a feature and every
-identity owner. The ProjectAgent builds the answer (`services/project-agent/src/dashboard-views.ts`).
+Every page opens under a breadcrumb that follows the hierarchy: Org, the team, the person, the
+feature, then the part and the file a feature page's anchor opened. A person's pages sit under the
+first declared team they lead, else the first they belong to, else their one-person team. The three
+pages read `GET /api/team` once through the shell, which every page shares for the person hues; the
+person page also reads `GET /api/people/<id>/scopes`. The ProjectAgent builds both answers
+(`services/project-agent/src/dashboard-views.ts`). Every signed-in person may read every team as
+counts and states. No page carries a part's changed lines.
 
-Each square holds:
+A page shows counts, the top few items as pills and tables. A list of every feature or every waiting
+item belongs to the level below. Only exceptions are highlighted: a stage needing a person, what
+waits on a person and a scope that is not clean take the attention colour. A table row holding one
+takes an attention edge. On a phone each row of the org, Members and Scopes tables stacks into a
+block under its name, with each cell beside its column's name.
 
-- the person's name and avatar in their hue, linking to the person's view;
-- the person's role as rows: Owns (the scopes they are DRI for), Reads (other people's scopes theirs
-  read) and Read by (other people's scopes that read theirs). Each row shows its count, such as
-  `Read by 27`, then its top three scopes by call sites as pills in their DRIs' hues, then a link
-  such as `24 more` to the person view. The dependencies come from main's code at the last promotion
-  plus the declared `depends_on` entries
-  ([design.md](design.md#scope-dependencies-from-the-code)). A row with no scope is left out, except
-  Owns, which says None. A last Steward row shows the person's steward, which opens its agent card. Beside it
-  sits the steward's queue of edit tasks from `steward` in `GET /api/team`: `1 of 2 running` against the person's cap,
-  then `3 queued` and `1 asked` (in the attention colour) when any. A person with no steward has no
-  Steward row;
-- each of the person's features, newest first, linking to its page, with its stage strip and the
-  agents whose sessions joined it. The strip is a dot per stage of the feature's pipeline
-  ([design.md](design.md#the-merge-as-a-pipeline-in-the-build)), the current one ringed, then the
-  current stage's name, such as `Review needs a person`;
-- the person's agents on no feature.
+Each feature counts at its current stage of its pipeline
+([design.md](design.md#the-merge-as-a-pipeline-in-the-build)). A feature whose current stage needs a
+person or failed, or that carries an exception, counts in its own stage pill in the attention colour,
+apart from the same stage's running features. A feature at its last stage whose block has not
+reached main counts under Promotion (#152). A feature whose block reached main counts under On main.
+A block Penguin closed with nothing left to carry counts under Closed. Pills order the stages
+needing a person first, then the pipeline's order, then On main and Closed. A pill of one feature
+opens that feature; a pill of several opens the level that lists them.
+
+### Org page
+
+`/org` (`org-page.tsx`) holds one row per team, declared teams first:
+
+| Column | Holds |
+|---|---|
+| Team | The team's name, linking to its page, with its count of people |
+| Lead | The team's lead as a pill |
+| Features by stage | The members' features as stage pills with counts. A person in two teams counts in each |
+| Waiting | How many items wait on the team's members, linking to the team page |
+| Health | How many of the team's scopes are clean, such as `27 of 29 scopes clean` |
+
+### Team page
+
+`/` opens the signed-in person's own team; `/teams/<id>` opens any team (`team-page.tsx`). Under the
+team's name and its lead, the Members table holds the lead first, then each member in the order
+`penguin/teams.json` lists them:
+
+| Column | Holds |
+|---|---|
+| Person | The member as a pill, linking to their page |
+| Features by stage | The member's features as stage pills. Under a pill, the count of open edit tasks routed to those features' builders, such as `2 tasks 1 asked` |
+| Agents | The member's steward with its own queue: `1 of 2 running` against the person's cap, then `3 queued` and `1 asked` (in the attention colour) when any. The queue counts only the tasks routed to the steward. Then the count of builders on features that have not reached main, linking to the person page |
+| Waiting on them | Every item waiting on the member, linking to their page, then the two features holding the most as pills with their counts, then a link such as `2 more` |
+
+What waits on a person is each overlapping start they approve, each plan part routed to them that
+waits or passed the round limit, each protected-path confirmation they owe and each edit task they
+are asked about.
+
+The Scopes table holds every scope the team owns, those not clean first:
+
+| Column | Holds |
+|---|---|
+| Scope | The scope's name, with its id on hover |
+| DRI | The scope's DRI as a pill, linking to their page |
+| Reads | How many other scopes it reads, in the code at main's last promotion or declared in `depends_on` |
+| Read by | How many other scopes read it |
+| Health | `2 waiting` for the items in the scope waiting on a person, `1 not in code` for declared dependencies the code no longer shows, else Clean |
+
+The items waiting in a scope are its plan parts waiting on a person, its edit tasks a person is asked
+about and each running feature whose newest review of the scope raised an exception.
+
+### Person page
+
+`/people/<id>` (`person-page.tsx`) shows, in order:
+
+- **Waiting:** one row per feature holding items that wait on the person, most first, with a tag per
+  kind such as `3 parts` or `1 start`. Each row opens the feature.
+- **Features:** Needs a person, then In progress, each feature with its timeline strip, its
+  exceptions, its agents and its builders' open tasks. The features on main fold behind On main
+  with their count. Closed blocks fold behind Closed. They list no agents: their builders have
+  finished.
+- **Scopes:** the role tables below.
+- **Agents:** the person's steward with its own queue, then On no feature: the idle stewards and the
+  builders of paused features. A builder of a feature on main leaves every agent list.
+- **Issues:** every issue that involves the person, open issues first. Each row carries why it is
+  there: Assigned, Review, Reply or Session to start.
+
+The role reads `GET /api/people/<id>/scopes` once and again on every live message. A line names the
+main commit the dependencies were read from (`Read from main at <commit>`), or says that Reads show
+declared dependencies until the next promotion of main. A search field (scope, scope id, DRI or team)
+and the source filters (All, Derived, Declared, Not in code, each with its count) narrow the tables;
+the source filters leave Owns whole. Owns (the scopes the person is DRI for), Reads and Read by each
+get a table:
+
+| Column | Holds |
+|---|---|
+| Scope | The scope's name. For Reads and Read by it also names the person's own scopes the dependency runs through (`via`), when the table's rows run through more than one of them |
+| DRI | The scope's DRI as a pill, linking to their page, with the owning team's name for a declared team |
+| Call sites | Call sites over the dependency's edges; for Owns, other people's calls into the scope |
+| Source | Derived, Declared, or both; a declared dependency with no use in the code adds Not in code in the attention colour. Owns reads Declared |
+| Updated | The main commit at which the row's counts last changed, with the time on hover, shown only where it differs from the commit the page reads main at. A table whose every row matches that commit leaves the column out |
+
+A table opens ranked by call sites. Each column header sorts by that column and a second click
+reverses it. Each table scrolls inside itself on a phone.
+
+### Feature states and exceptions
 
 Each feature in `GET /api/team` also carries a one-word state, which comes from facts Penguin holds,
 the latest step first:
@@ -86,36 +168,12 @@ the latest step first:
 | promoted | Main moved to the feature's checkpoint; its fork is read-only |
 | closed | A block feature Penguin opened was left with no part to carry and closed; nothing landed and its fork is read-only ([design.md](design.md#migration-plans-in-the-build)) |
 
-Only exceptions are highlighted: a feature carries each exception PRD
+On the person page a feature carries each exception PRD
 section 7 routes to a person as a line in the attention colour, with an attention edge on its row.
 The exceptions are a part past the round limit, a plan returned over the break limit, a broken
 invariant or a protected difference in the newest review of each scope. A run the check runner
 stopped at the failure limit is the last kind. Its line reads "Block run stopped after 3 failures"; the
 feature page shows the last reason on the run's failed job.
-
-### Person view
-
-`/?person=<id>` shows the person's role as tables, their features as on the square, their agents on
-no feature and every issue that involves them, open issues first. Each issue row carries why it is
-there: Assigned, Review, Reply or Session to start.
-
-The role reads `GET /api/people/<id>/scopes` once and again on every live message. A line names the
-main commit the dependencies were read from (`Read from main at <commit>`), or says that Reads show
-declared dependencies until the next promotion of main. A search field (scope, scope id, DRI or team)
-and the source filters (All, Derived, Declared, Not in code, each with its count) narrow the tables;
-the source filters leave Owns whole. Owns, Reads and Read by each get a table:
-
-| Column | Holds |
-|---|---|
-| Scope | The scope's name. For Reads and Read by it also names the person's own scopes the dependency runs through (`via`) |
-| Owner | The scope's DRI as a pill, linking to their view, with the owning team's name for a declared team |
-| Call sites | Call sites over the dependency's edges; for Owns, other people's calls into the scope |
-| Source | Derived, Declared, or both; a declared dependency with no use in the code adds Not in code in the attention colour. Owns reads Declared |
-| Updated | The main commit at which the row's counts last changed, with the time on hover |
-
-A table opens ranked by call sites. Each column header sorts by that column and a second click
-reverses it. Each table scrolls inside itself on a phone. The person's steward row follows the
-tables.
 
 ## Feature page
 
@@ -126,7 +184,7 @@ tables.
 
 | Part | Content |
 |---|---|
-| Breadcrumb | Team, the feature's person, the feature |
+| Breadcrumb | Org, the person's team, the feature's person, the feature, then the part and the file an anchor or a link opened. The part reads its number and place, such as `#3 tax`; the file reads its name. Each opens its fold on the page |
 | Title | The feature's name, its person as a pill in the person's hue and its scopes as pills in their owners' hues |
 | Timeline bar | One node per stage of the feature's pipeline ([design.md](design.md#the-merge-as-a-pipeline-in-the-build)): split features run Open, Expand, Migrate, Contract and Done; the rest run Open, Plan, Review, Fixes written, Block checks and Promoted. Each node shows its status as a dot and its count of passed jobs, such as `2 of 4`, with Needs a person or Failed when a job is. The current stage is ringed. A node opens its stage in the Pipeline view |
 | Branches | One line per person per stage holds the work that reached the person and has not settled. That work is their parts, starts and confirmations plus the open edit tasks the feature raised ([design.md](design.md#edit-tasks-in-the-build)). The line shows the person's agent, the count by kind (such as `2 parts 1 task`) and the most urgent tag. It shows the person instead when no agent or several agents took the work. A part, start or confirmation is tagged sent, reviewing, waiting (its fix waits for its turn on the fork), fix written, approved or needs a person; a task is tagged running, queued, waiting (its write waits for its turn on the fork) or asked. Opening the line lists each item with its tag and its part's number and place, which opens its diff, or the task's kind and place, such as `Review form analytics`. An item names its agent when the items' agents differ. A task names `builder` when a builder took it. A line of one item shows the item itself and opens to its fact: the job's fact, why the task's person is asked or how its run ended. Within a stage, lines needing a person (needs a person, asked) come first, then running lines (reviewing, running), then waiting lines (sent, waiting, queued); the latest stage's lines come first. On a plan a task hangs from Review (a review form), Fixes written (a fix) or Block checks (a next step); on a split a contract step hangs from Contract and any other task from Migrate. A task another feature raised in this feature's fork hangs from that feature's timeline. Another feature's fix waiting for its turn on this feature's fork hangs from the current stage under that feature's person, tagged waiting. A settled branch has rejoined the bar as the person's avatar under its stage. Six lines show before a button counts the rest |
@@ -181,7 +239,7 @@ stage. A banner that needs the person reads Your decision and links to the first
 feature has a banner while the person's inbox holds an item of it: a part to decide or one Penguin
 approved for them, a protected-path confirmation or an overlapping start. The banner clears once the
 inbox holds nothing of the feature or its block reaches main. The banners come from the answers the
-shell already reads for the inbox count and the team view, so they cost no request. The open
+shell already reads for the inbox count and the team answer, so they cost no request. The open
 feature's own page shows no banner of it.
 
 ## Agent card
@@ -304,7 +362,7 @@ Every surface outside the agent card names an agent the same way, through `Agent
 `agent-label.tsx`: the agent's name, the part of its handle after `@<owner>/` (`merge-rules` for
 `@priya/merge-rules`), beside its character, then its person. A 2px ring in the person's hue circles
 the character, so two people's agents with the same name read apart. The full label puts the person
-on a second line; the compact label, on team view rows and tool runs, puts it after the name. The
+on a second line; the compact label, on table rows, feature rows and tool runs, puts it after the name. The
 full handle, the vendor and the branch appear only on the agent card.
 
 ## Issue page
@@ -342,14 +400,14 @@ then one `assign` per identity, then opens the new issue.
 
 ## Live updates
 
-The team view, a feature page and the approvals read their answers again on every live message the
+The org, team and person pages, a feature page and the approvals read their answers again on every live message the
 person's connection receives and after a reconnect. The ProjectAgent sends an inbox-changed message
 to the people a decision, an overlap or a review exception concerns. It also sends a features-changed
 message to every connection after a write that may change a feature, its merge plan, a part's
 decision, a fix write or a review. Those writes are a feature's opening, area and checkpoints; an
 overlap approval; a plan proposal and its facts run; a part's approval, change request and revision;
 a fix write; a review's submission and the runner's record of it; a land request, a landing and a
-failed land run. Every open team view then shows the new state, including the views of people the
+failed land run. Every open org, team and person page then shows the new state, including the views of people the
 change does not concern. A feature page's timeline, jobs and branches come from the same answer it
 reads again, so they move with no reload and no request per job. The ProjectAgent's live feed sends one
 such message per task, however many writes the task made (`services/project-agent/src/live-feed.ts`).
@@ -384,7 +442,7 @@ People and agents look different at a glance (`character.ts`, `avatar.tsx`):
 Every string the dashboard shows is a bare label, a count or one clause with no comma. Headings are
 standard nouns such as Changes, Plans or Reviews. A field's hint names its field, such as "A handle
 takes lowercase letters and digits joined by hyphens". An empty state names the next step, such as
-the empty inbox's "Please open the team view to follow running features". A tag that asks the
+the empty inbox's "Please open your team page to follow running features". A tag that asks the
 person to act reads Your decision. `apps/dashboard/test/copy-style.test.ts` fails the build on any
 banned word or pattern of the house style in a string literal, a template literal or JSX text under
 `apps/dashboard/src`.

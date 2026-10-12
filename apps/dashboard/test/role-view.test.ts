@@ -1,5 +1,5 @@
-// The role rows of the team view and the role tables of the person page (#134): counts with the top
-// scopes by call sites, then every scope in tables that sort and filter.
+// The person page's role tables (#134, #136): every scope the person owns, reads and is read by,
+// in tables that sort and filter.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -69,33 +69,35 @@ test("a role row counts from `counts`, or from its list for an older Worker", ()
   assert.equal(roleCount({ scopes: [], dependents: [], dependencies: reads }, "reads"), 4);
 });
 
-test("the team view shows each row's count, its top scopes as pills and a link to the rest; the person page lists every scope", async () => {
-  const { square, person } = await load<{ square: (view: unknown) => string; person: (view: unknown, role: unknown) => string }>(`
+test("the person page lists every scope; Updated shows only where it differs from main's commit and via only where rows run through several own scopes", async () => {
+  const { person } = await load<{ person: (role: unknown) => string }>(`
     import { renderToStaticMarkup } from "react-dom/server";
     import { createElement } from "react";
-    import { PersonView, TeamMapView } from "./src/team-page.tsx";
-    export function square(view) {
-      return renderToStaticMarkup(createElement(TeamMapView, { view, navigate() {} }));
-    }
-    export function person(view, role) {
+    import { PersonView } from "./src/person-page.tsx";
+    export function person(role) {
+      const view = { people: [{ id: "ines", role, features: [], idleAgents: [] }] };
       return renderToStaticMarkup(createElement(PersonView, { view, board: undefined, person: "ines", navigate() {}, scopes: { person: "ines", role } }));
     }`);
   const owns = [scope("money", "ines", 13, { declared: true, via: [] }), scope("ledger", "ines", 1, { declared: true, via: [] }), scope("fx", "ines", 0, { declared: true, via: [] })];
-  const full: PersonRole = { scopes: owns, dependents: reads, dependencies: [], counts: { owns: 3, reads: 0, readBy: 4 }, derivation: DERIVED };
-  const top: PersonRole = { ...full, dependents: reads.slice(0, 3) };
-  const view = { people: [{ id: "ines", role: top, features: [], idleAgents: [] }] };
+  // Reports reads Ines's ledger; the rest read her money scope.
+  const dependents = reads.map((each) => (each.id === "reports" ? { ...each, via: ["ledger"] } : each));
+  const full: PersonRole = { scopes: owns, dependents, dependencies: [], counts: { owns: 3, reads: 0, readBy: 4 }, derivation: DERIVED };
   const text = (html: string) => html.replace(/<[^>]+>/gu, " ").replace(/\s+/gu, " ");
-  const map = text(square(view));
-  assert.match(map, /Owns 3 Money Ledger Fx/u);
-  assert.match(map, /Read by 4 Tax Orders Reports 1 more/u);
-  // A row with no scope is left out, except Owns.
-  assert.doesNotMatch(map, /Reads/u);
-  const page = person(view, full);
+  const page = person(full);
   assert.match(text(page), /Read from main at cccccccccccc/u);
-  assert.match(text(page), /Read by 4 Scope Owner Call sites Source Updated/u);
-  // Orders reads Ines's money in the code only; reports declares it with no use in the code.
-  assert.match(text(page), /Orders via Money T tomas 9 Derived cccccccccccc/u);
-  assert.match(text(page), /Reports via Money J jun 0 Declared Not in code/u);
+  // Every row's counts changed at the commit the page reads, so no table shows Updated.
+  assert.match(text(page), /Read by 4 Scope DRI Call sites Source Orders/u);
+  assert.doesNotMatch(text(page), /Updated/u);
+  // The rows run through two of Ines's three scopes, so each row names the one it runs through.
+  assert.match(text(page), /Orders via Money T tomas 9 Derived/u);
+  assert.match(text(page), /Reports via Ledger J jun 0 Declared Not in code/u);
+  // Every row running through one own scope would repeat the same via, so none shows.
+  assert.doesNotMatch(text(person({ ...full, dependents: reads })), /via/u);
   assert.match(page, /aria-sort="descending"/u);
   assert.equal(page.match(/<tr>/gu)?.length, 3 + 1 + 4 + 1, "a header and a line per scope in Owns and Read by");
+  // With one scope of their own, every row runs through it; a row changed at an older commit names it.
+  const older = { ...(reads[1] as RoleScope), updatedPromotion: "d".repeat(40) };
+  const single = text(person({ ...full, scopes: owns.slice(0, 1), counts: { owns: 1, reads: 0, readBy: 4 }, dependents: [older, ...reads.slice(2)] }));
+  assert.doesNotMatch(single, /via/u);
+  assert.match(single, /Read by 4 Scope DRI Call sites Source Updated Orders T tomas 9 Derived dddddddddddd Payouts A ana 2 Derived Reports/u);
 });

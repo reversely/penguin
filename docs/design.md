@@ -84,11 +84,13 @@ Where each rule lives in the build:
 | Stewards and builders | `edit-roster.ts` |
 | The lead's read-only list | `teamExceptions` in `plan-approval.ts` |
 
-The API the team views read (#136 renders them):
+The API the org, team and person pages read ([dashboard.md](dashboard.md#org-team-and-person-pages)):
 
 | Field | Where | Holds |
 |---|---|---|
-| `teams` | `GET /api/team` (`TeamView`) | Every team that owns a scope, sorted by id: `id`, `name`, `lead`, `members`, `implicit` (true for a one-person team) and `scopes`, each with `id`, `name`, `dri` and `fallback` |
+| `teams` | `GET /api/team` (`TeamView`) | Every team that owns a scope, sorted by id: `id`, `name`, `lead`, `members`, `implicit` (true for a one-person team) and `scopes`, each with `id`, `name`, `dri` and `fallback`. Each scope also carries `reads` and `readBy`, the counts of other scopes it reads and that read it in the code at main's last promotion or declared in `depends_on`. Its `health` holds `waiting` (its plan parts waiting on a person, its edit tasks a person is asked about and each running feature whose newest review of it raised an exception) and `notInCode` (its declared dependencies the last derivation found no use of) |
+| `waiting` | `GET /api/team` (`TeamPerson`) | What waits on the person across every feature, as `{ feature, kind, count }` with `kind` one of `part` (a plan part routed to them, waiting or past the round limit), `start` (an overlapping start they approve), `confirmation` (a protected-path confirmation they owe) or `task` (an edit task they are asked about); most first. The ProjectAgent tallies it in the same pass over the features that builds each strip, from its own SQLite (`tallyWaiting` in `dashboard-views.ts`) |
+| `builderTasks` | `GET /api/team` (`TeamFeature`) | The open edit tasks routed to the feature's builder, by state |
 | `role` | `GET /api/team` (`TeamPerson`) | The person's top three scopes by call sites in each of `scopes` (DRI for), `dependencies` (reads) and `dependents` (read by), with `counts` of each full list and the `derivation` they come from ([Scope dependencies from the code](#scope-dependencies-from-the-code)) |
 | `role` | `GET /api/people/<id>/scopes` (`PersonScopes`) | The same role with every list in full, for the person page's tables |
 | `ownerId`, `teamId`, `fallbackIds` | Every `DashboardScope` | The scope's DRI, its team and its fallback order |
@@ -957,17 +959,18 @@ agent becomes an edit task for one of them.
 - **The fix writer.** The identity a fix task went to may write the approved part. Its session asks
   `fix_token` for the part as the originating agent does. The commit message names it as the
   writer. Penguin checks the commit exactly as for the originating agent.
-- **Reads bring tasks up to date.** Before `get_work`, the team view and the feature page answer,
+- **Reads bring tasks up to date.** Before `get_work`, the team answer and the feature page answer,
   Penguin syncs the roster and the review and fix sources and settles every task's state.
 
 The API the dashboard reads. The feature page hangs each open task the feature raised as a branch
-on its timeline. The team view shows each person's steward with its queue
-([dashboard.md](dashboard.md#feature-page)):
+on its timeline. The team page shows each person's steward with its own queue and counts each
+builder's tasks under its feature's stage ([dashboard.md](dashboard.md#team-page)):
 
 | Field | Where | Holds |
 |---|---|---|
 | `editTasks` | `GET /api/features/<id>/page` (`FeaturePage`) | Every task the feature raised or that edits its fork, oldest first. Each `EditTaskView` has `id`, `kind`, `feature`, `target`, `block` (tasks of one source share it), `handle` (null while the person is asked), `person`, `via` (`builder`, `steward` or `person`), `state`, `askReason`, `files`, `scopes`, `instructions`, `verifier`, `outcome`, `commit`, `createdAt`, `updatedAt`. Each open task the feature raised joins its person's branch on the feature's timeline at the stage it serves, tagged running (`delivered` or `running`), queued or asked |
-| `steward` | `GET /api/team` (`TeamPerson`) | The person's steward: `handle`, `identityId`, `online` (the bridge polled lately) and the queue `running`, `queued`, `asked`, `cap`. Null when the person has no steward |
+| `steward` | `GET /api/team` (`TeamPerson`) | The person's steward: `handle`, `identityId`, `online` (the bridge polled lately) and the queue `running`, `queued`, `asked`, `cap` of the tasks routed to the steward alone (`EditTaskStore.queue` with `via` set to `steward`). Null when the person has no steward |
+| `builderTasks` | `GET /api/team` (`TeamFeature`) | The open tasks routed to the feature's builder: `running`, `queued`, `asked` |
 
 No view carries an agent's transcript. A task's `outcome` is one line the bridge builds from facts.
 
@@ -1688,7 +1691,9 @@ with an Approve start control.
 
 | View | Shows |
 |---|---|
-| Team | Each person as a square with their features. Each feature carries its agents and its stage strip with the current stage's name. Only exceptions are highlighted |
+| Org | Each team with its lead, its members' features counted by stage, what waits on its members and how many of its scopes are clean |
+| Team | The engineering manager's home and the landing page: each member with their features as stage pills with counts, their steward's own queue with their builders and what waits on them. Then the team's scopes with their DRIs, the counts of scopes each reads and is read by and its health. Only exceptions are highlighted |
+| Person | What waits on the person, their features with their timeline strips grouped as needing a person, in progress and on main, the scopes they are DRI for and their agents |
 | Approvals inbox | Overlapping starts, plan parts touching the person's code, protected-path confirmations and exceptions. Each item shows the facts behind it: the changed lines in the person's scope, the side-by-side differences and the review form |
 | Feature page | The feature's merge as a timeline of stages with the work that reached other people and at most three summary lines, over four views: Changes (the contract change, each place the plan fixes, its files and their hunks), Pipeline (each stage with its jobs and what they ran), People (the features that read this one and the starts it waited on) and Record |
 | Identities | Creating and editing agent identities with their charters |

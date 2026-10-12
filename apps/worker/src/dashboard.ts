@@ -237,7 +237,7 @@ export const CONTENT_SECURITY_POLICY = [
 const OAUTH_COOKIE = "__Host-penguin_oauth";
 const OAUTH_TTL_SECONDS = 600;
 const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]"]);
-const PAGE_PATH = /^\/(?:|inbox|identities|issues\/[A-Za-z0-9_-]+|features\/[a-z0-9.-]{1,63})$/;
+const PAGE_PATH = /^\/(?:|org|inbox|identities|teams\/(?:person:)?[a-z0-9-]{1,64}|people\/[a-z0-9-]{1,64}|issues\/[A-Za-z0-9_-]+|features\/[a-z0-9.-]{1,63})$/;
 const ASSET_PATH = /^\/(?:app\.(?:js|css)|fonts\/[a-z0-9-]+\.(?:woff2|txt))$/;
 const FONT_PATH = /^\/fonts\/[a-z0-9-]+\.woff2$/;
 /**

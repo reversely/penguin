@@ -133,11 +133,35 @@ export interface TeamFeature {
   /** The agents whose sessions joined the feature. */
   readonly agents: readonly DashboardAgent[];
   readonly openedAt: string;
+  /**
+   * The open edit tasks routed to the feature's builder, which the team page counts under the
+   * feature's stage (#136). Absent from an older Worker.
+   */
+  readonly builderTasks?: EditTaskCounts;
+}
+
+/** Open edit tasks by state. */
+export interface EditTaskCounts {
+  readonly running: number;
+  readonly queued: number;
+  readonly asked: number;
+}
+
+/** What a person decides or answers: a plan part, an overlapping start, a protected-path confirmation or an edit task they are asked about. */
+export const WAITING_KINDS = ["part", "start", "confirmation", "task"] as const;
+export type WaitingKind = (typeof WAITING_KINDS)[number];
+
+/** Items of one kind that wait on a person in one feature (#136). */
+export interface WaitingItem {
+  readonly feature: string;
+  readonly kind: WaitingKind;
+  readonly count: number;
 }
 
 /**
  * A person's steward with their queue of edit tasks (PRD 0.5 section 4.4a): the team view shows the
- * counts on the steward. Absent from an older Worker.
+ * counts on the steward. The counts hold only the tasks routed to the steward (#136); a builder's
+ * tasks count on its feature (`TeamFeature.builderTasks`). Absent from an older Worker.
  */
 export interface StewardView extends EditQueue {
   readonly handle: string;
@@ -183,6 +207,11 @@ export interface TeamPerson {
   readonly features: readonly TeamFeature[];
   /** The person's agents with no session on any of the person's features. */
   readonly idleAgents: readonly DashboardAgent[];
+  /**
+   * What waits on the person across every feature, by feature and kind, most first (#136). Absent
+   * from an older Worker.
+   */
+  readonly waiting?: readonly WaitingItem[];
 }
 
 /** One scope a team owns, with the person who answers for it and who stands in. */
@@ -191,6 +220,23 @@ export interface TeamScopeSummary {
   readonly name: string;
   readonly dri: string;
   readonly fallback: readonly string[];
+  /** How many other scopes this scope reads, in the code or declared (#136). Absent from an older Worker. */
+  readonly reads?: number;
+  /** How many other scopes read this scope (#136). Absent from an older Worker. */
+  readonly readBy?: number;
+  /** What stands open against the scope (#136). Absent from an older Worker. */
+  readonly health?: ScopeHealth;
+}
+
+/**
+ * What stands open against one scope (#136): `waiting` counts the items in the scope that wait on a
+ * person (plan parts, reviews of running features whose newest form raised an exception, protected
+ * confirmations); `notInCode` counts the scope's declared dependencies the last derivation of main
+ * found no use of. A scope with both at zero is clean.
+ */
+export interface ScopeHealth {
+  readonly waiting: number;
+  readonly notInCode: number;
 }
 
 /**

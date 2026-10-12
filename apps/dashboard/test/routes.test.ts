@@ -1,21 +1,26 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { identityPath, issueAllPath, NAVIGATION, parseRoute, personPath, signInProblem } from "../src/routes.ts";
+import { identityPath, issueAllPath, NAVIGATION, ORG_PATH, parseRoute, personPath, signInProblem, teamPath } from "../src/routes.ts";
 
 test("each page path maps to its route and other paths to none", () => {
-  assert.deepEqual(parseRoute("/"), { page: "team", person: null });
+  assert.deepEqual(parseRoute("/"), { page: "team", team: null });
+  assert.deepEqual(parseRoute("/org"), { page: "org" });
+  assert.deepEqual(parseRoute("/teams/payments"), { page: "team", team: "payments" });
+  assert.deepEqual(parseRoute("/teams/person:ines"), { page: "team", team: "person:ines" });
+  assert.deepEqual(parseRoute("/people/ines"), { page: "person", person: "ines" });
   assert.deepEqual(parseRoute("/inbox"), { page: "inbox" });
   assert.deepEqual(parseRoute("/identities"), { page: "identities" });
   assert.deepEqual(parseRoute("/issues/40"), { page: "issue", issueId: "40", showAll: false });
   assert.deepEqual(parseRoute("/issues/new"), { page: "new-issue" });
-  for (const path of ["/issues/", "/issues/40/ops", "/board/", "/api/session", "/nowhere"]) {
+  for (const path of ["/issues/", "/issues/40/ops", "/board/", "/api/session", "/nowhere", "/teams/", "/teams/Pay ments", "/teams/team:x", "/people/", "/people/a&b", "/org/x"]) {
     assert.equal(parseRoute(path), undefined, path);
   }
 });
 
-test("the team map is home, a person's view is its query and the retired board opens the team map", () => {
+test("the viewer's team is home, the hierarchy has its paths and the retired board and person query still open", () => {
   assert.deepEqual(NAVIGATION.map((entry) => [entry.label, entry.path]), [
+    ["Org", "/org"],
     ["Team", "/"],
     ["Inbox", "/inbox"],
     ["Identities", "/identities"],
@@ -24,10 +29,15 @@ test("the team map is home, a person's view is its query and the retired board o
     const url = new URL(path, "https://penguin.test");
     return parseRoute(url.pathname, url.search);
   };
-  assert.deepEqual(route(personPath("jun")), { page: "team", person: "jun" });
-  assert.deepEqual(route(personPath("a&b c")), { page: "team", person: "a&b c" });
-  assert.deepEqual(route("/?person="), { page: "team", person: null });
-  assert.deepEqual(route("/board?done=all"), { page: "team", person: null });
+  assert.equal(ORG_PATH, "/org");
+  assert.equal(personPath("jun"), "/people/jun");
+  assert.deepEqual(route(personPath("jun")), { page: "person", person: "jun" });
+  assert.equal(teamPath("person:ines"), "/teams/person:ines");
+  assert.deepEqual(route(teamPath("payments")), { page: "team", team: "payments" });
+  // A link from before people had their own path still opens the person.
+  assert.deepEqual(route("/?person=jun"), { page: "person", person: "jun" });
+  assert.deepEqual(route("/?person="), { page: "team", team: null });
+  assert.deepEqual(route("/board?done=all"), { page: "team", team: null });
   assert.equal(identityPath("identity-1"), "/identities?identity=identity-1");
   assert.equal(identityPath(null), "/identities");
 });

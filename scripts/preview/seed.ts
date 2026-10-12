@@ -1122,6 +1122,10 @@ export class PreviewProject {
       split: (featureId) => this.splits.get(featureId),
       editTasks: (featureId) => this.editTasks.forFeature(featureId).map((task) => editTaskView(task)),
       steward: (person) => this.stewardView(person),
+      builderFeature: (identityId) => {
+        const role = this.roster.roleOf(identityId);
+        return role?.role === "builder" ? (role.featureId ?? undefined) : undefined;
+      },
       scopeEdges: () => this.scopeEdges.snapshot(),
       recordCommits: (featureId) => this.recordRepo.commits(featureId),
     };
@@ -1154,7 +1158,7 @@ export class PreviewProject {
     const charter = this.roster.stewardOf(person);
     const identity = charter === undefined ? undefined : this.identities.byHandle(charter.handle);
     if (identity === undefined) return null;
-    return { handle: identity.handle, identityId: identity.id, online: this.editTasks.bridgeOnline(person), ...this.editTasks.queue(person, BACKGROUND_RUN_CAP_DEFAULT) };
+    return { handle: identity.handle, identityId: identity.id, online: this.editTasks.bridgeOnline(person), ...this.editTasks.queue(person, BACKGROUND_RUN_CAP_DEFAULT, "steward") };
   }
 
   /** The Worker's dashboard backend over these stores, as apps/worker/src/index.ts wires the ProjectAgent's. */

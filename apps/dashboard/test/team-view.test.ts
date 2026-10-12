@@ -164,61 +164,73 @@ test("past the palette's size hues repeat as evenly as they can", () => {
   assert.deepEqual([...counts].sort(), [2, 2, 2, 2, 2, 3, 3, 3]);
 });
 
-test("the team map's squares and a person's badge on any page show the shell's one assignment", async () => {
+test("the team page's members and a person's badge on any page show the shell's one assignment", async () => {
   const { render } = await load<{ render: (board: Board, page: IdentitiesPage, ids: readonly string[]) => string }>(`
     import { renderToStaticMarkup } from "react-dom/server";
     import { createElement } from "react";
     import { PersonAvatar } from "./src/avatar.tsx";
-    import { TeamHues, TeamMapView } from "./src/team-page.tsx";
+    import { TeamHues, TeamPageView } from "./src/team-page.tsx";
     export function render(board, page, ids) {
       const role = { scopes: [], dependents: [], dependencies: [] };
-      const view = { people: ids.filter((id) => id !== "outsider").map((id) => ({ id, role, features: [], idleAgents: [] })) };
+      const members = ids.filter((id) => id !== "outsider");
+      const view = {
+        people: members.map((id) => ({ id, role, features: [], idleAgents: [] })),
+        teams: [{ id: "core", name: "Core", lead: members[0], members, implicit: false, scopes: [] }],
+      };
       const team = { view: { kind: "ready", value: view }, board: { kind: "ready", value: board }, identities: { kind: "ready", value: page } };
       return renderToStaticMarkup(createElement(TeamHues, { team },
-        createElement(TeamMapView, { view, navigate() {} }),
+        createElement(TeamPageView, { view, team: null, viewer: members[0], navigate() {} }),
         ...ids.map((id) => createElement("p", { key: id, "data-badge": id }, createElement(PersonAvatar, { id, size: "card" })))));
     }`);
   const owners = ["jun", "priya", "sam", "lee", "mia", "ana", "kai", "noor"];
   const team = page(owners, []);
   const html = render(board(), team, [...owners, "outsider"]);
-  const squares = new Map(
-    [...html.matchAll(/class="person-square person-(\w+)">.*?avatar-initial person-(\w+)".*?person-square-name">([^<]+)</g)].map(
-      ([, square = "", badge = "", id = ""]) => {
-        assert.equal(badge, square, `${id}'s badge and square`);
-        return [id, square];
+  const rows = new Map(
+    [...html.matchAll(/<th scope="row"><a class="pill pill-person person-(\w+)" href="\/people\/([^"]+)"><span class="[^"]*person-(\w+)"/g)].map(
+      ([, pill = "", id = "", badge = ""]) => {
+        assert.equal(badge, pill, `${id}'s badge and pill`);
+        return [id, pill];
       },
     ),
   );
   const badges = new Map([...html.matchAll(/data-badge="([^"]+)"><span class="[^"]*person-(\w+)"/g)].map(([, id = "", hue = ""]) => [id, hue]));
   const assigned = assignPersonHues(teamPeople(board(), team));
-  assert.equal(squares.size, owners.length);
-  assert.equal(new Set(squares.values()).size, owners.length, "eight people, eight hues");
+  assert.equal(rows.size, owners.length);
+  assert.equal(new Set(rows.values()).size, owners.length, "eight people, eight hues");
   for (const id of owners) {
-    assert.equal(squares.get(id), assigned.get(id), id);
+    assert.equal(rows.get(id), assigned.get(id), id);
     assert.equal(badges.get(id), assigned.get(id), id);
   }
   assert.equal(badges.get("outsider"), hashed("outsider"));
 });
 
-test("a person's steward shows once, on the Steward row with its queue, and not among the agents on no feature", async () => {
-  const { render } = await load<{ render: (steward: unknown) => string }>(`
+test("a member's steward shows once with only its own queue; the agents on no feature show on the person page", async () => {
+  const { team, person } = await load<{ team: (steward: unknown) => string; person: (steward: unknown) => string }>(`
     import { renderToStaticMarkup } from "react-dom/server";
     import { createElement } from "react";
-    import { TeamMapView } from "./src/team-page.tsx";
-    export function render(steward) {
-      const role = { scopes: [], dependents: [], dependencies: [] };
-      const idleAgents = [{ handle: "@jun/steward", identityId: "i1", person: "jun", online: false }, { handle: "@jun/reports", identityId: "i2", person: "jun", online: false }];
-      const view = { people: [{ id: "jun", role, steward, features: [], idleAgents }] };
-      return renderToStaticMarkup(createElement(TeamMapView, { view, navigate() {} }));
+    import { TeamPageView } from "./src/team-page.tsx";
+    import { PersonView } from "./src/person-page.tsx";
+    const role = { scopes: [], dependents: [], dependencies: [] };
+    const idleAgents = [{ handle: "@jun/steward", identityId: "i1", person: "jun", online: false }, { handle: "@jun/reports", identityId: "i2", person: "jun", online: false }];
+    const view = (steward) => ({ people: [{ id: "jun", role, steward, features: [], idleAgents }], teams: [{ id: "data", name: "Data", lead: "jun", members: ["jun"], implicit: false, scopes: [] }] });
+    export function team(steward) {
+      return renderToStaticMarkup(createElement(TeamPageView, { view: view(steward), team: "data", viewer: "jun", navigate() {} }));
+    }
+    export function person(steward) {
+      return renderToStaticMarkup(createElement(PersonView, { view: view(steward), board: undefined, person: "jun", navigate() {}, scopes: { person: "jun", role } }));
     }`);
-  const html = render({ handle: "@jun/steward", identityId: "i1", online: false, running: 1, queued: 0, asked: 2, cap: 2 });
-  assert.match(html, /<dt>Steward<\/dt>/u);
-  const text = html.replace(/<[^>]+>/gu, " ").replace(/\s+/gu, " ");
-  assert.match(text, /steward jun 1 of 2 running 2 asked/u);
-  assert.doesNotMatch(text, /queued/u);
-  assert.equal(text.match(/steward jun/gu)?.length, 1, "the steward shows once");
-  assert.match(text, /reports jun/u);
+  const steward = { handle: "@jun/steward", identityId: "i1", online: false, running: 1, queued: 0, asked: 2, cap: 2 };
+  const text = (html: string) => html.replace(/<[^>]+>/gu, " ").replace(/\s+/gu, " ");
+  const row = text(team(steward));
+  assert.match(row, /steward jun 1 of 2 running 2 asked/u);
+  assert.doesNotMatch(row, /queued/u);
+  assert.equal(row.match(/steward jun/gu)?.length, 1, "the steward shows once");
+  assert.doesNotMatch(row, /reports jun/u, "an agent on no feature is no builder");
+  const page = text(person(steward));
+  assert.match(page, /Steward steward jun 1 of 2 running 2 asked/u);
+  assert.match(page, /On no feature 1 reports jun/u);
+  assert.equal(page.match(/steward jun/gu)?.length, 1, "the steward shows once");
   // A person with no steward, or a view from an older Worker, has no Steward row.
-  assert.doesNotMatch(render(null), /Steward/u);
-  assert.doesNotMatch(render(undefined), /Steward/u);
+  assert.doesNotMatch(person(null), /Steward/u);
+  assert.doesNotMatch(team(undefined), /steward/u);
 });

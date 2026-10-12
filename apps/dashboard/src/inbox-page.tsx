@@ -182,7 +182,7 @@ export function InboxPage({ approvals, navigate, onSignedOut }: PageProps) {
         <h1>Inbox</h1>
       </header>
       <ApprovalsInbox state={approvals} navigate={navigate} onSignedOut={onSignedOut} />
-      {empty ? <p className="inbox-empty">Please open the team view to follow running features</p> : null}
+      {empty ? <p className="inbox-empty">Please open your team page to follow running features</p> : null}
     </div>
   );
 }

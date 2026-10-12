@@ -37,8 +37,13 @@ import {
   type PersonScopes,
   ROLE_TOP,
   type Plan,
+  type EditTaskCounts,
+  type TeamFeature,
   type TeamPerson,
   type TeamScopeSummary,
+  WAITING_KINDS,
+  type WaitingItem,
+  type WaitingKind,
   type TeamSummary,
   type TeamView,
   type ToolRunView,
@@ -55,7 +60,7 @@ import { breakView, newestReviews, returnedPayload, type PartRoute, type PlanRou
 import type { ReviewStore, StoredReview } from "./review-submit.ts";
 import { reviewView } from "./review-view.ts";
 import type { RunFailure } from "./run-failures.ts";
-import { dashboardScope, personRole, roleIndex, type ScopeEdgeSnapshot } from "./scope-edges.ts";
+import { dashboardScope, personRole, roleIndex, type RoleIndex, type ScopeEdgeSnapshot } from "./scope-edges.ts";
 import type { Session } from "./session-store.ts";
 
 export interface DashboardViewDeps {
@@ -95,6 +100,8 @@ export interface DashboardViewDeps {
   readonly scopeEdges?: () => ScopeEdgeSnapshot;
   /** Each of a feature's records in the record repo: record id to the commit that added it (RecordRepoStore.commits). */
   readonly recordCommits?: (featureId: string) => ReadonlyMap<string, string>;
+  /** The feature a builder identity was made for (EditRoster.roleOf); undefined for any other identity or when absent. */
+  readonly builderFeature?: (identityId: string) => string | undefined;
 }
 
 /**
@@ -242,11 +249,20 @@ export async function buildTeamView(deps: DashboardViewDeps, viewer: string): Pr
   const byHandle = new Map(identities.map((identity) => [identity.handle, identity]));
   const features = deps.features.list();
   const working = new Set<string>();
-  const teamFeatures = features.map((feature) => {
+  const waiting = new WaitingTally();
+  const seenTasks = new Set<number>();
+  const teamFeatures = features.map((feature): TeamFeature => {
     const parts = deps.routes.ofFeature(feature.id);
     const records = parsedRecords(deps.features, feature.id);
     const agents = featureAgents(deps, feature.id, byHandle, feature.personId);
-    if (RUNNING_STATES.has(feature.state)) for (const agent of agents) working.add(agent.handle);
+    const running = RUNNING_STATES.has(feature.state);
+    if (running) for (const agent of agents) working.add(agent.handle);
+    const tasks = deps.editTasks?.(feature.id) ?? [];
+    // A task shows under both the feature that raised it and the one whose fork it edits: tally it once.
+    const unseen = tasks.filter((task) => !seenTasks.has(task.id));
+    for (const task of unseen) seenTasks.add(task.id);
+    tallyWaiting(waiting, deps, feature.id, parts, unseen, running);
+    const builderTasks = taskCounts(tasks.filter((task) => task.via === "builder" && task.target === feature.id));
     return {
       id: feature.id,
       person: feature.personId,
@@ -261,16 +277,22 @@ export async function buildTeamView(deps: DashboardViewDeps, viewer: string): Pr
       exceptions: featureExceptions(parts, deps.reviews.list(feature.id), records, deps.stoppedRuns?.(feature.id)),
       agents,
       openedAt: feature.openedAt,
+      ...(deps.editTasks === undefined ? {} : { builderTasks }),
     };
   });
-  const teams = teamSummaries(scopeMap);
   const roles = roleIndex(scopeMap, deps.scopeEdges?.() ?? NO_EDGES);
+  const teams = teamSummaries(scopeMap, { roles, waiting: waiting.scopes });
   const people = new Set<string>([
     ...dris(scopeMap),
     ...teams.flatMap((team) => [team.lead, ...team.members]),
     ...features.map((feature) => feature.personId),
     ...identities.map(identityPerson).filter((person) => person !== ""),
   ]);
+  // A builder whose feature reached main has finished: it leaves the agents on no feature (#136). A
+  // builder is the roster's, or an identity named `@<person>/<feature>` after one of its person's features.
+  const landed = new Map(features.filter((feature) => feature.state === "landed" || feature.state === "closed").map((feature) => [feature.id, feature.personId]));
+  const finished = (identity: Identity): boolean =>
+    landed.get(deps.builderFeature?.(identity.id) ?? identity.handle.slice(identity.handle.indexOf("/") + 1)) === identityPerson(identity);
   const ordered = [...people].sort((a, b) => Number(b === viewer) - Number(a === viewer) || (a < b ? -1 : a > b ? 1 : 0));
   return {
     people: ordered.map(
@@ -280,22 +302,98 @@ export async function buildTeamView(deps: DashboardViewDeps, viewer: string): Pr
         ...(deps.steward === undefined ? {} : { steward: deps.steward(id) }),
         features: teamFeatures.filter((feature) => feature.person === id),
         idleAgents: identities
-          .filter((identity) => identityPerson(identity) === id && !working.has(identity.handle))
+          .filter((identity) => identityPerson(identity) === id && !working.has(identity.handle) && !finished(identity))
           .map((identity) => ({ handle: identity.handle, identityId: identity.id, person: id, online: false })),
+        waiting: waiting.of(id),
       }),
     ),
     teams,
   };
 }
 
+/** What waits on each person by feature and kind, and how many items wait in each scope (#136). */
+class WaitingTally {
+  readonly #people = new Map<string, Map<string, WaitingItem>>();
+  readonly scopes = new Map<string, number>();
+
+  add(person: string, feature: string, kind: WaitingKind, scopes: readonly string[] = []): void {
+    const items = this.#people.get(person) ?? new Map<string, WaitingItem>();
+    this.#people.set(person, items);
+    const key = `${feature}\n${kind}`;
+    items.set(key, { feature, kind, count: (items.get(key)?.count ?? 0) + 1 });
+    this.addScopes(scopes);
+  }
+
+  addScopes(scopes: readonly string[]): void {
+    for (const scope of new Set(scopes)) this.scopes.set(scope, (this.scopes.get(scope) ?? 0) + 1);
+  }
+
+  /** The person's items, most first, then by feature and kind. */
+  of(person: string): WaitingItem[] {
+    const order = (kind: WaitingKind) => WAITING_KINDS.indexOf(kind);
+    return [...(this.#people.get(person)?.values() ?? [])].sort(
+      (a, b) => b.count - a.count || (a.feature < b.feature ? -1 : a.feature > b.feature ? 1 : 0) || order(a.kind) - order(b.kind),
+    );
+  }
+}
+
+/**
+ * Tallies what one feature leaves waiting on people: each open start lock on its approver, each part
+ * pending or past the round limit on the person it is routed to, each pending protected-path
+ * confirmation on the person who protects the path and each edit task its person is asked about. A
+ * running feature's newest review of a scope that raised an exception counts against that scope.
+ */
+function tallyWaiting(tally: WaitingTally, deps: DashboardViewDeps, feature: string, parts: readonly PartRoute[], tasks: readonly EditTaskView[], running: boolean): void {
+  for (const lock of [...deps.overlaps.locksOn(feature), ...deps.overlaps.ownerLocksOn(feature)]) {
+    if (lock.state === "open") tally.add(lock.personId, feature, "start");
+  }
+  for (const part of parts) if (part.state === "pending" || part.state === "round_limit") tally.add(part.ownerId, feature, "part", part.scopes);
+  for (const change of deps.protectedChanges?.(feature) ?? []) if (change.state === "pending") tally.add(change.ownerId, feature, "confirmation");
+  for (const task of tasks) if (task.state === "asked") tally.add(task.person, task.target, "task", task.scopes);
+  if (!running) return;
+  const reviews = deps.reviews.list(feature);
+  for (const review of newestReviews(reviews, [...new Set(reviews.map((each) => each.scopeId))])) {
+    if (review.exceptions.length > 0) tally.addScopes([review.scopeId]);
+  }
+}
+
+/** Open edit tasks by state. */
+function taskCounts(tasks: readonly EditTaskView[]): EditTaskCounts {
+  const count = (...states: string[]) => tasks.filter((task) => states.includes(task.state)).length;
+  // A delivered task runs in its session, as the feature's timeline tags it.
+  return { running: count("running", "delivered"), queued: count("queued"), asked: count("asked") };
+}
+
+/** How many scopes one scope reads and is read by, and its declared dependencies the code no longer shows. */
+function scopeStats(roles: RoleIndex, id: string): { reads: number; readBy: number; notInCode: number } {
+  const live = (key: string) => {
+    const pair = roles.pairs.get(key);
+    return pair !== undefined && (pair.edge?.inCode === true || pair.declared);
+  };
+  const consumed = roles.byConsumer.get(id) ?? [];
+  const notInCode =
+    roles.derivation === null ? 0 : consumed.filter((key) => roles.pairs.get(key)?.declared === true && roles.pairs.get(key)?.edge?.inCode !== true).length;
+  return { reads: consumed.filter(live).length, readBy: (roles.byProvider.get(id) ?? []).filter(live).length, notInCode };
+}
+
+function withStats(summary: TeamScopeSummary, roles: RoleIndex, waiting: ReadonlyMap<string, number>): TeamScopeSummary {
+  const { reads, readBy, notInCode } = scopeStats(roles, summary.id);
+  return { ...summary, reads, readBy, health: { waiting: waiting.get(summary.id) ?? 0, notInCode } };
+}
+
 /**
  * Every team that owns a scope, by id, with its lead, members and the scopes it owns, each with its
  * DRI and fallback order: the org, team and person levels of the hierarchy (#135; #136 renders them).
+ * With `stats`, each scope also carries its Reads and Read by counts and its health.
  */
-export function teamSummaries(scopeMap: ScopeMap): TeamSummary[] {
+export function teamSummaries(
+  scopeMap: ScopeMap,
+  stats?: { readonly roles: RoleIndex; readonly waiting: ReadonlyMap<string, number> },
+): TeamSummary[] {
   const owned = new Map<string, TeamScopeSummary[]>();
   for (const scope of scopeMap.scopes.values()) {
-    owned.set(scope.teamId, [...(owned.get(scope.teamId) ?? []), { id: scope.id, name: scope.name, dri: scope.driId, fallback: [...scope.fallbackIds] }]);
+    const summary: TeamScopeSummary = { id: scope.id, name: scope.name, dri: scope.driId, fallback: [...scope.fallbackIds] };
+    owned.set(scope.teamId, [...(owned.get(scope.teamId) ?? []), stats === undefined ? summary : withStats(summary, stats.roles, stats.waiting)]);
   }
   return [...scopeMap.teams.values()]
     .filter((team) => owned.has(team.id) || !team.implicit)

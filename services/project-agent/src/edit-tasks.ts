@@ -389,11 +389,15 @@ export class EditTaskStore {
     });
   }
 
-  /** The person's queue: running, waiting and asked tasks. */
-  queue(person: string, cap: number): EditQueue {
+  /**
+   * The person's queue: running, waiting and asked tasks. With `via`, only the tasks routed that way,
+   * such as the steward's own queue the team page shows (#136).
+   */
+  queue(person: string, cap: number, via?: EditRouteVia): EditQueue {
+    const routed = via === undefined ? "" : " AND via = ?";
     const counts = new Map(
       this.#db
-        .exec(`SELECT state, COUNT(*) AS n FROM EditTask WHERE person = ? AND state IN ('running', 'queued', 'asked') GROUP BY state`, person)
+        .exec(`SELECT state, COUNT(*) AS n FROM EditTask WHERE person = ?${routed} AND state IN ('running', 'queued', 'asked') GROUP BY state`, ...(via === undefined ? [person] : [person, via]))
         .map((row) => [row["state"] as string, Number(row["n"])]),
     );
     return { running: counts.get("running") ?? 0, queued: counts.get("queued") ?? 0, asked: counts.get("asked") ?? 0, cap };

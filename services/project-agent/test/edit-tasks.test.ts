@@ -282,6 +282,9 @@ test("a person's bridge holds two background runs by default; the rest queue, ol
   const first = project.poll("jun");
   assert.deepEqual(first.map((task) => task.sourceKey), ["migrate:1", "migrate:2"]);
   assert.deepEqual(project.tasks.queue("jun", 2), { running: 2, queued: 2, asked: 0, cap: 2 });
+  // The builder took every task, so the steward's own queue the team page shows is empty (#136).
+  assert.deepEqual(project.tasks.queue("jun", 2, "builder"), { running: 2, queued: 2, asked: 0, cap: 2 });
+  assert.deepEqual(project.tasks.queue("jun", 2, "steward"), { running: 0, queued: 0, asked: 0, cap: 2 });
   assert.deepEqual(project.poll("jun"), []);
   const done = project.tasks.report("bridge-jun", first[0]!.id, { status: "done", outcome: "claude -p changed 1 file", commit: "e".repeat(40) });
   assert.equal(done.status, "ok");

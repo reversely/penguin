@@ -111,7 +111,7 @@ function Shell({ session, onSignedOut }: { session: Session; onSignedOut: () => 
                     key={entry.page}
                     href={entry.path}
                     className="nav-link"
-                    aria-current={route?.page === entry.page ? "page" : undefined}
+                    aria-current={navPage(route) === entry.page ? "page" : undefined}
                     onClick={linkHandler(navigate, entry.path)}
                   >
                     {entry.label}
@@ -131,7 +131,7 @@ function Shell({ session, onSignedOut }: { session: Session; onSignedOut: () => 
               <AccountMenu session={session} status={live.status} />
             </header>
             <main className="centre" inert={covered}>
-              <div className={route?.page === "team" && route.person === null ? "page page-wide" : "page"} data-audit-center>
+              <div className={route?.page === "org" || route?.page === "team" || route?.page === "person" ? "page page-wide" : "page"} data-audit-center>
                 {approvals.loaded ? (
                   <Banners
                     approvals={approvals.approvals}
@@ -166,8 +166,8 @@ function Page({ route, session, live, approvals, team, navigate, onSignedOut }: 
   if (route?.page === "issue") {
     return <IssuePageView key={route.issueId} issueId={route.issueId} viewer={session.owner} live={live} navigate={navigate} onSignedOut={onSignedOut} />;
   }
-  if (route?.page === "team") {
-    return <TeamPage team={team} person={route.person} navigate={navigate} live={live} onSignedOut={onSignedOut} />;
+  if (route?.page === "org" || route?.page === "team" || route?.page === "person") {
+    return <TeamPage team={team} route={route} viewer={session.owner} navigate={navigate} live={live} onSignedOut={onSignedOut} />;
   }
   if (route?.page === "feature") {
     return <FeaturePageView key={route.featureId} featureId={route.featureId} viewer={session.owner} team={team.view.kind === "ready" ? team.view.value : undefined} live={live} navigate={navigate} onSignedOut={onSignedOut} />;
@@ -180,6 +180,11 @@ function Page({ route, session, live, approvals, team, navigate, onSignedOut }: 
     return <IdentitiesPageView viewer={session.owner} live={live} navigate={navigate} onSignedOut={onSignedOut} />;
   }
   return <h1>{pageTitle(route)}</h1>;
+}
+
+/** The navigation entry a route sits under: a person's page sits under Team. */
+function navPage(route: Route | undefined): Route["page"] | undefined {
+  return route?.page === "person" ? "team" : route?.page;
 }
 
 function pageTitle(route: Route | undefined): string {

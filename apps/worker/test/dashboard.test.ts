@@ -277,7 +277,7 @@ class Browser {
 describe("an unauthenticated visit", () => {
   test("gets the app's page, which carries no data, under a policy that blocks inline scripts", async () => {
     const browser = new Browser();
-    for (const path of ["/", "/inbox", "/identities", "/issues/40"]) {
+    for (const path of ["/", "/org", "/teams/payments", "/teams/person:ines", "/people/ines", "/inbox", "/identities", "/issues/40"]) {
       const response = await browser.request(path);
       assert.equal(response.status, 200, path);
       assert.equal(await response.text(), INDEX_HTML, path);

@@ -2626,6 +2626,10 @@ export class ProjectAgent extends Agent {
       // A task whose write waits for its fork's turn names why, for its waiting branch (fix-write.ts).
       editTasks: (featureId) => this.#editTaskStore().forFeature(featureId).map((task) => editTaskView(task, writeWaitsFor(this.#fixGrantStore(), task))),
       steward: (person) => this.#stewardView(person),
+      builderFeature: (identityId) => {
+        const role = this.#editRosterStore().roleOf(identityId);
+        return role?.role === "builder" ? (role.featureId ?? undefined) : undefined;
+      },
       features: this.#featureStore(),
       overlaps: this.#overlapStore(),
       routes: this.#planRouteStore(),
@@ -2949,7 +2953,7 @@ export class ProjectAgent extends Agent {
     const identity = charter === undefined ? undefined : this.#identityStore().byHandle(charter.handle);
     if (identity === undefined) return null;
     const tasks = this.#editTaskStore();
-    return { handle: identity.handle, identityId: identity.id, online: tasks.bridgeOnline(person), ...tasks.queue(person, this.#backgroundRunCap()) };
+    return { handle: identity.handle, identityId: identity.id, online: tasks.bridgeOnline(person), ...tasks.queue(person, this.#backgroundRunCap(), "steward") };
   }
 
   #editWorkDeps(repos: ProjectRepos): EditWorkDeps {
