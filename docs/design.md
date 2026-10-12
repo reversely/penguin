@@ -203,7 +203,10 @@ The procedure moves conflict handling to the start of the work. Each step below 
 - **Storing.** A complete plan is a signed `propose_plan` record listing each part. Its `Plan` and
   `PlanPart` rows live in the per-feature Durable Object, an instance of the HuddleAgent class named
   for the feature, until the FeatureAgent replaces it. `plan-store.ts` is the one module that holds
-  them. `GET /api/features/<id>/plan` answers the newest plan as JSON for the dashboard.
+  them. `GET /api/features/<id>/plan` answers the newest plan as JSON for the dashboard. A part's
+  patch and changed lines (`diff.patch`, `diff.files`) go to the feature's person, the part's owner
+  and that owner's delegate, the same rule the feature page applies (`mayReadPartLines` in
+  `dashboard-views.ts`). For any other signed-in person both fields are null.
 - **Limits.** A commit subject is cut at 300 characters, a docstring at 500 and an assertion or error
   line at 300. A note may hold 2,000 characters and a plan 128 parts. Penguin keeps every such string
   as data. The MCP answer puts each one inside `personWritten`.

@@ -3,13 +3,14 @@
 // and the check runner's programs (scripts/preview/seed.ts): forty features, an overlapping start, a
 // nine-scope plan returned over the break limit and proposed again, a tax review on the runner and
 // the codemodded scopes approved. Every person then signs in to the Worker's own dashboard routes.
-// A plan part's changed lines reach only its owner and the feature's person; no answer carries a
-// session transcript. The team view's read time at forty features is printed for the record.
+// A plan part's changed lines reach only its owner and the feature's person, on the feature page and
+// in the plan; no answer carries a session transcript. The team view's read time at forty features is
+// printed for the record.
 
 import assert from "node:assert/strict";
 import { before, test } from "node:test";
 
-import type { FeaturePage, OverlapRequests, PlanInbox, TeamView } from "@penguin/protocol";
+import type { FeaturePage, OverlapRequests, PlanInbox, TeamView, ViewerPlan } from "@penguin/protocol";
 
 import { handleDashboardRoute } from "../src/dashboard.ts";
 import { parseOwnerMap } from "../src/github-oauth.ts";
@@ -80,8 +81,18 @@ test("a part's changed lines reach only its owner and the feature's person, and 
   assert.ok(sun.plan?.parts.every((part) => part.files === null), "a person with no part reads no changed lines");
   // The same facts, states and checks reach everyone.
   assert.deepEqual(sun.plan?.parts.map((part) => [part.partId, part.state]), ines.plan?.parts.map((part) => [part.partId, part.state]));
+  // The plan route applies the same rule to each part's patch and changed lines.
+  const plan = async (person: string) => (await read<ViewerPlan>(person, "/api/features/money-minor-units/plan")).body;
+  const readable = (seen: ViewerPlan) => seen.parts.filter((part) => part.diff.files !== null).map((part) => part.partId);
+  const pageReadable = (seen: FeaturePage) => (seen.plan?.parts ?? []).filter((part) => part.files !== null).map((part) => part.partId);
+  for (const [person, seen] of [["ines", ines], ["rahul", rahul], ["sun", sun]] as const) {
+    const answered = await plan(person);
+    assert.deepEqual(readable(answered), pageReadable(seen), `the plan route and the page agree for ${person}`);
+    for (const part of answered.parts.filter((each) => each.diff.files === null)) assert.equal(part.diff.patch, null, `${part.partId} as ${person}`);
+  }
+  assert.ok((await plan("rahul")).parts.some((part) => part.diff.files === null), "rahul reads another owner's part without its lines");
   for (const person of ["ines", "rahul", "sun"]) {
-    for (const path of ["/api/team", "/api/features/money-minor-units/page", "/api/plan-parts", "/api/overlaps", "/api/identities"]) {
+    for (const path of ["/api/team", "/api/features/money-minor-units/page", "/api/features/money-minor-units/plan", "/api/plan-parts", "/api/overlaps", "/api/identities"]) {
       assert.doesNotMatch((await read(person, path)).text, /transcript/i, `${path} as ${person}`);
     }
   }

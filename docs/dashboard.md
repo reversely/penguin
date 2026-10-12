@@ -261,7 +261,8 @@ connections from the Worker's own origin only, with no inline script. Fonts (Int
 self-hosted. Every value from an issue, identity, record, commit, docstring, review form or person renders as
 React text, so markup in a title, body, name or handle shows as text and runs nothing. Each API route
 answers only as the session's person. The approvals list only that person's items. A feature page
-sends a part's changed lines only to the people they concern. No route returns an agent's
+and `GET /api/features/<id>/plan` send a part's changed lines and patch only to the people they
+concern: the feature's person, the part's owner and that owner's delegate. No route returns an agent's
 session transcript; Penguin holds none.
 
 ## Local preview

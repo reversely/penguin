@@ -41,7 +41,7 @@ import { claimToolRuns, recordToolResult } from "../../services/project-agent/sr
 import { AgentToolStore, requestTool, whatsNear, type AgentToolDeps } from "../../services/project-agent/src/agent-tools.ts";
 import { buildBoard } from "../../services/project-agent/src/board.ts";
 import { checkpointBaseline, checkpointChange, type RepoHistoryReader } from "../../services/project-agent/src/combined-run-schedule.ts";
-import { buildFeaturePage, buildTeamView, type DashboardViewDeps } from "../../services/project-agent/src/dashboard-views.ts";
+import { buildFeaturePage, buildFeaturePlan, buildTeamView, type DashboardViewDeps } from "../../services/project-agent/src/dashboard-views.ts";
 import { openFeature, recordFeatureRepo, reportFeatureCheckpoint, type FeatureDeps } from "../../services/project-agent/src/feature-open.ts";
 import { FeatureStore, signFeatureRecord } from "../../services/project-agent/src/feature-store.ts";
 import { buildIdentitiesPage } from "../../services/project-agent/src/identities-page.ts";
@@ -542,7 +542,7 @@ export class PreviewProject {
       features: async () => this.features.list().map(featureView),
       openFeature: unsupported as never,
       declareFeatureArea: unsupported as never,
-      featurePlan: async (featureId) => this.plans.latestPlan(featureId),
+      featurePlan: async (owner, featureId) => buildFeaturePlan(this.viewDeps(), featureId, owner),
       team: async (owner) => buildTeamView(this.viewDeps(), owner),
       featurePage: async (owner, featureId) => buildFeaturePage(this.viewDeps(), featureId, owner),
       overlapRequests: async (owner) => ({

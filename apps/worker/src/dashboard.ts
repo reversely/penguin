@@ -34,8 +34,10 @@
  *     @penguin/protocol): a part's changed lines only for the feature's person, the part's owner and
  *     that owner's delegate; 404 for no such feature.
  *   - GET /api/features/<id>/plan: the feature's newest merge plan with its facts and parts, as
- *     JSON; 404 when it has none. Commit subjects, docstrings, assertion lines and diff lines are
- *     plain strings in it, never markup.
+ *     JSON (ViewerPlan in @penguin/protocol); 404 when it has none. A part's patch and changed lines
+ *     (`diff.patch`, `diff.files`) follow the feature page's rule; for anyone else both are null.
+ *     Commit subjects, docstrings, assertion lines and diff lines are plain strings in it, never
+ *     markup.
  *   - GET /api/overlaps: the overlapping starts that wait for the signed-in person's approval,
  *     checked against OVERLAP_REQUESTS_SCHEMA; an answer that breaks it answers 500.
  *   - POST /api/overlaps/approve: approves one of them, `{ feature, blockedFeature }`, as the
@@ -125,8 +127,8 @@ export interface DashboardBackend {
   openFeature(owner: string, input: { readonly feature: unknown; readonly area?: unknown }): Promise<FeatureOpenResult>;
   /** Replaces the declared area of one of `owner`'s features. */
   declareFeatureArea(owner: string, featureId: string, area: unknown): Promise<FeatureAreaResult>;
-  /** The feature's newest merge plan as plain JSON (Plan in @penguin/protocol), or undefined. */
-  featurePlan(featureId: string): Promise<unknown>;
+  /** The feature's newest merge plan as `owner` may see it, as plain JSON (ViewerPlan in @penguin/protocol), or undefined. */
+  featurePlan(owner: string, featureId: string): Promise<unknown>;
   /** The team view for `owner` as plain JSON (TeamView in @penguin/protocol). */
   team(owner: string): Promise<unknown>;
   /** The feature page as `owner` may see it (FeaturePage in @penguin/protocol), or undefined. */
@@ -448,7 +450,7 @@ async function featureRoute(
   const plan = /^\/api\/features\/([a-z0-9.-]{1,63})\/plan$/.exec(url.pathname)?.[1];
   if (plan !== undefined) {
     if (request.method !== "GET") return methodNotAllowed("GET");
-    const found = await (await handlers.dashboard()).featurePlan(plan);
+    const found = await (await handlers.dashboard()).featurePlan(session.owner, plan);
     return found === undefined ? json({ error: "not found", message: `feature ${plan} has no merge plan` }, 404) : json(found);
   }
   const match = /^\/api\/features(?:\/([a-z0-9.-]{1,63})\/area)?$/.exec(url.pathname);

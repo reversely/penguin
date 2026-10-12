@@ -9,7 +9,7 @@
 
 import type { BlockCheck } from "./block-check.ts";
 import type { ImpactUse } from "./impact.ts";
-import type { PlanFactSource, PlanInvariantFact, PlanPartKind, PlanPartState, PlanPlace } from "./plan.ts";
+import type { Plan, PlanFactSource, PlanFileDiff, PlanInvariantFact, PlanPart, PlanPartKind, PlanPartState, PlanPlace } from "./plan.ts";
 import type { PlanPartFile } from "./plan-approval.ts";
 import { REVIEW_REFUSAL_CODES, REVIEW_VERDICTS, type ReviewException, type ReviewRefusalCode, type ReviewVerdict } from "./review.ts";
 import type { JsonSchema } from "./schema-check.ts";
@@ -199,6 +199,19 @@ export interface FeaturePlanView {
   readonly mainCallers: readonly ImpactUse[];
   readonly affectedFeatures: readonly { readonly feature: string; readonly person: string; readonly uses: number; readonly breaks: number }[];
   readonly parts: readonly PlanPartView[];
+}
+
+/**
+ * A feature's newest merge plan as GET /api/features/<id>/plan answers it to one viewer. A part's
+ * patch and changed lines (`diff.patch`, `diff.files`) reach the feature's person, the part's owner
+ * and that owner's delegate. For anyone else both are null and the rest of the part stays.
+ */
+export interface ViewerPlan extends Omit<Plan, "parts"> {
+  readonly parts: readonly ViewerPlanPart[];
+}
+
+export interface ViewerPlanPart extends Omit<PlanPart, "diff"> {
+  readonly diff: Omit<PlanPart["diff"], "files"> & { readonly files: readonly PlanFileDiff[] | null };
 }
 
 /** One agent tool call recorded on the feature (PRD 5.2), with what the tool reported. */

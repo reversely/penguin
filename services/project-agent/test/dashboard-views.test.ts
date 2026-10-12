@@ -1,13 +1,15 @@
 // The rules behind the dashboard's team view (dashboard-views.ts): each feature's one-word state, the
-// exceptions it highlights and each person's role in the scope map.
+// exceptions it highlights, each person's role in the scope map and who reads a plan part's patch.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { parseScopeMap } from "@penguin/scope-map";
 
-import { featureExceptions, featureState, personRole, type FeatureStateFacts } from "../src/dashboard-views.ts";
-import type { FeatureRecord } from "../src/feature-store.ts";
+import type { Plan } from "@penguin/protocol";
+
+import { buildFeaturePlan, featureExceptions, featureState, personRole, type FeatureStateFacts } from "../src/dashboard-views.ts";
+import type { Feature, FeatureRecord, FeatureStore } from "../src/feature-store.ts";
 import type { StoredReview } from "../src/review-submit.ts";
 
 const facts = (changes: Partial<FeatureStateFacts>): FeatureStateFacts => ({
@@ -74,4 +76,41 @@ test("a person's role names their scopes, the other scopes that read them and th
   });
   assert.deepEqual(personRole(scopeMap, "rahul").dependencies, [{ id: "money", name: "Money", ownerId: "ines" }]);
   assert.deepEqual(personRole(scopeMap, "nobody"), { scopes: [], dependents: [], dependencies: [] });
+});
+
+test("the plan route sends a part's patch only to the feature's person, the part's owner and that owner's delegate", async () => {
+  const file = { path: "tax/a.py", status: "modified", hunks: [{ lines: ["-round(x)", "+round_half_even(x)"] }] };
+  const part = (partId: string, owner: string) => ({
+    partId,
+    owner,
+    approvalState: "pending",
+    diff: { source: "patch", repo: `feature-${owner}`, ref: "r", commit: null, base: "b", patch: "--- a/tax/a.py\n+++ b/tax/a.py\n", files: [file], truncated: false },
+  });
+  const plan = { planId: "money/v1", person: "ines", parts: [part("money/v1#1", "rahul"), part("money/v1#2", "tomas")] } as unknown as Plan;
+  const deps = {
+    features: { get: (id: string) => (id === "money" || id === "bare" ? ({ id } as Feature) : undefined) } as unknown as FeatureStore,
+    delegates: async () => new Map([["rahul", "lee"]]),
+    plan: async (id: string) => (id === "money" ? plan : undefined),
+  };
+  const readable = async (viewer: string) => {
+    const seen = await buildFeaturePlan(deps, "money", viewer);
+    assert.ok(seen !== undefined);
+    // Everything but the patch and its changed lines reaches every viewer.
+    const facts = (parts: readonly { partId: string; owner: string; approvalState: string }[]) => parts.map(({ partId, owner, approvalState }) => [partId, owner, approvalState]);
+    assert.deepEqual(facts(seen.parts), facts(plan.parts));
+    for (const shown of seen.parts) {
+      if (shown.diff.files === null) assert.equal(shown.diff.patch, null, `${shown.partId} as ${viewer}`);
+      else assert.deepEqual(shown.diff, plan.parts.find((each) => each.partId === shown.partId)?.diff);
+    }
+    return seen.parts.filter((shown) => shown.diff.files !== null).map((shown) => shown.partId);
+  };
+  assert.deepEqual(await readable("ines"), ["money/v1#1", "money/v1#2"], "the feature's person");
+  assert.deepEqual(await readable("rahul"), ["money/v1#1"], "the part's owner");
+  assert.deepEqual(await readable("lee"), ["money/v1#1"], "the owner's delegate");
+  assert.deepEqual(await readable("tomas"), ["money/v1#2"], "the other part's owner");
+  assert.deepEqual(await readable("sun"), [], "a signed-in person with no part");
+  // The stored plan keeps every patch, and no feature or no plan answers undefined.
+  assert.ok(plan.parts.every((each) => each.diff.patch !== null && each.diff.files.length === 1));
+  assert.equal(await buildFeaturePlan(deps, "bare", "ines"), undefined);
+  assert.equal(await buildFeaturePlan(deps, "ledger", "ines"), undefined);
 });

@@ -9,7 +9,8 @@
 // What a person may see: the team view and every feature's declaration, plan places, states, checks
 // and records, since a person approves overlapping starts and plan parts from them. A part's changed
 // lines show only to the feature's person, the part's owner and that owner's delegate (PRD 13: another
-// person's work is visible as the affected lines, to the people they affect). No view carries an
+// person's work is visible as the affected lines, to the people they affect), on the feature page and
+// in the plan the plan route answers alike (`mayReadPartLines`). No view carries an
 // agent's session transcript; Penguin holds none.
 
 import {
@@ -25,6 +26,7 @@ import {
   type TeamPerson,
   type TeamView,
   type ToolRunView,
+  type ViewerPlan,
 } from "@penguin/protocol";
 import type { ScopeMap } from "@penguin/scope-map";
 
@@ -224,8 +226,32 @@ function toolRunView(run: AgentToolRun): ToolRunView {
   };
 }
 
+/**
+ * Whether `viewer` may read a part's changed lines and patch: the feature's person, the part's owner
+ * and that owner's delegate (PRD 13). The feature page and the plan route both apply it.
+ */
+export function mayReadPartLines(plan: Pick<Plan, "person">, owner: string, viewer: string, delegates: ReadonlyMap<string, string>): boolean {
+  return viewer === plan.person || viewer === owner || delegates.get(owner) === viewer;
+}
+
+/** GET /api/features/<id>/plan: the feature's newest plan as `viewer` may see it, or undefined for no feature or no plan. */
+export async function buildFeaturePlan(
+  deps: Pick<DashboardViewDeps, "features" | "delegates" | "plan">,
+  featureId: string,
+  viewer: string,
+): Promise<ViewerPlan | undefined> {
+  if (deps.features.get(featureId) === undefined) return undefined;
+  const [plan, delegates] = await Promise.all([deps.plan(featureId), deps.delegates()]);
+  if (plan === undefined) return undefined;
+  return {
+    ...plan,
+    parts: plan.parts.map((part) =>
+      mayReadPartLines(plan, part.owner, viewer, delegates) ? part : { ...part, diff: { ...part.diff, patch: null, files: null } },
+    ),
+  };
+}
+
 function planView(plan: Plan, viewer: string, delegates: ReadonlyMap<string, string>, roundLimit: number): FeaturePlanView {
-  const mayRead = (owner: string) => viewer === plan.person || viewer === owner || delegates.get(owner) === viewer;
   const diff = plan.facts.contractDiff;
   return {
     planId: plan.planId,
@@ -264,7 +290,7 @@ function planView(plan: Plan, viewer: string, delegates: ReadonlyMap<string, str
       breaks: part.breaks.map(breakView),
       invariants: part.invariants,
       note: part.note,
-      files: mayRead(part.owner) ? partFiles(part) : null,
+      files: mayReadPartLines(plan, part.owner, viewer, delegates) ? partFiles(part) : null,
     })),
   };
 }

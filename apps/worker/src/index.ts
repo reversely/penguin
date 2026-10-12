@@ -100,7 +100,7 @@ export default {
               const declared = await agent.declareFeatureArea(owner, featureId, area, null, repos);
               return declared.status === "ok" ? { status: "ok", feature: featureView(declared.feature) } : declared;
             },
-            featurePlan: async (featureId) => agent.featurePlan(featureId),
+            featurePlan: async (owner, featureId) => agent.featurePlan(owner, featureId, repos),
             team: async (owner) => agent.teamView(owner, repos),
             featurePage: async (owner, featureId) => agent.featurePage(owner, featureId, repos),
             overlapRequests: async (owner) => agent.overlapRequests(owner),

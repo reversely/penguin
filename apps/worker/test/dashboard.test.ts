@@ -139,9 +139,11 @@ class Backend implements DashboardBackend {
   async overlapRequests() {
     return this.overlaps;
   }
-  /** Each feature's newest plan, as the ProjectAgent answers it. */
+  /** Each feature's newest plan, as the ProjectAgent answers it, and each person it was read for. */
   readonly plans = new Map<string, unknown>();
-  async featurePlan(featureId: string) {
+  readonly planReads: { owner: string; featureId: string }[] = [];
+  async featurePlan(owner: string, featureId: string) {
+    this.planReads.push({ owner, featureId });
     return this.plans.get(featureId);
   }
   async approveOverlap(owner: string, featureId: string, blockedFeatureId: string): Promise<OverlapApproveResult> {
@@ -641,6 +643,8 @@ describe("a signed-in person's features", () => {
     assert.equal(response.status, 200);
     assert.match(response.headers.get("Content-Type") ?? "", /^application\/json/);
     assert.deepEqual(await response.json(), plan);
+    // The ProjectAgent reads the plan as the session's person, who decides which patches it carries.
+    assert.deepEqual(browser.backend.planReads, [{ owner: "jun", featureId: "tax-rounding" }]);
     assert.equal((await browser.request("/api/features/ledger/plan")).status, 404);
     assert.equal((await browser.post("/api/features/tax-rounding/plan", {})).status, 405);
     assert.equal((await new Browser(browser.backend).request("/api/features/tax-rounding/plan")).status, 401);

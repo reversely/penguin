@@ -88,7 +88,7 @@ import { IngestLedger, ingestPush, type IngestReport } from "./push-ingest.ts";
 import { rebuildIndex, type RebuildReport } from "./rebuild.ts";
 import { OWNERS_PATH, parseOwnersFile, parseScopeFile, SCOPE_MAP_PATH } from "./scope-file.ts";
 import { ReviewStore, submitReview, type ReviewInput, type ReviewOutcome, type StoredReview } from "./review-submit.ts";
-import { buildFeaturePage, buildTeamView, type DashboardViewDeps } from "./dashboard-views.ts";
+import { buildFeaturePage, buildFeaturePlan, buildTeamView, type DashboardViewDeps } from "./dashboard-views.ts";
 import { claimReviews, recordReview, type ReviewClaim, type ReviewReportOutcome } from "./review-record.ts";
 import {
   AgentToolStore,
@@ -182,11 +182,11 @@ import {
   type FeaturePage,
   type IssuePage,
   type OverlapRequests,
-  type Plan,
   type PlanInbox,
   type PlanFactsRequest,
   type TeamView,
   type VerificationRunSpec,
+  type ViewerPlan,
 } from "@penguin/protocol";
 import { INVARIANTS_PATH, type ScopeMap } from "@penguin/scope-map";
 
@@ -1971,10 +1971,12 @@ export class ProjectAgent extends Agent {
     return this.#planFactsStore().record(runId, caller.bridgeId, report);
   }
 
-  /** The feature's newest merge plan, from its own Durable Object, or undefined. */
-  async featurePlan(featureId: string): Promise<Plan | undefined> {
-    if (this.#featureStore().get(featureId) === undefined) return undefined;
-    return this.#planKeeper(featureId).latestPlan(featureId);
+  /**
+   * The feature's newest merge plan as `caller` may see it (dashboard-views.ts): a part's patch and
+   * changed lines only for the feature's person, the part's owner and that owner's delegate.
+   */
+  async featurePlan(caller: string, featureId: string, repos: ProjectRepos): Promise<ViewerPlan | undefined> {
+    return buildFeaturePlan(await this.#dashboardViewDeps(repos), featureId, caller);
   }
 
   #planFactsStore(): PlanFactsStore {
