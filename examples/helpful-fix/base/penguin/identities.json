@@ -1,22 +1,43 @@
 {
-  "$comment": "Seed agent identities for the demo. In the product an owner creates identities on the dashboard; this file seeds them. Format: a JSON object whose 'identities' array holds one entry per identity with 'handle' ('@<owner>/<name>'), 'owner' (an id from penguin/owners.json), 'vendor' (the agent product the identity runs in: 'claude-code' or 'codex'), 'job' (the work the identity does) and 'charter_scopes' (ids from penguin/scopes.json that the identity may change).",
+  "$comment": "Seed agent identities for the demo: one steward per person, chartered on every scope the person is DRI for, and one builder per feature, chartered on the scopes of the feature's area the person is DRI for. In the product an owner creates identities on the dashboard; this file seeds them. Format: a JSON object whose 'identities' array holds one entry per identity with 'handle' ('@<owner>/<name>'), 'owner' (an id from penguin/owners.json), 'vendor' (the agent product the identity runs in: 'claude-code' or 'codex'), 'job' (the work the identity does), 'charter_scopes' (ids from penguin/scopes.json that the identity may change; each scope's DRI is the identity's owner) and, when the feature's area holds a scope another person is DRI for, 'charter_paths' (that scope's paths).",
   "identities": [
     {
-      "handle": "@priya/batches",
+      "handle": "@priya/steward",
+      "owner": "priya",
+      "vendor": "claude-code",
+      "job": "Acts for its person on work that arrives from colleagues in the scopes they own: review forms, edits Penguin routes into those scopes and checks that fail there.",
+      "charter_scopes": ["ingestion", "shared-dates"]
+    },
+    {
+      "handle": "@jun/steward",
+      "owner": "jun",
+      "vendor": "codex",
+      "job": "Acts for its person on work that arrives from colleagues in the scopes they own: review forms, edits Penguin routes into those scopes and checks that fail there.",
+      "charter_scopes": ["analytics"]
+    },
+    {
+      "handle": "@sam/steward",
+      "owner": "sam",
+      "vendor": "claude-code",
+      "job": "Acts for its person on work that arrives from colleagues in the scopes they own: review forms, edits Penguin routes into those scopes and checks that fail there.",
+      "charter_scopes": ["messaging"]
+    },
+    {
+      "handle": "@priya/utc-day-start",
       "owner": "priya",
       "vendor": "claude-code",
       "job": "Fix the daily ingestion batches so that events at one instant share a batch",
-      "charter_scopes": ["ingestion"]
+      "charter_scopes": ["shared-dates", "ingestion"]
     },
     {
-      "handle": "@jun/reports",
+      "handle": "@jun/weekly-report",
       "owner": "jun",
       "vendor": "codex",
       "job": "Build a weekly activity report bucketed by each user's local day",
       "charter_scopes": ["analytics"]
     },
     {
-      "handle": "@sam/reminders",
+      "handle": "@sam/reminder-scheduling",
       "owner": "sam",
       "vendor": "claude-code",
       "job": "Build reminder scheduling at each user's local hour",

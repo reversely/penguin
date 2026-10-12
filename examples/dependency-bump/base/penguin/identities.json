@@ -1,15 +1,29 @@
 {
-  "$comment": "Seed agent identities for the demo. In the product an owner creates identities on the dashboard; this file seeds them. Format: a JSON object whose 'identities' array holds one entry per identity with 'handle' ('@<owner>/<name>'), 'owner' (an id from penguin/owners.json), 'vendor' (the agent product the identity runs in: 'claude-code' or 'codex'), 'job' (the work the identity does) and 'charter_scopes' (ids from penguin/scopes.json that the identity may change).",
+  "$comment": "Seed agent identities for the demo: one steward per person, chartered on every scope the person is DRI for, and one builder per feature, chartered on the scopes of the feature's area the person is DRI for. In the product an owner creates identities on the dashboard; this file seeds them. Format: a JSON object whose 'identities' array holds one entry per identity with 'handle' ('@<owner>/<name>'), 'owner' (an id from penguin/owners.json), 'vendor' (the agent product the identity runs in: 'claude-code' or 'codex'), 'job' (the work the identity does), 'charter_scopes' (ids from penguin/scopes.json that the identity may change; each scope's DRI is the identity's owner) and, when the feature's area holds a scope another person is DRI for, 'charter_paths' (that scope's paths).",
   "identities": [
     {
-      "handle": "@hugo/integrations",
+      "handle": "@hugo/steward",
+      "owner": "hugo",
+      "vendor": "claude-code",
+      "job": "Acts for its person on work that arrives from colleagues in the scopes they own: review forms, edits Penguin routes into those scopes and checks that fail there.",
+      "charter_scopes": ["http-client", "integrations"]
+    },
+    {
+      "handle": "@ana/steward",
+      "owner": "ana",
+      "vendor": "codex",
+      "job": "Acts for its person on work that arrives from colleagues in the scopes they own: review forms, edits Penguin routes into those scopes and checks that fail there.",
+      "charter_scopes": ["payments"]
+    },
+    {
+      "handle": "@hugo/http-client-upgrade",
       "owner": "hugo",
       "vendor": "claude-code",
       "job": "Keep carrier rate quotes working when the carrier drops a request",
-      "charter_scopes": ["platform"]
+      "charter_scopes": ["http-client", "integrations"]
     },
     {
-      "handle": "@ana/payments",
+      "handle": "@ana/order-placed-webhook",
       "owner": "ana",
       "vendor": "codex",
       "job": "Build the order webhooks that charge each placed order",

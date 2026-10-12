@@ -5,7 +5,7 @@
     "source": "base",
     "author": { "name": "Penguin Fixture", "email": "fixture@penguin.invalid" },
     "date": "2026-01-05T09:00:00+00:00",
-    "message": "Base: identity map, analytics models and messaging\n\nThree scopes owned by priya, jun and sam, declared in penguin/scopes.json with their\ncontracts. penguin/invariants.json declares the analytics and messaging invariants and\ntheir recorded examples.\n"
+    "message": "Base: identity map, analytics models and messaging\n\nThree scopes in two teams, declared in penguin/teams.json and penguin/scopes.json:\npriya is DRI for the identity map, jun for analytics and sam for messaging. penguin/invariants.json declares the analytics and messaging invariants and\ntheir recorded examples.\n"
   },
   "features": [
     {

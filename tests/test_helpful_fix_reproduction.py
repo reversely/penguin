@@ -202,6 +202,7 @@ def test_merged_checkpoints_fail_the_same_two_tests_in_any_host_timezone(
     }
     assert results == {
         "ingestion": (0, set()),
+        "shared-dates": (0, set()),
         "analytics": (1, {WEEKLY_LOCAL_DAY}),
         "messaging": (1, {REMINDER_LOCAL_HOUR}),
     }
@@ -226,7 +227,7 @@ def test_pins_map_each_test_to_its_fix_commit(built_repo: Path, test_id: str):
 
 
 @pytest.mark.parametrize(
-    ("commit", "scope"), [*FIXES.values(), ("owner-priya", "ingestion")]
+    ("commit", "scope"), [*FIXES.values(), ("owner-priya", "shared-dates")]
 )
 def test_each_fix_commit_changes_only_its_owner_scope(
     built_repo: Path, scopes: dict[str, dict], commit: str, scope: str

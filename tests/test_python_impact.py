@@ -804,7 +804,9 @@ def build_fixture(name: str, target: Path) -> dict[str, str]:
 
 def scope_ids_of(owner: str, repo: Path) -> list[str]:
     scopes = json.loads((repo / "penguin" / "scopes.json").read_text())["scopes"]
-    return [scope["id"] for scope in scopes if scope["owner"] == owner]
+    return [
+        scope["id"] for scope in scopes if scope.get("dri", scope.get("owner")) == owner
+    ]
 
 
 def fixture_report(name: str, changer: str, others: list[str], tmp_path: Path) -> dict:
@@ -921,7 +923,9 @@ def test_no_fixture_name_appears_in_the_analysis_code():
                     names.add(node.name)
         for scopes in fixture.rglob("scopes.json"):
             for scope in json.loads(scopes.read_text())["scopes"]:
-                names.update({scope["id"], scope["owner"], *scope["paths"]})
+                names.update(
+                    {scope["id"], scope.get("dri", scope.get("owner")), *scope["paths"]}
+                )
     source = ast.parse(ANALYSER.read_text())
     literals = {
         node.value

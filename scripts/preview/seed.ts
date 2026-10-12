@@ -49,7 +49,7 @@ import {
   type RewriteRule,
   type StewardView,
 } from "@penguin/protocol";
-import { parseInvariantsBytes, parseScopeMap, type ScopeMap } from "@penguin/scope-map";
+import { parseInvariantsBytes, parseScopeMap, parseTeams, type ScopeMap } from "@penguin/scope-map";
 
 import type { DashboardBackend } from "../../apps/worker/src/dashboard.ts";
 import { featureView } from "../../apps/worker/src/features.ts";
@@ -143,14 +143,19 @@ export type FixtureName = (typeof FIXTURES)[number];
 /** Every fixture under `examples/` a test may build; the preview seeds only FIXTURES. */
 export type ExampleName = FixtureName | "helpful-fix" | "dependency-bump";
 
-/** One identity as the fixture's `penguin/identities.json` seeds it. */
-interface SeedIdentity {
+/** One identity as the fixture's `penguin/identities.json` seeds it: a person's steward or a feature's builder. */
+export interface SeedIdentity {
   readonly handle: string;
   readonly owner: string;
   readonly vendor: string;
   readonly job: string;
   readonly charter_scopes: readonly string[];
+  /** A builder's paths in its feature's area that another person's scopes hold. */
+  readonly charter_paths?: readonly string[];
 }
+
+/** A feature's builder handle, `@<person>/<feature>`, as the fixtures' identities name it. */
+export const builderOf = (feature: { readonly owner: string; readonly id: string }): string => `@${feature.owner}/${feature.id}`;
 
 /** One step a scenario logs, with how long it took, so a run reads as the fixture's story. */
 export interface SeedStep {
@@ -488,7 +493,7 @@ export class PreviewProject {
       const name = identity.handle.split("/")[1] ?? identity.handle;
       const created = this.identities.create(
         identity.owner,
-        { handle: identity.handle, name, job: identity.job, charterScopes: identity.charter_scopes, autoAccept: true },
+        { handle: identity.handle, name, job: identity.job, charterScopes: identity.charter_scopes, charterPaths: identity.charter_paths ?? [], autoAccept: true },
         this.scopeMap,
       );
       if (created.status !== "ok") throw new Error(`${identity.handle}: ${JSON.stringify(created)}`);
@@ -1260,11 +1265,27 @@ export async function buildFixture(fixture: ExampleName): Promise<string> {
   return dir;
 }
 
+/**
+ * The scope map of `penguin/owners.json`, `penguin/teams.json` and `penguin/scopes.json` at `ref` of a
+ * built fixture, as the ProjectAgent reads them from main (scope-file.ts).
+ */
+export function fixtureScopeMap(repo: string, ref = "main"): ScopeMap {
+  const show = (path: string): string | null => {
+    try {
+      return execFileSync("git", ["-C", repo, "show", `${ref}:${path}`], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+    } catch {
+      return null;
+    }
+  };
+  const owners = (JSON.parse(show("penguin/owners.json") ?? "{}") as { owners: { id: string }[] }).owners.map((owner) => owner.id);
+  const teamsFile = show("penguin/teams.json");
+  const teams = teamsFile === null ? undefined : parseTeams(JSON.parse(teamsFile), { ownerIds: owners });
+  return parseScopeMap(JSON.parse(show("penguin/scopes.json") ?? "{}"), { ownerIds: owners, ...(teams === undefined ? {} : { teams }) });
+}
+
 async function project(fixture: FixtureName): Promise<PreviewProject> {
   const repo = await buildFixture(fixture);
-  const show = (path: string) => execFileSync("git", ["-C", repo, "show", `main:${path}`], { encoding: "utf8" });
-  const owners = (JSON.parse(show("penguin/owners.json")) as { owners: { id: string }[] }).owners.map((owner) => owner.id);
-  return new PreviewProject(fixture, repo, parseScopeMap(JSON.parse(show("penguin/scopes.json")), { ownerIds: owners }));
+  return new PreviewProject(fixture, repo, fixtureScopeMap(repo));
 }
 
 const identitiesOf = (preview: PreviewProject): SeedIdentity[] =>
@@ -1304,7 +1325,7 @@ async function featuresFixture(preview: PreviewProject): Promise<void> {
   const pins = JSON.parse(await readFile(join(fixtureDir, "pins.json"), "utf8")) as { branches: Record<string, string>; tags: Record<string, string> };
   const identities = identitiesOf(preview);
   preview.seedIdentities(identities);
-  const agentOf = (feature: IdentityFeature) => identities.find((identity) => identity.owner === feature.owner) as SeedIdentity;
+  const agentOf = (feature: IdentityFeature) => identities.find((identity) => identity.handle === builderOf(feature)) as SeedIdentity;
   // Running features open first, so the originating feature's overlap check lists them as dependents.
   const ordered = [...features.filter((feature) => feature.role === "running"), ...features.filter((feature) => feature.role === "originating")];
   for (const feature of ordered) {
@@ -1370,9 +1391,8 @@ interface LarderFeature {
   readonly id: string;
   readonly owner: string;
   readonly role: string;
-  readonly agent: string;
-  /** The scopes the feature declares when it opens, when they reach past its owner's own scopes. */
-  readonly area?: readonly string[];
+  /** The scopes the feature declares when it opens. */
+  readonly area: readonly string[];
   readonly commits: readonly LarderCommit[];
 }
 
@@ -1399,10 +1419,9 @@ async function moneyMinorUnits(preview: PreviewProject): Promise<void> {
   };
   const identities = identitiesOf(preview);
   preview.seedIdentities(identities);
-  const handleOf = (feature: LarderFeature) => `@${feature.owner}/${feature.agent}`;
-  const agentOf = (feature: LarderFeature) => identities.find((identity) => identity.handle === handleOf(feature)) as SeedIdentity;
-  // A feature declares the scopes larder.json names for it, or else the scopes its agent's charter holds.
-  const areaOf = (feature: LarderFeature) => feature.area ?? agentOf(feature).charter_scopes;
+  const agentOf = (feature: LarderFeature) => identities.find((identity) => identity.handle === builderOf(feature)) as SeedIdentity;
+  // A feature declares the scopes larder.json names for it.
+  const areaOf = (feature: LarderFeature) => feature.area;
   const ref = (feature: LarderFeature, tag: string) => preview.git("rev-parse", `feature-${feature.id}-${tag}^{commit}`);
   // The built repository's main is where the last wave left it; the run starts from main as Ines found it.
   const [stacking] = larder.promotions;

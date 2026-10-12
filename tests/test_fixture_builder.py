@@ -78,12 +78,23 @@ def test_build_reproduces_the_pinned_shas(built_repo: Path):
     }
 
 
-def test_scopes_are_owned_by_priya_jun_and_sam(scopes: list[dict]):
-    assert {scope["id"]: scope["owner"] for scope in scopes} == {
-        "identity-map": "priya",
-        "analytics": "jun",
-        "messaging": "sam",
+def test_each_scope_names_its_team_dri_and_fallback(scopes: list[dict]):
+    assert {
+        scope["id"]: (scope["team"], scope["dri"], scope["fallback"])
+        for scope in scopes
+    } == {
+        "identity-map": ("data", "priya", ["jun"]),
+        "analytics": ("data", "jun", ["priya"]),
+        "messaging": ("lifecycle", "sam", []),
     }
+
+
+def test_teams_file_lists_two_teams_with_their_leads(built_repo: Path):
+    teams = json.loads((built_repo / "penguin" / "teams.json").read_text())["teams"]
+    assert [(t["id"], t["lead"], t["members"]) for t in teams] == [
+        ("data", "priya", ["priya", "jun"]),
+        ("lifecycle", "sam", ["sam"]),
+    ]
 
 
 def test_analytics_and_messaging_depend_on_the_identity_map(scopes: list[dict]):
@@ -101,9 +112,12 @@ def test_owners_and_identities_files_list_the_three_owners(built_repo: Path):
     assert {
         i["handle"]: (i["owner"], i["vendor"]) for i in identities["identities"]
     } == {
-        "@priya/merge-rules": ("priya", "claude-code"),
-        "@jun/reports": ("jun", "codex"),
-        "@sam/campaigns": ("sam", "claude-code"),
+        "@priya/steward": ("priya", "claude-code"),
+        "@jun/steward": ("jun", "codex"),
+        "@sam/steward": ("sam", "claude-code"),
+        "@priya/person-id-merge-rules": ("priya", "claude-code"),
+        "@jun/retention-dashboard": ("jun", "codex"),
+        "@sam/reengagement-audience": ("sam", "claude-code"),
     }
 
 

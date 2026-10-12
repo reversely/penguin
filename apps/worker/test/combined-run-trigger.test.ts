@@ -174,9 +174,9 @@ test("publishing Priya's checkpoint after Jun's and Sam's opens the Huddle with 
     assert.deepEqual(
       project.fixes("1").map((fix) => fix.split(" ").slice(0, 2).join(" ")),
       [
-        "@jun/reports test_identity::shared_device_split",
-        "@jun/reports test_retention::dau_stable",
-        "@sam/campaigns test_consent::unsubscribe_survives",
+        "@jun/retention-dashboard test_identity::shared_device_split",
+        "@jun/retention-dashboard test_retention::dau_stable",
+        "@sam/reengagement-audience test_consent::unsubscribe_survives",
       ],
     );
     assert.equal(project.index.issue("1")?.state, "fixing");

@@ -61,12 +61,24 @@ def test_build_reproduces_the_pinned_shas(built_repo: Path):
     assert refs(built_repo) == {**pins["branches"], **pins["tags"]}
 
 
-def test_scopes_are_owned_by_priya_jun_and_sam(scopes: list[dict]):
-    assert {scope["id"]: scope["owner"] for scope in scopes} == {
-        "ingestion": "priya",
-        "analytics": "jun",
-        "messaging": "sam",
+def test_each_scope_names_its_team_dri_and_fallback(scopes: list[dict]):
+    assert {
+        scope["id"]: (scope["team"], scope["dri"], scope["fallback"])
+        for scope in scopes
+    } == {
+        "ingestion": ("data", "priya", ["jun"]),
+        "shared-dates": ("data", "priya", ["jun"]),
+        "analytics": ("data", "jun", ["priya"]),
+        "messaging": ("lifecycle", "sam", []),
     }
+
+
+def test_teams_file_lists_two_teams_with_their_leads(built_repo: Path):
+    teams = json.loads((built_repo / "penguin" / "teams.json").read_text())["teams"]
+    assert [(t["id"], t["lead"], t["members"]) for t in teams] == [
+        ("data", "priya", ["priya", "jun"]),
+        ("lifecycle", "sam", ["sam"]),
+    ]
 
 
 def test_analytics_and_messaging_depend_on_the_shared_date_helpers(
@@ -76,9 +88,10 @@ def test_analytics_and_messaging_depend_on_the_shared_date_helpers(
         scope["id"]: [dep["scope"] for dep in scope["depends_on"]] for scope in scopes
     }
     assert providers == {
-        "ingestion": [],
-        "analytics": ["ingestion"],
-        "messaging": ["ingestion"],
+        "ingestion": ["shared-dates"],
+        "shared-dates": [],
+        "analytics": ["ingestion", "shared-dates"],
+        "messaging": ["ingestion", "shared-dates"],
     }
 
 
@@ -89,13 +102,18 @@ def test_owners_and_identities_files_list_the_three_owners(built_repo: Path):
     assert {
         i["handle"]: (i["owner"], i["vendor"]) for i in identities["identities"]
     } == {
-        "@priya/batches": ("priya", "claude-code"),
-        "@jun/reports": ("jun", "codex"),
-        "@sam/reminders": ("sam", "claude-code"),
+        "@priya/steward": ("priya", "claude-code"),
+        "@jun/steward": ("jun", "codex"),
+        "@sam/steward": ("sam", "claude-code"),
+        "@priya/utc-day-start": ("priya", "claude-code"),
+        "@jun/weekly-report": ("jun", "codex"),
+        "@sam/reminder-scheduling": ("sam", "claude-code"),
     }
 
 
-@pytest.mark.parametrize("scope_id", ["ingestion", "analytics", "messaging"])
+@pytest.mark.parametrize(
+    "scope_id", ["ingestion", "shared-dates", "analytics", "messaging"]
+)
 def test_scope_test_command_passes_in_the_built_repo(
     built_repo: Path, scopes: list[dict], scope_id: str
 ):

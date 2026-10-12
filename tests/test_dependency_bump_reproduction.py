@@ -113,7 +113,8 @@ def test_merged_checkpoints_charge_the_timed_out_order_twice(
         merged_tree(built_repo, "owner-hugo-checkpoint", "owner-ana-checkpoint"),
         tmp_path,
     )
-    assert failed_tests(tree, test_commands["platform"]) == (0, set())
+    assert failed_tests(tree, test_commands["http-client"]) == (0, set())
+    assert failed_tests(tree, test_commands["integrations"]) == (0, set())
     status, failed, output = run_tests(tree, test_commands["payments"])
     assert (status, failed) == (1, {TIMED_OUT_CHARGE})
     assert DOUBLE_CHARGE in output
@@ -145,7 +146,7 @@ def test_pins_map_each_test_to_its_fix_commit(built_repo: Path, test_id: str):
     ("commit", "scope"),
     [
         *FIXES.values(),
-        ("owner-hugo-checkpoint", "platform"),
+        ("owner-hugo-checkpoint", "http-client integrations"),
         ("owner-ana-checkpoint", "payments"),
     ],
 )
@@ -153,7 +154,8 @@ def test_each_owner_commit_changes_only_its_owner_scope(
     built_repo: Path, scopes: dict[str, dict], commit: str, scope: str
 ):
     changed = git(built_repo, "diff", "--name-only", f"{commit}^", commit).split()
-    paths = tuple(scopes[scope]["paths"])
+    # Hugo is DRI for both scopes his checkpoint changes.
+    paths = tuple(path for each in scope.split() for path in scopes[each]["paths"])
     assert changed
     # A running feature also declares its own contracts and examples in the penguin files.
     outside = {path for path in changed if not path.startswith(paths)}

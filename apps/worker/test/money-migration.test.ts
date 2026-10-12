@@ -18,11 +18,10 @@ import { before, test, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { migrationPlaceKey, type MigrationPlanView, type RetiringSymbol, type RewriteRule } from "@penguin/protocol";
-import { parseScopeMap } from "@penguin/scope-map";
 
 import { claimEditTasks, type EditWorkDeps } from "../../../services/project-agent/src/edit-work.ts";
 import type { FixWriteDeps } from "../../../services/project-agent/src/fix-write.ts";
-import { buildFixture, PreviewProject } from "../../../scripts/preview/seed.ts";
+import { buildFixture, builderOf, fixtureScopeMap, PreviewProject } from "../../../scripts/preview/seed.ts";
 import { migrationTasksSettled, migrationWrites } from "../../../services/project-agent/src/migration-plans.ts";
 import { carriedUnwritten } from "../../../services/project-agent/src/penguin-land.ts";
 
@@ -32,8 +31,7 @@ interface LarderFeature {
   readonly id: string;
   readonly owner: string;
   readonly role: string;
-  readonly agent: string;
-  readonly area?: readonly string[];
+  readonly area: readonly string[];
   readonly commits: readonly { readonly tag?: string }[];
 }
 const LARDER = JSON.parse(readFileSync(join(ROOT, "examples", "money-minor-units", "larder.json"), "utf8")) as {
@@ -64,20 +62,19 @@ interface SeedIdentity {
 
 let preview: PreviewProject;
 let identities: SeedIdentity[];
-const agentOf = (each: LarderFeature) => identities.find((identity) => identity.handle === `@${each.owner}/${each.agent}`) as SeedIdentity;
+const agentOf = (each: LarderFeature) => identities.find((identity) => identity.handle === builderOf(each)) as SeedIdentity;
 const EXPAND = feature("money-type");
 
 before(async () => {
   const repo = await buildFixture("money-minor-units");
   const git = (path: string): unknown => JSON.parse(execFileSync("git", ["-C", repo, "show", `main:${path}`], { encoding: "utf8" }));
-  const owners = (git("penguin/owners.json") as { owners: { id: string }[] }).owners.map((owner) => owner.id);
-  preview = new PreviewProject("money-minor-units", repo, parseScopeMap(git("penguin/scopes.json"), { ownerIds: owners }));
+  preview = new PreviewProject("money-minor-units", repo, fixtureScopeMap(repo));
   identities = (git("penguin/identities.json") as { identities: SeedIdentity[] }).identities;
   preview.seedIdentities(identities);
   preview.migrationPlans = true;
   preview.moveMain(preview.git("rev-parse", "feature-promotion-stacking"));
   for (const each of CALLERS) {
-    await preview.open(agentOf(each), each.id, { scopes: each.area ?? agentOf(each).charter_scopes });
+    await preview.open(agentOf(each), each.id, { scopes: each.area });
     await preview.checkpoint(each.id, `feature-${each.id}-${each.commits[0]?.tag}`);
   }
 });

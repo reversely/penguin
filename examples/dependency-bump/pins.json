@@ -1,15 +1,15 @@
 {
   "$comment": "Commit SHAs a build of this fixture produces. Format: a JSON object with three objects. 'branches' maps each branch build.py creates to its head commit SHA: 'main' holds the base commit, 'owner-hugo' holds Hugo's upgrade of the shared HTTP client (Hugo makes no fix commit, so it equals the checkpoint), and 'owner-ana' holds Ana's fix commit. 'tags' maps each tag build.py creates to its commit SHA: '<branch>-checkpoint' is the owner's checkpoint before the fix. 'fixes' maps the pytest node ID of each test that fails on the merged checkpoints to the SHA of the commit that makes it pass. tests/test_dependency_bump_builder.py checks that a fresh build reproduces every branch and tag SHA; tests/test_dependency_bump_reproduction.py checks the 'fixes' entries.",
   "branches": {
-    "main": "0e252bbfc1b08513827ee4e8189b759b2740946e",
-    "owner-hugo": "4a56f11d9f6cf4a8755f52d094c1dcddfcc4df4c",
-    "owner-ana": "44c848ca579b506d0e0878ad52462c78c29965a1"
+    "main": "b4c1e0396bbebe490963cd157c8fd235242af906",
+    "owner-hugo": "7f9fa590388f2bdcbc0ef16e7946a9c1c78f9cb4",
+    "owner-ana": "9d175cb2ddc6d767b768891237d4c14e4c49d92e"
   },
   "tags": {
-    "owner-hugo-checkpoint": "4a56f11d9f6cf4a8755f52d094c1dcddfcc4df4c",
-    "owner-ana-checkpoint": "e6994519dd706e3557e086b23ccc4e84d3fbeb72"
+    "owner-hugo-checkpoint": "7f9fa590388f2bdcbc0ef16e7946a9c1c78f9cb4",
+    "owner-ana-checkpoint": "f38a44b49d25d7e4eee1705a3735b83097d7d069"
   },
   "fixes": {
-    "payments/tests/test_webhooks.py::test_timed_out_charge_is_charged_once": "44c848ca579b506d0e0878ad52462c78c29965a1"
+    "payments/tests/test_webhooks.py::test_timed_out_charge_is_charged_once": "9d175cb2ddc6d767b768891237d4c14e4c49d92e"
   }
 }

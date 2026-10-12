@@ -217,7 +217,7 @@ describe("submit_review", () => {
   });
 
   test("a review covers the caller's own scope of a feature with a checkpoint", async () => {
-    const other = await call(project, JUN, { sessionId: session, feature: "person-id", scope: "identity-map", form: { rows: [] } });
+    const other = await call(project, JUN, { sessionId: session, feature: "person-id", scope: "messaging", form: { rows: [] } });
     assert.equal(other.value.error, "forbidden");
     const nowhere = await call(project, JUN, { sessionId: session, feature: "ledger", scope: "analytics", form: { rows: [] } });
     assert.equal(nowhere.value.error, "not_found");

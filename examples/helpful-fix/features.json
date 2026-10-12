@@ -5,7 +5,7 @@
     "source": "base",
     "author": { "name": "Penguin Fixture", "email": "fixture@penguin.invalid" },
     "date": "2026-02-02T09:00:00+00:00",
-    "message": "Base: ingestion, shared date helpers, analytics and messaging\n\nThree scopes owned by priya, jun and sam, declared in penguin/scopes.json with their\ncontracts. penguin/invariants.json declares the analytics and messaging invariants and\nthe recorded examples of the daily batches.\n"
+    "message": "Base: ingestion, shared date helpers, analytics and messaging\n\nFour scopes in two teams, declared in penguin/teams.json and penguin/scopes.json:\npriya is DRI for ingestion and the shared date helpers, jun for analytics and sam\nfor messaging. penguin/invariants.json declares the analytics and messaging invariants and\nthe recorded examples of the daily batches.\n"
   },
   "features": [
     {
@@ -15,7 +15,7 @@
       "role": "originating",
       "fork": "owner-priya",
       "area": {
-        "scopes": ["ingestion"],
+        "scopes": ["shared-dates", "ingestion"],
         "paths": ["shared/dates.py", "ingestion/tests/test_batches.py"],
         "contracts": ["shared/dates.py::start_of_day"]
       },

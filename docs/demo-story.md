@@ -9,13 +9,13 @@ The frames describe the approved design. The current build runs the same use cas
 ([huddle-flow.md](huddle-flow.md)). The fixture changes it needs are listed in
 [fixture.md](fixture.md#under-the-new-procedure).
 
-The team, from `examples/identity-unification/base/penguin/`:
+The people, from `examples/identity-unification/base/penguin/`:
 
-| Person | Owns | Agent |
-|---|---|---|
-| Priya | Ingestion and the identity map | `@priya/merge-rules` |
-| Jun | Analytics, which reads the identity map | `@jun/reports` |
-| Sam | Messaging and the CRM sync, which read the identity map | `@sam/campaigns` |
+| Person | Team | DRI for | Reads | Steward | Builder |
+|---|---|---|---|---|---|
+| Priya | Data | Ingestion and the identity map | none | `@priya/steward` | `@priya/person-id-merge-rules` |
+| Jun | Data | Analytics | The identity map | `@jun/steward` | `@jun/retention-dashboard` |
+| Sam | Lifecycle messaging | Messaging and the CRM sync | The identity map | `@sam/steward` | `@sam/reengagement-audience` |
 
 ## Who does what
 

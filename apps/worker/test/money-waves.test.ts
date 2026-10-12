@@ -2,7 +2,9 @@
 // money-minor-units fixture seeded through the ProjectAgent's modules and the check runner's programs
 // (scripts/preview/seed.ts). Every count below is what propose_plan answers on the fixture's built
 // repository: the one-block attempt returned over the break limit, then the waves of the parallel
-// change. Expected places are read from larder.json, never typed here.
+// change. The tax wave changes `tax.rates`, which tax-filing reads, and the fixture holds no fix for
+// tax-filing, so Penguin answers the tax wave's plan with a missing part and the waves stop there.
+// Expected places are read from larder.json, never typed here.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -26,7 +28,7 @@ interface LarderFeature {
 }
 const LARDER = JSON.parse(readFileSync(join(ROOT, "examples", "money-minor-units", "larder.json"), "utf8")) as {
   features: LarderFeature[];
-  scopes: { id: string; owner: string; protected_paths?: string[] }[];
+  scopes: { id: string; dri: string; protected_paths?: string[] }[];
   plan: { parts: { scope: string }[] };
 };
 const WAVES = LARDER.features.filter((feature) => feature.role === "wave");
@@ -60,36 +62,31 @@ test("the one-block plan reaches every scope that reads money and the readers' o
   assert.ok(found.inPerson > preview.breakLimit);
 });
 
-test("every wave is proposed in order, the expand wave with no place at all", () => {
-  assert.deepEqual(
-    preview.waveOutcomes.map((each) => each.feature),
-    WAVES.map((wave) => wave.id),
-  );
+/** The waves the seed proposed: each in order, up to the first whose plan Penguin did not store. */
+const proposed = () => preview.waveOutcomes.map((each) => each.feature);
+const STORED = () => WAVES.filter((wave) => outcomeOf(wave.id)?.status === "stored");
+
+test("every wave is proposed in order up to the tax wave, which reaches tax-filing with no part for it", () => {
+  const stop = WAVES.findIndex((wave) => outcomeOf(wave.id) !== undefined && outcomeOf(wave.id)?.status !== "stored");
+  assert.ok(stop > 0, "a wave's plan was not stored");
+  assert.deepEqual(proposed(), WAVES.slice(0, stop + 1).map((wave) => wave.id));
+  const stopped = outcomeOf(WAVES[stop]?.id as string);
+  assert.equal(stopped?.status, "missing");
+  assert.deepEqual(stopped?.status === "missing" ? stopped.missing.map((item) => [item.code, item.place?.kind === "scope" ? item.place.scope : null]) : [], [["no_part", "tax-filing"]]);
   const expand = outcomeOf(WAVES[0]?.id as string);
   assert.equal(expand?.status, "stored");
   assert.deepEqual(places(expand), { places: [], inPerson: 0 });
 });
 
 test("each migrate wave's places are the other scopes on main its fix commits name", (t: TestContext) => {
-  for (const wave of WAVES.slice(1, -1)) {
+  for (const wave of STORED().slice(1)) {
     const outcome = outcomeOf(wave.id);
-    assert.equal(outcome?.status, "stored", wave.id);
     const found = places(outcome);
     t.diagnostic(`${wave.id}: ${found.places.length} parts, ${found.inPerson} needing a person`);
     const named = wave.commits.flatMap((commit) => (commit.fix === undefined || commit.fix.kind === "revision" ? [] : [`scope:${commit.fix.scope}`]));
     assert.deepEqual(found.places, named.sort(), wave.id);
     assert.ok(found.inPerson <= preview.breakLimit, wave.id);
   }
-});
-
-test("the contract wave's places are the remaining callers of the float API: orders on main and each reader's own changes", (t: TestContext) => {
-  const contract = WAVES.at(-1) as LarderFeature;
-  const found = places(outcomeOf(contract.id));
-  t.diagnostic(`${contract.id}: ${outcomeOf(contract.id)?.status}, ${found.inPerson} parts needing a person`);
-  const onMain = contract.commits.flatMap((commit) => (commit.fix === undefined ? [] : [`scope:${commit.fix.scope}`]));
-  // A reader is a place when the checkpoint it reported is the one its wave fix is built on.
-  const reached = READERS.filter((feature) => feature.commits.some((commit) => commit.after !== undefined)).map((feature) => `feature:${feature.id}`);
-  assert.deepEqual(found.places, [...onMain, ...reached].sort());
 });
 
 test("the tax wave's review breaks tax-per-line on the whole-order step and holds on the per-line revision", () => {
@@ -106,14 +103,14 @@ test("the tax wave's review breaks tax-per-line on the whole-order step and hold
 test("a wave whose own change writes a protected file asks the file's protector, who confirms the lines before main moves", async () => {
   const guarded = LARDER.scopes.filter((scope) => (scope.protected_paths ?? []).length > 0);
   // Each wave that declares a protected scope as its area and belongs to another person rewrites that scope's protected file.
-  const expected = WAVES.flatMap((wave) => guarded.flatMap((scope) => ((wave.area ?? []).includes(scope.id) && scope.owner !== wave.owner ? [[wave.id, scope.owner]] : [])));
-  assert.ok(expected.length > 0);
+  // Only a wave whose plan was stored reached its protected change; the analytics wave comes after the tax wave stopped.
+  const expected = STORED().flatMap((wave) => guarded.flatMap((scope) => ((wave.area ?? []).includes(scope.id) && scope.dri !== wave.owner ? [[wave.id, scope.dri]] : [])));
   const rows = preview.features.list().flatMap((feature) => preview.protectedChanges.ofFeature(feature.id));
   assert.deepEqual(rows.map((row) => [row.featureId, row.ownerId]), expected, "only the waves' own changes touch another person's protected file");
   for (const row of rows) {
     assert.equal(row.state, "confirmed");
     assert.equal(row.confirmedBy, row.ownerId);
-    assert.deepEqual(row.files.map((file) => file.protectedPath), guarded.find((scope) => scope.owner === row.ownerId)?.protected_paths);
+    assert.deepEqual(row.files.map((file) => file.protectedPath), guarded.find((scope) => scope.dri === row.ownerId)?.protected_paths);
     const confirm = preview.steps.findIndex((step) => step.step === `confirm ${row.featureId}'s protected lines as ${row.ownerId}`);
     assert.ok(confirm > preview.steps.findIndex((step) => step.step === `propose_plan for ${row.featureId}`), "the protector confirms once the wave's plan is stored, before main moves");
     const records = preview.features.records(row.featureId).map((kept) => JSON.parse(kept.file) as { type: string; payload: { owner: string } });
@@ -131,9 +128,6 @@ test("Penguin approves each stored wave's clean part, and Rahul's tax review sti
   for (const wave of WAVES) {
     for (const part of (await preview.plan(wave.id))?.parts ?? []) decided.push([part.partId, part.owner, part.approvedBy]);
   }
-  assert.deepEqual(decided, [
-    ["money-checkout/v1#1", "lena", "penguin"],
-    ["money-tax/v2#1", "mei", "penguin"],
-  ]);
+  assert.deepEqual(decided, [["money-checkout/v1#1", "lena", "penguin"]]);
   assert.deepEqual(preview.inbox.items("rahul").map((item) => [item.reason, item.issueId]), [["review_exception", "money-tax/tax"]]);
 });

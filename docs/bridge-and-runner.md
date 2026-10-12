@@ -925,7 +925,7 @@ round 2: 20 checks, 0 failing, on ebe750fadc97
 ```
 
 On the fixture's own trigger, `owner-priya-checkpoint`, Jun's and Sam's failing tests go to step 5,
-to the stewards `@jun/steward` and `@sam/steward`, because the failing files lie outside `@priya/batches`'s
+to the stewards `@jun/steward` and `@sam/steward`, because the failing files lie outside `@priya/utc-day-start`'s
 charter. With an unused import added to Priya's `shared/dates.py`, lint fails on every target. The
 failure goes to step 1. One `fix:ruff-autofix` commit on Priya's checkpoint clears it on all
 three. On an Apple silicon laptop one codemod run takes about 1 second, most of it libcst's import.

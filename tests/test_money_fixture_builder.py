@@ -64,7 +64,7 @@ def penguin(built: tuple[Path, dict]) -> dict[str, dict]:
     repo, _ = built
     return {
         name: json.loads((repo / "penguin" / f"{name}.json").read_text())
-        for name in ("owners", "scopes", "identities", "invariants")
+        for name in ("owners", "teams", "scopes", "identities", "invariants")
     }
 
 
@@ -94,11 +94,9 @@ def test_build_leaves_a_clean_checkout_of_main(built):
 def test_counts_match_the_case_study(built, penguin):
     repo, _ = built
     scopes = {scope["id"]: scope for scope in penguin["scopes"]["scopes"]}
-    assert len(scopes) == 14
-    assert len(penguin["owners"]["owners"]) == 14
-    assert {scope["owner"] for scope in scopes.values()} == {
-        owner["id"] for owner in penguin["owners"]["owners"]
-    }
+    people = [owner["id"] for owner in penguin["owners"]["owners"]]
+    assert len(people) == 14
+    assert {scope["dri"] for scope in scopes.values()} == set(people)
     plan_scopes = {part["scope"] for part in RAW["plan"]["parts"]}
     assert len(plan_scopes) == 9
     kinds = [part["kind"] for part in RAW["plan"]["parts"]]
@@ -182,12 +180,34 @@ def test_scopes_claim_disjoint_paths_and_hold_their_contracts(penguin):
             )
 
 
-def test_identities_give_each_feature_an_agent_of_its_owner(penguin):
+def test_identities_give_each_person_a_steward_and_each_feature_a_builder(penguin):
     identities = penguin["identities"]["identities"]
-    waves = [f for f in RAW["features"] if f["role"] == "wave"]
-    assert len(identities) == len(RAW["features"]) == 40 + len(waves)
-    assert all(i["handle"].startswith(f"@{i['owner']}/") for i in identities)
-    assert len({i["handle"] for i in identities}) == len(identities)
+    people = [owner["id"] for owner in penguin["owners"]["owners"]]
+    handles = [i["handle"] for i in identities]
+    assert handles == [f"@{person}/steward" for person in people] + [
+        f"@{f['owner']}/{f['id']}" for f in RAW["features"]
+    ]
+    assert len(set(handles)) == len(handles)
+    dri_of = {s["id"]: s["dri"] for s in penguin["scopes"]["scopes"]}
+    for identity in identities[: len(people)]:
+        assert identity["charter_scopes"] == [
+            scope for scope, dri in dri_of.items() if dri == identity["owner"]
+        ]
+
+
+def test_teams_hold_the_fourteen_people_with_two_or_three_scopes_each(penguin):
+    teams = penguin["teams"]["teams"]
+    people = [owner["id"] for owner in penguin["owners"]["owners"]]
+    assert 3 <= len(teams) <= 4
+    assert sorted(m for team in teams for m in team["members"]) == sorted(people)
+    assert all(team["lead"] in team["members"] for team in teams)
+    scopes = penguin["scopes"]["scopes"]
+    team_of = {m: team["id"] for team in teams for m in team["members"]}
+    for scope in scopes:
+        assert team_of[scope["dri"]] == scope["team"], scope["id"]
+        assert all(team_of[p] == scope["team"] for p in scope["fallback"]), scope["id"]
+    for person in people:
+        assert 2 <= sum(scope["dri"] == person for scope in scopes) <= 3, person
 
 
 def test_tax_sample_keeps_every_drawn_order(built):
@@ -240,7 +260,12 @@ HOSTILE = [
     (("people", 0, "display_name"), "Ines <ines@x>\ncommitter Mallory"),
     (("authors", "codemod", "email"), "codemod@penguin.invalid>\n"),
     (("features", 0, "id"), "money/../../etc"),
-    (("features", 0, "agent"), "@ines/money"),
+    (("teams", 0, "id"), "../payments"),
+    (("teams", 0, "members"), ["ines", "ines"]),
+    (("scopes", 0, "dri"), "priya"),
+    (("scopes", 0, "fallback"), ["ines"]),
+    (("scopes", 0, "team"), "nobody"),
+    (("features", 0, "area"), []),
     (("features", 0, "commits", 0, "source"), "../../base"),
     (("features", 0, "commits", 0, "tag"), "--force"),
     (("features", 0, "commits", 0, "date"), "2026-03-05T10:00:00"),
@@ -260,7 +285,8 @@ def test_loader_refuses_hostile_names(path: tuple, value):
 
 def test_loader_accepts_the_fixture_data():
     larder = build.load_larder(copy.deepcopy(RAW))
-    assert len(larder.scopes) == 14
+    assert len(larder.scopes) == 29
+    assert len(larder.teams) == 4
     assert len(larder.features) == 47
 
 

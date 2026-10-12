@@ -51,7 +51,7 @@ describe("on the helpful-fix fixture", () => {
     pins = JSON.parse(await readFile(join(FIXTURE, "pins.json"), "utf8"));
     const scopeMap = JSON.parse(await readFile(join(repo, "penguin", "scopes.json"), "utf8"));
     scopesOf = (owner) =>
-      scopeMap.scopes.filter((scope: { owner: string }) => scope.owner === owner).map((scope: { id: string }) => scope.id);
+      scopeMap.scopes.filter((scope: { dri: string }) => scope.dri === owner).map((scope: { id: string }) => scope.id);
   });
 
   after(() => rm(root, { recursive: true, force: true }));
@@ -98,11 +98,15 @@ describe("on the helpful-fix fixture", () => {
     const parsed = parseToolResult(result);
     assert.ok(parsed.ok, parsed.ok ? "" : parsed.problems.join("; "));
     const edges = result?.impact?.scopeEdges ?? [];
-    // Analytics imports ingestion's events on main. Messaging declares ingestion in depends_on, but
-    // its code on main uses none of it: the declared edge is absent from the code.
+    // Analytics imports ingestion's events on main; ingestion imports the shared date helpers.
+    // Messaging declares ingestion in depends_on, but its code on main uses none of it: the declared
+    // edge is absent from the code.
     assert.deepEqual(
       edges.map(({ consumer, provider }) => [consumer, provider]),
-      [["analytics", "ingestion"]],
+      [
+        ["analytics", "ingestion"],
+        ["ingestion", "shared-dates"],
+      ],
     );
     assert.ok((edges[0]?.imports ?? 0) > 0);
     assert.match(result?.summary ?? "", /^\d+ scope dependenc(y|ies) read from main at [0-9a-f]{12}$/u);
@@ -120,8 +124,9 @@ describe("on the helpful-fix fixture", () => {
     }).run({
       checkpointSha: checkpoint("priya"),
       baselineSha: pins.branches.main as string,
-      // One owner is still on main, where nothing in the owner's scope calls the changed helper.
-      targets: ownerForkTargets({ jun: checkpoint("jun"), sam: pins.branches.main as string }),
+      // One owner is still on main, where nothing in the owner's scope calls the changed helper. Priya
+      // is DRI for ingestion, which reads shared-dates, so her own checkpoint is its target.
+      targets: ownerForkTargets({ jun: checkpoint("jun"), priya: checkpoint("priya"), sam: pins.branches.main as string }),
     });
     assert.equal(report.impactError, null);
     assert.deepEqual(report.notAffected, scopesOf("sam"));
@@ -130,10 +135,11 @@ describe("on the helpful-fix fixture", () => {
       report.results.map((result) => [result.ownerId, result.status]),
       [
         ["jun", "failed"],
+        ["priya", "passed"],
         ["sam", "not-affected"],
       ],
     );
-    assert.deepEqual(report.impact?.forks.map((fork) => fork.id), ["jun", "sam"]);
+    assert.deepEqual(report.impact?.forks.map((fork) => fork.id), ["jun", "priya", "sam"]);
   });
 
   test("a failed analysis runs every dependent scope's tests and says why", async () => {
@@ -144,11 +150,11 @@ describe("on the helpful-fix fixture", () => {
     }).run({
       checkpointSha: checkpoint("priya"),
       baselineSha: pins.branches.main as string,
-      targets: ownerForkTargets({ jun: checkpoint("jun"), sam: checkpoint("sam") }),
+      targets: ownerForkTargets({ jun: checkpoint("jun"), priya: checkpoint("priya"), sam: checkpoint("sam") }),
     });
     assert.match(report.impactError ?? "", /could not start/);
     assert.deepEqual(report.notAffected, []);
-    assert.equal(report.results.length, 2);
+    assert.equal(report.results.length, 3);
   });
 
   test("a commit missing from the repository is an analysis error", async () => {

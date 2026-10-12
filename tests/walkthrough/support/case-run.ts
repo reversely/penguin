@@ -185,6 +185,7 @@ export class CaseRun {
           name: identity.handle.split("/")[1],
           job: identity.job.slice(0, 1_000),
           charterScopes: identity.charter_scopes,
+          ...(identity.charter_paths === undefined ? {} : { charterPaths: identity.charter_paths }),
           autoAccept: true,
         });
         if (created.status !== 201) throw new Error(`${identity.handle}: HTTP ${created.status} ${JSON.stringify(created.body)}`);

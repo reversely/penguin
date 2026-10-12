@@ -10,7 +10,7 @@ id, owner, role, fork branch, declared area and commits. Every build produces th
 
 | Ref | Owner | Commit contents |
 |---|---|---|
-| `main` | none | The base commit: three scopes declared in `penguin/scopes.json` with their owners, agent identities and contracts. `penguin/invariants.json` declares the analytics and messaging invariants with their recorded examples |
+| `main` | none | The base commit: three scopes in two teams, declared in `penguin/teams.json` and `penguin/scopes.json` with their DRIs and contracts. `penguin/identities.json` holds a steward per person and a builder per feature. `penguin/invariants.json` declares the analytics and messaging invariants with their recorded examples |
 | `owner-priya-checkpoint` (tag) | Priya | `person_id` with merge rules in `ingestion/identity_map.py`: a `login` event links its device to its user. A shared verified email links identities. A merged profile keeps the latest value of each attribute. |
 | `owner-jun-checkpoint` (tag) | Jun | The retention dashboard in `analytics/retention.py` with `test_retention.py` and `test_identity.py`. `penguin/scopes.json` adds the contract `analytics/retention.py::retention_dashboard` |
 | `owner-sam-checkpoint` (tag) | Sam | The re-engagement email audience in `messaging/audience.py` with `test_audience.py` and `test_consent.py`. `penguin/scopes.json` adds the contract `messaging/audience.py::reengagement_audience`. `penguin/invariants.json` adds its examples file `messaging/examples/reengagement_audience.json` |
@@ -172,16 +172,13 @@ stored data rule for a scope that reads the changed shape and one that does not.
 
 ## Teams
 
-This fixture declares no teams. Each scope in its `penguin/scopes.json` names only an `owner`, so
-each reads as that owner's one-person team, `person:<owner>`, with the owner as DRI and no fallback.
-Priya, Jun and Sam are each asked exactly as before teams.
-
-A repo with teams adds `penguin/teams.json` beside `penguin/scopes.json`:
+`penguin/teams.json` on `main` declares two teams:
 
 ```json
 {
   "teams": [
-    { "id": "data-platform", "name": "Data platform", "lead": "maya", "members": ["priya", "jun"] }
+    { "id": "data", "name": "Data", "lead": "priya", "members": ["priya", "jun"] },
+    { "id": "lifecycle", "name": "Lifecycle messaging", "lead": "sam", "members": ["sam"] }
   ]
 }
 ```
@@ -193,18 +190,30 @@ A repo with teams adds `penguin/teams.json` beside `penguin/scopes.json`:
 | `lead` | A person id from `penguin/owners.json`, usually the engineering manager. The lead need not be a member |
 | `members` | One to 256 person ids, each once |
 
-Each scope then names `team`, `dri` and an optional `fallback` in place of `owner`:
+Each scope in `penguin/scopes.json` names `team`, `dri` and an optional `fallback` in place of
+`owner`:
 
-```json
-{ "id": "identity-map", "team": "data-platform", "dri": "priya", "fallback": ["jun"], "paths": ["ingestion/"] }
-```
+| Scope | Team | DRI | Fallback | Reads |
+|---|---|---|---|---|
+| `identity-map` | `data` | Priya | Jun | none |
+| `analytics` | `data` | Jun | Priya | `identity-map` |
+| `messaging` | `lifecycle` | Sam | none | `identity-map` |
+
+The fixture's code holds three modules, so each person is DRI for one scope here. Jun and Priya
+stand in for each other. Sam has no teammate to stand in, so a decision on messaging waits for Sam.
 
 The DRI and every fallback must be members of the team. The fallback order names no one twice and
-leaves out the DRI. A scope names either `owner` or `team` and `dri`. Penguin refuses the whole scope
+leaves out the DRI. A scope names either `owner` or `team` and `dri`. A scope that names only an
+`owner` reads as that owner's one-person team, `person:<owner>`. Penguin refuses the whole scope
 file when any of these rules fails. `tests/fixtures/team-scopes/penguin/` holds a two-person team with
-a DRI and a fallback, a lead outside the team and one scope that still names an owner. Ticket #130
-adds teams to the use-case fixtures. The routing rules are in
-[design.md](design.md#teams-dris-and-routing).
+a DRI and a fallback, a lead outside the team and one scope that still names an owner. The routing
+rules are in [design.md](design.md#teams-dris-and-routing).
+
+`penguin/identities.json` gives each person one steward, `@<person>/steward`, chartered on every
+scope the person is DRI for. Each feature has one builder, `@<person>/<feature>`, chartered on the
+scopes of its area the person is DRI for: `@priya/person-id-merge-rules`, `@jun/retention-dashboard`
+and `@sam/reengagement-audience`. The walkthrough and the preview register each feature's agent
+session as its builder.
 
 ## Manual reproduction
 

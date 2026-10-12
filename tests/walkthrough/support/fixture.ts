@@ -12,27 +12,36 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
+import { STEWARD_JOB } from "@penguin/protocol";
+
 const run = promisify(execFile);
 
 export interface FixturePerson {
   readonly id: string;
   readonly display_name: string;
+  /** In the larder data: the agent product the person's steward runs in. */
+  readonly vendor?: string;
 }
 
+/** A scope as `penguin/scopes.json` declares it: its team, its DRI and the fallback order. */
 export interface FixtureScope {
   readonly id: string;
   readonly name: string;
-  readonly owner: string;
+  readonly team: string;
+  readonly dri: string;
+  readonly fallback?: readonly string[];
   readonly paths: readonly string[];
   readonly contracts: readonly string[];
 }
 
+/** A person's steward, `@<person>/steward`, or a feature's builder, `@<person>/<feature>`. */
 export interface FixtureIdentity {
   readonly handle: string;
   readonly owner: string;
   readonly vendor: string;
   readonly job: string;
   readonly charter_scopes: readonly string[];
+  readonly charter_paths?: readonly string[];
 }
 
 export interface FixtureInvariant {
@@ -101,17 +110,16 @@ interface FeaturesFile {
 interface LarderFile {
   readonly base: { readonly date: string };
   readonly people: readonly FixturePerson[];
-  readonly scopes: readonly (Omit<FixtureScope, "contracts"> & { readonly contracts: readonly string[] })[];
+  readonly scopes: readonly FixtureScope[];
   readonly invariants: readonly FixtureInvariant[];
   readonly features: readonly {
     readonly id: string;
     readonly owner: string;
     readonly role: FeatureRole;
-    readonly agent: string;
     readonly vendor: string;
     readonly title: string;
     readonly start: "base" | "main";
-    readonly area?: readonly string[];
+    readonly area: readonly string[];
     readonly commits: readonly { readonly tag?: string; readonly after?: string; readonly fix?: CommitFix }[];
   }[];
   readonly promotions: readonly { readonly feature: string }[];
@@ -128,6 +136,9 @@ interface Pins {
 function readJson<T>(path: string): T {
   return JSON.parse(readFileSync(path, "utf8")) as T;
 }
+
+/** A feature's builder handle, as the fixtures' identities name it. */
+const builderHandle = (feature: { readonly owner: string; readonly id: string }): string => `@${feature.owner}/${feature.id}`;
 
 /** The fixture's word for a revision of an originating commit in the larder data. */
 const REVISION = "revision";
@@ -221,8 +232,8 @@ export class CaseFixture implements CaseData {
     const file = readJson<FeaturesFile>(join(dir, "features.json"));
     const identities = readJson<{ identities: FixtureIdentity[] }>(join(penguin, "identities.json")).identities;
     const features = file.features.map((feature): CaseFeature => {
-      const identity = identities.find((candidate) => candidate.owner === feature.owner && feature.area.scopes.some((scope) => candidate.charter_scopes.includes(scope)));
-      if (identity === undefined) throw new Error(`${name}: no identity of ${feature.owner} is chartered for ${feature.id}'s area`);
+      const identity = identities.find((candidate) => candidate.handle === builderHandle(feature));
+      if (identity === undefined) throw new Error(`${name}: no builder identity for ${feature.id}`);
       return {
         id: feature.id,
         owner: feature.owner,
@@ -262,22 +273,34 @@ export class CaseFixture implements CaseData {
 
   static #fromLarder(name: string, dir: string, pins: Pins, reviewForms: ReviewFormFile[]): CaseFixture {
     const larder = readJson<LarderFile>(join(dir, "larder.json"));
-    const owned = (person: string) => larder.scopes.filter((scope) => scope.owner === person).map((scope) => scope.id);
-    // The build makes one identity per feature, `@<owner>/<agent>`, chartered on its owner's scopes.
-    const identities = larder.features.map((feature) => ({
-      handle: `@${feature.owner}/${feature.agent}`,
-      owner: feature.owner,
-      vendor: feature.vendor,
-      job: feature.title,
-      charter_scopes: owned(feature.owner),
-    }));
+    const owned = (person: string) => larder.scopes.filter((scope) => scope.dri === person).map((scope) => scope.id);
+    const pathsOf = (scope: string) => larder.scopes.find((each) => each.id === scope)?.paths ?? [];
+    // The build makes one steward per person, chartered on the scopes the person is DRI for, and one
+    // builder per feature, chartered on its area: the scopes the person is DRI for, and the paths of the rest.
+    const stewards = larder.people.flatMap((person): FixtureIdentity[] =>
+      owned(person.id).length === 0
+        ? []
+        : [{ handle: `@${person.id}/steward`, owner: person.id, vendor: person.vendor ?? "claude-code", job: STEWARD_JOB, charter_scopes: owned(person.id) }],
+    );
+    const builders = larder.features.map((feature): FixtureIdentity => {
+      const borrowed = feature.area.filter((scope) => !owned(feature.owner).includes(scope));
+      return {
+        handle: builderHandle(feature),
+        owner: feature.owner,
+        vendor: feature.vendor,
+        job: feature.title,
+        charter_scopes: feature.area.filter((scope) => owned(feature.owner).includes(scope)),
+        ...(borrowed.length === 0 ? {} : { charter_paths: [...new Set(borrowed.flatMap(pathsOf))].sort() }),
+      };
+    });
+    const identities = [...stewards, ...builders];
     const features = larder.features.map((feature): CaseFeature => ({
       id: feature.id,
       owner: feature.owner,
       role: feature.role,
       start: feature.start,
-      area: { scopes: feature.area ?? owned(feature.owner), paths: [], contracts: [] },
-      handle: `@${feature.owner}/${feature.agent}`,
+      area: { scopes: feature.area, paths: [], contracts: [] },
+      handle: builderHandle(feature),
       commits: feature.commits.map((commit) => ({
         sha: commitSha(
           commit.tag === undefined ? undefined : pins.tags[`feature-${feature.id}-${commit.tag}`],

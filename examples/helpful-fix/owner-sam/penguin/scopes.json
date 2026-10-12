@@ -1,36 +1,54 @@
 {
-  "$comment": "Scope map for this repository. Format: a JSON object whose 'scopes' array holds one entry per scope with 'id', 'name', 'owner' (an id from penguin/owners.json), 'paths' (path prefixes, relative to the repository root, that the scope owns), 'contracts' (the scope's public symbols as 'path::symbol', which the impact graph, the review harness and other scopes' calls name; a class covers its methods), 'test_command' (a shell command run from the repository root; exit status 0 means the scope's tests pass) and 'depends_on' (one entry per provider scope: 'scope' is the provider's id and 'kind' is 'imports' when the consumer imports the provider's code).",
+  "$comment": "Scope map for this repository. Format: a JSON object whose 'scopes' array holds one entry per scope with 'id', 'name', 'team' (an id from penguin/teams.json), 'dri' (the team member who answers for the scope), 'fallback' (other team members, in the order they stand in for the DRI), 'paths' (path prefixes, relative to the repository root, that the scope owns), 'contracts' (the scope's public symbols as 'path::symbol', which the impact graph, the review harness and other scopes' calls name; a class covers its methods), 'test_command' (a shell command run from the repository root; exit status 0 means the scope's tests pass) and 'depends_on' (one entry per provider scope: 'scope' is the provider's id and 'kind' is 'imports' when the consumer imports the provider's code).",
   "scopes": [
     {
       "id": "ingestion",
-      "name": "Ingestion and shared date helpers",
-      "owner": "priya",
-      "paths": ["ingestion/", "shared/"],
+      "name": "Ingestion batches",
+      "team": "data",
+      "dri": "priya",
+      "fallback": ["jun"],
+      "paths": ["ingestion/"],
       "contracts": [
         "ingestion/batches.py::daily_batches",
-        "ingestion/events.py::Event",
+        "ingestion/events.py::Event"
+      ],
+      "test_command": "python -m pytest ingestion",
+      "depends_on": [{ "scope": "shared-dates", "kind": "imports" }]
+    },
+    {
+      "id": "shared-dates",
+      "name": "Shared date helpers",
+      "team": "data",
+      "dri": "priya",
+      "fallback": ["jun"],
+      "paths": ["shared/"],
+      "contracts": [
         "shared/dates.py::parse_day",
         "shared/dates.py::parse_instant",
         "shared/dates.py::parse_utc_offset",
         "shared/dates.py::require_offset",
         "shared/dates.py::start_of_day"
       ],
-      "test_command": "python -m pytest ingestion shared",
+      "test_command": "python -m pytest shared",
       "depends_on": []
     },
     {
       "id": "analytics",
       "name": "Analytics reports",
-      "owner": "jun",
+      "team": "data",
+      "dri": "jun",
+      "fallback": ["priya"],
       "paths": ["analytics/"],
       "contracts": ["analytics/totals.py::events_per_user"],
       "test_command": "python -m pytest analytics",
-      "depends_on": [{ "scope": "ingestion", "kind": "imports" }]
+      "depends_on": [{ "scope": "ingestion", "kind": "imports" }, { "scope": "shared-dates", "kind": "imports" }]
     },
     {
       "id": "messaging",
       "name": "Messaging and reminders",
-      "owner": "sam",
+      "team": "lifecycle",
+      "dri": "sam",
+      "fallback": [],
       "paths": ["messaging/"],
       "contracts": [
         "messaging/contacts.py::Contact",
@@ -39,7 +57,7 @@
         "messaging/reminders.py::reminder_times"
       ],
       "test_command": "python -m pytest messaging",
-      "depends_on": [{ "scope": "ingestion", "kind": "imports" }]
+      "depends_on": [{ "scope": "ingestion", "kind": "imports" }, { "scope": "shared-dates", "kind": "imports" }]
     }
   ]
 }

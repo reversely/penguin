@@ -72,9 +72,9 @@ test("replaying the owner checkpoints opens exactly one Huddle issue with three 
     first.report.results.flatMap((result) => (result.status === "failed" ? [[result.scopeId, result.fingerprint.id]] : [])),
   );
   assert.deepEqual(project.fixes("1"), [
-    `@jun/reports test_identity::shared_device_split ${fingerprints.get("analytics")}`,
-    `@jun/reports test_retention::dau_stable ${fingerprints.get("analytics")}`,
-    `@sam/campaigns test_consent::unsubscribe_survives ${fingerprints.get("messaging")}`,
+    `@jun/retention-dashboard test_identity::shared_device_split ${fingerprints.get("analytics")}`,
+    `@jun/retention-dashboard test_retention::dau_stable ${fingerprints.get("analytics")}`,
+    `@sam/reengagement-audience test_consent::unsubscribe_survives ${fingerprints.get("messaging")}`,
   ]);
   const huddle = project.index.issue("1");
   assert.ok(huddle);

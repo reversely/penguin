@@ -1,10 +1,12 @@
 {
-  "$comment": "Scope map for this repository. Format: a JSON object whose 'scopes' array holds one entry per scope with 'id', 'name', 'owner' (an id from penguin/owners.json), 'paths' (path prefixes, relative to the repository root, that the scope owns), 'contracts' (the scope's public symbols as 'path::symbol', which the impact graph, the review harness and other scopes' calls name; a class covers its methods), 'test_command' (a shell command run from the repository root; exit status 0 means the scope's tests pass) and 'depends_on' (one entry per provider scope: 'scope' is the provider's id and 'kind' is 'imports' when the consumer imports the provider's code).",
+  "$comment": "Scope map for this repository. Format: a JSON object whose 'scopes' array holds one entry per scope with 'id', 'name', 'team' (an id from penguin/teams.json), 'dri' (the team member who answers for the scope), 'fallback' (other team members, in the order they stand in for the DRI), 'paths' (path prefixes, relative to the repository root, that the scope owns), 'contracts' (the scope's public symbols as 'path::symbol', which the impact graph, the review harness and other scopes' calls name; a class covers its methods), 'test_command' (a shell command run from the repository root; exit status 0 means the scope's tests pass) and 'depends_on' (one entry per provider scope: 'scope' is the provider's id and 'kind' is 'imports' when the consumer imports the provider's code).",
   "scopes": [
     {
       "id": "identity-map",
       "name": "Ingestion and identity map",
-      "owner": "priya",
+      "team": "data",
+      "dri": "priya",
+      "fallback": ["jun"],
       "paths": ["ingestion/"],
       "contracts": [
         "ingestion/identity_map.py::Event",
@@ -18,7 +20,9 @@
     {
       "id": "analytics",
       "name": "Analytics models",
-      "owner": "jun",
+      "team": "data",
+      "dri": "jun",
+      "fallback": ["priya"],
       "paths": ["analytics/"],
       "contracts": ["analytics/models.py::daily_active_users"],
       "test_command": "python -m pytest analytics",
@@ -27,7 +31,9 @@
     {
       "id": "messaging",
       "name": "Messaging and CRM sync",
-      "owner": "sam",
+      "team": "lifecycle",
+      "dri": "sam",
+      "fallback": [],
       "paths": ["messaging/"],
       "contracts": [
         "messaging/audience.py::reengagement_audience",

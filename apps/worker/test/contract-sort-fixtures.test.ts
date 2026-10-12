@@ -12,11 +12,10 @@ import { describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import type { ContractSortEntry, ContractWorkView } from "@penguin/protocol";
-import { parseScopeMap } from "@penguin/scope-map";
 
 import { retireSplit, splitReplacements } from "../../../services/project-agent/src/contract-split.ts";
 import { buildFeaturePage } from "../../../services/project-agent/src/dashboard-views.ts";
-import { buildFixture, PreviewProject, type ExampleName } from "../../../scripts/preview/seed.ts";
+import { buildFixture, builderOf, fixtureScopeMap, PreviewProject, type ExampleName } from "../../../scripts/preview/seed.ts";
 
 const ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 
@@ -31,8 +30,7 @@ interface SeedIdentity {
 async function previewOf(fixture: ExampleName): Promise<{ preview: PreviewProject; identities: SeedIdentity[] }> {
   const repo = await buildFixture(fixture);
   const show = (path: string): unknown => JSON.parse(execFileSync("git", ["-C", repo, "show", `main:${path}`], { encoding: "utf8" }));
-  const owners = (show("penguin/owners.json") as { owners: { id: string }[] }).owners.map((owner) => owner.id);
-  const preview = new PreviewProject(fixture, repo, parseScopeMap(show("penguin/scopes.json"), { ownerIds: owners }));
+  const preview = new PreviewProject(fixture, repo, fixtureScopeMap(repo));
   const identities = (show("penguin/identities.json") as { identities: SeedIdentity[] }).identities;
   preview.seedIdentities(identities);
   return { preview, identities };
@@ -47,7 +45,7 @@ async function sortOriginating(fixture: ExampleName): Promise<{ preview: Preview
   const origin = features.find((each) => each.role === "originating");
   assert.ok(origin);
   preview.sortContracts = true;
-  await preview.open(identities.find((identity) => identity.owner === origin.owner) as SeedIdentity, origin.id, origin.area);
+  await preview.open(identities.find((identity) => identity.handle === builderOf(origin)) as SeedIdentity, origin.id, origin.area);
   await preview.checkpoint(origin.id, origin.commits[0]?.tag as string);
   await preview.factsPass();
   return { preview, feature: origin.id, work: await preview.contract(origin.id) };
@@ -87,7 +85,7 @@ describe("case 2, the helpful fix: start_of_day to UTC", () => {
 describe("case 4, money in minor units: Ines's float-to-Money change", () => {
   test("the float price functions are incompatible, so Penguin splits the feature and the old names retire after the expand", async () => {
     const larder = JSON.parse(readFileSync(join(ROOT, "examples", "money-minor-units", "larder.json"), "utf8")) as {
-      features: { id: string; owner: string; agent: string; commits: { tag?: string }[] }[];
+      features: { id: string; owner: string; commits: { tag?: string }[] }[];
     };
     const { preview, identities } = await previewOf("money-minor-units");
     const ines = larder.features.find((each) => each.id === "money-minor-units");
@@ -95,7 +93,7 @@ describe("case 4, money in minor units: Ines's float-to-Money change", () => {
     // Main as Ines found it: Lena's stacking promoted.
     preview.moveMain(preview.git("rev-parse", "feature-promotion-stacking"));
     preview.sortContracts = true;
-    const agent = identities.find((identity) => identity.handle === `@${ines.owner}/${ines.agent}`) as SeedIdentity;
+    const agent = identities.find((identity) => identity.handle === builderOf(ines)) as SeedIdentity;
     await preview.open(agent, ines.id, { scopes: agent.charter_scopes });
     await preview.checkpoint(ines.id, `feature-${ines.id}-${ines.commits[0]?.tag}`);
     await preview.factsPass();

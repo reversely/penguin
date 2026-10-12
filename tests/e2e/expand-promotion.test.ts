@@ -103,7 +103,7 @@ class Person {
   constructor(id: string, feature: string, root: string) {
     this.id = id;
     this.feature = feature;
-    this.handle = (IDENTITIES.find((identity) => identity.owner === id) as { handle: string }).handle;
+    this.handle = (IDENTITIES.find((identity) => identity.owner === id && identity.handle !== `@${id}/steward`) as { handle: string }).handle;
     this.stateDir = join(root, id);
     this.work = join(this.stateDir, "work");
   }
@@ -277,7 +277,7 @@ test("an expand checkpoint reaches main on its own from the feature's fork", { s
     const junOpened = await jun.call("open_feature", { feature: jun.feature, area: { scopes: ["analytics"], paths: ["analytics/weekly.py"], contracts: [] } });
     jun.forkToken = junOpened.token;
     await jun.publish(PINS.tags["owner-jun-checkpoint"] as string);
-    const priyaOpened = await priya.call("open_feature", { feature: priya.feature, area: { scopes: ["ingestion"], paths: ["shared/dates.py"], contracts: ["shared/dates.py::start_of_day"] } });
+    const priyaOpened = await priya.call("open_feature", { feature: priya.feature, area: { scopes: ["shared-dates", "ingestion"], paths: ["shared/dates.py"], contracts: ["shared/dates.py::start_of_day"] } });
     assert.notEqual(priyaOpened.token, null, JSON.stringify(priyaOpened.waitingOn));
     priya.forkToken = priyaOpened.token;
     step("features opened", { features: [jun.feature, priya.feature] });

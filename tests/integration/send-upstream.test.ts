@@ -1,7 +1,7 @@
 // Phase 4's upstream reassignment (#40) on the identity-unification fixture, without the network: the
-// runner's combined run opens the Huddle (#38), @jun/reports receives the shared-device sub-issue
+// runner's combined run opens the Huddle (#38), @jun/retention-dashboard receives the shared-device sub-issue
 // (#39), finds the fix belongs in Priya's merge rules and sends it upstream through the MCP
-// post_update tool. Penguin reassigns it to @priya/merge-rules. The agent sessions are JSON-RPC calls
+// post_update tool. Penguin reassigns it to @priya/person-id-merge-rules. The agent sessions are JSON-RPC calls
 // to the real MCP tools over the ProjectAgent's real stores.
 
 import assert from "node:assert/strict";
@@ -111,13 +111,13 @@ async function register(project: HuddleProject, owner: string, identity: string,
   return value.sessionId;
 }
 
-/** The Huddle opened from Priya's checkpoint, with @jun/reports holding the shared-device fix, #2. */
+/** The Huddle opened from Priya's checkpoint, with @jun/retention-dashboard holding the shared-device fix, #2. */
 async function opened(project: HuddleProject): Promise<void> {
   project.publish("priya", priyaCheckpoint);
   assert.equal((await project.open(event)).status, "opened");
   const shared = project.index.issue("2");
   assert.match(shared?.title ?? "", /shared_device_split/u);
-  assert.deepEqual([...(shared?.assignments.keys() ?? [])], ["identity:@jun/reports"]);
+  assert.deepEqual([...(shared?.assignments.keys() ?? [])], ["identity:@jun/retention-dashboard"]);
 }
 
 /** The issue's timeline from `fromSeq` on, as "<status> <author> <type> <assignee or reason>". */
@@ -149,10 +149,10 @@ async function sharedDeviceTask(project: HuddleProject, owner: string, sessionId
 const lastSeq = (project: HuddleProject, issueId: string): number =>
   project.index.read(issueId).timeline.at(-1)?.seq ?? 0;
 
-test("@jun/reports sends the shared-device sub-issue upstream and it is reassigned to @priya/merge-rules", async () => {
+test("@jun/retention-dashboard sends the shared-device sub-issue upstream and it is reassigned to @priya/person-id-merge-rules", async () => {
   const project = new HuddleProject();
-  const priya = await register(project, "priya", "@priya/merge-rules", "wt-merge");
-  const jun = await register(project, "jun", "@jun/reports", "wt-retention");
+  const priya = await register(project, "priya", "@priya/person-id-merge-rules", "wt-merge");
+  const jun = await register(project, "jun", "@jun/retention-dashboard", "wt-retention");
   await opened(project);
   project.sessions.checkpointWorktree("jun", "wt-retention");
   const from = lastSeq(project, "2") + 1;
@@ -165,21 +165,21 @@ test("@jun/reports sends the shared-device sub-issue upstream and it is reassign
     update: { type: "send_upstream", reason: REASON },
   });
   assert.equal(isError, false, JSON.stringify(value));
-  assert.deepEqual(value.reassignment, { status: "reassigned", assignee: { identity: "@priya/merge-rules" } });
+  assert.deepEqual(value.reassignment, { status: "reassigned", assignee: { identity: "@priya/person-id-merge-rules" } });
 
   // Both steps are on the timeline: the session's upstream note, then Penguin's reassignment. The
   // changing scope's label comes first, so Priya, its owner, may review the fix beside Jun.
   assert.deepEqual(timeline(project, "2", from), [
-    `applied jun.reports send_upstream ${REASON}`,
+    `applied jun.retention-dashboard send_upstream ${REASON}`,
     "applied penguin add_label scope:identity-map",
-    "applied penguin assign @priya/merge-rules",
-    "applied penguin unassign @jun/reports",
+    "applied penguin assign @priya/person-id-merge-rules",
+    "applied penguin unassign @jun/retention-dashboard",
   ]);
   assert.deepEqual(project.index.issue("2")?.labels, ["scope:analytics", "scope:identity-map"]);
-  assert.deepEqual([...(project.index.issue("2")?.assignments.keys() ?? [])], ["identity:@priya/merge-rules"]);
+  assert.deepEqual([...(project.index.issue("2")?.assignments.keys() ?? [])], ["identity:@priya/person-id-merge-rules"]);
 
   // Priya's running session holds it and receives it at its next safe checkpoint; Jun's no longer does.
-  assert.deepEqual(project.sessions.routes("2"), [{ handle: "@priya/merge-rules", sessionId: priya, waitingFor: null }]);
+  assert.deepEqual(project.sessions.routes("2"), [{ handle: "@priya/person-id-merge-rules", sessionId: priya, waitingFor: null }]);
   assert.deepEqual(project.sessions.work("priya", priya), { status: "ok", issueIds: [] });
   assert.deepEqual(project.sessions.checkpointWorktree("priya", "wt-merge")[0]?.delivered, ["2"]);
   assert.deepEqual(project.sessions.work("priya", priya), { status: "ok", issueIds: ["2"] });
@@ -209,7 +209,7 @@ test("@jun/reports sends the shared-device sub-issue upstream and it is reassign
 
 test("with no running Priya session, the sub-issue stays assigned to Priya's identity and Priya is asked to start one", async () => {
   const project = new HuddleProject();
-  const jun = await register(project, "jun", "@jun/reports", "wt-retention");
+  const jun = await register(project, "jun", "@jun/retention-dashboard", "wt-retention");
   await opened(project);
 
   const { value, isError } = await call(project, "jun", "post_update", {
@@ -218,8 +218,8 @@ test("with no running Priya session, the sub-issue stays assigned to Priya's ide
     update: { type: "send_upstream", reason: REASON },
   });
   assert.equal(isError, false, JSON.stringify(value));
-  assert.deepEqual(value.reassignment.assignee, { identity: "@priya/merge-rules" });
-  assert.deepEqual(project.sessions.routes("2"), [{ handle: "@priya/merge-rules", sessionId: null, waitingFor: "session" }]);
+  assert.deepEqual(value.reassignment.assignee, { identity: "@priya/person-id-merge-rules" });
+  assert.deepEqual(project.sessions.routes("2"), [{ handle: "@priya/person-id-merge-rules", sessionId: null, waitingFor: "session" }]);
   assert.deepEqual(
     project.inbox
       .items("priya")
@@ -231,14 +231,14 @@ test("with no running Priya session, the sub-issue stays assigned to Priya's ide
   assert.equal(project.index.issue("1")?.state, "fixing");
 
   // A session Priya starts later receives it at registration, a safe checkpoint.
-  const priya = await register(project, "priya", "@priya/merge-rules", "wt-merge");
+  const priya = await register(project, "priya", "@priya/person-id-merge-rules", "wt-merge");
   assert.deepEqual(project.sessions.work("priya", priya), { status: "ok", issueIds: ["2"] });
   assert.equal(project.inbox.items("priya").some((item) => item.reason === "start_session"), false);
 });
 
 test("a send-upstream from a session that is not the assignee is recorded as rejected with its reason", async () => {
   const project = new HuddleProject();
-  const sam = await register(project, "sam", "@sam/campaigns", "wt-reengage");
+  const sam = await register(project, "sam", "@sam/reengagement-audience", "wt-reengage");
   await opened(project);
   const from = lastSeq(project, "2") + 1;
   const version = project.index.issue("2")?.version;
@@ -249,14 +249,14 @@ test("a send-upstream from a session that is not the assignee is recorded as rej
     update: { type: "send_upstream", reason: REASON },
   });
   assert.equal(isError, true);
-  assert.deepEqual([value.error, value.recordedAs], ["not_assignee", "sam.campaigns-web-0001"]);
-  assert.match(value.message, /@sam\/campaigns is not assigned to issue 2/u);
-  assert.deepEqual(timeline(project, "2", from), ["rejected sam.campaigns send_upstream not_assignee"]);
+  assert.deepEqual([value.error, value.recordedAs], ["not_assignee", "sam.reengagement-audience-web-0001"]);
+  assert.match(value.message, /@sam\/reengagement-audience is not assigned to issue 2/u);
+  assert.deepEqual(timeline(project, "2", from), ["rejected sam.reengagement-audience send_upstream not_assignee"]);
 
   // Nothing moved: the version, the assignee and its routing are as before.
   assert.equal(project.index.issue("2")?.version, version);
-  assert.deepEqual([...(project.index.issue("2")?.assignments.keys() ?? [])], ["identity:@jun/reports"]);
+  assert.deepEqual([...(project.index.issue("2")?.assignments.keys() ?? [])], ["identity:@jun/retention-dashboard"]);
   // The rejection waits for the runner like any submitted operation, so it reaches the Git log.
   const pending = project.index.pendingFiles({ bridgeId: "runner", role: "runner" });
-  assert.ok(pending.status === "ok" && pending.files.some((file) => file.opId === "sam.campaigns-web-0001"));
+  assert.ok(pending.status === "ok" && pending.files.some((file) => file.opId === "sam.reengagement-audience-web-0001"));
 });

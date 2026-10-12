@@ -158,7 +158,7 @@ The Worker then forks `huddle-<id>` from the base repo. A failed fork leaves the
 next report of the trigger forks again.
 
 In the identity-unification fixture this opens one Huddle with three fix sub-issues: two assigned to
-`@jun/reports` and one to `@sam/campaigns`.
+`@jun/retention-dashboard` and one to `@sam/reengagement-audience`.
 
 ## 5. Fix delivery at safe checkpoints
 
@@ -207,8 +207,8 @@ The task then reads in the new assignee's terms: it pins the trigger and asks fo
 of the new owner that makes the dependent owner's test pass. The tool's answer names the new assignee
 under `reassignment`.
 
-In the identity-unification fixture, `@jun/reports` sends the shared-device fix upstream and Penguin
-reassigns it to `@priya/merge-rules`.
+In the identity-unification fixture, `@jun/retention-dashboard` sends the shared-device fix upstream and Penguin
+reassigns it to `@priya/person-id-merge-rules`.
 
 ## 7. Verification on the integration branch
 

@@ -5,7 +5,7 @@
     "source": "base",
     "author": { "name": "Penguin Fixture", "email": "fixture@penguin.invalid" },
     "date": "2026-03-02T09:00:00+00:00",
-    "message": "Base: shared HTTP client, carrier integrations and orders\n\nTwo scopes owned by hugo and ana, declared in penguin/scopes.json with their\ncontracts. Every scope imports the HTTP client from shared/http.py, which imports\nwire 1.4.0 from vendor/. penguin/invariants.json declares the payments invariant.\n"
+    "message": "Base: shared HTTP client, carrier integrations and orders\n\nThree scopes in two teams, declared in penguin/teams.json and penguin/scopes.json:\nhugo is DRI for the HTTP client and the carrier integrations, ana for payments. Every scope imports the HTTP client from shared/http.py, which imports\nwire 1.4.0 from vendor/. penguin/invariants.json declares the payments invariant.\n"
   },
   "features": [
     {
@@ -15,7 +15,7 @@
       "role": "originating",
       "fork": "owner-hugo",
       "area": {
-        "scopes": ["platform"],
+        "scopes": ["http-client", "integrations"],
         "paths": ["shared/http.py", "vendor/wire_v2/__init__.py", "integrations/tests/test_shipping.py"],
         "contracts": ["shared/http.py::Client"]
       },

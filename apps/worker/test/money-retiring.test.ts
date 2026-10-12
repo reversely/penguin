@@ -16,9 +16,9 @@ import { before, test, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { contractPath, isTestFile, type AgentToolResult, type RetiringSymbol, type RewriteRule } from "@penguin/protocol";
-import { parseScopeMap, scopeForPath } from "@penguin/scope-map";
+import { scopeForPath } from "@penguin/scope-map";
 
-import { buildFixture, PreviewProject } from "../../../scripts/preview/seed.ts";
+import { buildFixture, builderOf, fixtureScopeMap, PreviewProject } from "../../../scripts/preview/seed.ts";
 
 const ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 
@@ -26,8 +26,7 @@ interface LarderFeature {
   readonly id: string;
   readonly owner: string;
   readonly role: string;
-  readonly agent: string;
-  readonly area?: readonly string[];
+  readonly area: readonly string[];
   readonly commits: readonly { readonly tag?: string }[];
 }
 const LARDER = JSON.parse(readFileSync(join(ROOT, "examples", "money-minor-units", "larder.json"), "utf8")) as {
@@ -60,20 +59,19 @@ interface SeedIdentity {
 
 let preview: PreviewProject;
 let identities: SeedIdentity[];
-const agentOf = (each: LarderFeature) => identities.find((identity) => identity.handle === `@${each.owner}/${each.agent}`) as SeedIdentity;
+const agentOf = (each: LarderFeature) => identities.find((identity) => identity.handle === builderOf(each)) as SeedIdentity;
 const outcomeOf = (runId: number) => preview.tools.get(runId)?.outcome as AgentToolResult;
 
 before(async () => {
   const repo = await buildFixture("money-minor-units");
   const git = (path: string): unknown => JSON.parse(execFileSync("git", ["-C", repo, "show", `main:${path}`], { encoding: "utf8" }));
-  const owners = (git("penguin/owners.json") as { owners: { id: string }[] }).owners.map((owner) => owner.id);
-  preview = new PreviewProject("money-minor-units", repo, parseScopeMap(git("penguin/scopes.json"), { ownerIds: owners }));
+  preview = new PreviewProject("money-minor-units", repo, fixtureScopeMap(repo));
   identities = (git("penguin/identities.json") as { identities: SeedIdentity[] }).identities;
   preview.seedIdentities(identities);
   // Main as Ines found it: Lena's stacking promoted. Every caller is running at its first checkpoint.
   preview.moveMain(preview.git("rev-parse", "feature-promotion-stacking"));
   for (const each of CALLERS) {
-    await preview.open(agentOf(each), each.id, { scopes: each.area ?? agentOf(each).charter_scopes });
+    await preview.open(agentOf(each), each.id, { scopes: each.area });
     await preview.checkpoint(each.id, `feature-${each.id}-${each.commits[0]?.tag}`);
   }
 });
@@ -160,7 +158,7 @@ test("Noor's pagination adds retiring calls midway and its checkpoint gets one n
 
 test("the remaining callers on main and in the running features' own changes come back grouped by owner", async (t: TestContext) => {
   // Ines's agent asks from a checkpoint at main's head, so main's callers are main's after the migrate waves.
-  const ines = identities.find((identity) => identity.handle === "@ines/money") as SeedIdentity;
+  const ines = identities.find((identity) => identity.handle === "@ines/money-minor-units") as SeedIdentity;
   await preview.open(ines, "money-migrate", { scopes: ["money"] });
   await preview.checkpoint("money-migrate", "feature-money-messaging-mobile");
   const runId = await preview.runnerTool("money-migrate", "impact");

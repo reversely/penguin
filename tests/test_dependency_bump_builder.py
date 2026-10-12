@@ -63,18 +63,34 @@ def test_build_reproduces_the_pinned_shas(built_repo: Path):
     assert refs(built_repo) == {**pins["branches"], **pins["tags"]}
 
 
-def test_scopes_are_owned_by_hugo_and_ana(scopes: list[dict]):
-    assert {scope["id"]: scope["owner"] for scope in scopes} == {
-        "platform": "hugo",
-        "payments": "ana",
+def test_each_scope_names_its_team_and_dri(scopes: list[dict]):
+    assert {
+        scope["id"]: (scope["team"], scope["dri"], scope["fallback"])
+        for scope in scopes
+    } == {
+        "http-client": ("platform", "hugo", []),
+        "integrations": ("platform", "hugo", []),
+        "payments": ("payments", "ana", []),
     }
+
+
+def test_teams_file_lists_two_teams_with_their_leads(built_repo: Path):
+    teams = json.loads((built_repo / "penguin" / "teams.json").read_text())["teams"]
+    assert [(t["id"], t["lead"], t["members"]) for t in teams] == [
+        ("platform", "hugo", ["hugo"]),
+        ("payments", "ana", ["ana"]),
+    ]
 
 
 def test_payments_depends_on_the_shared_http_client(scopes: list[dict]):
     providers = {
         scope["id"]: [dep["scope"] for dep in scope["depends_on"]] for scope in scopes
     }
-    assert providers == {"platform": [], "payments": ["platform"]}
+    assert providers == {
+        "http-client": [],
+        "integrations": ["http-client"],
+        "payments": ["http-client"],
+    }
 
 
 def test_owners_and_identities_files_list_the_two_owners(built_repo: Path):
@@ -84,8 +100,10 @@ def test_owners_and_identities_files_list_the_two_owners(built_repo: Path):
     assert {
         i["handle"]: (i["owner"], i["vendor"]) for i in identities["identities"]
     } == {
-        "@hugo/integrations": ("hugo", "claude-code"),
-        "@ana/payments": ("ana", "codex"),
+        "@hugo/steward": ("hugo", "claude-code"),
+        "@ana/steward": ("ana", "codex"),
+        "@hugo/http-client-upgrade": ("hugo", "claude-code"),
+        "@ana/order-placed-webhook": ("ana", "codex"),
     }
 
 
@@ -102,7 +120,7 @@ def test_main_imports_wire_1_and_hugo_imports_wire_2(built_repo: Path):
     assert "from vendor.wire_v2 import" in show("owner-hugo", "shared/http.py")
 
 
-@pytest.mark.parametrize("scope_id", ["platform", "payments"])
+@pytest.mark.parametrize("scope_id", ["http-client", "integrations", "payments"])
 def test_scope_test_command_passes_in_the_built_repo(
     built_repo: Path, scopes: list[dict], scope_id: str
 ):

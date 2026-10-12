@@ -139,7 +139,7 @@ describe("the agent tools", () => {
   beforeEach(async () => {
     project = new Project();
     for (const owner of [PRIYA, JUN, SAM]) sessions[owner] = project.register(owner);
-    await project.open("local-day", PRIYA, "ingestion", sessions[PRIYA] as string);
+    await project.open("local-day", PRIYA, "shared-dates", sessions[PRIYA] as string);
     await project.open("weekly", JUN, "analytics", sessions[JUN] as string);
     await project.open("reminders", SAM, "messaging", sessions[SAM] as string);
   });
@@ -154,7 +154,7 @@ describe("the agent tools", () => {
       person: JUN,
       state: "building",
       touches: null,
-      dependsOn: [{ consumerScope: "analytics", providerScope: "ingestion", kind: "imports" }],
+      dependsOn: [{ consumerScope: "analytics", providerScope: "shared-dates", kind: "imports" }],
       agents: [{ identity: `@${JUN}/agent`, vendor: "codex", status: "running" }],
     });
     const [run] = project.runs.list("local-day");

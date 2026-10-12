@@ -112,9 +112,9 @@ describe("opening a Huddle issue from a failing combined run", () => {
       ],
     );
     assert.deepEqual(project.fixes("1"), [
-      `@jun/reports test_identity::shared_device_split ${JUN_FINGERPRINT}`,
-      `@jun/reports test_retention::dau_stable ${JUN_FINGERPRINT}`,
-      `@sam/campaigns test_consent::unsubscribe_survives ${SAM_FINGERPRINT}`,
+      `@jun/retention-dashboard test_identity::shared_device_split ${JUN_FINGERPRINT}`,
+      `@jun/retention-dashboard test_retention::dau_stable ${JUN_FINGERPRINT}`,
+      `@sam/reengagement-audience test_consent::unsubscribe_survives ${SAM_FINGERPRINT}`,
     ]);
     const sub = project.index.issue("3");
     assert.ok(sub);
@@ -195,7 +195,7 @@ describe("opening a Huddle issue from a failing combined run", () => {
     await project.open(failingRun());
     assert.deepEqual(
       project.fixes("1").map((fix) => fix.split(" ")[0]),
-      ["@jun/dashboards", "@jun/dashboards", "@sam/campaigns"],
+      ["@jun/dashboards", "@jun/dashboards", "@sam/reengagement-audience"],
     );
 
     const bare = new HuddleProject({ seedIdentities: false });

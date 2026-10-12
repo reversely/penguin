@@ -117,7 +117,7 @@ class Person {
   constructor(feature: FixtureFeature, root: string) {
     this.id = feature.owner;
     this.feature = feature;
-    this.handle = (IDENTITIES.find((identity) => identity.owner === feature.owner) as { handle: string }).handle;
+    this.handle = (IDENTITIES.find((identity) => identity.handle === `@${feature.owner}/${feature.id}`) as { handle: string }).handle;
     this.stateDir = join(root, this.id);
     this.work = join(this.stateDir, "work");
   }

@@ -7,10 +7,10 @@ import { parseOwnersFile, parseScopeFile } from "../src/scope-file.ts";
 
 describe("parseScopeFile", () => {
   test("reads the fixture's scope file", () => {
-    const file = readFileSync(
-      join(import.meta.dirname, "../../../examples/identity-unification/base/penguin/scopes.json"),
-    );
-    assert.ok(parseScopeFile(file).scopes.size > 0);
+    const penguin = join(import.meta.dirname, "../../../examples/identity-unification/base/penguin");
+    const scopes = parseScopeFile(readFileSync(join(penguin, "scopes.json")), readFileSync(join(penguin, "teams.json")));
+    assert.ok(scopes.scopes.size > 0);
+    assert.equal(scopes.scopes.get("analytics")?.teamId, "data");
   });
 
   test("a base repo without a scope file has no scopes", () => {

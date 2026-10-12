@@ -20,16 +20,16 @@ transports, so no test opens a network connection.
 
 | Ref | Owner | Commit contents |
 |---|---|---|
-| `main` | none | The base commit: two scopes declared in `penguin/scopes.json` with their owners, agent identities and contracts. `penguin/invariants.json` declares the payments invariant. `vendor/wire_v1/` holds wire 1.4.0, which sends each request once. `shared/http.py` imports it. `integrations/shipping.py` quotes carrier rates. `payments/orders.py` builds a charge request body. |
+| `main` | none | The base commit: three scopes in two teams, declared in `penguin/teams.json` and `penguin/scopes.json` with their DRIs and contracts, and the agent identities in `penguin/identities.json`. `penguin/invariants.json` declares the payments invariant. `vendor/wire_v1/` holds wire 1.4.0, which sends each request once. `shared/http.py` imports it. `integrations/shipping.py` quotes carrier rates. `payments/orders.py` builds a charge request body. |
 | `owner-hugo-checkpoint` (tag) | Hugo | Adds `vendor/wire_v2/` with wire 2.0.0, which retries a timed-out request up to 2 more times. `shared/http.py` imports wire 2.0.0. `integrations/tests/test_shipping.py` adds `test_quote_survives_one_dropped_request`. |
 | `owner-ana-checkpoint` (tag) | Ana | The order-placed webhook in `payments/webhooks.py` with `test_webhooks.py`. `payments/tests/fake_processor.py` is the fake payment processor. It records each charge. It answers a repeated `Idempotency-Key` header with the first response and makes no new charge. `payments/tests/charge_replay.py` replays a placed order against it. The penguin files add the two payments contracts and the examples file `payments/examples/placed_orders.json`. |
 | `owner-hugo` | Hugo | The same commit as `owner-hugo-checkpoint`. Hugo makes no fix commit. |
 | `owner-ana` | Ana | On `owner-ana-checkpoint`: the webhook sends `Idempotency-Key: charge-<order id>` with each charge request |
 
-Hugo's scope `platform` owns the paths `shared/`, `vendor/` and `integrations/`. Ana's scope
-`payments` owns `payments/`. It declares a dependency on `platform` because it imports
-`shared.http`. Each feature is a fork of `main`. Ana's fix commit starts from Ana's checkpoint.
-Each owner's commit changes only paths in that owner's scope. Ana's checkpoint also changes the
+Hugo is DRI for two scopes: `http-client` owns `shared/` and the vendored library in `vendor/`.
+`integrations` owns `integrations/`. Ana's scope `payments` owns `payments/`. `payments` and
+`integrations` each declare a dependency on `http-client` because they import `shared.http`. Each feature is a fork of `main`. Ana's fix commit starts from Ana's checkpoint.
+Each owner's commit changes only paths in scopes that owner is DRI for. Ana's checkpoint also changes the
 payments entries of the penguin files. Every scope's tests pass on each
 checkpoint alone. They also pass on `owner-ana` alone, which still uses wire 1.4.0. `pins.json`
 records the SHA of every branch head and tag. It also maps the failing test to the commit that fixes
@@ -37,7 +37,7 @@ it.
 
 ## Expected failures
 
-Merging the two checkpoints fails one test in Ana's scope. The `platform` tests pass on the merged
+Merging the two checkpoints fails one test in Ana's scope. The `http-client` and `integrations` tests pass on the merged
 tree. The case names no test ID.
 
 | Pytest node ID | Merged tree | Failure |
@@ -164,7 +164,8 @@ from the root of the tree under test.
    mkdir ../owner-ana-checkpoint
    git archive owner-ana-checkpoint | tar -x -C ../owner-ana-checkpoint
    cd ../owner-ana-checkpoint
-   python -m pytest shared integrations
+   python -m pytest shared
+   python -m pytest integrations
    python -m pytest payments
    cd /tmp/penguin-dependency-bump
    ```
@@ -178,13 +179,14 @@ from the root of the tree under test.
    mkdir ../merged-checkpoints
    git archive <tree SHA printed above> | tar -x -C ../merged-checkpoints
    cd ../merged-checkpoints
-   python -m pytest shared integrations
+   python -m pytest shared
+   python -m pytest integrations
    python -m pytest payments -rf
    cd /tmp/penguin-dependency-bump
    ```
 
-   `git merge-tree` prints a single tree SHA because the merge has no conflicts. The `platform` run
-   exits 0. The payments run reports `1 failed, 3 passed`. Its short test summary lists this test
+   `git merge-tree` prints a single tree SHA because the merge has no conflicts. The `http-client` and `integrations` runs
+   exit 0. The payments run reports `1 failed, 3 passed`. Its short test summary lists this test
    as `FAILED`:
 
    ```text
@@ -198,7 +200,8 @@ from the root of the tree under test.
    mkdir ../combined
    git archive <tree SHA printed above> | tar -x -C ../combined
    cd ../combined
-   python -m pytest shared integrations
+   python -m pytest shared
+   python -m pytest integrations
    python -m pytest payments
    ```
 

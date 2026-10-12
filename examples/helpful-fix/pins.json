@@ -1,19 +1,19 @@
 {
   "$comment": "Commit SHAs a build of this fixture produces. Format: a JSON object with three objects. 'branches' maps each branch build.py creates to its head commit SHA: 'main' holds the base commit, and 'owner-priya', 'owner-jun' and 'owner-sam' each hold one owner's fix commit. 'tags' maps each tag build.py creates to its commit SHA: '<branch>-checkpoint' is the owner's checkpoint before the fix, and 'owner-priya-local-day', the 'owner-priya' head, is Priya's checkpoint with start_of_local_day, where her merge plan is proposed. 'fixes' maps the pytest node ID of each test that fails on the merged checkpoints to the SHA of the commit that makes it pass; each of those commits imports start_of_local_day, which the 'owner-priya' head adds. tests/test_helpful_fix_builder.py checks that a fresh build reproduces every branch and tag SHA; tests/test_helpful_fix_reproduction.py checks the 'fixes' entries.",
   "branches": {
-    "main": "12126a36c404d3f2bf6b0951f64541470c7e44bc",
-    "owner-priya": "bfedc49f0bd873fe47299c0a12edf5b55e353899",
-    "owner-jun": "26ed8bfadee6d57447aa01913ebdc54d6cf37337",
-    "owner-sam": "94b58b792fe34bf24e539d2dca38a9bd535c6147"
+    "main": "695e076cb5417a44e484013234c14b1e44e43d82",
+    "owner-priya": "47a8111c0a2da3860661771070c6f390222326df",
+    "owner-jun": "c3e04cb9f4dbd622caab1f84960de807eadd59b1",
+    "owner-sam": "5251e4ebcd84ae2da3dcd3682dd931fc63cfd1af"
   },
   "tags": {
-    "owner-priya-checkpoint": "55a4fc22e7ad7914f55937a52723e6573c465e3f",
-    "owner-priya-local-day": "bfedc49f0bd873fe47299c0a12edf5b55e353899",
-    "owner-jun-checkpoint": "eaa4ca52af8f297a675d8cf73c9aa5e82be4b46d",
-    "owner-sam-checkpoint": "006c6c59893483ec02b67a9a3af8cd63730e6728"
+    "owner-priya-checkpoint": "2e7cb93780b3b6c618c740b56d33e26acf80816d",
+    "owner-priya-local-day": "47a8111c0a2da3860661771070c6f390222326df",
+    "owner-jun-checkpoint": "21b94f26f08fea2dc98036fb8f899c76d0335984",
+    "owner-sam-checkpoint": "6dc2b31e7c79ab03c97b33d254168c08e356d17c"
   },
   "fixes": {
-    "analytics/tests/test_weekly.py::test_evening_activity_west_of_utc_stays_on_its_local_day": "26ed8bfadee6d57447aa01913ebdc54d6cf37337",
-    "messaging/tests/test_reminders.py::test_fires_at_the_local_hour_west_of_utc": "94b58b792fe34bf24e539d2dca38a9bd535c6147"
+    "analytics/tests/test_weekly.py::test_evening_activity_west_of_utc_stays_on_its_local_day": "c3e04cb9f4dbd622caab1f84960de807eadd59b1",
+    "messaging/tests/test_reminders.py::test_fires_at_the_local_hour_west_of_utc": "5251e4ebcd84ae2da3dcd3682dd931fc63cfd1af"
   }
 }

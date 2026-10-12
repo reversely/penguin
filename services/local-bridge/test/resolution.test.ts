@@ -254,7 +254,7 @@ describe("the phase C exit check on the helpful-fix fixture", () => {
       checkpointSha: commits["priya-rename"] as string,
       baselineSha: commits.main as string,
       targets: ownerForkTargets({ jun: commits["owner-jun-checkpoint"] as string, sam: commits["owner-sam-checkpoint"] as string }),
-      identity: "@priya/batches",
+      identity: "@priya/utc-day-start",
     });
   });
 
@@ -323,7 +323,7 @@ describe("the phase C exit check on the helpful-fix fixture", () => {
     process.env.PATH = TEST_ENV.PATH;
     try {
       const code = await runCli(
-        ["resolve", "--repo", repo, "--base", "main", "--head", "priya-lint", "--identity", "@priya/batches",
+        ["resolve", "--repo", repo, "--base", "main", "--head", "priya-lint", "--identity", "@priya/utc-day-start",
           "--checkpoint", "jun=owner-jun-checkpoint", "--checkpoint", "sam=owner-sam-checkpoint",
           "--python", PYTHON, "--ruff", RUFF, "--codemod-python", PYTHON, "--yes", "--write"],
         io,

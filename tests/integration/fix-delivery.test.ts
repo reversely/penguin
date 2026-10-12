@@ -117,24 +117,24 @@ async function register(project: HuddleProject, owner: string, identity: string)
 const workIds = async (project: HuddleProject, owner: string, sessionId: string): Promise<string[]> =>
   (await call(project, owner, "get_work", { sessionId })).issues.map((issue: { id: string }) => issue.id);
 
-test("a running @jun/reports session gets its fix sub-issues at its next checkpoint and not before", async () => {
+test("a running @jun/retention-dashboard session gets its fix sub-issues at its next checkpoint and not before", async () => {
   const project = new HuddleProject();
   project.publish("priya", tags["owner-priya-checkpoint"] as string);
-  const jun = await register(project, "jun", "@jun/reports");
+  const jun = await register(project, "jun", "@jun/retention-dashboard");
   assert.equal((await project.open(event)).status, "opened");
-  assert.deepEqual(project.fixes("1").map((fix) => fix.split(" ")[0]), ["@jun/reports", "@jun/reports", "@sam/campaigns"]);
+  assert.deepEqual(project.fixes("1").map((fix) => fix.split(" ")[0]), ["@jun/retention-dashboard", "@jun/retention-dashboard", "@sam/reengagement-audience"]);
 
   // Routed to the session, but not delivered: the session is in the middle of other work.
-  assert.deepEqual(project.sessions.routes("2"), [{ handle: "@jun/reports", sessionId: jun, waitingFor: null }]);
+  assert.deepEqual(project.sessions.routes("2"), [{ handle: "@jun/retention-dashboard", sessionId: jun, waitingFor: null }]);
   assert.deepEqual(await workIds(project, "jun", jun), []);
 
   // The bridge's PreToolUse hook reports the checkpoint for the session's worktree.
   const { id: worktreeId } = await worktreeAt(repo);
   const deliveries = project.sessions.checkpointWorktree("jun", worktreeId);
-  assert.deepEqual(deliveries, [{ sessionId: jun, handle: "@jun/reports", delivered: ["2", "3"], threads: [], overlaps: [], settled: [], toolResults: [], planNotices: { parts: [], decisions: [], reviews: [] } }]);
+  assert.deepEqual(deliveries, [{ sessionId: jun, handle: "@jun/retention-dashboard", delivered: ["2", "3"], threads: [], overlaps: [], settled: [], toolResults: [], planNotices: { parts: [], decisions: [], reviews: [] } }]);
   const answer = JSON.parse(hookAnswer(deliveries.map(({ handle, sessionId, delivered, threads }) => ({ sessionId, delivered, threads, identity: handle, overlaps: [], locksSettled: [], newPlanParts: [], planDecisions: [], reviewResults: [] }))) ?? "");
   assert.equal(answer.hookSpecificOutput.hookEventName, "PreToolUse");
-  assert.match(answer.hookSpecificOutput.additionalContext, /fix tasks #2, #3 to @jun\/reports/u);
+  assert.match(answer.hookSpecificOutput.additionalContext, /fix tasks #2, #3 to @jun\/retention-dashboard/u);
 
   const work = await call(project, "jun", "get_work", { sessionId: jun });
   assert.deepEqual(
@@ -166,7 +166,7 @@ test("a running @jun/reports session gets its fix sub-issues at its next checkpo
 test("an explicit checkpoint report delivers the fix tasks and names them in its answer", async () => {
   const project = new HuddleProject();
   project.publish("priya", tags["owner-priya-checkpoint"] as string);
-  const jun = await register(project, "jun", "@jun/reports");
+  const jun = await register(project, "jun", "@jun/retention-dashboard");
   await project.open(event);
   assert.deepEqual(await workIds(project, "jun", jun), []);
 
@@ -178,11 +178,11 @@ test("an explicit checkpoint report delivers the fix tasks and names them in its
   assert.deepEqual(await workIds(project, "jun", jun), ["2", "3"]);
 });
 
-test("with no @sam/campaigns session, Sam is asked to start one and the Huddle stays in FIXING", async () => {
+test("with no @sam/reengagement-audience session, Sam is asked to start one and the Huddle stays in FIXING", async () => {
   const project = new HuddleProject();
   project.publish("priya", tags["owner-priya-checkpoint"] as string);
   await project.open(event);
-  assert.deepEqual(project.sessions.routes("4"), [{ handle: "@sam/campaigns", sessionId: null, waitingFor: "session" }]);
+  assert.deepEqual(project.sessions.routes("4"), [{ handle: "@sam/reengagement-audience", sessionId: null, waitingFor: "session" }]);
   assert.deepEqual(
     project.inbox
       .items("sam")
@@ -199,7 +199,7 @@ test("a disconnect leaves the sub-issue open; a later session of the same identi
   project.clock = Date.parse("2026-10-11T12:00:00Z");
   project.publish("priya", tags["owner-priya-checkpoint"] as string);
   await project.open(event);
-  const first = await register(project, "sam", "@sam/campaigns");
+  const first = await register(project, "sam", "@sam/reengagement-audience");
   // Registering is a safe checkpoint: the new session has nothing in progress.
   assert.deepEqual(await workIds(project, "sam", first), ["4"]);
 
@@ -208,14 +208,14 @@ test("a disconnect leaves the sub-issue open; a later session of the same identi
   assert.equal(project.sessions.get(first)?.status, "offline");
   const sub = project.index.issue("4");
   assert.equal(sub?.state, "open");
-  assert.deepEqual([...(sub?.assignments.keys() ?? [])], ["identity:@sam/campaigns"]);
+  assert.deepEqual([...(sub?.assignments.keys() ?? [])], ["identity:@sam/reengagement-audience"]);
   assert.equal(project.index.issue("1")?.state, "fixing");
   assert.deepEqual(
     project.sessions.requests("sam").map((request) => `${request.kind} #${request.issueId}`),
     ["start #4"],
   );
 
-  const second = await register(project, "sam", "@sam/campaigns");
+  const second = await register(project, "sam", "@sam/reengagement-audience");
   assert.deepEqual(await workIds(project, "sam", second), ["4"]);
   assert.deepEqual(project.sessions.requests("sam"), []);
 });

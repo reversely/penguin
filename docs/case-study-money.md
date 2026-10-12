@@ -7,25 +7,26 @@ counts and the review harness run on the fixture in [fixture-money.md](fixture-m
 
 ## Team
 
-Larder is a grocery delivery marketplace with one repository. Fourteen engineers each own one or two
-scopes and each run between three and eight agents. At any moment about forty features are open.
+Larder is a grocery delivery marketplace with one repository. Fourteen engineers work in four teams.
+Each is DRI for two or three of the repository's 29 scopes. Each runs one steward plus one builder
+per open feature. At any moment about forty features are open.
 
-| Person | Owns | Reads money? |
-|---|---|---|
-| Ines | `shared/money`: price types and arithmetic | Owns it |
-| Priya | `checkout` | Yes |
-| Tomas | `orders` | Yes |
-| Ade | `refunds` | Yes |
-| Mei | `invoicing` | Yes |
-| Rahul | `tax` | Yes |
-| Lena | `promotions` | Yes |
-| Kofi | `payouts` to stores | Yes |
-| Sun | `catalog` and search pricing | Yes |
-| Jun | `analytics` | Yes |
-| Sam | `messaging`: receipts and emails | Yes |
-| Noor | `mobile-api` | Yes |
-| Elif | `store-dashboard` | No |
-| Hugo | `platform`: shared libraries and dependencies | No |
+| Team | Person | DRI for | Reads money? |
+|---|---|---|---|
+| Payments (lead Ines) | Ines | `money` (price types and arithmetic), `currencies` | Owns it |
+| | Kofi | `payouts` to stores, `store-billing` | Yes |
+| | Ade | `refunds`, `disputes` | Yes |
+| | Rahul | `tax`, `tax-filing` | Yes |
+| | Mei | `invoicing`, `dunning` | Yes |
+| Shopping (lead Tomas) | Priya | `checkout`, `payment-methods` | Yes |
+| | Tomas | `orders`, `fulfilment` | Yes |
+| | Lena | `promotions`, `loyalty` | Yes |
+| | Sun | `catalog` and search pricing, `inventory` | Yes |
+| Stores and apps (lead Elif) | Noor | `mobile-api`, `app-config` | Yes |
+| | Elif | `store-dashboard`, `store-onboarding` | No |
+| | Sam | `messaging` (receipts and emails), `notification-prefs` | Yes |
+| Data and platform (lead Hugo) | Jun | `analytics`, `dashboards`, `experiments` | Yes |
+| | Hugo | `platform` (shared libraries and dependencies), `feature-flags` | No |
 
 ## Change
 

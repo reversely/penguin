@@ -13,7 +13,7 @@ const JUN_CHECKPOINT = "c".repeat(40);
 const FIX_COMMIT = `owner-jun@${"d".repeat(40)}`;
 const REASON = "The cutover marker still counts the merged people twice.";
 
-/** Priya's trigger fails Jun's retention test: one fix sub-issue, #2, assigned to @jun/reports. */
+/** Priya's trigger fails Jun's retention test: one fix sub-issue, #2, assigned to @jun/retention-dashboard. */
 function failingRun(): CombinedRunEvent {
   return {
     trigger: { ownerId: "priya", sha: TRIGGER, baselineSha: BASELINE },
@@ -96,7 +96,7 @@ describe("threads on Huddle fixes", () => {
   test("the thread reaches each running session of the person it needs once, at a safe checkpoint", async () => {
     const project = await opened();
     const registered = project.sessions.register("jun", {
-      identity: "@jun/reports",
+      identity: "@jun/retention-dashboard",
       vendor: "codex",
       worktreeId: "wt-retention",
       branch: "main",

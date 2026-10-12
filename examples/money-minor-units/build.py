@@ -7,8 +7,8 @@ scope, invariant, feature and commit from ``larder.json`` next to this script, c
 creates a Git repository in TARGET:
 
 - The base commit holds the files under ``base/`` plus the generated ``penguin/owners.json``,
-  ``penguin/scopes.json``, ``penguin/identities.json`` and ``penguin/invariants.json``, and each
-  generated examples file. It is ``main`` and the tag ``base``.
+  ``penguin/teams.json``, ``penguin/scopes.json``, ``penguin/identities.json`` and
+  ``penguin/invariants.json``, and each generated examples file. It is ``main`` and the tag ``base``.
 - Each feature is the branch ``feature-<id>``, started from ``base`` or from ``main`` as it stands at
   the feature's first commit. Each commit lays the files under ``features/<id>/<source>/`` over the
   branch's tree, so a source directory holds only the files the commit adds or changes. A commit with
@@ -102,6 +102,7 @@ class CommitSpec:
 class Larder:
     raw: dict
     people: dict[str, dict]
+    teams: dict[str, dict]
     scopes: dict[str, dict]
     # Each scope's paths, normalised without the trailing '/'.
     scope_paths: dict[str, list[str]]
@@ -190,6 +191,8 @@ def check_people(raw: dict, check: Checker) -> dict[str, dict]:
     people = {}
     for i, person in enumerate(raw.get("people", [])):
         check.name(person.get("display_name"), f"people[{i}].display_name")
+        if person.get("vendor") not in VENDORS:
+            check.fail(f"people[{i}].vendor", f"must be one of {sorted(VENDORS)}")
         if check.id(person.get("id"), f"people[{i}].id"):
             if person["id"] in people:
                 check.fail(f"people[{i}].id", f"repeats {person['id']!r}")
@@ -197,8 +200,48 @@ def check_people(raw: dict, check: Checker) -> dict[str, dict]:
     return people
 
 
+def check_teams(raw: dict, people: dict, check: Checker) -> dict[str, dict]:
+    teams = {}
+    for i, team in enumerate(raw.get("teams", [])):
+        at = f"teams[{i}]"
+        if not check.id(team.get("id"), f"{at}.id"):
+            continue
+        if team["id"] in teams:
+            check.fail(f"{at}.id", f"repeats {team['id']!r}")
+        check.text(team.get("name"), f"{at}.name")
+        if team.get("lead") not in people:
+            check.fail(f"{at}.lead", f"{team.get('lead')!r} is not a person")
+        members = team.get("members", [])
+        if not members or len(set(members)) != len(members):
+            check.fail(f"{at}.members", "must list each person once, at least one")
+        for member in members:
+            if member not in people:
+                check.fail(f"{at}.members", f"{member!r} is not a person")
+        teams[team["id"]] = team
+    return teams
+
+
+def check_responsibility(scope: dict, at: str, teams: dict, check: Checker) -> None:
+    """A scope names its team, a DRI who is a member and a fallback order of other members."""
+    team = teams.get(scope.get("team"))
+    if team is None:
+        check.fail(f"{at}.team", f"{scope.get('team')!r} is not a team")
+        return
+    members = team.get("members", [])
+    if scope.get("dri") not in members:
+        check.fail(f"{at}.dri", f"{scope.get('dri')!r} is not a member of {team['id']}")
+    fallback = scope.get("fallback", [])
+    for person in fallback:
+        if person not in members or person == scope.get("dri"):
+            check.fail(
+                f"{at}.fallback", f"{person!r} is not another member of {team['id']}"
+            )
+    if len(set(fallback)) != len(fallback):
+        check.fail(f"{at}.fallback", "names a person twice")
+
+
 def check_scopes(
-    raw: dict, people: dict, check: Checker
+    raw: dict, teams: dict, check: Checker
 ) -> tuple[dict[str, dict], dict[str, list[str]]]:
     scopes, scope_paths = {}, {}
     for i, scope in enumerate(raw.get("scopes", [])):
@@ -208,8 +251,7 @@ def check_scopes(
         if scope["id"] in scopes:
             check.fail(f"{at}.id", f"repeats {scope['id']!r}")
         check.text(scope.get("name"), f"{at}.name")
-        if scope.get("owner") not in people:
-            check.fail(f"{at}.owner", f"{scope.get('owner')!r} is not a person")
+        check_responsibility(scope, at, teams, check)
         paths = [check.path(p, f"{at}.paths") for p in scope.get("paths", [])]
         if not paths:
             check.fail(f"{at}.paths", "must list at least one path")
@@ -305,11 +347,12 @@ def check_features(
         features[feature["id"]] = feature
         if feature.get("owner") not in people:
             check.fail(f"{at}.owner", f"{feature.get('owner')!r} is not a person")
-        check.id(feature.get("agent"), f"{at}.agent")
         check.text(feature.get("title"), f"{at}.title")
         for key, allowed in (("vendor", VENDORS), ("role", ROLES), ("start", STARTS)):
             if feature.get(key) not in allowed:
                 check.fail(f"{at}.{key}", f"must be one of {sorted(allowed)}")
+        if not feature.get("area"):
+            check.fail(f"{at}.area", "must list the scopes the feature declares")
         for scope_id in feature.get("area", []):
             if scope_id not in scopes:
                 check.fail(f"{at}.area", f"{scope_id!r} is not a scope")
@@ -370,13 +413,14 @@ def load_larder(raw: object) -> Larder:
         raise LarderError(["the file must hold a JSON object"])
     check = Checker()
     people = check_people(raw, check)
-    scopes, scope_paths = check_scopes(raw, people, check)
+    teams = check_teams(raw, people, check)
+    scopes, scope_paths = check_scopes(raw, teams, check)
     check_invariants(raw, scope_paths, check)
     features, commits = check_features(raw, people, scopes, check)
     check_plan(raw, features, scopes, check)
     if check.problems:
         raise LarderError(check.problems)
-    return Larder(raw, people, scopes, scope_paths, features, commits)
+    return Larder(raw, people, teams, scopes, scope_paths, features, commits)
 
 
 def read_larder(path: Path = LARDER) -> Larder:
@@ -401,13 +445,30 @@ def owners_file(larder: Larder) -> dict:
     }
 
 
+def teams_file(larder: Larder) -> dict:
+    return {
+        "$comment": "Teams of this repository, generated from larder.json by build.py. Format in docs/fixture.md, Teams: 'id', 'name', 'lead' (the person who leads the team) and 'members'.",
+        "teams": [
+            {
+                "id": team["id"],
+                "name": team["name"],
+                "lead": team["lead"],
+                "members": team["members"],
+            }
+            for team in larder.teams.values()
+        ],
+    }
+
+
 def scopes_file(larder: Larder) -> dict:
     scopes = []
     for scope in larder.scopes.values():
         entry = {
             "id": scope["id"],
             "name": scope["name"],
-            "owner": scope["owner"],
+            "team": scope["team"],
+            "dri": scope["dri"],
+            "fallback": scope.get("fallback", []),
             "paths": scope["paths"],
             "contracts": scope.get("contracts", []),
             "test_command": f"python -m pytest {larder.scope_paths[scope['id']][0]}",
@@ -420,27 +481,57 @@ def scopes_file(larder: Larder) -> dict:
             entry["protected_paths"] = scope["protected_paths"]
         scopes.append(entry)
     return {
-        "$comment": "Scope map of this repository, generated from larder.json by build.py. Format as in the other fixtures, plus 'contracts' (each scope's public symbols as path::symbol) and 'protected_paths' (files whose owner confirms the final lines of any change).",
+        "$comment": "Scope map of this repository, generated from larder.json by build.py. Format as in the other fixtures, with 'team', 'dri' and 'fallback' in place of 'owner' (docs/fixture.md, Teams), plus 'contracts' (each scope's public symbols as path::symbol) and 'protected_paths' (files whose DRI confirms the final lines of any change).",
         "scopes": scopes,
     }
 
 
+# The steward's job, as Penguin's roster gives it (packages/protocol, edit-task.ts STEWARD_JOB).
+STEWARD_JOB = "Acts for its person on work that arrives from colleagues in the scopes they own: review forms, edits Penguin routes into those scopes and checks that fail there."
+
+
+def dri_scopes(larder: Larder, person: str) -> list[str]:
+    return [s["id"] for s in larder.scopes.values() if s["dri"] == person]
+
+
+def builder_handle(feature: dict) -> str:
+    """A feature's builder: ``@<person>/<feature>``, as Penguin's roster names it."""
+    return f"@{feature['owner']}/{feature['id']}"
+
+
 def identities_file(larder: Larder) -> dict:
-    identities = []
+    identities = [
+        {
+            "handle": f"@{person['id']}/steward",
+            "owner": person["id"],
+            "vendor": person["vendor"],
+            "job": STEWARD_JOB,
+            "charter_scopes": dri_scopes(larder, person["id"]),
+        }
+        for person in larder.people.values()
+        if dri_scopes(larder, person["id"])
+    ]
     for feature in larder.features.values():
-        owner = feature["owner"]
-        owned = [s["id"] for s in larder.scopes.values() if s["owner"] == owner]
-        identities.append(
-            {
-                "handle": f"@{owner}/{feature['agent']}",
-                "owner": owner,
-                "vendor": feature["vendor"],
-                "job": feature["title"],
-                "charter_scopes": owned,
-            }
-        )
+        owned = set(dri_scopes(larder, feature["owner"]))
+        builder = {
+            "handle": builder_handle(feature),
+            "owner": feature["owner"],
+            "vendor": feature["vendor"],
+            "job": feature["title"],
+            "charter_scopes": [s for s in feature["area"] if s in owned],
+        }
+        # The paths of the area's scopes another person is DRI for, as Penguin's roster charters a builder.
+        borrowed = [
+            path
+            for s in feature["area"]
+            if s not in owned
+            for path in larder.scopes[s]["paths"]
+        ]
+        if borrowed:
+            builder["charter_paths"] = sorted(set(borrowed))
+        identities.append(builder)
     return {
-        "$comment": "Agent identities, one per feature, generated from larder.json by build.py. Format as in the other fixtures. Each identity's charter_scopes lists its owner's own scopes; a feature that declares a scope another person owns names it in its area in larder.json.",
+        "$comment": "Agent identities generated from larder.json by build.py: one steward per person, chartered on every scope the person is DRI for, then one builder per feature, chartered on the scopes of the feature's area the person is DRI for and, in 'charter_paths', on the paths of the area's other scopes. Format as in the other fixtures. A feature that declares a scope another person is DRI for names it in its area in larder.json.",
         "identities": identities,
     }
 
@@ -690,6 +781,7 @@ def timeline(larder: Larder) -> list[CommitSpec | dict]:
 def penguin_files(larder: Larder) -> dict[str, bytes]:
     files = {
         "owners.json": owners_file(larder),
+        "teams.json": teams_file(larder),
         "scopes.json": scopes_file(larder),
         "identities.json": identities_file(larder),
         "invariants.json": invariants_file(larder),

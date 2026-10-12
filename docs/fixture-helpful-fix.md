@@ -13,7 +13,7 @@ the same commit SHAs.
 
 | Ref | Owner | Commit contents |
 |---|---|---|
-| `main` | none | The base commit: three scopes declared in `penguin/scopes.json` with their owners, agent identities and contracts. `penguin/invariants.json` declares the analytics and messaging invariants. `shared/dates.py` holds `start_of_day()`, which returns midnight in the UTC offset of the datetime it receives. |
+| `main` | none | The base commit: four scopes in two teams, declared in `penguin/teams.json` and `penguin/scopes.json` with their DRIs and contracts, and the agent identities in `penguin/identities.json`. `penguin/invariants.json` declares the analytics and messaging invariants. `shared/dates.py` holds `start_of_day()`, which returns midnight in the UTC offset of the datetime it receives. |
 | `owner-priya-checkpoint` (tag) | Priya | `start_of_day()` returns midnight UTC of the UTC day. Two events recorded at one instant with different offsets fall into one daily ingestion batch. `ingestion/tests/test_batches.py` adds `test_events_at_one_instant_share_a_batch`. |
 | `owner-jun-checkpoint` (tag) | Jun | The weekly activity report in `analytics/weekly.py` with `test_weekly.py`. The report converts each event to its user's UTC offset and calls `start_of_day()`. The penguin files add the contract `weekly_report` and its examples file. |
 | `owner-sam-checkpoint` (tag) | Sam | Reminder scheduling in `messaging/reminders.py` with `test_reminders.py`. The scheduler converts the current time to the contact's UTC offset and adds the reminder hour to `start_of_day()`. `reminder_times()` lists each contact's next reminder as text. The penguin files add both contracts and the examples file. |
@@ -21,11 +21,12 @@ the same commit SHAs.
 | `owner-jun` | Jun | On `owner-jun-checkpoint`: the weekly report buckets events with `start_of_local_day()` |
 | `owner-sam` | Sam | On `owner-sam-checkpoint`: reminder scheduling starts from `start_of_local_day()` |
 
-Priya's scope `ingestion` owns the paths `ingestion/` and `shared/`. Jun's scope `analytics` and
-Sam's scope `messaging` each declare a dependency on `ingestion` because they import
-`shared.dates`. Each feature is a fork of `main`: its checkpoint starts from `main` and its fix
+Priya is DRI for two scopes: `ingestion` owns `ingestion/` and `shared-dates` owns `shared/`.
+`ingestion` declares a dependency on `shared-dates` because `ingestion/batches.py` imports
+`shared.dates`. Jun's scope `analytics` and Sam's scope `messaging` each declare a dependency on
+both: they read ingestion's `Event` and the running features import `shared.dates`. Each feature is a fork of `main`: its checkpoint starts from `main` and its fix
 commit from the checkpoint. Each fix commit changes only paths in its owner's scope. Priya's second
-commit also adds `start_of_local_day` to the contracts of Priya's scope. Every scope's tests pass on each checkpoint
+commit also adds `start_of_local_day` to the contracts of `shared-dates`. Every scope's tests pass on each checkpoint
 alone. They also pass on `owner-priya` alone. `owner-jun` and `owner-sam` import
 `start_of_local_day()`, which only `owner-priya` adds. Their tests run on a tree merged with
 `owner-priya`. `pins.json` records the SHA of every branch head and tag. It also maps each failing
@@ -174,7 +175,8 @@ from the root of the tree under test.
    mkdir ../owner-jun-checkpoint
    git archive owner-jun-checkpoint | tar -x -C ../owner-jun-checkpoint
    cd ../owner-jun-checkpoint
-   python -m pytest ingestion shared
+   python -m pytest ingestion
+   python -m pytest shared
    python -m pytest analytics
    python -m pytest messaging
    cd /tmp/penguin-helpful-fix
@@ -192,7 +194,8 @@ from the root of the tree under test.
    mkdir ../merged-checkpoints
    git archive <tree SHA printed above> | tar -x -C ../merged-checkpoints
    cd ../merged-checkpoints
-   python -m pytest ingestion shared
+   python -m pytest ingestion
+   python -m pytest shared
    python -m pytest analytics
    python -m pytest messaging
    cd /tmp/penguin-helpful-fix
@@ -216,7 +219,8 @@ from the root of the tree under test.
    mkdir ../combined
    git archive <tree SHA printed above> | tar -x -C ../combined
    cd ../combined
-   python -m pytest ingestion shared
+   python -m pytest ingestion
+   python -m pytest shared
    python -m pytest analytics
    python -m pytest messaging
    ```

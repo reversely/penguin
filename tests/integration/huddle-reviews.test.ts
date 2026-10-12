@@ -1,5 +1,5 @@
 // Phase 4's review collection (#42) on the identity-unification fixture, without the network: the
-// Huddle opens from the owners' unfixed checkpoints, @jun/reports sends the shared-device fix
+// Huddle opens from the owners' unfixed checkpoints, @jun/retention-dashboard sends the shared-device fix
 // upstream to Priya, the owners' fixed checkpoints pass on the integration branch, and Penguin asks
 // each owner whose review counts to review each fix's head. Reviews then count only from those
 // owners or their delegates, and only on the head. Jun's request for changes on the shared-device fix
@@ -74,7 +74,7 @@ function testRunner(repoPath: string): TestRunner {
 
 /**
  * One project with the Huddle open from the unfixed run, the shared-device fix sent upstream to
- * @priya/merge-rules, and every owner's fixed checkpoint verified on the integration branch.
+ * @priya/person-id-merge-rules, and every owner's fixed checkpoint verified on the integration branch.
  */
 async function inReview(name: string) {
   const dir = join(root, name);
@@ -107,7 +107,7 @@ async function inReview(name: string) {
   const fixes = { retention: fix(/dau_stable/u), shared: fix(/shared_device_split/u), consent: fix(/unsubscribe/u) };
 
   const session = project.sessions.register("jun", {
-    identity: "@jun/reports",
+    identity: "@jun/retention-dashboard",
     vendor: "codex",
     worktreeId: "wt-retention",
     branch: "main",
@@ -286,7 +286,7 @@ test("Jun's request for changes on the shared-device fix opens a thread that rea
   const reason = "A limit of five still joins the tablet's users.";
   const priya = (
     await call(project, "priya", "register_session", {
-      identity: "@priya/merge-rules",
+      identity: "@priya/person-id-merge-rules",
       vendor: "claude-code",
       worktreeId: "wt-merge",
       branch: "main",
@@ -316,7 +316,7 @@ test("Jun's request for changes on the shared-device fix opens a thread that rea
   const [delivery] = project.sessions.checkpointWorktree("priya", "wt-merge");
   assert.deepEqual(delivery?.threads, [{ issueId: fixes.shared, threadId }]);
   const answer = JSON.parse(hookAnswer([{ ...delivery!, identity: delivery!.handle, overlaps: [], locksSettled: [], toolResults: [], newPlanParts: [], planDecisions: [], reviewResults: [] }]) ?? "");
-  assert.match(answer.hookSpecificOutput.additionalContext, new RegExp(`a thread on #${fixes.shared} now needs the developer of @priya/merge-rules`, "u"));
+  assert.match(answer.hookSpecificOutput.additionalContext, new RegExp(`a thread on #${fixes.shared} now needs the developer of @priya/person-id-merge-rules`, "u"));
   const work = await call(project, "priya", "get_work", { sessionId: priya });
   assert.deepEqual(
     work.threadsNeedingYou.map((needing: any) => [needing.issueId, needing.id, needing.personWritten.body]),

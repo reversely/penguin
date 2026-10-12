@@ -1,6 +1,6 @@
 // Teams own scopes; each scope names a DRI and a fallback order (#135, PRD 0.5 core concepts and
-// section 9). A scope that names only an owner reads as a one-person team, so every example fixture
-// routes exactly as before.
+// section 9). A scope that names only an owner reads as a one-person team; every example fixture
+// declares its teams and names each scope's team, DRI and fallback order.
 
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
@@ -70,27 +70,32 @@ test("team membership and leadership come from the teams file", () => {
   assert.deepEqual(ledScopes(bare, "maya"), []);
 });
 
-test("every committed example fixture names only owners, so each scope routes to its owner as before", () => {
+test("every committed example fixture names a team, a DRI from it and a fallback order from it", () => {
   const examples = new URL("../../../examples/", import.meta.url);
   const fixtures = readdirSync(examples, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
   let checked = 0;
   for (const fixture of fixtures) {
-    let json: { scopes: { id: string; owner: string }[] };
+    let json: { scopes: { id: string; team: string; dri: string; fallback: string[] }[] };
+    let declared: unknown;
     try {
       json = read(new URL(`${fixture}/base/penguin/scopes.json`, examples)) as typeof json;
+      declared = read(new URL(`${fixture}/base/penguin/teams.json`, examples));
     } catch {
       continue;
     }
-    const parsed = parseScopeMap(json, { teams: new Map() });
+    const owners = (read(new URL(`${fixture}/base/penguin/owners.json`, examples)) as { owners: { id: string }[] }).owners.map((owner) => owner.id);
+    const fixtureTeams = parseTeams(declared, { ownerIds: owners });
+    const parsed = parseScopeMap(json, { ownerIds: owners, teams: fixtureTeams });
     for (const raw of json.scopes) {
       const scope = parsed.scopes.get(raw.id)!;
-      assert.deepEqual([scope.driId, scope.fallbackIds, scope.teamId], [raw.owner, [], `person:${raw.owner}`], `${fixture} ${raw.id}`);
-      for (const available of [everybody, nobody]) assert.equal(routeScope(parsed, raw.id, available), raw.owner);
-      assert.deepEqual(ledScopes(parsed, raw.owner).includes(raw.id), true);
+      assert.deepEqual([scope.driId, scope.fallbackIds, scope.teamId], [raw.dri, raw.fallback, raw.team], `${fixture} ${raw.id}`);
+      assert.equal(routeScope(parsed, raw.id, everybody), raw.dri);
+      assert.equal(routeScope(parsed, raw.id, only(...raw.fallback)), raw.fallback[0] ?? raw.dri, `${fixture} ${raw.id} with its DRI away`);
+      assert.ok(driScopes(parsed, raw.dri).includes(raw.id));
       checked += 1;
     }
   }
-  assert.ok(checked >= 8, `checked ${checked} scopes`);
+  assert.ok(checked >= 10, `checked ${checked} scopes`);
 });
 
 function assertRejected(run: () => unknown, kind: typeof ScopeMapError | typeof TeamsError, field: string): void {

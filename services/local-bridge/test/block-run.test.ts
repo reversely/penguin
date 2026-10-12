@@ -57,7 +57,7 @@ describe("a block run on the runner", () => {
       { feature: "reminder-scheduling", person: "sam", fork: "feature-reminder-scheduling", sha: sha(sam) },
       { feature: "weekly-report", person: "jun", fork: "feature-weekly-report", sha: sha(jun) },
     ],
-    charter: { handle: "@priya/batches", person: "priya", scopes: ["ingestion"], paths: [] },
+    charter: { handle: "@priya/utc-day-start", person: "priya", scopes: ["ingestion", "shared-dates"], paths: [] },
   });
 
   async function run(claimed: BlockRunRequest): Promise<{ report: BlockRunReport; fetched: string[]; output: string }> {
@@ -104,6 +104,7 @@ describe("a block run on the runner", () => {
       ["test:analytics", "passed"],
       ["test:ingestion", "passed"],
       ["test:messaging", "passed"],
+      ["test:shared-dates", "passed"],
     ]);
     const verdict = blockVerdict(claimed, report.checks);
     assert.deepEqual([verdict.passed, verdict.unmerged, verdict.failing.map((check) => `${check.target} ${check.check}`)], [true, [], []]);

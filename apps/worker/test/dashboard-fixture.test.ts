@@ -4,8 +4,8 @@
 // break limit, then the waves of the parallel change with their overlapping starts, a tax review on
 // the runner, each stored plan's parts approved and main moved, and the contract wave's plan as
 // Penguin answers it. Every person then signs in to the Worker's own dashboard routes. A plan part's
-// changed lines reach only its owner and the feature's person, on the feature page and in the plan; no
-// answer carries a session transcript. The team view's read time is printed for the record.
+// changed lines reach only its owner, the members of its scope's team and the feature's person, on the
+// feature page and in the plan; no answer carries a session transcript. The team view's read time is printed for the record.
 
 import assert from "node:assert/strict";
 import { before, test } from "node:test";
@@ -74,32 +74,37 @@ test("each person sees only the approvals and exceptions that wait on them", asy
   assert.equal((await read<PlanInbox>("sun", "/api/plan-parts")).body.reviewExceptions.length, 0);
 });
 
-// The tax wave's stored plan: its part for invoicing on main belongs to Mei.
-const WAVE = "money-tax";
+// The checkout wave's stored plan: its part for promotions on main belongs to Lena, in Shopping.
+const WAVE = "money-checkout";
 
-test("a part's changed lines reach only its owner and the feature's person, and no answer carries a transcript", async () => {
+test("a part's changed lines reach only its owner, its scope's team and the feature's person, and no answer carries a transcript", async () => {
   const page = async (person: string) => (await read<FeaturePage>(person, `/api/features/${WAVE}/page`)).body;
   const ines = await page("ines");
-  const mei = await page("mei");
+  const lena = await page("lena");
+  const tomas = await page("tomas");
   const rahul = await page("rahul");
-  const sun = await page("sun");
+  // A team member reads the changed lines of a part in the team's scopes (#135).
+  const teammate = (person: string, scopes: readonly string[]) =>
+    scopes.some((scope) => preview.scopeMap.teams.get(preview.scopeMap.scopes.get(scope)?.teamId ?? "")?.memberIds.includes(person) === true);
   assert.ok(ines.plan !== null && ines.plan.parts.length > 0 && ines.plan.parts.every((part) => part.files !== null), "the feature's person reads every part");
-  for (const part of mei.plan?.parts ?? []) assert.equal(part.files !== null, part.owner === "mei", part.partId);
-  assert.ok(rahul.plan?.parts.every((part) => part.files === null), "a person with no part reads no changed lines");
-  assert.ok(sun.plan?.parts.every((part) => part.files === null), "a person with no part reads no changed lines");
+  for (const part of lena.plan?.parts ?? []) assert.equal(part.files !== null, part.owner === "lena", part.partId);
+  // Tomas is Lena's teammate in Shopping, so Tomas reads the lines of Lena's promotions part.
+  for (const part of tomas.plan?.parts ?? []) assert.equal(part.files !== null, teammate("tomas", part.scopes), part.partId);
+  assert.ok(tomas.plan?.parts.some((part) => part.files !== null), "a teammate reads the part's lines");
+  assert.ok(rahul.plan?.parts.every((part) => part.files === null), "a person outside the part's team reads no changed lines");
   // The same facts, states and checks reach everyone.
-  assert.deepEqual(sun.plan?.parts.map((part) => [part.partId, part.state]), ines.plan?.parts.map((part) => [part.partId, part.state]));
+  assert.deepEqual(rahul.plan?.parts.map((part) => [part.partId, part.state]), ines.plan?.parts.map((part) => [part.partId, part.state]));
   // The plan route applies the same rule to each part's patch and changed lines.
   const plan = async (person: string) => (await read<ViewerPlan>(person, `/api/features/${WAVE}/plan`)).body;
   const readable = (seen: ViewerPlan) => seen.parts.filter((part) => part.diff.files !== null).map((part) => part.partId);
   const pageReadable = (seen: FeaturePage) => (seen.plan?.parts ?? []).filter((part) => part.files !== null).map((part) => part.partId);
-  for (const [person, seen] of [["ines", ines], ["mei", mei], ["rahul", rahul], ["sun", sun]] as const) {
+  for (const [person, seen] of [["ines", ines], ["lena", lena], ["tomas", tomas], ["rahul", rahul]] as const) {
     const answered = await plan(person);
     assert.deepEqual(readable(answered), pageReadable(seen), `the plan route and the page agree for ${person}`);
     for (const part of answered.parts.filter((each) => each.diff.files === null)) assert.equal(part.diff.patch, null, `${part.partId} as ${person}`);
   }
-  assert.ok((await plan("rahul")).parts.some((part) => part.diff.files === null), "rahul reads another owner's part without its lines");
-  for (const person of ["ines", "rahul", "sun"]) {
+  assert.ok((await plan("rahul")).parts.some((part) => part.diff.files === null), "rahul reads another team's part without its lines");
+  for (const person of ["ines", "rahul", "tomas"]) {
     for (const path of ["/api/team", `/api/features/${WAVE}/page`, `/api/features/${WAVE}/plan`, "/api/plan-parts", "/api/overlaps", "/api/identities"]) {
       assert.doesNotMatch((await read(person, path)).text, /transcript/i, `${path} as ${person}`);
     }
@@ -124,7 +129,7 @@ test("the team view states each feature's one word and highlights only exception
     if (outcome.status === "stored" && feature !== preview.waveOutcomes.at(-1)?.feature) assert.equal(features.find((each) => each.id === feature)?.state, "promoted", feature);
   }
   const tomas = team.people.find((person) => person.id === "tomas");
-  assert.deepEqual(tomas?.role.scopes.map((scope) => scope.id), ["orders"]);
+  assert.deepEqual(tomas?.role.scopes.map((scope) => scope.id).sort(), ["fulfilment", "orders"]);
   // The team view carries the top scopes of each row and every row's full count (#134).
   assert.ok((tomas?.role.counts?.readBy ?? 0) > 3);
   assert.equal(tomas?.role.dependents.length, ROLE_TOP);

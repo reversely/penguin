@@ -1,5 +1,5 @@
 // Phase 4's close-out (#44) on the identity-unification fixture, without the network: the Huddle
-// opens from the owners' unfixed checkpoints, @jun/reports sends the shared-device fix upstream to
+// opens from the owners' unfixed checkpoints, @jun/retention-dashboard sends the shared-device fix upstream to
 // Priya, the owners' fixed checkpoints pass on the integration branch, and every owner whose review
 // counts reviews each fix's head. Jun requests changes on the shared-device fix and opens a thread.
 // Once every fix is approved and the thread is resolved, the runner points the Huddle repo's
@@ -73,7 +73,7 @@ function testRunner(repoPath: string): TestRunner {
 
 /**
  * One project with the Huddle open from the unfixed run, the shared-device fix sent upstream to
- * @priya/merge-rules, and every owner's fixed checkpoint verified on the integration branch, with
+ * @priya/person-id-merge-rules, and every owner's fixed checkpoint verified on the integration branch, with
  * the runner that records the approved branch in the bare Huddle repo.
  */
 async function inReview(name: string) {
@@ -101,7 +101,7 @@ async function inReview(name: string) {
   const shared = subIssues.find((sub) => /shared_device_split/u.test(project.index.issue(sub)?.title ?? ""));
   assert.ok(shared !== undefined, "the shared-device fix sub-issue");
 
-  const session = project.sessions.register("jun", { identity: "@jun/reports", vendor: "codex", worktreeId: "wt-retention", branch: "main" });
+  const session = project.sessions.register("jun", { identity: "@jun/retention-dashboard", vendor: "codex", worktreeId: "wt-retention", branch: "main" });
   assert.equal(session.status, "ok", JSON.stringify(session));
   const sent = await project.sessionUpdate("jun", session.status === "ok" ? session.session.id : "", {
     issue: Number(shared),
