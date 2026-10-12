@@ -13,6 +13,7 @@ import type {
   PlanInbox,
   ReviewDifferences,
   TeamView,
+  ViewerPlan,
 } from "@penguin/protocol";
 
 export interface Session {
@@ -186,6 +187,19 @@ export async function fetchTeam(): Promise<TeamView> {
 export async function fetchFeaturePage(featureId: string): Promise<FeaturePage | undefined> {
   try {
     return await getJson<FeaturePage>(`/api/features/${encodeURIComponent(featureId)}/page`);
+  } catch (error) {
+    if (error instanceof NotFound) return undefined;
+    throw error;
+  }
+}
+
+/**
+ * A feature's newest plan as the signed-in person may see it, read when they expand a file the page
+ * cut; undefined for no feature or no plan.
+ */
+export async function fetchFeaturePlan(featureId: string): Promise<ViewerPlan | undefined> {
+  try {
+    return await getJson<ViewerPlan>(`/api/features/${encodeURIComponent(featureId)}/plan`);
   } catch (error) {
     if (error instanceof NotFound) return undefined;
     throw error;

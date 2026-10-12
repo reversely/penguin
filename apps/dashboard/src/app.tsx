@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { AccountMenu } from "./account-menu.tsx";
+import { Banners } from "./banner.tsx";
 import { fetchSession, type Session } from "./api.ts";
 import { DetailsPane, DetailsProvider, useDetails } from "./details-pane.tsx";
 import { FeaturePageView } from "./feature-page.tsx";
@@ -131,6 +132,15 @@ function Shell({ session, onSignedOut }: { session: Session; onSignedOut: () => 
             </header>
             <main className="centre" inert={covered}>
               <div className={route?.page === "team" && route.person === null ? "page page-wide" : "page"} data-audit-center>
+                {approvals.loaded ? (
+                  <Banners
+                    approvals={approvals.approvals}
+                    team={team.view.kind === "ready" ? team.view.value : undefined}
+                    viewer={session.owner}
+                    current={route?.page === "feature" ? route.featureId : null}
+                    navigate={navigate}
+                  />
+                ) : null}
                 <Page route={route} session={session} live={live} approvals={approvals} team={team} navigate={navigate} onSignedOut={onSignedOut} />
               </div>
             </main>

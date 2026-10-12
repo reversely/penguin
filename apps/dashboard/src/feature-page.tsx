@@ -16,6 +16,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { Agent } from "./agent-directory.tsx";
 import { fetchFeaturePage } from "./api.ts";
+import { viewerToDos, type ToDo } from "./banner-view.ts";
 import { ChangeTree } from "./change-tree.tsx";
 import { checksByTool, counted, partStateText, recordLabel, shortSha } from "./feature-view.ts";
 import { Fold, FoldProvider, useFolds } from "./fold.tsx";
@@ -23,6 +24,7 @@ import { Icon } from "./icon.tsx";
 import { useRead } from "./inbox-page.tsx";
 import { linkHandler } from "./links.ts";
 import {
+  CONTRACT_FOLD,
   foldParents,
   initialFolds,
   readByRows,
@@ -100,7 +102,10 @@ function teamFacts(team: TeamView | undefined): { readonly strips: Map<string, P
 export function FeatureView({ page, viewer, team, navigate, open = [], view: firstView = "changes" }: ViewProps) {
   const { feature } = page;
   const ownStages = feature.person === viewer ? page.pipeline.stages.filter((stage) => stage.status === "person" || stage.status === "failed").map((stage) => stageAnchor(stage.key)) : [];
-  const folds = useFolds(() => [...initialFolds(page, viewer), ...ownStages, ...open], foldParents);
+  // On a colleague's feature the main change is what the viewer reads first, so it opens.
+  const colleague = feature.person === viewer ? [] : [CONTRACT_FOLD];
+  const folds = useFolds(() => [...initialFolds(page, viewer), ...ownStages, ...colleague, ...open], foldParents);
+  const todos = useMemo(() => viewerToDos(page, viewer), [page, viewer]);
   const [view, setView] = useState<View>(firstView);
   const reveal = useCallback(
     (id: string) => {
@@ -156,6 +161,7 @@ export function FeatureView({ page, viewer, team, navigate, open = [], view: fir
           )}
         </header>
         <Timeline pipeline={page.pipeline} reveal={reveal} />
+        {todos.length === 0 ? null : <ToDos todos={todos} reveal={reveal} navigate={navigate} />}
         {lines.length === 0 ? null : <Summary lines={lines} reveal={reveal} />}
         <div className="tabs" role="tablist" aria-label="Views">
           {VIEWS.map((each) => (
@@ -187,13 +193,42 @@ export function FeatureView({ page, viewer, team, navigate, open = [], view: fir
           ))}
         </div>
         <section className="view" id={view} role="tabpanel" aria-labelledby={`tab-${view}`}>
-          {view === "changes" ? <ChangesView page={page} navigate={navigate} /> : null}
+          {view === "changes" ? <ChangesView page={page} viewer={viewer} owners={facts.owners} navigate={navigate} /> : null}
           {view === "pipeline" ? <PipelineView page={page} reveal={reveal} /> : null}
           {view === "people" ? <PeopleView page={page} strips={facts.strips} owners={facts.owners} navigate={navigate} reveal={reveal} /> : null}
           {view === "record" ? <RecordView page={page} /> : null}
         </section>
       </article>
     </FoldProvider>
+  );
+}
+
+/** What the viewer must do on a colleague's feature, each with the part it concerns and the inbox where they act. */
+function ToDos({ todos, reveal, navigate }: { readonly todos: readonly ToDo[]; readonly reveal: (id: string) => void; readonly navigate: (path: string) => void }) {
+  return (
+    <ul className="todos" aria-label="For you">
+      {todos.map((todo) => (
+        <li key={todo.text}>
+          <span className="tag tag-attention">Needs you</span>
+          {todo.anchor === null ? (
+            <span>{todo.text}</span>
+          ) : (
+            <a
+              href={`#${todo.anchor}`}
+              onClick={(event) => {
+                event.preventDefault();
+                reveal(todo.anchor as string);
+              }}
+            >
+              {todo.text}
+            </a>
+          )}
+          <a className="todo-inbox" href="/inbox" onClick={linkHandler(navigate, "/inbox")}>
+            Inbox
+          </a>
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -220,11 +255,28 @@ function Summary({ lines, reveal }: { readonly lines: readonly SummaryLine[]; re
 }
 
 /** Changes: the contract change, each place the plan fixes, then the declared area. */
-function ChangesView({ page, navigate }: { readonly page: FeaturePage; readonly navigate: (path: string) => void }) {
+interface ChangesProps {
+  readonly page: FeaturePage;
+  readonly viewer: string;
+  readonly owners: ReadonlyMap<string, string>;
+  readonly navigate: (path: string) => void;
+}
+
+function ChangesView({ page, viewer, owners, navigate }: ChangesProps) {
   const { feature } = page;
   return (
     <div className="view-body">
-      <ChangeTree plan={page.plan} contract={page.contract ?? null} fixes={page.fixes} person={feature.person} navigate={navigate} />
+      <ChangeTree
+        plan={page.plan}
+        contract={page.contract ?? null}
+        fixes={page.fixes}
+        featureId={feature.id}
+        person={feature.person}
+        viewer={viewer}
+        dependents={page.dependents}
+        owners={owners}
+        navigate={navigate}
+      />
       <Fold id="area" className="tree-node" summary={<span className="tree-title">Area</span>}>
         <div className="tree-body">
           <dl className="facts">

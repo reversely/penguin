@@ -285,7 +285,20 @@ export interface PartFileView {
   readonly hunks: readonly PlanHunk[];
   /** Why no hunks are shown: a binary file or one over the size cap; null when they are. */
   readonly omitted: "binary" | "too_large" | null;
+  /**
+   * Diff lines left out past FEATURE_PAGE_LIMITS.fileLines, which the page reads on expand from
+   * GET /api/features/<id>/plan; 0 when every line is here.
+   */
+  readonly omittedLines: number;
+  /** Added and removed lines across every hunk, including those left out. */
+  readonly added: number;
+  readonly removed: number;
 }
+
+export const FEATURE_PAGE_LIMITS = {
+  /** Diff lines of one file the feature page answer carries; the rest load on expand. */
+  fileLines: 80,
+} as const;
 
 export interface FeaturePlanView {
   readonly planId: string;

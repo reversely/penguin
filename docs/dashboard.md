@@ -126,6 +126,39 @@ Each deterministic tool shows by name beside its output, as [demo-story.md](demo
 asks. A part's changed lines go only to the feature's person, the part's owner and that owner's
 delegate; anyone else sees the part's place, state and facts.
 
+The page answer carries the first 80 diff lines of each file (`FEATURE_PAGE_LIMITS.fileLines`) with
+the count of the rest and each file's added and removed lines. Expanding a cut file reads its whole
+diff once from `GET /api/features/<id>/plan`, which applies the same line rule; the page makes no
+other request.
+
+### Change page
+
+A feature opened by someone other than its person is that person's change page (`change-tree.tsx`,
+`banner-view.ts`). Under the header, a line per thing the viewer must do: decide each of their parts
+that waits on them, confirm their protected lines, approve its start. Each line opens the part it
+concerns, with a link to the inbox where they act. The Changes view then reads, in order:
+
+| Section | Content |
+|---|---|
+| Main change | The contract change, open from the start |
+| Your changes | The viewer's running features that read what the feature changes, each with the reading scope and the scope it reads as pills; then each of the viewer's places, grouped by scope, with its state and approver; each file lists the changed contract symbols its lines use above its diff |
+| Other places | The other places, folded, with their state and no lines |
+
+Pipeline, People and Record hold the rest: the block checks and jobs, the review forms with their
+side-by-side runs, the Read by and Start tables and the record. A viewer sees the contract change and
+their own places' lines only.
+
+## Banners
+
+The top of every page shows one line per colleague's feature that reaches the signed-in person
+(`banner.tsx`): the colleague, the feature, linking to its change page, and the feature's current
+stage. A banner that needs the person reads Needs you and links to the first part they decide. A
+feature has a banner while the person's inbox holds an item of it: a part to decide or one Penguin
+approved for them, a protected-path confirmation or an overlapping start. The banner clears once the
+inbox holds nothing of the feature or its block reaches main. The banners come from the answers the
+shell already reads for the inbox count and the team view, so they cost no request. The open
+feature's own page shows no banner of it.
+
 ## Agent card
 
 `/identities?identity=<id>` opens an identity's card in the centre, beside the list of every identity
@@ -165,7 +198,9 @@ receives no assigned work ([huddle-flow.md](huddle-flow.md#5-fix-delivery-at-saf
 ## Inbox
 
 The inbox page holds the approvals that wait on the signed-in person (`approvals.tsx`, read from
-`GET /api/overlaps` and `GET /api/plan-parts`), each a card with the facts behind it:
+`GET /api/overlaps` and `GET /api/plan-parts`), each a card with the facts behind it. Each part's
+number and place link to the feature's change page at that part (`/features/<id>#part-3`); a
+protected-path card links to its Changes view and a review exception to its review:
 
 | Group | Holds | Controls |
 |---|---|---|

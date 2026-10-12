@@ -8,7 +8,7 @@ import { parseScopeMap } from "@penguin/scope-map";
 
 import type { Plan } from "@penguin/protocol";
 
-import { buildFeaturePlan, featureExceptions, featureState, personRole, type FeatureStateFacts } from "../src/dashboard-views.ts";
+import { buildFeaturePlan, featureExceptions, featureState, pageFile, personRole, type FeatureStateFacts } from "../src/dashboard-views.ts";
 import type { RunFailure } from "../src/run-failures.ts";
 import type { Feature, FeatureRecord, FeatureStore } from "../src/feature-store.ts";
 import type { StoredReview } from "../src/review-submit.ts";
@@ -120,4 +120,24 @@ test("the plan route sends a part's patch only to the feature's person, the part
   assert.ok(plan.parts.every((each) => each.diff.patch !== null && each.diff.files.length === 1));
   assert.equal(await buildFeaturePlan(deps, "bare", "ines"), undefined);
   assert.equal(await buildFeaturePlan(deps, "ledger", "ines"), undefined);
+});
+
+test("the feature page carries a file's diff up to the line limit and counts the lines it leaves for the plan route", () => {
+  const hunk = (start: number, lines: string[]) => ({ oldStart: start, oldLines: lines.length, newStart: start, newLines: lines.length, lines });
+  const file = {
+    path: "analytics/models.py",
+    scopeId: "analytics",
+    status: "modified" as const,
+    omitted: null,
+    hunks: [hunk(1, [" a", "-b", "+c"]), hunk(20, ["+d", "+e", " f", "-g"]), hunk(40, ["+h"])],
+  };
+  const cut = pageFile(file, 5);
+  // The first hunk whole, two lines of the second, none of the third.
+  assert.deepEqual(cut.hunks.map((each) => each.lines), [[" a", "-b", "+c"], ["+d", "+e"]]);
+  assert.equal(cut.omittedLines, 3);
+  // The counts cover every line, shown or not.
+  assert.deepEqual([cut.added, cut.removed], [4, 2]);
+  const whole = pageFile(file, 80);
+  assert.equal(whole.omittedLines, 0);
+  assert.equal(whole.hunks[2], file.hunks[2]);
 });

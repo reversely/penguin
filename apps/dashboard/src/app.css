@@ -5585,3 +5585,138 @@ button.pill:focus-visible {
   min-width: 1.5rem;
   justify-content: center;
 }
+
+/* Colleagues' changes (#125): one line per feature at the top of every page, those needing the person
+   edged in the attention colour. */
+.banners {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0 0 var(--space-4);
+  padding: 0;
+  list-style: none;
+}
+
+.banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+  min-width: 0;
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  box-shadow: var(--elevation-raised);
+  font: var(--text-meta);
+}
+
+.banner[data-needs-you] {
+  box-shadow:
+    inset 3px 0 0 var(--attention-dot),
+    var(--elevation-raised);
+}
+
+.banner-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
+  min-width: 0;
+  color: var(--ink);
+  font-weight: 500;
+  overflow-wrap: anywhere;
+  text-underline-offset: 3px;
+}
+
+/* What the viewer must do on a colleague's feature. */
+.todos {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font: var(--text-ui);
+}
+
+.todos li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  min-width: 0;
+}
+
+.todos a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
+  color: var(--ink);
+  font-weight: 500;
+  overflow-wrap: anywhere;
+  text-underline-offset: 3px;
+}
+
+.todos .todo-inbox {
+  color: var(--link);
+  font-weight: 400;
+}
+
+.change-tree {
+  display: grid;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.tree-scope {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.tree-scope-name {
+  margin: 0;
+  color: var(--ink-muted);
+  font: var(--text-meta);
+  font-weight: 500;
+}
+
+.file-symbols {
+  margin-bottom: var(--space-2);
+}
+
+.part-link {
+  color: inherit;
+  text-underline-offset: 3px;
+}
+
+/* A diff scrolls inside its own block: no node of the tree may widen the page. */
+.tree > li,
+.tree-scope,
+.fold {
+  min-width: 0;
+}
+
+.file-symbols .code-chip {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.part-link {
+  display: inline-block;
+  padding-block: 4px;
+}
+
+.your-readers {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font: var(--text-meta);
+}
+
+.your-readers li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+  min-width: 0;
+}

@@ -14,9 +14,13 @@
 // agent's session transcript; Penguin holds none.
 
 import {
+  FEATURE_PAGE_LIMITS,
   featurePipeline,
   pipelineStrip,
   PLAN_ROUND_LIMIT_DEFAULT,
+  type PartFileView,
+  type PlanFileDiff,
+  type PlanHunk,
   type ContractSplitView,
   type ContractWorkView,
   type DashboardAgent,
@@ -368,10 +372,38 @@ function planView(plan: Plan, viewer: string, delegates: ReadonlyMap<string, str
       invariants: part.invariants,
       note: part.note,
       files: mayReadPartLines(plan, part.owner, viewer, delegates)
-        ? part.diff.files.map(({ path, scopeId, status, hunks, omitted }) => ({ path, scope: scopeId, status, hunks, omitted }))
+        ? part.diff.files.map((file) => pageFile(file))
         : null,
     })),
   };
+}
+
+/**
+ * One file of a part as the feature page carries it: its hunks up to `limit` diff lines, cutting the
+ * hunk that crosses the limit, and how many lines were left out. The page reads the rest from the plan
+ * route when the reader expands the file, so a long diff costs nothing until someone opens it.
+ */
+export function pageFile(file: PlanFileDiff, limit: number = FEATURE_PAGE_LIMITS.fileLines): PartFileView {
+  const hunks: PlanHunk[] = [];
+  let budget = limit;
+  let omittedLines = 0;
+  let added = 0;
+  let removed = 0;
+  for (const hunk of file.hunks) {
+    for (const line of hunk.lines) {
+      if (line.startsWith("+")) added += 1;
+      else if (line.startsWith("-")) removed += 1;
+    }
+    if (budget <= 0) {
+      omittedLines += hunk.lines.length;
+      continue;
+    }
+    const lines = hunk.lines.slice(0, budget);
+    omittedLines += hunk.lines.length - lines.length;
+    budget -= lines.length;
+    hunks.push(lines.length === hunk.lines.length ? hunk : { ...hunk, lines });
+  }
+  return { path: file.path, scope: file.scopeId, status: file.status, hunks, omitted: file.omitted, omittedLines, added, removed };
 }
 
 /** A record's author as its record path names it: a person, an identity's handle or Penguin. */

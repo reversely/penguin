@@ -32,6 +32,8 @@ import { PersonAvatar } from "./avatar.tsx";
 import { Disclosure } from "./disclosure.tsx";
 import { linkHandler } from "./links.ts";
 import { BreakList, DiffFiles, ReviewCard } from "./review-card.tsx";
+import { changePath } from "./banner-view.ts";
+import { partAnchor } from "./pipeline-view.ts";
 import { featurePath } from "./routes.ts";
 import type { Live } from "./use-live.ts";
 
@@ -247,8 +249,9 @@ export function ApprovalsView({ approvals, busy, failed, unread = false, navigat
   );
 }
 
-function FeatureLink({ feature, navigate }: { readonly feature: string; readonly navigate: (path: string) => void }) {
-  const path = featurePath(feature);
+/** A feature's change page, anchored at the part, file or review an item concerns. */
+function FeatureLink({ feature, anchor = null, navigate }: { readonly feature: string; readonly anchor?: string | null; readonly navigate: (path: string) => void }) {
+  const path = anchor === null ? featurePath(feature) : changePath(feature, anchor);
   return (
     <a className="feature-link" href={path} onClick={linkHandler(navigate, path)}>
       {feature}
@@ -349,7 +352,7 @@ function PlanCard({ group, busy, navigate, onDecide, onReverse }: PlanProps) {
       )}
       <ol className="plan-parts" aria-label="Your parts">
         {group.parts.map((part) => (
-          <PartRow key={`${part.ask}/${part.partId}`} part={part} sending={busy === part.partId} onDecide={onDecide} onReverse={onReverse} />
+          <PartRow key={`${part.ask}/${part.partId}`} part={part} sending={busy === part.partId} navigate={navigate} onDecide={onDecide} onReverse={onReverse} />
         ))}
       </ol>
     </article>
@@ -367,10 +370,12 @@ interface PartProps {
   readonly sending: boolean;
   readonly onDecide: (part: PlanPartRequest, text?: string) => void;
   readonly onReverse: (part: PlanPartRequest) => void;
+  readonly navigate: (path: string) => void;
 }
 
 /** One part in its plan's card: its place and rounds, its facts behind a counting line, and the decision. */
-function PartRow({ part, sending, onDecide, onReverse }: PartProps) {
+function PartRow({ part, sending, navigate, onDecide, onReverse }: PartProps) {
+  const changePage = changePath(part.feature, partAnchor(part.partId));
   const [asking, setAsking] = useState(false);
   const [text, setText] = useState("");
   const fieldId = useId();
@@ -399,7 +404,9 @@ function PartRow({ part, sending, onDecide, onReverse }: PartProps) {
     <li className="plan-part" data-unread={part.read ? undefined : true}>
       <div className="plan-part-head">
         <h4 className="part-title" id={titleId} tabIndex={-1}>
-          Part {partNumber(part.partId)} <span className="plan-part-place">{placeText(part.place)}</span>
+          <a className="part-link" href={changePage} onClick={linkHandler(navigate, changePage)}>
+            Part {partNumber(part.partId)} <span className="plan-part-place">{placeText(part.place)}</span>
+          </a>
         </h4>
         <ul className="approval-facts" aria-label="Part">
           <li className="tag tag-data">{part.kind}</li>
@@ -492,7 +499,7 @@ function ProtectedChangeCard({ change, sending, navigate, onConfirm }: Protected
     <article className="approval-card card-raised" data-unread={change.read ? undefined : true} aria-labelledby={titleId}>
       <header className="approval-card-head">
         <h3 className="approval-card-title" id={titleId}>
-          <FeatureLink feature={change.feature} navigate={navigate} />
+          <FeatureLink feature={change.feature} anchor="changes" navigate={navigate} />
         </h3>
         <span className="approval-person">
           <PersonAvatar id={change.person} size="card" />
@@ -541,7 +548,7 @@ function ExceptionCard({ item, shownAbove, navigate }: ExceptionProps) {
     <article className="approval-card card-raised" data-unread={item.read ? undefined : true}>
       <header className="approval-card-head">
         <h3 className="approval-card-title">
-          <FeatureLink feature={item.feature} navigate={navigate} />
+          <FeatureLink feature={item.feature} anchor={reviewAnchor(item.reviewId)} navigate={navigate} />
         </h3>
       </header>
       {shownAbove ? (

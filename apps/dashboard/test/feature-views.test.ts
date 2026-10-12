@@ -159,7 +159,7 @@ test("markup in a feature page's declaration, plan, review, checks, tools and re
       return ["changes", "pipeline", "people", "record"].map((view) => renderToStaticMarkup(createElement(FeatureView, { page, viewer: "rahul", navigate() {}, open, view }))).join("");
     }
     export function renderClosed(page) {
-      return renderToStaticMarkup(createElement(FeatureView, { page, viewer: "ines", navigate() {} }));
+      return renderToStaticMarkup(createElement(FeatureView, { page, viewer: "<b>ines</b>", navigate() {} }));
     }`);
   const check = {
     planId: null,
@@ -241,7 +241,7 @@ test("markup in a feature page's declaration, plan, review, checks, tools and re
           breaks: [{ target: "main", statement: MARKUP, nodeId: UNBROKEN, assertion: SCRIPT, error: MARKUP }],
           invariants: [{ scopeId: "tax", id: "tax-per-line", statement: MARKUP, protected: true }],
           note: null,
-          files: [{ path: UNBROKEN, scope: "tax", status: "modified", hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: [`-${MARKUP}`, `+${SCRIPT}`] }], omitted: null }],
+          files: [{ path: UNBROKEN, scope: "tax", status: "modified", hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: [`-${MARKUP}`, `+${SCRIPT}`] }], omitted: null, omittedLines: 3, added: 1, removed: 1 }],
         },
       ],
     },
@@ -259,6 +259,13 @@ test("markup in a feature page's declaration, plan, review, checks, tools and re
   for (const text of ["&lt;script&gt;globalThis.pwned = 2&lt;/script&gt;", "&lt;b&gt;ines&lt;/b&gt;", "&lt;i&gt;hugo&lt;/i&gt;", "&lt;b&gt;rahul&lt;/b&gt;", UNBROKEN]) {
     assert.ok(html.includes(text), text);
   }
+  // Rahul's change page: what Rahul must do, the main change opened first, then Rahul's own places by scope.
+  assert.match(html, /Needs you<\/span><a href="#part-1">Decide #1 &lt;b&gt;tax&lt;\/b&gt;<\/a>/);
+  assert.ok(html.indexOf("Main change") < html.indexOf("Your changes"), "the main change comes first");
+  assert.match(html, /<h3 class="tree-scope-name">tax<\/h3>/);
+  assert.doesNotMatch(html, /Other places/);
+  // A file the answer cut offers the rest, which loads on request.
+  assert.match(html, /3 more lines<\/button>/);
   // A fix written into another fork names its writer and the commit.
   assert.match(html, /Written<\/span><span class="muted">by the originating agent<\/span><code>cccccccccccc<\/code>/);
   // The part waiting on the viewer opens with its file: both sides' line numbers and the marked lines.

@@ -2,12 +2,20 @@
 // fixes, then its files, then each file's hunks. Every node is a fold; only what needs the viewer opens
 // on its own. A place's lines show only to the people the server sends them to (mayReadPartLines,
 // #108); anyone else sees the place, its state and its facts. Every value renders as React text.
+//
+// A colleague's change page (#125) orders the tree for its viewer: the main change, then the viewer's
+// own places grouped by scope, each file naming the changed symbols its lines use, then the other
+// places folded away. A file the page answer cut reads its whole diff from the plan route on expand.
 
-import type { ContractWorkView, FeaturePlanView, FixView, PartFileView, PlanHunk, PlanPartView } from "@penguin/protocol";
+import type { ContractWorkView, FeaturePage, FeaturePlanView, FixView, PartFileView, PlanHunk, PlanPartView } from "@penguin/protocol";
 import { useState } from "react";
 
 import { PersonAvatar } from "./avatar.tsx";
-import { hunkHeader, hunkRows, lineCounts } from "./diff-view.ts";
+import { fetchFeaturePlan } from "./api.ts";
+import { yourChanges, yourReaders } from "./banner-view.ts";
+import { Icon } from "./icon.tsx";
+import { ScopePill } from "./pills.tsx";
+import { hunkHeader, hunkRows } from "./diff-view.ts";
 import { counted, partNumber, partStateText, roundText, shortSha } from "./feature-view.ts";
 import { Fold } from "./fold.tsx";
 import { linkHandler } from "./links.ts";
@@ -16,12 +24,8 @@ import { partAnchor, placeName } from "./pipeline-view.ts";
 import { BreakList } from "./review-card.tsx";
 import { featurePath, personPath } from "./routes.ts";
 
-/** Lines of one file shown before a "more lines" button. */
-export const FILE_LINE_CAP = 80;
 /** Rows of a contract list shown before a "more" button. */
 const LIST_CAP = 8;
-
-
 
 /** The element id of a file's node under its part. */
 export function fileAnchor(partId: string, index: number): string {
@@ -33,12 +37,82 @@ interface TreeProps {
   readonly contract: ContractWorkView | null;
   /** Each part's write into another fork. */
   readonly fixes: readonly FixView[];
+  readonly featureId: string;
   readonly person: string;
+  /** The signed-in person; on a colleague's feature the tree puts their own places first. */
+  readonly viewer: string;
+  /** The running features that read what the feature changes, and each scope's owner for its pill. */
+  readonly dependents: FeaturePage["dependents"];
+  readonly owners: ReadonlyMap<string, string>;
   readonly navigate: (path: string) => void;
 }
 
-export function ChangeTree({ plan, contract, fixes, person, navigate }: TreeProps) {
+export function ChangeTree({ plan, contract, fixes, featureId, person, viewer, dependents, owners, navigate }: TreeProps) {
   const hasContract = plan?.contractDiff != null || (contract?.entries.length ?? 0) > 0 || (contract?.split?.retiring.length ?? 0) > 0;
+  const node = (part: PlanPartView) =>
+    plan === null ? null : <PartNode part={part} plan={plan} fix={fixes.find((fix) => fix.partId === part.partId)} featureId={featureId} person={person} navigate={navigate} />;
+  if (viewer !== person) {
+    const yours = yourChanges({ plan }, viewer);
+    const readers = yourReaders({ dependents }, viewer);
+    const others = (plan?.parts ?? []).filter((part) => part.owner !== viewer);
+    return (
+      <div className="change-tree">
+        <section className="feature-section" aria-labelledby="main-change">
+          <h2 id="main-change" className="team-section-heading">
+            Main change
+          </h2>
+          {hasContract ? <ContractNode plan={plan} contract={contract} /> : <p className="muted">Waiting for the agent's merge plan</p>}
+        </section>
+        <section className="feature-section" aria-labelledby="your-changes">
+          <h2 id="your-changes" className="team-section-heading">
+            Your changes
+          </h2>
+          {readers.length === 0 ? null : (
+            <ul className="your-readers" aria-label="Your features that read it">
+              {readers.map((reader) => (
+                <li key={`${reader.feature} ${reader.consumerScope}`}>
+                  <a className="feature-link" href={featurePath(reader.feature)} onClick={linkHandler(navigate, featurePath(reader.feature))}>
+                    {reader.feature}
+                  </a>
+                  <span className="reads">
+                    <ScopePill name={reader.consumerScope} owner={owners.get(reader.consumerScope) ?? null} />
+                    <span className="reads-arrow">
+                      <Icon name="back" />
+                    </span>
+                    <span className="visually-hidden">reads</span>
+                    <ScopePill name={reader.providerScope} owner={owners.get(reader.providerScope) ?? null} />
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {yours.length === 0 ? (
+            readers.length === 0 ? <p className="muted">None in your scopes</p> : null
+          ) : (
+            yours.map((group) => (
+              <div key={group.scope} className="tree-scope">
+                <h3 className="tree-scope-name">{group.scope}</h3>
+                <ol className="tree">
+                  {group.parts.map(({ part }) => (
+                    <li key={part.partId}>{node(part)}</li>
+                  ))}
+                </ol>
+              </div>
+            ))
+          )}
+        </section>
+        {others.length === 0 ? null : (
+          <Fold id="change-others" className="tree-node" summary={<span className="tree-title">Other places {others.length}</span>}>
+            <ol className="tree">
+              {others.map((part) => (
+                <li key={part.partId}>{node(part)}</li>
+              ))}
+            </ol>
+          </Fold>
+        )}
+      </div>
+    );
+  }
   return (
     <div className="change-tree">
       {!hasContract && plan === null ? (
@@ -51,9 +125,7 @@ export function ChangeTree({ plan, contract, fixes, person, navigate }: TreeProp
             </li>
           ) : null}
           {plan?.parts.map((part) => (
-            <li key={part.partId}>
-              <PartNode part={part} plan={plan} fix={fixes.find((fix) => fix.partId === part.partId)} person={person} navigate={navigate} />
-            </li>
+            <li key={part.partId}>{node(part)}</li>
           ))}
         </ol>
       )}
@@ -198,6 +270,7 @@ interface PartProps {
   readonly part: PlanPartView;
   readonly plan: FeaturePlanView;
   readonly fix: FixView | undefined;
+  readonly featureId: string;
   readonly person: string;
   readonly navigate: (path: string) => void;
 }
@@ -209,7 +282,7 @@ const WRITE_TEXT: Readonly<Record<string, string>> = {
   withdrawn: "Write withdrawn",
 };
 
-function PartNode({ part, plan, fix, person, navigate }: PartProps) {
+function PartNode({ part, plan, fix, featureId, person, navigate }: PartProps) {
   const anchor = partAnchor(part.partId);
   const ownerPath = personPath(part.owner);
   return (
@@ -270,7 +343,12 @@ function PartNode({ part, plan, fix, person, navigate }: PartProps) {
           <ol className="tree">
             {part.files.map((file, index) => (
               <li key={file.path}>
-                <FileNode id={fileAnchor(part.partId, index)} file={file} />
+                <FileNode
+                  id={fileAnchor(part.partId, index)}
+                  file={file}
+                  symbols={[...new Set(part.callers.filter((use) => use.path === file.path).map((use) => use.symbol))]}
+                  load={() => wholeFile(featureId, part.partId, file.path)}
+                />
               </li>
             ))}
           </ol>
@@ -300,8 +378,23 @@ function PartNode({ part, plan, fix, person, navigate }: PartProps) {
 }
 
 /** One file: its path, status and line counts, then its hunks with both sides' line numbers. */
-export function FileNode({ id, file }: { readonly id: string; readonly file: PartFileView }) {
-  const counts = lineCounts(file.hunks);
+/** A file's whole diff from the plan route, which sends a part's lines to the same people the page does. */
+async function wholeFile(featureId: string, partId: string, path: string): Promise<readonly PlanHunk[] | null> {
+  const plan = await fetchFeaturePlan(featureId);
+  return plan?.parts.find((part) => part.partId === partId)?.diff.files?.find((file) => file.path === path)?.hunks ?? null;
+}
+
+interface FileProps {
+  readonly id: string;
+  readonly file: PartFileView;
+  /** The changed contract symbols the file's lines use. */
+  readonly symbols: readonly string[];
+  /** Reads the file's whole diff, for a file the page answer cut; resolves null when it is gone. */
+  readonly load: () => Promise<readonly PlanHunk[] | null>;
+}
+
+/** One file: its path, status and line counts, then its hunks with both sides' line numbers. */
+export function FileNode({ id, file, symbols, load }: FileProps) {
   return (
     <Fold
       id={id}
@@ -310,55 +403,70 @@ export function FileNode({ id, file }: { readonly id: string; readonly file: Par
         <span className="tree-head">
           <code className="tree-path">{file.path}</code>
           <span className="muted">{file.status}</span>
-          <span className="diff-count diff-count-add">+{counts.added}</span>
-          <span className="diff-count diff-count-remove">-{counts.removed}</span>
+          <span className="diff-count diff-count-add">+{file.added}</span>
+          <span className="diff-count diff-count-remove">-{file.removed}</span>
         </span>
       }
     >
-      {file.omitted !== null ? <p className="muted">{file.omitted === "binary" ? "Binary file" : "File over the size limit"}</p> : <Hunks hunks={file.hunks} />}
+      {symbols.length === 0 ? null : (
+        <ul className="chip-list file-symbols" aria-label="Symbols">
+          {symbols.map((symbol) => (
+            <li key={symbol} className="code-chip">
+              {symbol}
+            </li>
+          ))}
+        </ul>
+      )}
+      {file.omitted !== null ? <p className="muted">{file.omitted === "binary" ? "Binary file" : "File over the size limit"}</p> : <Hunks file={file} load={load} />}
     </Fold>
   );
 }
 
-/** A file's hunks in one scrolling block, cut at FILE_LINE_CAP lines with a button for the rest. */
-export function Hunks({ hunks, more }: { readonly hunks: readonly PlanHunk[]; readonly more?: React.ReactNode }) {
-  const [all, setAll] = useState(false);
-  const total = hunks.reduce((sum, hunk) => sum + hunk.lines.length, 0);
-  let budget = all ? Number.POSITIVE_INFINITY : FILE_LINE_CAP;
+type Rest = { readonly kind: "cut" } | { readonly kind: "loading" } | { readonly kind: "failed" } | { readonly kind: "loaded"; readonly hunks: readonly PlanHunk[] };
+
+/** A file's hunks in one block that scrolls inside itself; lines the answer cut load on request. */
+export function Hunks({ file, load }: { readonly file: Pick<PartFileView, "hunks" | "omittedLines">; readonly load: FileProps["load"] }) {
+  const [rest, setRest] = useState<Rest>({ kind: "cut" });
+  const hunks = rest.kind === "loaded" ? rest.hunks : file.hunks;
+  const more = () => {
+    setRest({ kind: "loading" });
+    load().then(
+      (loaded) => setRest(loaded === null ? { kind: "failed" } : { kind: "loaded", hunks: loaded }),
+      () => setRest({ kind: "failed" }),
+    );
+  };
   return (
     <div className="diff-scroll">
       <table className="diff-table">
-        {hunks.map((hunk, index) => {
-          if (budget <= 0) return null;
-          const rows = hunkRows(hunk).slice(0, budget);
-          budget -= rows.length;
-          return (
-            <tbody key={index}>
-              <tr className="diff-hunk">
-                <td colSpan={3}>{hunkHeader(hunk)}</td>
+        {hunks.map((hunk, index) => (
+          <tbody key={index}>
+            <tr className="diff-hunk">
+              <td colSpan={3}>{hunkHeader(hunk)}</td>
+            </tr>
+            {hunkRows(hunk).map((row, line) => (
+              <tr key={line} className={`diff-row diff-${row.kind}`}>
+                <td className="diff-number">{row.old ?? ""}</td>
+                <td className="diff-number">{row.new ?? ""}</td>
+                <td className="diff-text">
+                  <span className="diff-mark" aria-label={row.kind === "add" ? "added" : row.kind === "remove" ? "removed" : undefined}>
+                    {row.kind === "add" ? "+" : row.kind === "remove" ? "-" : " "}
+                  </span>
+                  {row.text}
+                </td>
               </tr>
-              {rows.map((row, line) => (
-                <tr key={line} className={`diff-row diff-${row.kind}`}>
-                  <td className="diff-number">{row.old ?? ""}</td>
-                  <td className="diff-number">{row.new ?? ""}</td>
-                  <td className="diff-text">
-                    <span className="diff-mark" aria-label={row.kind === "add" ? "added" : row.kind === "remove" ? "removed" : undefined}>
-                      {row.kind === "add" ? "+" : row.kind === "remove" ? "-" : " "}
-                    </span>
-                    {row.text}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          );
-        })}
+            ))}
+          </tbody>
+        ))}
       </table>
-      {!all && total > FILE_LINE_CAP ? (
-        <button type="button" className="button quiet show-more" onClick={() => setAll(true)}>
-          {counted(total - FILE_LINE_CAP, "more line")}
-        </button>
+      {file.omittedLines === 0 || rest.kind === "loaded" ? null : rest.kind === "failed" ? (
+        <p className="notice" role="alert">
+          Please reload the page to see the rest
+        </p>
       ) : (
-        more
+        // While the lines load the button keeps focus and refuses presses through aria-disabled.
+        <button type="button" className="button quiet show-more" aria-disabled={rest.kind === "loading"} onClick={() => rest.kind === "loading" || more()}>
+          {rest.kind === "loading" ? "Loading" : counted(file.omittedLines, "more line")}
+        </button>
       )}
     </div>
   );
