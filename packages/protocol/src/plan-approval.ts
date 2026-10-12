@@ -12,8 +12,8 @@
 //    the check runner accepted it, and every row of its form says the invariant holds.
 // 3. Side by side. That review's run shows no difference on a protected invariant.
 // 4. Protected paths. The part's diff touches no path a scope's owner protects in `penguin/scopes.json`.
-// 5. Place. Every file the diff changes lies in the part's scopes and holds a caller of a changed
-//    contract symbol or a test the change breaks there.
+// 5. Place. Every file the diff changes lies in the part's scopes, and a fix commit changes no file
+//    outside them.
 //
 // Admin mode, a project setting, makes every part need a person, and an author's reversal of
 // Penguin's approval makes that revision need them. The break limit (PRD 4.2 step 4) counts the parts
@@ -110,12 +110,6 @@ export interface PartEvidence {
   readonly adminMode: boolean;
 }
 
-/** The test file of a pytest node ID: `tax/tests/test_invoice.py::test_x` is `tax/tests/test_invoice.py`. */
-function nodeFile(nodeId: string): string {
-  const at = nodeId.indexOf("::");
-  return at === -1 ? nodeId : nodeId.slice(0, at);
-}
-
 function testReasons(part: Pick<PlanPart, "scopes" | "tests" | "breaks">): PartRoutingReason[] {
   const tests = part.tests;
   if (tests === undefined || tests === null) {
@@ -170,15 +164,20 @@ function reviewReasons(scopes: readonly string[], evidence: PartEvidence): PartR
   return reasons;
 }
 
-/** The files the part may change: those holding a caller of a changed symbol or a test the change breaks. */
-function placeReasons(part: Pick<PlanPart, "scopes" | "diff" | "callers" | "breaks">): PartRoutingReason[] {
+/**
+ * The files the part may change: its place's scopes. For code on main that is the scope's paths, tests
+ * included, since a fix that moves a scope's own tests onto the new API stays inside the scope. For a
+ * running feature it is the scopes the feature's own changes reach, where its patch must lie. A
+ * commit that changes anything outside them, or a part whose outside files were never recorded,
+ * leaves its place.
+ */
+function placeReasons(part: Pick<PlanPart, "scopes" | "diff">): PartRoutingReason[] {
   const outside = part.diff.outside;
   if (outside === undefined) return [{ kind: "outside_place", file: null }];
   const scopes = new Set(part.scopes);
-  const allowed = new Set([...part.callers.map((use) => use.path), ...part.breaks.map((each) => nodeFile(each.nodeId))]);
   const reasons: PartRoutingReason[] = outside.map((file) => ({ kind: "outside_place", file }));
   for (const file of part.diff.files) {
-    if (file.scopeId === null || !scopes.has(file.scopeId) || !allowed.has(file.path)) reasons.push({ kind: "outside_place", file: file.path });
+    if (file.scopeId === null || !scopes.has(file.scopeId)) reasons.push({ kind: "outside_place", file: file.path });
   }
   return reasons;
 }
@@ -189,7 +188,7 @@ function placeReasons(part: Pick<PlanPart, "scopes" | "diff" | "callers" | "brea
  * one. `protectedFor` names the protected path covering a repository path, or undefined.
  */
 export function partRouting(
-  part: Pick<PlanPart, "scopes" | "diff" | "callers" | "breaks" | "tests" | "revision" | "reversal">,
+  part: Pick<PlanPart, "scopes" | "diff" | "breaks" | "tests" | "revision" | "reversal">,
   evidence: PartEvidence,
   protectedFor: (path: string) => ProtectedPathHit | undefined,
 ): PartRouting {

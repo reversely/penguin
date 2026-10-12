@@ -93,7 +93,8 @@ test("the contract wave's places are the remaining callers of the float API: ord
 });
 
 test("the tax wave's review breaks tax-per-line on the whole-order step and holds on the per-line revision", () => {
-  const reviews = preview.reviews.list("money-tax");
+  // Mei's agent also reviews the invoicing part of the same wave; Rahul's reviews are the tax ones.
+  const reviews = preview.reviews.list("money-tax").filter((review) => review.scopeId === "tax");
   assert.equal(reviews.length, 2);
   const [whole, perLine] = reviews;
   assert.ok((whole?.record?.sideBySide.totals.differing ?? 0) > 0);
@@ -123,15 +124,16 @@ test("a wave whose own change writes a protected file asks the file's protector,
   }
 });
 
-test("each stored wave's part goes to its author, and Rahul's tax review still goes to Rahul", async () => {
-  // Neither part's fix is under the checkpoint its facts run tested, and neither author's agent reviewed it.
+test("Penguin approves each stored wave's clean part, and Rahul's tax review still goes to Rahul", async () => {
+  // Each part's trial passes its scope's tests with the fix in place, the scope's agent submits the
+  // fixture's form and the trial accepts it, and each fix stays inside its scope, tests included.
   const decided = [];
   for (const wave of WAVES) {
     for (const part of (await preview.plan(wave.id))?.parts ?? []) decided.push([part.partId, part.owner, part.approvedBy]);
   }
   assert.deepEqual(decided, [
-    ["money-checkout/v1#1", "lena", "lena"],
-    ["money-tax/v2#1", "mei", "mei"],
+    ["money-checkout/v1#1", "lena", "penguin"],
+    ["money-tax/v2#1", "mei", "penguin"],
   ]);
   assert.deepEqual(preview.inbox.items("rahul").map((item) => [item.reason, item.issueId]), [["review_exception", "money-tax/tax"]]);
 });

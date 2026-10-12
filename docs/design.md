@@ -409,7 +409,7 @@ reason too:
 | Review | The newest review of each of the part's scopes was submitted on the plan's checkpoint. The check runner accepted it. Every row says the invariant holds | The feature's reviews (`review-submit.ts`), each form the part's trial ran read from that trial |
 | Side by side | That review's run shows no difference on a protected invariant | The review's exceptions |
 | Protected paths | No file of the diff lies under a path a scope's owner protects in `penguin/scopes.json` | The scope map |
-| Place | Every changed file lies in the part's scopes and holds a caller of a changed contract symbol or a test the change breaks there | `PlanPart.diff.files`, `diff.outside`, `callers` and `breaks` |
+| Place | Every changed file lies in the part's scopes, and a fix commit changes no file outside them. For code on main the place is the scope's paths, tests included: a fix that moves the scope's own tests onto the new API stays inside the scope. For a running feature it is the scopes its own changes reach, where its patch must lie. The place never widens beyond the part's scopes | `PlanPart.diff.files`, `diff.outside` and `scopes` |
 
 - **Which fixes a run has tested.** Each part revision's trial builds the tree with the fix in place
   and runs the part's scopes' tests and reviews on it ([Part trials](#part-trials)). Once the trial
@@ -946,8 +946,9 @@ differently.
    more lines".
 4. **Named risky inputs.** The form lists inputs the reviewer expects to behave differently. Penguin
    runs them against the old code and the new code. It attaches the results.
-5. **Stored data rule.** If the contract diff shows that stored data changes meaning or shape, the
-   plan needs a migration, a backfill or a cutover marker before anyone can approve it.
+5. **Stored data rule.** If the contract diff shows that stored data changes meaning or shape, each
+   part whose scope reads that data needs a migration, a backfill or a cutover marker before anyone
+   can approve it. A part whose scope reads none of it reviews normally (#132).
 
 #### Invariants and examples
 
@@ -998,7 +999,7 @@ runs evidence. `validateReviewForm` (`packages/protocol`) refuses a form with ea
 | `no_evidence` | A row has no evidence, whatever its verdict |
 | `invalid_evidence`, `evidence_not_found` | Evidence is malformed, or the fork lacks it |
 | `unknown_without_test` | An `unknown` row cites no test |
-| `stored_data_without_marker` | The contract diff shows a stored data shape changed and the form names no marker |
+| `stored_data_without_marker` | The contract diff shows a stored data shape changed that the reviewing scope reads, and the form names no marker |
 | `invalid_form` | A field is missing, unknown or over its limit, such as 600 characters of evidence or 64 KiB of one input's arguments |
 
 #### Submitting a review
@@ -1046,7 +1047,12 @@ runner's own list of exceptions. When `reviewExceptions` raises one, the scope's
 
 The runner's review (`penguin-bridge review`, [bridge-and-runner.md](bridge-and-runner.md#side-by-side-runs))
 checks the form again against the fork's Git objects. It makes the contract diff with
-`analysis:python-impact` and applies the stored data rule to its stored data shapes. It then runs
+`analysis:python-impact` and applies the stored data rule to the changed stored data shapes the
+reviewing scope reads: the same analysis searches every file of the scope in the fork, changed or
+not, for a use of each shape or one of its members (`shapesRead`), and the record's `storedShapes`
+lists only those. On identity unification, Priya's change reshapes `Profile`. Messaging reads
+`Profile` and `Profile.get`, so Sam's form needs a marker; analytics reads only `IdentityMap` and
+`resolve()`, so Jun's does not. It then runs
 the scope's examples files and the form's risky inputs on main and on the fork through
 `analysis:side-by-side`. Inputs reach the scope's code as JSON data built into the parameter types.
 Each input is checked against the function's signature before any input runs.
@@ -1115,14 +1121,19 @@ A trial still running, one of another revision, or none gives no evidence.
 
 The trial uses the plan's checkpoint. A later checkpoint of the originating feature is outside the
 trial until a new plan is proposed on it. On the helpful-fix fixture Jun's and Sam's fixes import
-`start_of_local_day`, which Priya adds in the commit after her plan's checkpoint, so their trials on
-that checkpoint fail.
+`start_of_local_day`, so Priya's agent proposes the plan at the checkpoint that adds it, as PRD case 2
+orders it. Both trials then pass and Penguin approves both parts. Proposed one checkpoint earlier,
+both trials failed on the missing import.
 
 On the identity-unification fixture Jun's form can cite
 `analytics/tests/test_identity.py::test_shared_device_split` and name the cutover marker
 `analytics/retention.py::person_id_cutover`. Both exist only in Jun's fork with the fix of Jun's
 part. The review of Priya's checkpoint refuses the form with `evidence_not_found`. The review on the
-trial of Jun's part accepts it, with the stored data rule satisfied by the marker (`tests/integration/part-trial.test.ts`).
+trial of Jun's part accepts it: Jun's patch adds a `cutover` field to the stored `RetentionDashboard`,
+which analytics reads, and the marker answers it (`tests/integration/part-trial.test.ts`). The
+fixture's own form names that marker, so on the trial of the analytics part on main, whose tree
+lacks Jun's file, it is refused with `evidence_not_found`. Sam's form names no marker and messaging
+reads the reshaped `Profile`, so both of Sam's trials refuse it with `stored_data_without_marker`.
 
 ## Exceptions
 

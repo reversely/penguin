@@ -17,7 +17,7 @@ the same commit SHAs.
 | `owner-priya-checkpoint` (tag) | Priya | `start_of_day()` returns midnight UTC of the UTC day. Two events recorded at one instant with different offsets fall into one daily ingestion batch. `ingestion/tests/test_batches.py` adds `test_events_at_one_instant_share_a_batch`. |
 | `owner-jun-checkpoint` (tag) | Jun | The weekly activity report in `analytics/weekly.py` with `test_weekly.py`. The report converts each event to its user's UTC offset and calls `start_of_day()`. The penguin files add the contract `weekly_report` and its examples file. |
 | `owner-sam-checkpoint` (tag) | Sam | Reminder scheduling in `messaging/reminders.py` with `test_reminders.py`. The scheduler converts the current time to the contact's UTC offset and adds the reminder hour to `start_of_day()`. `reminder_times()` lists each contact's next reminder as text. The penguin files add both contracts and the examples file. |
-| `owner-priya` | Priya | On `owner-priya-checkpoint`: `start_of_local_day(moment, utc_offset)` in `shared/dates.py`, declared as a contract |
+| `owner-priya`, tagged `owner-priya-local-day` | Priya | On `owner-priya-checkpoint`: `start_of_local_day(moment, utc_offset)` in `shared/dates.py`, declared as a contract. Priya's merge plan is proposed at this checkpoint |
 | `owner-jun` | Jun | On `owner-jun-checkpoint`: the weekly report buckets events with `start_of_local_day()` |
 | `owner-sam` | Sam | On `owner-sam-checkpoint`: reminder scheduling starts from `start_of_local_day()` |
 
@@ -64,17 +64,19 @@ In the approved design ([design.md](design.md#procedure)) this case runs as foll
    Jun's weekly report and Sam's reminders as callers.
 2. **Plan.** The signature stays the same, so the contract diff alone shows nothing. Penguin's
    side-by-side run shows `start_of_day()` returning a different day for users west of UTC, which
-   makes the change a behaviour change. Priya's agent adds `start_of_local_day()` in its own feature.
-   It proposes switching Jun's and Sam's calls to the new helper. Each new call also passes the
+   makes the change a behaviour change. Priya's agent adds `start_of_local_day()` in its own feature
+   and reports that commit, `owner-priya-local-day`, as its checkpoint. It then proposes switching Jun's and Sam's calls to the new helper. Each new call also passes the
    user's offset, so the switch is a behavioural fix that Priya's agent writes, not a codemod.
-3. **Advance notice.** Jun and Sam each approve their part. Their review forms cite the two tests in
-   [Expected failures](#expected-failures).
+3. **Advance notice.** Jun's and Sam's agents each review their part. Each part's trial tree, the
+   affected fork with the switch applied and `owner-priya-local-day` merged in, holds the helper, so
+   both scopes' tests pass and both forms are accepted. Every check is clean, so Penguin approves
+   both parts and tells Jun and Sam.
 4. **Build.** Priya's agent writes the switch into Jun's and Sam's existing forks. Today Jun and Sam
    write the switch themselves (`owner-jun`, `owner-sam`), so those commits are the expected result.
    A pure rename of `start_of_day`, with no new argument, is mechanical; #94's exit check shows a
    LibCST codemod making that rename in every affected fork with no agent.
 5. **Block promotion.** One promotion. Neither Jun's report nor Sam's reminders ever runs on the UTC
-   helper. Jun and Sam are each asked once, for approval.
+   helper. Neither Jun nor Sam is asked; each is told of Penguin's approval.
 
 ## Invariants, contracts and features
 
@@ -104,7 +106,9 @@ the side-by-side run encodes a returned `datetime` without its value.
 Messaging declares `Contact` and `local_timezone`. Priya's second commit adds `start_of_local_day`.
 
 `features.json` lists Priya's feature "Start each day at UTC midnight in start_of_day" as the
-originating feature on the fork `owner-priya`. Jun's weekly report (`owner-jun`) and Sam's reminder
+originating feature on the fork `owner-priya`. Its second commit, tagged `owner-priya-local-day`,
+carries `"plan": true`: the preview seed (`scripts/preview/seed.ts`) reports it as Priya's checkpoint
+and proposes the plan there, as PRD case 2 orders it. Jun's weekly report (`owner-jun`) and Sam's reminder
 scheduling (`owner-sam`) are the running features. Jun's checkpoint adds the contract `weekly_report`
 with its examples file. Sam's checkpoint adds `next_reminder` and `reminder_times` with theirs. Jun's
 examples entry goes first in `penguin/invariants.json` and Sam's goes last, so the two forks merge

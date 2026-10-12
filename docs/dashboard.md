@@ -323,17 +323,21 @@ approval of each part whose checks are clean and each person's decision on the r
 On identity unification the plan is stored with four parts: Priya's fix commits for analytics' and
 messaging's code on main, and the patches for Jun's and Sam's forks. Jun's and Sam's agents submit
 the fixture's review forms from `examples/identity-unification/reviews/`. Each part's trial runs the
-forms on its trial tree ([design.md](design.md#part-trials)). Penguin approves none of the four:
-both reviews are refused for a stored data change with no marker. Sam approves both of Sam's parts.
-Jun's review raises the tablet invariant, so Jun's two parts wait on Jun. On the helpful fix the plan
-holds the patches for Jun's weekly report and Sam's reminders. Both reviews hold on the trial trees,
-with no difference on the 2 recorded examples each fork declares. Each feature's tests fail on its
-trial tree: each patch imports `start_of_local_day`, which Priya adds after the plan's checkpoint.
-Penguin approves neither. Jun and Sam each approve their own part. On money in minor units the one-block plan is returned
+forms on its trial tree ([design.md](design.md#part-trials)). Penguin approves none of the four.
+Sam's review is refused on both of Sam's trial trees with `stored_data_without_marker`: messaging
+reads the reshaped `Profile` and Sam's form names no marker. Sam approves both of Sam's parts. Jun's
+form names the cutover marker of Jun's fork; it is accepted on the trial of Jun's own part and
+refused with `evidence_not_found` on the analytics part on main. The tablet invariant reaches Jun, so
+Jun's two parts wait on Jun. On the helpful fix Priya's agent proposes the plan at the checkpoint
+that adds `start_of_local_day`, and the plan holds the patches for Jun's weekly report and Sam's
+reminders. Each feature's tests pass on its trial tree and both reviews hold, with no difference on
+the 2 recorded examples each fork declares. Penguin approves both parts, and Jun and Sam each get a
+`penguin_approved` item. On money in minor units the one-block plan is returned
 over the default break limit of 10 and stays in Ines's inbox. The seed then runs the seven waves of
 [case-study-money.md](case-study-money.md): each wave opens from main as the wave before left it. The
-seed approves each overlapping start. Penguin approves no stored part, so Lena and Mei approve
-theirs ([case-study-money.md](case-study-money.md#what-it-took)). The seed then moves main to the
+seed approves each overlapping start. Lena's and Mei's agents submit the fixture's forms for
+promotions and invoicing, and Penguin approves both stored parts
+([case-study-money.md](case-study-money.md#what-it-took)). The seed then moves main to the
 wave's head. Rahul's tax review raises the broken `tax-per-line` invariant on the tax wave's first
 checkpoint and holds on its revision. The contract wave's plan is returned with 24 parts needing a person
 and stays in Ines's inbox beside the one-block plan.

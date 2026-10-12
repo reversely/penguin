@@ -227,19 +227,23 @@ describe("the review harness on identity unification", () => {
     ]);
   });
 
-  test("a stored shape change needs a migration, backfill or cutover marker", async () => {
+  test("a stored shape change needs a marker only in a scope that reads the shape", async () => {
     const analyzer = pythonImpactAnalyzer({ repoPath: repo, python: PYTHON });
+    // Priya's checkpoint changes the Profile dataclass. Analytics reads only IdentityMap and resolve(),
+    // so its form needs no marker; messaging reads Profile and Profile.get(), so its form does.
     const breaks = { invariant: TABLET, verdict: "breaks", evidence: ["ingestion/identity_map.py::IdentityMap::observe"], storedData: "Past days lose people" };
-    const form = { rows: [breaks, orderRow] };
-    const without = await runReview(options({ analyzer }), { base: main, fork: forks.checkpoint, scope: ANALYTICS, form });
-    assert.ok(without.storedShapes?.some((shape) => shape.symbol.endsWith("Profile")));
-    assert.deepEqual(without.refusals.map((refusal) => refusal.code), ["stored_data_without_marker"]);
-
-    const marked = { ...form, storedDataMarker: { kind: "cutover", evidence: "ingestion/identity_map.py::IdentityMap::person_id" } };
-    const accepted = await runReview(options({ analyzer }), { base: main, fork: forks.checkpoint, scope: ANALYTICS, form: marked });
-    assert.equal(accepted.state, "accepted", formatReviewResult(accepted));
+    const analytics = await runReview(options({ analyzer }), { base: main, fork: forks.checkpoint, scope: ANALYTICS, form: { rows: [breaks, orderRow] } });
+    assert.deepEqual(analytics.storedShapes, []);
+    assert.equal(analytics.state, "accepted", formatReviewResult(analytics));
     // A broken invariant goes to the scope's owner, as does the protected difference.
-    assert.deepEqual(accepted.exceptions.map((exception) => exception.kind).sort(), ["broken_invariant", "protected_difference"]);
+    assert.deepEqual(analytics.exceptions.map((exception) => exception.kind).sort(), ["broken_invariant", "protected_difference"]);
+
+    const without = await runReview(options({ analyzer }), { base: main, fork: forks.checkpoint, scope: "messaging", form: { rows: [] } });
+    assert.deepEqual(without.storedShapes?.map((shape) => shape.symbol), ["ingestion.identity_map.Profile"]);
+    assert.deepEqual(without.refusals.map((refusal) => refusal.code), ["stored_data_without_marker"]);
+    const marked = { rows: [], storedDataMarker: { kind: "cutover", evidence: "ingestion/identity_map.py::IdentityMap::person_id" } };
+    const accepted = await runReview(options({ analyzer }), { base: main, fork: forks.checkpoint, scope: "messaging", form: marked });
+    assert.equal(accepted.state, "accepted", formatReviewResult(accepted));
   });
 
   test("penguin-bridge review prints the verdict and writes the record", async () => {

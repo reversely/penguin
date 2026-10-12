@@ -14,8 +14,8 @@ not work yet), **rule needed** (the procedure does not yet say what should happe
 | Open: Priya's feature starts; Jun's and Sam's features listed as readers | works | Walkthrough case 1 (`docs/progress/100/identity-unification/`) |
 | Sort: `person_id` additive; `resolve()`, `profile()` behaviour changes; merge plan kept | works | #116 fixture test |
 | Plan: four parts stored from the fixture | works | #106 |
-| Sam's parts approved by Penguin | gap | Both reviews refused with `stored_data_without_marker` (#126) |
-| Jun's tablet invariant routes to Jun; two revisions | works | Walkthrough case 1, frames 05 to 07 |
+| Sam's parts approved by Penguin | rule needed | The stored-data rule now asks only a scope that reads a changed stored shape (#126). Messaging reads the reshaped `Profile` and Sam's form names no marker, and no marker exists in Sam's trees, so both of Sam's trials refuse the form with `stored_data_without_marker` and Sam approves in person. Whether a marker in another part (Jun's cutover) answers it is open (`apps/worker/test/preview-approvals.test.ts`, `tests/integration/part-trial.test.ts`) |
+| Jun's tablet invariant routes to Jun; two revisions | works | Walkthrough case 1, frames 05 to 07. In the preview, Jun's form is accepted on the trial of Jun's own part with the cutover marker it names, and the broken invariant routes both of Jun's parts to Jun (#126) |
 | Fixes written into Jun's and Sam's forks | works | #91, walkthrough frame 08 |
 | Land as one block | works | Walkthrough case 1 promoted, main green |
 
@@ -24,8 +24,8 @@ not work yet), **rule needed** (the procedure does not yet say what should happe
 | Step | State | Evidence or ticket |
 |---|---|---|
 | Sort: `start_of_day` behaviour change, merge plan kept | works | #116 fixture test |
-| Plan proposed after `start_of_local_day()` exists | gap | Plan proposed one checkpoint early; trials fail (#126) |
-| Jun's and Sam's parts approved by Penguin | gap | Blocked by the row above (#126) |
+| Plan proposed after `start_of_local_day()` exists | works | The plan is proposed at `owner-priya-local-day` (#126, `apps/worker/test/preview-approvals.test.ts`) |
+| Jun's and Sam's parts approved by Penguin | works | Preview: 2 of 2 parts approved by Penguin; both trials pass and both forms hold (#126) |
 | Land as one block | works | Walkthrough case 2 promoted |
 
 ## Case 3: dependency bump (merge plan)
@@ -48,6 +48,7 @@ not work yet), **rule needed** (the procedure does not yet say what should happe
 | Migrate: migration parts proposed per owner group | rule needed | Penguin computes the groups (`migrationGroups`) but nothing proposes the plans (#131) |
 | Migration edits run by each owner's steward or builder | gap | #128, #129 |
 | Rahul's tax part routes to Rahul | works | #107, #122 |
+| Clean wave parts approved by Penguin | works | Preview: Lena's promotions part and Mei's invoicing part, 2 of 2, with the fixture's forms and each scope's own tests inside its place (#126, `apps/worker/test/money-waves.test.ts`) |
 | Jun confirms the protected revenue report | works | #112 |
 | Contract when no caller is left | partial | #117 counts callers after each promotion and proposes at zero; the money fixture still has 59 callers after the waves (14 on main, 45 in readers' own changes), moved by #131 |
 | Contract after the originating feature has landed | rule needed | #131 (steward of the defining scope's DRI) |
@@ -58,7 +59,7 @@ not work yet), **rule needed** (the procedure does not yet say what should happe
 | Question | State | Ticket |
 |---|---|---|
 | Who makes an edit when no session is open | gap | #128, #129 |
-| Does the stored-data rule apply to every reviewing scope or only those that read the changed data | rule needed | #132 |
+| Does the stored-data rule apply to every reviewing scope or only those that read the changed data | works | Only those that read it, per the impact graph of the reviewing scope (#126, #132's first rule) |
 | May a plan's patch use a symbol its checkpoint does not have | rule needed | #132 |
 | Two plans writing into the same fork at once | rule needed | #133 |
 | A failed runner pass holds its run 30 minutes | gap | #120 |

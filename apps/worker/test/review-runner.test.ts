@@ -95,7 +95,7 @@ const BREAKS_FORM = {
   ],
   storedDataMarker: { kind: "cutover", evidence: "ingestion/identity_map.py::IdentityMap::person_id" },
 };
-/** A form that passes at submission but names no marker for the stored shape the contract diff finds. */
+/** A form that passes at submission and names no stored data marker. */
 const HOLDS_FORM = {
   rows: [{ invariant: TABLET, verdict: "holds", evidence: ["analytics/tests/test_dau.py::test_distinct_users_each_count"], storedData: "Past days keep their counts" }, ORDER_ROW],
 };
@@ -310,7 +310,8 @@ describe("the check runner's reviews", () => {
     assert.deepEqual(set?.differing.map((entry) => [entry.name, entry.main, entry.fork]), [
       ["three patrons on one library tablet", { status: "returned", value: { "2026-01-05": 3 } }, { status: "returned", value: { "2026-01-05": 1 } }],
     ]);
-    assert.ok(review?.record?.storedShapes?.some((shape) => shape.symbol.endsWith("Profile")));
+    // Priya's change reshapes Profile, which analytics never reads, so the stored data rule asks it for nothing.
+    assert.deepEqual(review?.record?.storedShapes, []);
     // PRD 4.3 step 4: the broken invariant and the protected difference route to the scope's owner.
     assert.deepEqual(review?.exceptions.map((exception) => exception.kind).sort(), ["broken_invariant", "protected_difference"]);
     assert.equal(result.reviews[0]?.reply?.routedTo, deployment.owner(ANALYTICS));
@@ -324,16 +325,16 @@ describe("the check runner's reviews", () => {
     assert.deepEqual(deployment.reported, [review?.id]);
   });
 
-  test("the runner refuses a form the contract diff shows needs a marker, with the record attached", async () => {
+  test("the runner accepts a form with no marker when its scope reads no changed stored shape", async () => {
     assert.equal((await deployment.submit(HOLDS_FORM)).state, "pending");
     const result = await deployment.pass("runner-holds");
     const [review] = deployment.reviews.list(FEATURE);
-    assert.equal(review?.state, "refused");
-    assert.deepEqual(review?.refusals.map((refusal) => refusal.code), ["stored_data_without_marker"]);
+    assert.equal(review?.state, "accepted");
+    assert.deepEqual(review?.refusals, []);
     assert.equal(review?.record?.sideBySide.totals.differing, 1);
-    // A refused form raises no broken invariant; the protected difference still reaches Jun.
+    // The form says the tablet invariant holds; the protected difference still reaches Jun.
     assert.deepEqual(review?.exceptions.map((exception) => exception.kind), ["protected_difference"]);
-    assert.equal(result.reviews[0]?.reply?.state, "refused");
+    assert.equal(result.reviews[0]?.reply?.state, "accepted");
   });
 
   test("a form refused at submission is never claimed", async () => {

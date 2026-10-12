@@ -182,3 +182,25 @@ test("a trial runs the part's tests and each form on its tree, and its report is
   assert.deepEqual(report.tests.map((each) => [each.commandId, each.status]), [["test:messaging", "passed"]]);
   assert.deepEqual(report.reviews.map((each) => [each.reviewId, each.record.base, each.record.fork]), [[7, request.target.sha, report.tree]]);
 });
+
+test("on the fixture's own forms the stored data rule asks only a scope that reads the changed shape for a marker", async () => {
+  // Jun's patch adds the cutover field to RetentionDashboard, which analytics reads, and Jun's form
+  // names the cutover marker the patch adds. Sam's audience reads Priya's reshaped Profile, and Sam's
+  // form names no marker, so the rule still asks Sam's agent for one.
+  const options = reviewOptions(identity);
+  const formOf = async (scope: string) => JSON.parse(await readFile(join(REPO_ROOT, "examples", "identity-unification", "reviews", `${scope}.json`), "utf8")) as ReviewForm;
+  const trial = async (feature: string, scope: string) => {
+    const request = featureTrial(identity, feature, scope, [scope]);
+    const built = await buildTrialTree(identity.repo, request, root);
+    assert.equal(built.status, "built");
+    return runReview(options, { base: request.target.sha, fork: built.status === "built" ? built.tree : "", scope, form: await formOf(scope) });
+  };
+  const jun = await trial("jun", "analytics");
+  assert.deepEqual(jun.storedShapes?.map((shape) => shape.symbol), ["analytics.retention.RetentionDashboard"]);
+  assert.equal(jun.state, "accepted", JSON.stringify(jun.refusals));
+  // The tablet invariant the form reports broken still reaches Jun.
+  assert.deepEqual(jun.exceptions.map((exception) => exception.kind).sort(), ["broken_invariant", "protected_difference"]);
+  const sam = await trial("sam", "messaging");
+  assert.deepEqual(sam.storedShapes?.map((shape) => shape.symbol), ["ingestion.identity_map.Profile"]);
+  assert.deepEqual(sam.refusals.map((refusal) => refusal.code), ["stored_data_without_marker"]);
+});

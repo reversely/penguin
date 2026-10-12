@@ -916,7 +916,7 @@ interface IdentityFeature {
   readonly role: "originating" | "running";
   readonly fork: string;
   readonly area: { readonly scopes: readonly string[] };
-  readonly commits: readonly { readonly tag?: string; readonly fix?: { readonly scope: string } }[];
+  readonly commits: readonly { readonly tag?: string; readonly plan?: boolean; readonly fix?: { readonly scope: string } }[];
 }
 
 /**
@@ -939,6 +939,10 @@ async function featuresFixture(preview: PreviewProject): Promise<void> {
     await preview.step(`checkpoint ${feature.id}`, () => preview.checkpoint(feature.id, feature.commits[0]?.tag as string));
   }
   const origin = features.find((feature) => feature.role === "originating") as IdentityFeature;
+  // The originating agent proposes its plan at the commit features.json marks `plan`, when that is a
+  // later checkpoint: on the helpful fix, Priya's agent adds start_of_local_day() first (PRD case 2).
+  const planAt = origin.commits.find((commit) => commit.plan === true)?.tag;
+  if (planAt !== undefined && planAt !== origin.commits[0]?.tag) await preview.step(`checkpoint ${origin.id} ${planAt}`, () => preview.checkpoint(origin.id, planAt));
   await preview.step("whats_near", () => preview.whatsNear(origin.id));
   if (preview.runnerTools) {
     await preview.step("impact", () => preview.runnerTool(origin.id, "impact"));
@@ -1135,6 +1139,17 @@ async function moneyMinorUnits(preview: PreviewProject): Promise<void> {
     }
     preview.waveOutcomes.push({ feature: wave.id, outcome: proposed });
     if (proposed.status !== "stored" || last) break;
+    // The agent of each part's scope reviews it with the fixture's form, `reviews/<scope>.json`, from a
+    // feature of the scope's owner that is running; a scope with no form gets no review.
+    for (const part of (await preview.plan(wave.id))?.parts ?? []) {
+      for (const scope of part.scopes) {
+        const file = join(ROOT, "examples", preview.fixture, "reviews", `${scope}.json`);
+        const reviewer = early.find((feature) => feature.owner === preview.scopeMap.scopes.get(scope)?.ownerId);
+        if (!existsSync(file) || reviewer === undefined) continue;
+        const form = JSON.parse(await readFile(file, "utf8")) as ReviewForm;
+        await preview.step(`submit_review ${scope} on ${wave.id}`, () => preview.review(reviewer.id, wave.id, scope, form));
+      }
+    }
     // Penguin approved each part whose checks are clean; each author approves a part still waiting on
     // them once. Each person whose protected path the wave's own change writes confirms its lines; main
     // moves to the wave's head and the wave has landed.

@@ -14,5 +14,5 @@
     }
   ],
   "riskyInputs": [],
-  "storedDataMarker": null
+  "storedDataMarker": { "kind": "cutover", "evidence": "analytics/retention.py::person_id_cutover" }
 }

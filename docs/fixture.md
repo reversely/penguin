@@ -131,7 +131,9 @@ without a conflict.
 `reviews/analytics.json` and `reviews/messaging.json` hold the review forms Jun's and Sam's agents
 submit on Priya's feature. Jun's form reports `tablet-patrons-separate` as broken. Sam's form reports
 `unsubscribe-holds` as holding. Each row's evidence is the contract the invariant's recorded examples
-run. The builder does not commit the forms.
+run. Jun's form also names the cutover marker `analytics/retention.py::person_id_cutover`, which only
+Jun's fork holds: Jun's fix adds a `cutover` field to the stored `RetentionDashboard`. Sam's form
+names no marker, since Sam's fork holds none. The builder does not commit the forms.
 
 ## Impact and review on this fixture
 
@@ -146,21 +148,24 @@ use the changed symbols, so both forks run tests.
 
 | Review | Base | Fork | Side-by-side differences | Verdict and exceptions |
 |---|---|---|---|---|
-| Analytics | `main` | `owner-priya-checkpoint` | Three patrons on one tablet: 3 people on main, 1 on the fork. Six patrons: 6 and 1. A later login on a published day: that day's count drops from 2 to 1 | Refused with `stored_data_without_marker`. The tablet difference goes to Jun as a `protected_difference` |
-| Analytics | `main` | `owner-priya-limit-five` | Three patrons: 3 and 1. Six patrons: 6 and 2. The risky input of ten patrons: 10 and 6. The published-day example matches main, because `owner-priya-fix-analytics` comes before the limit | Refused with `stored_data_without_marker`. A `protected_difference` goes to Jun |
-| Analytics | `main` | `owner-priya` merged onto `owner-jun` | No example differs on `daily_active_users`. The tablet examples, the published-day example and the risky input match main | Accepted with the cutover marker `analytics/retention.py::person_id_cutover`. No exception |
+| Analytics | `main` | `owner-priya-checkpoint` | Three patrons on one tablet: 3 people on main, 1 on the fork. Six patrons: 6 and 1. A later login on a published day: that day's count drops from 2 to 1 | Refused with `evidence_not_found`: the marker the form names is in Jun's fork only. Analytics reads no changed stored shape, so the stored data rule asks nothing. The tablet difference goes to Jun as a `protected_difference` |
+| Analytics | `main` | `owner-priya-limit-five` | Three patrons: 3 and 1. Six patrons: 6 and 2. The risky input of ten patrons: 10 and 6. The published-day example matches main, because `owner-priya-fix-analytics` comes before the limit | Refused with `evidence_not_found`, as above. A `protected_difference` goes to Jun |
+| Analytics | `main` | `owner-priya` merged onto `owner-jun` | No example differs on `daily_active_users`. The tablet examples, the published-day example and the risky input match main | Accepted, with the cutover marker in the tree. The row Jun's form reports broken goes to Jun as a `broken_invariant` |
 | Messaging, without the contract diff | `owner-sam-checkpoint` | `owner-priya-checkpoint` merged onto it | After an unsubscribe on mobile and a web signup, `subscription_status` gives `device:d1` false and `user:u1` true on the base. The fork gives one subscribed person. `reengagement_audience` returns no address on the base and `a@example.com` on the fork | Accepted. The reported break goes to Sam as a `broken_invariant` |
 | Messaging, without the contract diff | `owner-sam` | `owner-priya` merged onto it | `reengagement_audience` matches on both examples. `subscription_status` gives `device:d1` false and `user:u1` true on the base. The fork gives one person, `device:d1`, not subscribed, through `owner-priya-fix-messaging` | Accepted. No exception |
 
-The messaging reviews run with `--no-diff`. The cutover marker in Jun's review answers the `Profile`
-shape change for the block. `penguin-bridge check` on the three checkpoints passes overlap, merge,
+The messaging reviews run with `--no-diff`. With the contract diff, the stored data rule refuses
+Sam's form on both forks with `stored_data_without_marker`: messaging reads `Profile` and
+`Profile.get`, whose shape Priya's change alters, and the form names no marker. The rule asks only a
+scope that reads a changed stored shape (#132), so analytics, which reads only `IdentityMap` and
+`resolve()`, needs no marker for `Profile`. `penguin-bridge check` on the three checkpoints passes overlap, merge,
 lint and format on every merged tree. It fails `test_shared_device_split` and `test_dau_stable` on
 Jun's merged tree. It fails `test_unsubscribe_survives` on Sam's. On the three fixed heads every
 check passes.
 
 `services/local-bridge/test/review-harness.test.ts` replaces the fixture's invariants file on `main`
 with its own. It checks the same tablet differences, the refusals for missing evidence and the
-stored data rule.
+stored data rule for a scope that reads the changed shape and one that does not.
 
 ## Manual reproduction
 

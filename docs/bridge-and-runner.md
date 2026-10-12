@@ -534,14 +534,15 @@ standard error, so only the report reaches standard output.
 | A contract no scope declares | `invalid`; nothing is imported for it |
 
 A review on the runner runs the whole harness (`review-harness.ts`): it checks the form, makes the
-contract diff for the stored data rule and runs both sides.
+contract diff for the stored data rule, keeping the changed stored shapes the reviewing scope reads,
+and runs both sides.
 
 ```sh
 penguin-bridge review --repo <path> --base main --fork <commit> --scope analytics \
   --form form.json [--out review.json] [--json] [--no-diff]
 ```
 
-The text form prints the verdict with each refusal, the stored shapes the diff found, the
+The text form prints the verdict with each refusal, the changed stored shapes the scope reads, the
 exceptions for the scope's owner and each input that differs, with both outcomes. `--out` writes the
 full record as JSON. `--no-diff` leaves out the contract diff. The command exits 0 when the form is
 accepted and 1 when it is refused. Runner mode runs the same harness on every submitted review

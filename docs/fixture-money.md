@@ -207,6 +207,14 @@ whole-order tax (`tax-per-line` breaks) and one for the revision (both invariant
 name `Order.from_record` as the migration marker, because the contract diff shows the stored shapes
 of `orders.model.Line` and `checkout.cart.CartLine` changing.
 
+It also holds one form for each other scope a wave's plan has a part in, named after the scope, which
+that scope's agent submits on the wave. `invoicing.json` is Mei's: `invoice-matches-charge` holds,
+citing `invoicing/tests/test_invoice.py::test_amount_due_is_sent_in_cents` and
+`invoicing/invoice.py::amount_due_cents`. `promotions.json` is Lena's:
+`discount-keeps-price-positive` holds, citing `promotions/tests/test_stacking.py::test_coupons_stack`
+and `promotions/coupons.py::coupon_percent`. Each cited test and definition exists on the part's
+trial tree. Neither names a marker: neither scope reads a stored shape the wave changes.
+
 ## Checking the case with the bridge
 
 Build into a directory, then run the impact graph on Ines's checkpoint against main, with each

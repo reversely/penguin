@@ -19,7 +19,7 @@ export {
 export type { ImpactAnalyzer, ImpactForkRequest, ImpactRequest, PythonImpactOptions } from "./impact-analysis.ts";
 export { loadReviewConfig, readCommittedFile, runSideBySide, SideBySideError } from "./side-by-side.ts";
 export type { SideBySideOptions, SideBySideRequest } from "./side-by-side.ts";
-export { formatReviewResult, runReview } from "./review-harness.ts";
+export { formatReviewResult, runReview, shapesRead } from "./review-harness.ts";
 export { failureLines, testDocstring, testFunctionName, type FailureLines } from "./test-evidence.ts";
 export {
   checkFactsRequest,

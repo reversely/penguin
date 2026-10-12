@@ -1,8 +1,8 @@
 // The review harness on the check runner (PRD 0.4 section 6): one review of one plan part by the
 // reviewing scope's agent. It reads the scope's invariants from `penguin/invariants.json` on main,
 // checks the form and its evidence against the fork's Git objects, applies the stored data rule to
-// the contract diff, runs the scope's public functions side by side on main and on the fork, and
-// names the exceptions that go to the scope's owner. Every step is deterministic; no step calls a
+// the changed stored shapes the reviewing scope reads, runs the scope's public functions side by
+// side on main and on the fork, and names the exceptions that go to the scope's owner. Every step is deterministic; no step calls a
 // model. The result is a record a feature page or a demo can show as it is.
 
 import {
@@ -12,6 +12,7 @@ import {
   validateReviewForm,
   formatSideBySide,
   REVIEW_SCHEMA_VERSION,
+  type ImpactReport,
   type InvariantView,
   type ReviewForm,
   type ReviewRecord,
@@ -41,6 +42,21 @@ export interface ReviewOptions extends SideBySideOptions {
 /** The record of one review, as runner mode reports it (`ReviewRecord` in `@penguin/protocol`). */
 export type ReviewResult = ReviewRecord;
 
+/** The impact request's one fork: the reviewing scope at the fork commit. */
+const READER = "reviewing-scope";
+
+/**
+ * The changed stored shapes the reviewing scope reads in the fork: a shape counts when a file of the
+ * scope uses it or one of its members, such as `Profile` through `Profile.get`. A scope that reads
+ * none needs no marker, whatever another scope's stored data does.
+ */
+export function shapesRead(report: Pick<ImpactReport, "dataShapes" | "forks">, scope: string): StoredShapeChange[] {
+  const used = (report.forks.find((fork) => fork.id === READER)?.uses ?? []).filter((use) => use.scope === scope).map((use) => use.symbol);
+  return report.dataShapes
+    .filter((shape) => used.some((symbol) => symbol === shape.symbol || symbol.startsWith(`${shape.symbol}.`)))
+    .map((shape) => ({ symbol: shape.symbol, path: shape.path }));
+}
+
 /** Reads each evidence file from the fork; a missing, unreadable or oversized file counts as missing. */
 async function forkFiles(repoPath: string, fork: string, form: ReviewForm): Promise<Map<string, string | null>> {
   const files = new Map<string, string | null>();
@@ -60,8 +76,11 @@ export async function runReview(options: ReviewOptions, request: ReviewRequest):
   let storedShapes: StoredShapeChange[] | null = null;
   const impactStarted = performance.now();
   if (options.analyzer !== undefined) {
-    const report = await options.analyzer({ base: request.base, head: request.fork, forks: [] });
-    storedShapes = report.dataShapes.map((shape) => ({ symbol: shape.symbol, path: shape.path }));
+    // The fork entry searches every file of the reviewing scope in the fork, changed or not, for uses
+    // of the changed symbols: the stored data rule asks for a marker only when the scope reads a
+    // stored shape that changed (#132).
+    const report = await options.analyzer({ base: request.base, head: request.fork, forks: [{ id: READER, sha: request.fork, scopes: [request.scope] }] });
+    storedShapes = shapesRead(report, request.scope);
   }
   const impactMs = performance.now() - impactStarted;
 

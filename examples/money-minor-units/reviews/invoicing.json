@@ -1,0 +1,12 @@
+{
+  "rows": [
+    {
+      "invariant": "invoice-matches-charge",
+      "verdict": "holds",
+      "evidence": ["invoicing/tests/test_invoice.py::test_amount_due_is_sent_in_cents", "invoicing/invoice.py::amount_due_cents"],
+      "storedData": "Invoicing stores no amounts: each invoice is rendered from its order when it is asked for."
+    }
+  ],
+  "riskyInputs": [],
+  "storedDataMarker": null
+}

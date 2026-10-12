@@ -85,7 +85,6 @@ const part = (paths: string[], scopes = ["tax"], overrides: Partial<RoutedPart> 
   scopes,
   revision: 1,
   reversal: null,
-  callers: paths.map((path) => ({ path, line: 3, kind: "call" as const, symbol: "shared.money.price", name: "price", scope: scopes[0] ?? null })),
   breaks: [],
   tests: {
     target: "main",
@@ -186,21 +185,21 @@ test("protected paths: a part that writes one routes to the path's owner", () =>
   });
 });
 
-test("place: a file outside the part's scopes or its callers and breaks sends the part to a person", () => {
+test("place: a part may change any file of its scopes, tests included, and nothing outside them", () => {
   const clean = part(["tax/invoice.py"]);
   const outside = part(["tax/invoice.py"], ["tax"], { diff: { ...clean.diff, outside: ["checkout/cart.py"] } });
   assert.deepEqual(partRouting(outside, evidence([HOLDS]), protectedFor).reasons, [{ kind: "outside_place", file: "checkout/cart.py" }]);
-  // A test file the change does not break and that calls nothing changed is outside the place.
-  const extra = { ...clean.diff, files: [...clean.diff.files, { path: "tax/tests/test_rates.py", scopeId: "tax", status: "modified" as const, hunks: [], omitted: null }] };
-  assert.deepEqual(partRouting(part(["tax/invoice.py"], ["tax"], { diff: extra }), evidence([HOLDS]), protectedFor).reasons, [
-    { kind: "outside_place", file: "tax/tests/test_rates.py" },
-  ]);
-  // The same file is inside when one of its tests is a break of the part.
-  const broken = part(["tax/invoice.py"], ["tax"], {
-    diff: extra,
-    breaks: [{ target: "main", scopeId: "tax", commandId: "test:tax", nodeId: "tax/tests/test_rates.py::test_rate", statement: "rate", statementFrom: "test_name", assertion: null, error: null, fingerprint: null }],
-  });
-  assert.deepEqual(partRouting(broken, evidence([HOLDS]), protectedFor).reasons, []);
+  // A fix that moves the scope's own tests onto the new API stays inside the scope, though the change
+  // breaks none of them and they call nothing changed.
+  const tests = { ...clean.diff, files: [...clean.diff.files, { path: "tax/tests/test_rates.py", scopeId: "tax", status: "modified" as const, hunks: [], omitted: null }] };
+  assert.deepEqual(partRouting(part(["tax/invoice.py"], ["tax"], { diff: tests }), evidence([HOLDS]), protectedFor).reasons, []);
+  // The place never widens beyond the part's scopes: a file of another scope, or of none, is outside.
+  for (const scopeId of ["checkout", null]) {
+    const other = { ...clean.diff, files: [...clean.diff.files, { path: "checkout/cart.py", scopeId, status: "modified" as const, hunks: [], omitted: null }] };
+    assert.deepEqual(partRouting(part(["tax/invoice.py"], ["tax"], { diff: other }), evidence([HOLDS]), protectedFor).reasons, [
+      { kind: "outside_place", file: "checkout/cart.py" },
+    ]);
+  }
   // A part kept before #114 names no files outside its scopes, so Penguin cannot tell.
   const { outside: _unrecorded, ...older } = clean.diff;
   assert.deepEqual(partRouting(part(["tax/invoice.py"], ["tax"], { diff: older }), evidence([HOLDS]), protectedFor).reasons, [{ kind: "outside_place", file: null }]);

@@ -214,12 +214,13 @@ not carry the removal at zero.
 | Callers of the retiring functions after the last migrate wave | 59: 14 on main, 45 in 23 running features |
 
 Penguin approves a part only when each of its checks is clean ([design.md](design.md#penguins-approval-in-the-build)).
-Neither stored part passes. Each part's trial applies its fix commit to main merged with the wave's
-checkpoint ([design.md](design.md#part-trials)). Promotions' tests and invoicing's tests pass on
-those trees. No agent reviewed either part, since the fixture holds no review form for promotions or
-invoicing. Lena's fix also edits `promotions/tests/test_stacking.py`, which holds no caller of a
-changed symbol and no break. Rahul's tax review is a review of
-the tax wave's own change, so its broken invariant still reaches Rahul as a review exception.
+Both stored parts pass, and Penguin approves each. Each part's trial applies its fix commit to main
+merged with the wave's checkpoint ([design.md](design.md#part-trials)). Promotions' tests and
+invoicing's tests pass on those trees. Lena's and Mei's agents each submit a form for their scope,
+citing tests that exist on the trial tree, and each trial accepts it. Lena's fix edits
+`promotions/tests/test_stacking.py` as well as `promotions/stacking.py`; both lie in the promotions
+scope, so the fix stays inside its place. Rahul's tax review is a review of the tax wave's own change,
+so its broken invariant still reaches Rahul as a review exception.
 
 The waves moved the nine scopes on main one or two at a time, with at most one part needing a person
 per plan. The running features' own float calls stay in place until the contract wave, so that wave

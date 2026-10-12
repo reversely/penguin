@@ -1,5 +1,5 @@
 {
-  "$comment": "Commit SHAs a build of this fixture produces. Format: a JSON object with three objects. 'branches' maps each branch build.py creates to its head commit SHA: 'main' holds the base commit, and 'owner-priya', 'owner-jun' and 'owner-sam' each hold one owner's fix commit. 'tags' maps each tag build.py creates to its commit SHA: '<branch>-checkpoint' is the owner's checkpoint before the fix. 'fixes' maps the pytest node ID of each test that fails on the merged checkpoints to the SHA of the commit that makes it pass; each of those commits imports start_of_local_day, which the 'owner-priya' head adds. tests/test_helpful_fix_builder.py checks that a fresh build reproduces every branch and tag SHA; tests/test_helpful_fix_reproduction.py checks the 'fixes' entries.",
+  "$comment": "Commit SHAs a build of this fixture produces. Format: a JSON object with three objects. 'branches' maps each branch build.py creates to its head commit SHA: 'main' holds the base commit, and 'owner-priya', 'owner-jun' and 'owner-sam' each hold one owner's fix commit. 'tags' maps each tag build.py creates to its commit SHA: '<branch>-checkpoint' is the owner's checkpoint before the fix, and 'owner-priya-local-day', the 'owner-priya' head, is Priya's checkpoint with start_of_local_day, where her merge plan is proposed. 'fixes' maps the pytest node ID of each test that fails on the merged checkpoints to the SHA of the commit that makes it pass; each of those commits imports start_of_local_day, which the 'owner-priya' head adds. tests/test_helpful_fix_builder.py checks that a fresh build reproduces every branch and tag SHA; tests/test_helpful_fix_reproduction.py checks the 'fixes' entries.",
   "branches": {
     "main": "12126a36c404d3f2bf6b0951f64541470c7e44bc",
     "owner-priya": "bfedc49f0bd873fe47299c0a12edf5b55e353899",
@@ -8,6 +8,7 @@
   },
   "tags": {
     "owner-priya-checkpoint": "55a4fc22e7ad7914f55937a52723e6573c465e3f",
+    "owner-priya-local-day": "bfedc49f0bd873fe47299c0a12edf5b55e353899",
     "owner-jun-checkpoint": "eaa4ca52af8f297a675d8cf73c9aa5e82be4b46d",
     "owner-sam-checkpoint": "006c6c59893483ec02b67a9a3af8cd63730e6728"
   },
