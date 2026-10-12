@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { basename } from "node:path";
 
-import { changedPathsBetween, commitMergedTree, isObjectId, simulateMerge } from "@penguin/git-analysis";
+import { changedPathsBetween, commitMergedTree, isObjectId, runGit, simulateMerge } from "@penguin/git-analysis";
 import {
   BLOCK_CHECK_LIMITS,
   MAIN_TARGET,
@@ -85,6 +85,12 @@ export interface CombinedRunRequest {
    * for it: main moves to the checked tree, so every scope's tests must pass there (PRD 0.4 4.5).
    */
   readonly mainTests?: boolean;
+  /**
+   * The person whose checkpoint this is. A dependent scope whose DRI is this person, and that no
+   * target covers, runs its tests on the checkpoint itself: the checkpoint already holds that scope's
+   * code, so nothing is merged and no checkpoint is missing.
+   */
+  readonly changer?: string;
 }
 
 /** One failed test from the runner's log. */
@@ -96,7 +102,10 @@ export interface FailingTest {
 }
 
 interface DependentTarget {
-  /** The fork target's id, or the scope owner's id when no target covers the scope. */
+  /**
+   * The fork target's id, or the scope owner's id when no target covers the scope. The changer's own
+   * scope, tested on the checkpoint itself, has the changer's id.
+   */
   readonly target: string;
   /** The target's person. */
   readonly ownerId: string;
@@ -104,7 +113,10 @@ interface DependentTarget {
   readonly commandId: string;
 }
 
-/** The merge was clean and the dependent scope's tests ran on the merged commit. */
+/**
+ * The merge was clean and the dependent scope's tests ran on the merged commit. For the changer's own
+ * scope nothing is merged: the owner checkpoint and the merged commit are the checkpoint itself.
+ */
 export interface TestedResult extends DependentTarget {
   readonly status: "passed" | "failed";
   readonly ownerCheckpoint: string;
@@ -319,15 +331,18 @@ export class CombinedRunner {
     const changed = await changedPathsBetween(repoPath, baselineSha, checkpointSha);
     const affected = affectedOwners(scopeMap, changed);
 
-    const targets: (DependentTarget & { readonly ownerCheckpoint: string | undefined })[] = [];
+    const targets: PlannedTarget[] = [];
     for (const scopeId of affected.dependentScopes) {
       const owner = scopeMap.scopes.get(scopeId)?.driId as string;
       const commandId = testCommandId(scopeId);
       if (wanted !== undefined && !wanted.has(commandId)) continue;
       const covering = forks.filter((fork) => (fork.scopes === undefined ? fork.person === owner : fork.scopes.includes(scopeId)));
-      if (covering.length === 0) targets.push({ target: owner, ownerId: owner, scopeId, commandId, ownerCheckpoint: undefined });
+      if (covering.length === 0) {
+        const own = owner === request.changer;
+        targets.push({ target: owner, ownerId: owner, scopeId, commandId, ownerCheckpoint: own ? checkpointSha : undefined, own });
+      }
       for (const fork of covering) {
-        targets.push({ target: fork.id, ownerId: fork.person, scopeId, commandId, ownerCheckpoint: fork.checkpoint });
+        targets.push({ target: fork.id, ownerId: fork.person, scopeId, commandId, ownerCheckpoint: fork.checkpoint, own: false });
       }
     }
     const started = performance.now();
@@ -339,10 +354,23 @@ export class CombinedRunner {
     // A target with several dependent scopes is merged once; the merged commit serves each scope.
     // An unaffected target is merged too: a conflict is a fact whatever the impact graph says.
     const merges = new Map<string, MergeOutcome>();
-    for (const { ownerCheckpoint, ...target } of targets) {
+    let unmerged: CleanOutcome | undefined;
+    for (const { ownerCheckpoint, own, ...target } of targets) {
       const id = target.target;
       if (ownerCheckpoint === undefined) {
         results.push({ ...target, status: "no-checkpoint" });
+        continue;
+      }
+      // The changer's own scope runs on the checkpoint as it is: nothing is merged, and the
+      // checkpoint is no fork target of the block checks.
+      if (own) {
+        if (selected !== undefined && !selected.has(id)) {
+          notAffected.push(target.scopeId);
+          results.push({ ...target, status: "not-affected", ownerCheckpoint, mergedCommit: checkpointSha });
+          continue;
+        }
+        unmerged ??= await this.#unmerged(checkpointSha);
+        results.push(await this.#test(target, ownerCheckpoint, unmerged));
         continue;
       }
       const merge = merges.get(id) ?? (await this.#merge(checkpointSha, ownerCheckpoint));
@@ -432,7 +460,7 @@ export class CombinedRunner {
   async #impact(
     baselineSha: string,
     checkpointSha: string,
-    targets: readonly (DependentTarget & { readonly ownerCheckpoint: string | undefined })[],
+    targets: readonly PlannedTarget[],
   ): Promise<{ impact: ImpactReport | null; impactError: string | null; selected: Set<string> | undefined }> {
     const analyzer = this.#options.impact;
     const scopesByTarget = new Map<string, { sha: string; scopes: string[] }>();
@@ -461,6 +489,12 @@ export class CombinedRunner {
     }
     const commit = await commitMergedTree(repoPath, merge.tree, [checkpointSha, ownerCheckpoint]);
     return { kind: "clean", tree: merge.tree, commit, ms: performance.now() - started };
+  }
+
+  /** The checkpoint as its own tested tree, for the changer's own scope. */
+  async #unmerged(checkpointSha: string): Promise<CleanOutcome> {
+    const tree = await runGit(this.#options.repoPath, ["rev-parse", "--verify", "--end-of-options", `${checkpointSha}^{tree}`]);
+    return { kind: "clean", tree: tree.trim(), commit: checkpointSha, ms: 0 };
   }
 
   async #test(target: DependentTarget, ownerCheckpoint: string, merge: CleanOutcome): Promise<TestedResult> {
@@ -498,6 +532,14 @@ function checkedTargets(targets: readonly ForkTarget[]): readonly ForkTarget[] {
     ids.add(id);
   }
   return targets;
+}
+
+/** A dependent scope and the checkpoint its tests run against, before any merge. */
+interface PlannedTarget extends DependentTarget {
+  /** The target's checkpoint; undefined when no target covers the scope. */
+  readonly ownerCheckpoint: string | undefined;
+  /** True for the changer's own scope, tested on the checkpoint itself. */
+  readonly own: boolean;
 }
 
 interface CleanOutcome {

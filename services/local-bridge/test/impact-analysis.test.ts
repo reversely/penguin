@@ -124,13 +124,14 @@ describe("on the helpful-fix fixture", () => {
     }).run({
       checkpointSha: checkpoint("priya"),
       baselineSha: pins.branches.main as string,
-      // One owner is still on main, where nothing in the owner's scope calls the changed helper. Priya
-      // is DRI for ingestion, which reads shared-dates, so her own checkpoint is its target.
-      targets: ownerForkTargets({ jun: checkpoint("jun"), priya: checkpoint("priya"), sam: pins.branches.main as string }),
+      // One owner is still on main, where nothing in the owner's scope calls the changed helper.
+      targets: ownerForkTargets({ jun: checkpoint("jun"), sam: pins.branches.main as string }),
+      changer: "priya",
     });
     assert.equal(report.impactError, null);
     assert.deepEqual(report.notAffected, scopesOf("sam"));
-    // Sam's run still completes: merged, not tested, reported as not affected.
+    // Sam's run still completes: merged, not tested, reported as not affected. Priya is DRI for
+    // ingestion, which reads shared-dates: its tests run on her checkpoint itself, unmerged.
     assert.deepEqual(
       report.results.map((result) => [result.ownerId, result.status]),
       [
@@ -139,7 +140,41 @@ describe("on the helpful-fix fixture", () => {
         ["sam", "not-affected"],
       ],
     );
+    const own = report.results.find((result) => result.ownerId === "priya");
+    assert.ok(own?.status === "passed");
+    assert.deepEqual([own.scopeId, own.ownerCheckpoint, own.mergedCommit], ["ingestion", checkpoint("priya"), checkpoint("priya")]);
     assert.deepEqual(report.impact?.forks.map((fork) => fork.id), ["jun", "priya", "sam"]);
+  });
+
+  test("without the changer named, the changer's own dependent scope has no checkpoint to merge", async () => {
+    const report = await new CombinedRunner({
+      repoPath: repo,
+      runner: new TestRunner({ repoPath: repo, env: TEST_ENV, scratchDir: join(root, "bridge"), consent: () => true }),
+    }).run({ checkpointSha: checkpoint("priya"), baselineSha: pins.branches.main as string, targets: [], commandIds: ["test:ingestion"] });
+    assert.deepEqual(report.results.map((result) => [result.ownerId, result.status]), [["priya", "no-checkpoint"]]);
+  });
+
+  test("a change that breaks the changer's own dependent scope fails its tests on the checkpoint", async () => {
+    // On top of Priya's checkpoint, start_of_day goes back to main's local midnight. The diff from
+    // her checkpoint touches only shared-dates; ingestion's tests at the checkpoint expect UTC days.
+    const base = checkpoint("priya");
+    const author = { GIT_AUTHOR_NAME: "Priya", GIT_AUTHOR_EMAIL: "priya@example.com", GIT_COMMITTER_NAME: "Priya", GIT_COMMITTER_EMAIL: "priya@example.com" };
+    const env = { ...process.env, ...author, GIT_INDEX_FILE: join(root, "revert-index") };
+    const git = async (args: string[]) => (await promisify(execFile)("git", args, { cwd: repo, env })).stdout.trim();
+    const mainDates = await git(["rev-parse", `${pins.branches.main}:shared/dates.py`]);
+    await git(["read-tree", base]);
+    await git(["update-index", "--cacheinfo", `100644,${mainDates},shared/dates.py`]);
+    const reverted = await git(["commit-tree", await git(["write-tree"]), "-p", base, "-m", "Start each day at local midnight again"]);
+
+    const report = await new CombinedRunner({
+      repoPath: repo,
+      runner: new TestRunner({ repoPath: repo, env: TEST_ENV, scratchDir: join(root, "bridge"), consent: () => true }),
+    }).run({ checkpointSha: reverted, baselineSha: base, targets: [], commandIds: ["test:ingestion"], changer: "priya" });
+    assert.deepEqual(report.changedScopes, ["shared-dates"]);
+    const [own] = report.results;
+    assert.ok(own?.status === "failed", JSON.stringify(own?.status));
+    assert.deepEqual([own.ownerId, own.scopeId, own.mergedCommit], ["priya", "ingestion", reverted]);
+    assert.ok(own.failingTests.length > 0);
   });
 
   test("a failed analysis runs every dependent scope's tests and says why", async () => {

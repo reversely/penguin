@@ -678,7 +678,14 @@ The script reads only Git objects. It never checks out a tree or imports the cod
 A combined run (`CombinedRunner`) takes its targets as forks, each with an id, a person and a
 checkpoint. A running feature's fork is a target keyed by its feature id, so one person's two
 features are two targets. An owner fork is a target keyed by its owner's id. A target is tested in
-the dependent scopes it names, or in its person's dependent scopes when it names none. Given an
+the dependent scopes it names, or in its person's dependent scopes when it names none. A dependent
+scope that no target covers gets a `no-checkpoint` result, unless its DRI is the person who made
+the checkpoint, named as the request's `changer`. The checkpoint already holds that scope's code,
+so its tests run on the checkpoint itself, with no merge, and report `passed` or `failed` with the
+checkpoint as both `ownerCheckpoint` and `mergedCommit`. That checkpoint is no fork target of the
+block checks. On the helpful-fix fixture Priya is DRI for both `ingestion` and `shared-dates`, and
+`ingestion` reads `shared-dates`, so a change of hers to `shared-dates` runs the `ingestion` tests
+on her checkpoint. Given an
 analyzer, the run analyses first, with one fork per target that covers a dependent scope. It merges
 every target's checkpoint, then runs tests only for the targets the report selects. Each skipped
 scope gets a `not-affected` result with its target's checkpoint and is listed under `notAffected`
