@@ -63,4 +63,4 @@ not work yet), **rule needed** (the procedure does not yet say what should happe
 | A failed runner pass holds its run 30 minutes | gap | #120 |
 | Signed records in a record repo | gap | #123 |
 | Reads derived from the code, readable at hundreds of scopes | gap | #134 |
-| Teams above people (an engineering manager's view) | decision for the user | board question |
+| Teams above people (an engineering manager's view) | gap | #135, #136 |
