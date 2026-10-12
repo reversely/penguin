@@ -12,6 +12,10 @@
 // - Depends on it: a running feature works in a scope that declares a dependency (`depends_on` in
 //   `penguin/scopes.json`) on a scope the declared area falls in. It is stored on the declaring
 //   feature as a dependent. Dependents block nothing; they go into the merge plan (PRD 4.2).
+// - An owner's scope: an expand checkpoint that adds to a scope another person owns waits on that
+//   person before it reaches main on its own (expand-promotion.ts, PRD 4.2 step 2). Its lock is keyed
+//   by `owner:<person>` in place of a covering feature, so the person is asked once per feature. It
+//   holds only the expand promotion: the feature's write tokens and its start never wait on it.
 //
 // Two areas overlap where a scope one declares holds a path, contract or scope of the other; where
 // a declared path is, contains or lies inside a path the other declares; and where both name the
@@ -22,7 +26,7 @@
 // map; this module names none. Each check and each approval is a signed record on the declaring
 // feature (feature-store.ts).
 
-import type { Author } from "@penguin/protocol";
+import { ownerLockId, type Author } from "@penguin/protocol";
 import type { ScopeMap } from "@penguin/scope-map";
 
 import type { Feature, FeatureArea, FeatureRecord, FeatureStore, UnsignedFeatureRecord } from "./feature-store.ts";
@@ -262,11 +266,32 @@ export class OverlapStore {
     return row === undefined ? undefined : lock(row);
   }
 
-  /** The locks on `blockedFeatureId`'s start, oldest first. */
+  /** The locks on `blockedFeatureId`'s start, oldest first; owner's-scope locks hold no start. */
   locksOn(blockedFeatureId: string): OverlapLock[] {
     return this.#db
-      .exec(`SELECT * FROM OverlapLock WHERE blocked_feature_id = ? ORDER BY opened_at, rowid`, blockedFeatureId)
+      .exec(`SELECT * FROM OverlapLock WHERE blocked_feature_id = ? AND feature_id NOT LIKE 'owner:%' ORDER BY opened_at, rowid`, blockedFeatureId)
       .map(lock);
+  }
+
+  /** The owner's-scope locks on `blockedFeatureId`'s expand promotions, oldest first. */
+  ownerLocksOn(blockedFeatureId: string): OverlapLock[] {
+    return this.#db
+      .exec(`SELECT * FROM OverlapLock WHERE blocked_feature_id = ? AND feature_id LIKE 'owner:%' ORDER BY opened_at, rowid`, blockedFeatureId)
+      .map(lock);
+  }
+
+  /** Opens `personId`'s owner's-scope lock on `blockedFeatureId`; false when one exists, open or approved. */
+  openOwnerLock(personId: string, blockedFeatureId: string, overlap: Overlap): boolean {
+    const opened = this.#db.exec(
+      `INSERT OR IGNORE INTO OverlapLock (feature_id, blocked_feature_id, person_id, state, approved_by, overlap, opened_at, decided_at)
+       VALUES (?, ?, ?, 'open', NULL, ?, ?, NULL) RETURNING feature_id`,
+      ownerLockId(personId),
+      blockedFeatureId,
+      personId,
+      JSON.stringify(overlap),
+      this.#now(),
+    );
+    return opened.length > 0;
   }
 
   /** The features whose start an open lock of `featureId` holds, oldest lock first. */

@@ -6,7 +6,7 @@
 // running feature's fork head (block-land.ts). A run moves through these states:
 //
 //   pending -> claimed -> passed | failed          a plan check stops here
-//   passed  -> promoting -> promoted | raced | refused   a land run
+//   passed  -> promoting -> promoted | raced | refused   a land or expand run
 //   pending | claimed -> superseded                 a newer run of the feature took its place
 //
 // `raced`: main moved before the push, so Penguin checks the block again on the new main.
@@ -42,7 +42,7 @@ export type BlockRunState = "pending" | "claimed" | "passed" | "failed" | "super
 
 /** States in which a run still waits on the runner. */
 const WAITING: readonly BlockRunState[] = ["pending", "claimed"];
-/** States in which a land run still holds the feature: checking, or passed and about to move main. */
+/** States in which a land or expand run still holds the feature: checking, or passed and about to move main. */
 const LANDING: readonly BlockRunState[] = ["pending", "claimed", "passed", "promoting"];
 
 /** A promotion still `promoting` after this long was cut off mid-way; the next land request ends it as refused. */
@@ -177,7 +177,8 @@ export class BlockStore {
 
   /**
    * Opens the feature's next run. A run still waiting on the runner is superseded by it, except that a
-   * land run in progress is never displaced: a second land answers `busy`, and so does a plan check.
+   * land or expand run in progress is never displaced: a second land or expand answers `busy`, and so
+   * does a plan check.
    * A promotion cut off for longer than PROMOTION_STALE_MS is ended as refused first.
    */
   open(input: BlockRunInput): BlockOpenOutcome {
@@ -189,7 +190,7 @@ export class BlockStore {
         now - PROMOTION_STALE_MS,
       );
       const [active] = this.#db.exec(
-        `SELECT ${RUN_COLUMNS} FROM BlockRun WHERE feature_id = ? AND purpose = 'land' AND state IN (${LANDING.map(() => "?").join(", ")}) ORDER BY seq DESC LIMIT 1`,
+        `SELECT ${RUN_COLUMNS} FROM BlockRun WHERE feature_id = ? AND purpose IN ('land', 'expand') AND state IN (${LANDING.map(() => "?").join(", ")}) ORDER BY seq DESC LIMIT 1`,
         input.featureId,
         ...LANDING,
       );
@@ -329,9 +330,19 @@ export class BlockStore {
     });
   }
 
-  /** The feature's promotion, or undefined before it landed. */
+  /** The feature's promotion, or undefined before it landed. An expand promotion is not the feature's. */
   promotion(featureId: string): Promotion | undefined {
-    const [row] = this.#db.exec(`SELECT promotion FROM Promotion WHERE feature_id = ? ORDER BY promoted_at DESC LIMIT 1`, featureId);
+    const [row] = this.#db.exec(
+      `SELECT promotion FROM Promotion WHERE feature_id = ? AND json_extract(promotion, '$.purpose') IS NULL ORDER BY promoted_at DESC LIMIT 1`,
+      featureId,
+    );
     return row === undefined ? undefined : (JSON.parse(row["promotion"] as string) as Promotion);
+  }
+
+  /** The feature's expand checkpoints promoted alone, oldest first. */
+  expansions(featureId: string): Promotion[] {
+    return this.#db
+      .exec(`SELECT promotion FROM Promotion WHERE feature_id = ? AND json_extract(promotion, '$.purpose') = 'expand' ORDER BY promoted_at, run_id`, featureId)
+      .map((row) => JSON.parse(row["promotion"] as string) as Promotion);
   }
 }

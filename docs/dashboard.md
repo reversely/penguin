@@ -101,7 +101,7 @@ Assigned, Review, Reply or Session to start.
 | Fixes in other forks | Each part whose fix goes into a running feature's fork, with its approval state and its write: queued for the check runner, granted to the originating agent, or written with its commit ([design.md](design.md#steps-1-and-3-in-the-build)) |
 | Block checks | The newest `check` run's results grouped by the tool that ran them, with its version and command ID: the failing targets with their findings, a count of the rest and one next step per failing check |
 | Tool runs | Every agent tool call on the feature, newest first: the tool, its caller, its result and what it reported, such as the impact graph's changed symbols and the forks that use them |
-| Record | Each signed record with its type, author, time and path in the record repo |
+| Record | Each signed record with its type, author, time and path in the record repo. An expand checkpoint promoted on its own shows as its own `Expand promoted` record after its `Expand requested` record |
 
 Each deterministic tool shows by name beside its output, as [demo-story.md](demo-story.md#tools-on-screen)
 asks. A part's changed lines go only to the feature's person, the part's owner and that owner's
@@ -150,7 +150,7 @@ The inbox page holds the approvals that wait on the signed-in person (`approvals
 
 | Group | Holds | Controls |
 |---|---|---|
-| Overlapping starts | Each feature whose start waits beside one of the person's running features, its person and the scopes, contracts and paths where the two areas meet | Approve start, `POST /api/overlaps/approve` |
+| Overlapping starts | Each feature whose start waits beside one of the person's running features, its person and the scopes, contracts and paths where the two areas meet. An expand checkpoint that adds to the person's scopes shows here too, with the scopes and paths it adds to ([design.md](design.md#expand-in-the-build)) | Approve start, `POST /api/overlaps/approve`; for an expand, Approve addition with `feature` set to `owner:<person>` |
 | Plans | One card per merge plan with parts for the person: the originating feature and person, why the plan needs the person in person, each review the parts carry and then each of the person's parts | Per part: Approve revision, `POST /api/plan-parts/approve`; Request change, which opens a field whose text posts `POST /api/plan-parts/request-change` |
 | Protected paths | Each feature whose own change, since its merge base with main, writes a path the person protects in `penguin/scopes.json`: the feature and its person, the checkpoint, each protected path and the changed lines of each file under it | Confirm lines, `POST /api/plan-parts/confirm-protected` with `{ feature, owner, checkpoint }`. A confirmed card stays, marked Confirmed, until a later checkpoint changes the lines |
 | Review exceptions | Each review of the person's scopes whose record raised an exception | None |

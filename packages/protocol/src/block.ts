@@ -4,8 +4,10 @@
 //
 // A block run checks one feature's checkpoint merged onto main and onto each other running feature's
 // fork head, where an approved fix of the feature's plan already sits (fix-write.ts). A `land` run
-// promotes main when every check passes. A `plan_check` run checks the same block for an announced
-// plan when another feature's checkpoint reaches the plan's area (PRD 4.4 step 3); it never promotes.
+// promotes main when every check passes. An `expand` run checks the expand checkpoint of a split
+// (PRD 4.2 step 2) the same way and promotes it on its own, leaving the feature's fork writable. A
+// `plan_check` run checks the same block for an announced plan when another feature's checkpoint
+// reaches the plan's area (PRD 4.4 step 3); it never promotes.
 //
 // Everything that reaches Git here is a full object ID or a branch name checked against
 // BRANCH_PATTERN; nothing is interpolated into a shell string.
@@ -18,8 +20,11 @@ import { LADDER_DECISION_SCHEMA } from "./tool-result.ts";
 
 export const BLOCK_SCHEMA_VERSION = 1;
 
-/** `land`: checks the block, then promotes main. `plan_check`: checks an announced plan's block only. */
-export const BLOCK_RUN_PURPOSES = ["land", "plan_check"] as const;
+/**
+ * `land`: checks the block, then promotes main. `expand`: checks a checkpoint that only adds, then
+ * promotes it alone while the feature keeps building. `plan_check`: checks an announced plan's block only.
+ */
+export const BLOCK_RUN_PURPOSES = ["land", "expand", "plan_check"] as const;
 export type BlockRunPurpose = (typeof BLOCK_RUN_PURPOSES)[number];
 
 export const BLOCK_LIMITS = {
@@ -197,6 +202,8 @@ export interface PromotedFix {
  */
 export interface Promotion {
   readonly schemaVersion: typeof BLOCK_SCHEMA_VERSION;
+  /** `expand` for an expand checkpoint promoted alone; absent for a feature's land. */
+  readonly purpose?: "expand";
   readonly planId: string | null;
   readonly featureId: string;
   readonly runId: string;

@@ -491,9 +491,49 @@ The procedure moves conflict handling to the start of the work. Each step below 
   asks for a `plan_check` run of that plan's block (Build step 3). It runs the same checks, keeps its
   record and never moves main. A land run supersedes a waiting plan check; a plan check waits while a
   land run holds the feature.
+- **Expand.** An expand checkpoint reaches main through the same run, slot and push with the run's
+  purpose `expand` ([Expand in the build](#expand-in-the-build)). The feature stays `building` and its
+  fork keeps its write tokens.
 - **Preview.** An owner fetches the originating fork with an expiring read token through
   `penguin-bridge preview --feature <id>` ([bridge-and-runner.md](bridge-and-runner.md#preview)).
   Artifacts makes no new repo.
+
+#### Expand in the build
+
+The expand step of a split adds the new shape beside the old one. Penguin promotes that checkpoint to
+main on its own, from the feature's fork, while the feature keeps building on top of it
+(`services/project-agent/src/expand-promotion.ts`).
+
+- **Asking.** The feature's agent calls `land_feature` with `expand: true`. Penguin checks what a land
+  checks first: the latest checkpoint is in the fork and holds main's head (`behind_main` otherwise).
+  A change to a path another person protects waits for that person's confirmation
+  (`protected_path_unconfirmed`), as a land does. A feature that is landing answers `busy`.
+- **The impact run.** The Only adds check reuses the facts run a merge plan reads
+  ([Steps 1 to 5 in the build](#steps-1-to-5-in-the-build)): the checkpoint's impact report and test
+  results against main's head. With no such run, Penguin schedules one and answers
+  `waiting_for_runner`. A failed analysis answers `impact_failed`.
+- **Only adds.** The checkpoint passes when the impact report is complete and every changed symbol is
+  `added`. A changed signature, a removed export, a changed stored data shape or a modified, removed,
+  renamed or moved symbol fails it. So does every place the facts show: a scope with a caller or a
+  break on main, or a running feature whose own changes use a changed symbol or break. Adding a method
+  to an existing class changes that class, so the class counts as modified. Penguin refuses a failing
+  checkpoint with `not_only_adds` and lists each entry that fails.
+- **Another owner's scope.** A checkpoint whose added symbols fall in a scope another person owns waits
+  on that person through the overlap lock. Penguin opens one lock per person and feature, keyed
+  `owner:<person>` in place of a covering feature, with a signed `overlap_check` record. The person
+  gets an `overlap` inbox item and approves it on the dashboard with `POST /api/overlaps/approve`.
+  Until then the expand answers `waiting_on_owner`. An approved person is not asked again for later
+  expands of the same feature. This lock holds only the expand: the feature's start and its write
+  tokens never wait on it.
+- **The run and the promotion.** Penguin opens an `expand` block run with a signed `expand_requested`
+  record that names the facts run and the added symbols. The run checks the checkpoint merged onto
+  main and onto every other running feature's fork head, like a land run. A passing run takes the
+  promotion slot and moves main with Penguin's own short-lived tokens in one push. The promotion is a
+  signed `expand_promotion` record. The fork keeps its write tokens and the feature stays `building`.
+  A race checks the expand again on main's new head, or records `land_returned` with the reason.
+- **Afterwards.** The feature's next checkpoints build on the promoted one, which is now main's head.
+  `get_work` lists each expand promotion under `landing.expansions`. The feature's own land later
+  moves main from the expand checkpoint to its final checkpoint.
 
 ### Late starters
 
@@ -525,6 +565,7 @@ Each check is a mechanical fact about code. No check calls a model.
 | Lint | Lint rules on the merged tree |
 | Dependency diff | A shared library changed version; which forks use it |
 | Tests | Each affected scope's own tests on the merged tree |
+| Only adds | Whether a checkpoint changes no existing signature and the impact graph shows no place |
 | Retiring calls | Uses of a retiring symbol in a checkpoint's own changes |
 
 Penguin runs tests and type checks only for forks the impact graph marks as affected.

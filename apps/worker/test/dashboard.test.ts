@@ -685,6 +685,18 @@ describe("a signed-in person's overlapping starts", () => {
     assert.equal((await browser.request("/api/overlaps")).status, 500);
   });
 
+  test("an expand into the person's scopes is approved by its owner key, owner:<person>", async () => {
+    const priya = new Browser();
+    await priya.signIn("Priya-GH");
+    const request = { feature: "owner:priya", blockedFeature: "money-type", blockedPerson: "ines", overlap: { scopes: ["ingestion"], paths: ["shared/money.py"], contracts: [], omittedPaths: 0 }, read: false, raisedAt: "2026-10-12T00:00:00.000Z" };
+    priya.backend.overlaps = { requests: [request] };
+    assert.equal((await priya.request("/api/overlaps")).status, 200);
+    for (const bad of [{ feature: "owner:", blockedFeature: "money-type" }, { feature: "owner:../x", blockedFeature: "money-type" }, { feature: "owner:priya", blockedFeature: "owner:ines" }]) {
+      assert.equal((await priya.post("/api/overlaps/approve", bad)).status, 400);
+    }
+    assert.equal((await priya.post("/api/overlaps/approve", { feature: "owner:priya", blockedFeature: "money-type" })).status, 200);
+  });
+
   test("approves as the session's person; a forged approver, another person and a replay are refused", async () => {
     const priya = new Browser();
     await priya.signIn("Priya-GH");

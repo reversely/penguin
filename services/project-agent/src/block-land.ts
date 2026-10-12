@@ -22,6 +22,10 @@
 // A checkpoint of a running feature that reaches an announced plan's area asks for a `plan_check` of
 // that plan's block (PRD 4.4 step 3): the same checks, with no promotion.
 //
+// An `expand` run (expand-promotion.ts, PRD 4.2 step 2 and 4.5 step 6) checks and promotes a checkpoint
+// that only adds through the same steps, but the feature stays `building`: its fork keeps its write
+// tokens, the promotion is a signed `expand_promotion` record, and a race is checked again as an expand.
+//
 // Because main moves only by fast-forward to a commit the block was checked on, main's tree after a
 // promotion is exactly the tree whose tests passed: main is never red unless a check missed a break.
 
@@ -139,7 +143,13 @@ export type LandRejectReason =
   | "fix_not_written"
   | "fix_not_in_block"
   | "fix_not_in_place"
-  | "busy";
+  | "busy"
+  // An expand checkpoint (expand-promotion.ts): the impact run is not reported, failed, finds more
+  // than additions, or an owner of a scope it adds to has not approved yet.
+  | "waiting_for_runner"
+  | "impact_failed"
+  | "not_only_adds"
+  | "waiting_on_owner";
 
 export type LandRejection = { readonly status: "rejected"; readonly reason: LandRejectReason; readonly message: string };
 
@@ -204,7 +214,7 @@ export async function ancestorsFound(reader: ForkReader, from: string, wanted: R
 }
 
 /** Main's head and the first-parent history under it, read from the base repo. */
-async function mainState(deps: LandDeps): Promise<{ readonly head: string | null; readonly history: Set<string> }> {
+export async function mainState(deps: LandDeps): Promise<{ readonly head: string | null; readonly history: Set<string> }> {
   const log = await deps.readRepo(deps.baseRepo, (reader) => reader.log({ ref: deps.branch, limit: MAIN_HISTORY_LIMIT }));
   return { head: log[0]?.hash ?? null, history: new Set(log.map((entry) => entry.hash)) };
 }
@@ -216,7 +226,7 @@ async function forkHead(deps: LandDeps, repo: string): Promise<string | null> {
 }
 
 /** Every other running feature's fork head, in feature id order: the block's targets besides main. */
-async function blockTargets(deps: LandDeps, own: string): Promise<BlockRunTarget[]> {
+export async function blockTargets(deps: LandDeps, own: string): Promise<BlockRunTarget[]> {
   const running = deps.features
     .list()
     .filter((feature) => feature.id !== own && RUNNING_STATES.has(feature.state) && feature.repo !== null)
@@ -226,6 +236,21 @@ async function blockTargets(deps: LandDeps, own: string): Promise<BlockRunTarget
     const sha = heads[index];
     return sha == null ? [] : [{ feature: feature.id, person: feature.personId, fork: `feature-${feature.id}`, sha }];
   });
+}
+
+/**
+ * Why the feature may not reach main while a person whose protected path its own change touches has
+ * not confirmed the lines (protected-change.ts); undefined when none waits. A land and an expand both ask.
+ */
+export function protectedRefusal(deps: Pick<LandDeps, "unconfirmedProtected">, featureId: string): LandRejection | undefined {
+  const unconfirmed = deps.unconfirmedProtected?.(featureId) ?? [];
+  if (unconfirmed.length === 0) return undefined;
+  // Each person is named with the protected paths of penguin/scopes.json, never the fork's file names.
+  const list = unconfirmed.map(({ ownerId, files }) => `${ownerId} (${[...new Set(files.map((file) => file.protectedPath))].join(", ")})`).join("; ");
+  return rejected(
+    "protected_path_unconfirmed",
+    `the feature's own change touches paths other people protect; each confirms the lines on the dashboard before it lands: ${list}`,
+  );
 }
 
 interface Prepared {
@@ -257,15 +282,8 @@ async function prepareLand(deps: LandDeps, feature: Feature, checkpoint: unknown
     const list = unapproved.map((part) => `${part.partId} (${part.approvalState.replaceAll("_", " ")})`).join(", ");
     return rejected("plan_not_approved", `every part of plan ${plan?.planId} must be approved before it lands: ${list}`);
   }
-  const unconfirmed = deps.unconfirmedProtected?.(feature.id) ?? [];
-  if (unconfirmed.length > 0) {
-    // Each person is named with the protected paths of penguin/scopes.json, never the fork's file names.
-    const list = unconfirmed.map(({ ownerId, files }) => `${ownerId} (${[...new Set(files.map((file) => file.protectedPath))].join(", ")})`).join("; ");
-    return rejected(
-      "protected_path_unconfirmed",
-      `the feature's own change touches paths other people protect; each confirms the lines on the dashboard before it lands: ${list}`,
-    );
-  }
+  const unconfirmed = protectedRefusal(deps, feature.id);
+  if (unconfirmed !== undefined) return unconfirmed;
   const writes = plan === undefined ? [] : await deps.agent(feature.id).fixWrites(feature.id);
   const written = new Map(writes.map((write) => [`${write.partId}@${write.revision}`, write]));
   const featureParts = plan?.parts.filter((part) => part.place.kind === "feature") ?? [];
@@ -303,7 +321,7 @@ async function prepareLand(deps: LandDeps, feature: Feature, checkpoint: unknown
   return { feature: feature as Prepared["feature"], plan, mainBefore: main.head, targets };
 }
 
-function targetFields(targets: readonly BlockRunTarget[]): Record<string, unknown>[] {
+export function targetFields(targets: readonly BlockRunTarget[]): Record<string, unknown>[] {
   return targets.map(({ feature, sha }) => ({ feature, sha }));
 }
 
@@ -445,7 +463,7 @@ export async function claimBlockRuns(
 // The FeatureAgent's side: the runner's report, then the promotion.
 
 /** The record types a FeatureAgent may ask the ProjectAgent to sign for its feature. */
-export const BLOCK_RECORD_TYPES = ["block_checked", "promotion", "promotion_refused"] as const satisfies readonly FeatureRecordType[];
+export const BLOCK_RECORD_TYPES = ["block_checked", "promotion", "promotion_refused", "expand_promotion"] as const satisfies readonly FeatureRecordType[];
 export type BlockRecordType = (typeof BLOCK_RECORD_TYPES)[number];
 
 /** What a FeatureAgent asks of the ProjectAgent while it records a run and promotes, over RPC. */
@@ -461,6 +479,10 @@ export interface BlockProjectPort {
   landFailed(featureId: string, runId: string): Promise<void>;
   /** Checks the block again on main's new head after a refused push; see retryLand. */
   retryLand(featureId: string, runId: string, charter: CharterView): Promise<{ readonly status: string; readonly runId?: string; readonly reason?: string; readonly message?: string }>;
+  /** Main moved to an expand checkpoint: the feature keeps building, and its person hears. */
+  expandPromoted(featureId: string, promotion: Promotion): Promise<void>;
+  /** Checks an expand again on main's new head after a refused push; see expand-promotion.ts retryExpand. */
+  retryExpand(featureId: string, runId: string, charter: CharterView): Promise<{ readonly status: string; readonly runId?: string; readonly reason?: string; readonly message?: string }>;
 }
 
 export interface BlockReportDeps {
@@ -489,8 +511,9 @@ export type BlockReportResult =
   | { readonly status: "rejected"; readonly reason: "forbidden" | "not_found" | "invalid" | "superseded" | "conflict"; readonly message: string };
 
 /**
- * Records the runner's report of run `runId` with its signed `block_checked` record. A land run that
- * passed is promoted at once; one that failed returns the feature to `building`.
+ * Records the runner's report of run `runId` with its signed `block_checked` record. A land or expand
+ * run that passed is promoted at once; a land run that failed returns the feature to `building`, where
+ * an expand run's feature already is.
  */
 export async function reportBlockRun(deps: BlockReportDeps, caller: BridgeCaller, runId: string, body: unknown): Promise<BlockReportResult> {
   if (caller.role !== "runner") return { status: "rejected", reason: "forbidden", message: `bridge ${caller.bridgeId} does not hold the runner role` };
@@ -527,7 +550,7 @@ export async function reportBlockRun(deps: BlockReportDeps, caller: BridgeCaller
   });
   deps.store.setRecord(runId, recordId);
   const result = { status: "recorded" as const, runId, passed: verdict.passed, recordId, promotion: null, retried: null };
-  if (run.purpose !== "land") return { ...result, state: reported.state };
+  if (run.purpose === "plan_check") return { ...result, state: reported.state };
   if (!verdict.passed) {
     await deps.port.landFailed(run.featureId, runId);
     return { ...result, state: reported.state };
@@ -535,7 +558,7 @@ export async function reportBlockRun(deps: BlockReportDeps, caller: BridgeCaller
   return { ...result, ...(await promote(deps, { ...reported, recordId }, checkMs)) };
 }
 
-/** Moves main to a passing land run's checkpoint, or says why not. */
+/** Moves main to a passing land or expand run's checkpoint, or says why not. */
 async function promote(
   deps: BlockReportDeps,
   run: BlockRun,
@@ -543,6 +566,9 @@ async function promote(
 ): Promise<{ readonly state: BlockRunState; readonly promotion: Promotion | null; readonly retried: { readonly status: string; readonly runId?: string; readonly reason?: string } | null }> {
   const now = deps.now ?? Date.now;
   const started = now();
+  const expand = run.purpose === "expand";
+  const retry = () =>
+    expand ? deps.port.retryExpand(run.featureId, run.runId, run.request.charter) : deps.port.retryLand(run.featureId, run.runId, run.request.charter);
   const refuse = async (state: "raced" | "refused", reason: string, head: string | null) => {
     deps.store.transition(run.runId, ["passed", "promoting"], state, reason);
     await deps.port.signBlockRecord(run.featureId, "promotion_refused", {
@@ -556,16 +582,14 @@ async function promote(
   };
   if (!(await deps.port.acquirePromotion(run.featureId, run.runId))) {
     await refuse("raced", "another promotion was moving main", null);
-    const retried = await deps.port.retryLand(run.featureId, run.runId, run.request.charter);
-    return { state: "raced", promotion: null, retried };
+    return { state: "raced", promotion: null, retried: await retry() };
   }
   try {
     if (!deps.store.transition(run.runId, ["passed"], "promoting")) return { state: deps.store.get(run.runId)?.state ?? "passed", promotion: null, retried: null };
     const pushed = await deps.push(run);
     if (pushed.status === "moved") {
       await refuse("raced", `main moved to ${pushed.head ?? "nothing"} after the block was checked`, pushed.head);
-      const retried = await deps.port.retryLand(run.featureId, run.runId, run.request.charter);
-      return { state: "raced", promotion: null, retried };
+      return { state: "raced", promotion: null, retried: await retry() };
     }
     if (pushed.status === "failed") {
       await refuse("refused", pushed.reason, pushed.head);
@@ -589,7 +613,8 @@ async function promote(
       checkMs,
       promoteMs: promotedAt - started,
     };
-    const recordId = await deps.port.signBlockRecord(run.featureId, "promotion", {
+    // An expand promotion is a record of its own: main moved, and the feature has not landed.
+    const recordId = await deps.port.signBlockRecord(run.featureId, expand ? "expand_promotion" : "promotion", {
       run_id: run.runId,
       plan_id: run.planId,
       branch: fields.branch,
@@ -602,8 +627,13 @@ async function promote(
       check_ms: checkMs,
       promote_ms: fields.promoteMs,
     });
-    const promotion: Promotion = { schemaVersion: 1, ...fields, recordId };
+    const promotion: Promotion = { schemaVersion: 1, ...(expand ? { purpose: "expand" as const } : {}), ...fields, recordId };
     deps.store.keepPromotion(promotion);
+    if (expand) {
+      // The fork keeps its write tokens: the feature builds on top of what reached main.
+      await deps.port.expandPromoted(run.featureId, promotion);
+      return { state: "promoted", promotion, retried: null };
+    }
     try {
       await deps.seal(run);
     } catch (error) {

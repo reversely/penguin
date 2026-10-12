@@ -287,6 +287,22 @@ temporary folder. On the helpful-fix fixture, three features open and Priya's pl
 written. Priya's block reaches main, then Jun's and Sam's after a failing land and a race. Every
 scope's tests run on main after each promotion.
 
+### Expand promotion check
+
+`tests/e2e/expand-promotion.test.ts` proves an expand checkpoint reaches main on its own against real
+Artifacts, through local `wrangler dev` under a repo prefix unique to the run. It deletes every repo it
+made. It needs a Wrangler login and this repository's `.venv`:
+
+```sh
+PENGUIN_EXPAND_E2E=1 node --test tests/e2e/expand-promotion.test.ts
+```
+
+It writes `worker.log`, `runner.log` and `evidence.json` with each step's wall time to
+`PENGUIN_EXPAND_E2E_OUT`, default a temporary folder. On the helpful-fix fixture, Jun's weekly report
+runs while Priya's feature promotes `start_of_local_day` alone and keeps pushing to its fork. A changed
+signature of `start_of_day` is refused. An addition to Jun's analytics scope waits for Jun's approval
+on the dashboard, then reaches main. Every scope's tests run on main after each promotion.
+
 ### Fix writes
 
 Once an author approves a part of a merge plan, its fix becomes one commit on the affected feature's

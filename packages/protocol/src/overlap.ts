@@ -1,6 +1,8 @@
 // What GET /api/overlaps returns to the dashboard: the overlapping starts that wait for the signed-in
 // person's approval (PRD 0.4 section 4.1 step 3). Each names the person's own running feature, the
-// feature whose start waits and where the two areas meet. The ProjectAgent builds it from the
+// feature whose start waits and where the two areas meet. An expand checkpoint that adds to a scope the
+// person owns (PRD 0.5 section 4.2 step 2) waits the same way: its `feature` is then `owner:<person>`,
+// since no feature of the person's need be running, and only the expand promotion waits. The ProjectAgent builds it from the
 // person's overlap inbox items and the stored locks (services/project-agent/src/overlap-lock.ts); the
 // Worker checks it against OVERLAP_REQUESTS_SCHEMA before answering.
 
@@ -8,7 +10,7 @@ import { PERSON_ID_MAX_LENGTH, PERSON_ID_PATTERN, SEGMENT_PATTERN } from "./oper
 import { checkSchema, type JsonSchema, type SchemaError } from "./schema-check.ts";
 
 export interface OverlapRequest {
-  /** The person's own running feature, which covers the area. */
+  /** The person's own running feature, which covers the area, or `owner:<person>` for an expand into their scopes. */
   readonly feature: string;
   /** The feature whose start waits for the approval. */
   readonly blockedFeature: string;
@@ -33,6 +35,19 @@ export interface OverlapRequests {
 /** A feature id as the ProjectAgent stores it (feature-store.ts). */
 export const FEATURE_ID_MAX_LENGTH = 63;
 const FEATURE_ID_SCHEMA: JsonSchema = { type: "string", pattern: `^${SEGMENT_PATTERN}$`, maxLength: FEATURE_ID_MAX_LENGTH };
+
+/** The covering key of an owner's-scope lock: `owner:<person>`. Feature ids hold no ":". */
+export const OWNER_LOCK_PATTERN = `^owner:${PERSON_ID_PATTERN.slice(1)}`;
+const OWNER_LOCK = new RegExp(OWNER_LOCK_PATTERN, "u");
+
+export function ownerLockId(personId: string): string {
+  return `owner:${personId}`;
+}
+
+/** True for an owner's-scope lock's covering key, `owner:<person>`. */
+export function isOwnerLockId(value: unknown): value is string {
+  return typeof value === "string" && value.length <= PERSON_ID_MAX_LENGTH + 6 && OWNER_LOCK.test(value);
+}
 const STRINGS: JsonSchema = { type: "array", items: { type: "string" } };
 
 /** JSON Schema (draft 2020-12) for the GET /api/overlaps answer. */
@@ -50,7 +65,7 @@ export const OVERLAP_REQUESTS_SCHEMA: JsonSchema = {
         additionalProperties: false,
         required: ["feature", "blockedFeature", "blockedPerson", "overlap", "read", "raisedAt"],
         properties: {
-          feature: FEATURE_ID_SCHEMA,
+          feature: { anyOf: [FEATURE_ID_SCHEMA, { type: "string", pattern: OWNER_LOCK_PATTERN, maxLength: PERSON_ID_MAX_LENGTH + 6 }] },
           blockedFeature: FEATURE_ID_SCHEMA,
           blockedPerson: { type: "string", pattern: PERSON_ID_PATTERN, maxLength: PERSON_ID_MAX_LENGTH },
           overlap: {

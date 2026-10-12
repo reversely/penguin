@@ -11,7 +11,7 @@
 // agent never approves. The lists are read again on each inbox-changed or features-changed message
 // and after a reconnect. Every value renders as text.
 
-import type { OverlapRequest, PlanInbox, PlanPartRequest, ProtectedChangeRequest, ReviewExceptionRequest } from "@penguin/protocol";
+import { isOwnerLockId, type OverlapRequest, type PlanInbox, type PlanPartRequest, type ProtectedChangeRequest, type ReviewExceptionRequest } from "@penguin/protocol";
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 
 import { approveOverlap, confirmProtectedChange, decidePlanPart, fetchOverlapRequests, fetchPlanInbox, SignedOut } from "./api.ts";
@@ -259,8 +259,12 @@ interface OverlapProps {
   readonly onApprove: () => void;
 }
 
-/** A start that waits beside the person's own feature, with where the two areas meet. */
+/**
+ * A start that waits beside the person's own feature, with where the two areas meet; or an expand
+ * checkpoint that adds to the person's scopes and waits to reach main ahead of the rest of its feature.
+ */
 function OverlapCard({ request, sending, navigate, onApprove }: OverlapProps) {
+  const expand = isOwnerLockId(request.feature);
   const meet = [...request.overlap.scopes.map((scope) => ({ key: `s ${scope}`, text: scope, code: false })), ...[...request.overlap.contracts, ...request.overlap.paths].map((text) => ({ key: `c ${text}`, text, code: true }))];
   return (
     <article className="approval-card card-raised" data-unread={request.read ? undefined : true}>
@@ -274,9 +278,15 @@ function OverlapCard({ request, sending, navigate, onApprove }: OverlapProps) {
         </span>
       </header>
       <p className="approval-line">
-        Waits to start beside your <FeatureLink feature={request.feature} navigate={navigate} />
+        {expand ? (
+          "Adds to your scopes and waits to reach main ahead of the rest of its feature"
+        ) : (
+          <>
+            Waits to start beside your <FeatureLink feature={request.feature} navigate={navigate} />
+          </>
+        )}
       </p>
-      <ul className="chip-list" aria-label="Where the areas meet">
+      <ul className="chip-list" aria-label={expand ? "What it adds to" : "Where the areas meet"}>
         {meet.map((item) => (
           <li key={item.key} className={item.code ? "code-chip" : "chip"}>
             {item.text}
@@ -287,7 +297,7 @@ function OverlapCard({ request, sending, navigate, onApprove }: OverlapProps) {
       <div className="approval-actions">
         {/* While the approval sends the button keeps focus and refuses presses through aria-disabled. */}
         <button type="button" className="button primary progressive" aria-disabled={sending} onClick={() => sending || onApprove()}>
-          {sending ? "Approving" : "Approve start"}
+          {sending ? "Approving" : expand ? "Approve addition" : "Approve start"}
         </button>
       </div>
     </article>

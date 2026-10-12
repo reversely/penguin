@@ -250,15 +250,20 @@ export interface LandingWorkView {
     readonly failing: readonly FailingCheckView[];
     readonly decisions: readonly LadderDecisionView[];
   }[];
-  readonly promotion: {
-    readonly runId: string;
-    readonly mainBefore: string;
-    readonly mainAfter: string;
-    readonly recordId: string;
-    readonly promotedAt: string;
-    readonly checkMs: number;
-    readonly promoteMs: number;
-  } | null;
+  readonly promotion: PromotionWorkView | null;
+  /** The feature's expand checkpoints promoted on their own, oldest first. */
+  readonly expansions?: readonly PromotionWorkView[];
+}
+
+/** One promotion as get_work reports it. */
+interface PromotionWorkView {
+  readonly runId: string;
+  readonly mainBefore: string;
+  readonly mainAfter: string;
+  readonly recordId: string;
+  readonly promotedAt: string;
+  readonly checkMs: number;
+  readonly promoteMs: number;
 }
 
 /** Advance notice a checkpoint names for the first time (the ProjectAgent's `PlanNotices`). */
@@ -298,7 +303,7 @@ export interface McpFeatures {
   /** Reports the commit the originating agent pushed for a granted write. */
   reportFixWrite(sessionId: string, input: FixPart & { readonly commit: string }): Promise<FeatureCallResult>;
   /** Asks to land the feature the session works on (PRD 0.4 section 4.5). */
-  land(sessionId: string, input: { readonly feature: string; readonly checkpoint?: string | undefined }): Promise<FeatureCallResult>;
+  land(sessionId: string, input: { readonly feature: string; readonly checkpoint?: string | undefined; readonly expand?: boolean | undefined }): Promise<FeatureCallResult>;
 }
 
 /** One revision of a part of the session's feature's plan, as the fix-writing tools name it. */
@@ -714,6 +719,10 @@ const landFeatureInput = z.strictObject({
   sessionId,
   feature: featureId.describe("The feature this session works on."),
   checkpoint: commitSha.optional().describe("The checkpoint you mean to land; it must be the feature's latest reported checkpoint."),
+  expand: z
+    .boolean()
+    .optional()
+    .describe("True to promote only your latest checkpoint, the expand step of a split, while the feature keeps building: it must only add."),
 });
 
 // The agent tools (PRD 0.4 section 5.2). These caps match AGENT_TOOL_LIMITS in the ProjectAgent, which
@@ -837,7 +846,7 @@ export function createPenguinMcpServer(
         "with where each part stands: answer each `change_requested` part with revise_plan_part. `reviewResults` " +
         "gives the check runner's verdict on each review you submitted. `landing` says where your feature's " +
         "landing stands: each block run with its state, the failing checks and one next step per failure, and " +
-        "the promotion once main moved to your checkpoint.",
+        "the promotion once main moved to your checkpoint; `expansions` lists each expand checkpoint promoted on its own.",
       inputSchema: workInput,
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -1243,7 +1252,13 @@ function registerFeatureTools(server: McpServer, features: McpFeatures): void {
         "every other running feature's fork and run the checks, with every scope's tests on main. When every " +
         "check passes, Penguin moves main to your checkpoint in one push and your fork turns read-only. A " +
         "failing check sends the feature back to building with one next step per failure; read them in " +
-        "get_work's `landing`, act on them, report a checkpoint and land again. You never get a token on main.",
+        "get_work's `landing`, act on them, report a checkpoint and land again. You never get a token on main. " +
+        "With `expand: true`, Penguin promotes only your latest checkpoint, the expand step of a split, through " +
+        "the same checks and push, and your fork stays writable. The checkpoint must only add: every symbol " +
+        "in its contract diff is new, no existing signature changes and nothing on main or in a running " +
+        "feature calls what it changes. A refusal lists each entry that fails. The first call schedules the " +
+        "impact run (`waiting_for_runner`); call again once the runner reported it. A checkpoint that adds to " +
+        "a scope another person owns waits until that person approves on the dashboard (`waiting_on_owner`).",
       inputSchema: landFeatureInput,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
@@ -1382,6 +1397,7 @@ export function landingFields(landing: LandingWorkView): Record<string, unknown>
       },
     })),
     promotion: landing.promotion === null ? null : { ...landing.promotion },
+    expansions: (landing.expansions ?? []).map((expansion) => ({ ...expansion })),
   };
 }
 

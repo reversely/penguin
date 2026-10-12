@@ -160,7 +160,7 @@ export class FeatureAgent extends Agent implements HuddleVerifier, HuddleReviewe
   }
 
   /**
-   * Records the runner's report of a block run, and promotes main when a land run passed. `port`
+   * Records the runner's report of a block run, and promotes main when a land or expand run passed. `port`
    * reaches the ProjectAgent; `repos` names the base repo and the deployment's prefix.
    */
   reportBlockRun(caller: BridgeCaller, runId: string, body: unknown, port: BlockProjectPort, repos: PromotionRepos): Promise<BlockReportResult> {
@@ -178,9 +178,10 @@ export class FeatureAgent extends Agent implements HuddleVerifier, HuddleReviewe
     );
   }
 
-  /** The feature's newest block runs, newest first, and its promotion. */
-  landing(featureId: string): { readonly runs: BlockRun[]; readonly promotion: Promotion | null } {
-    return { runs: this.#blockStore().runs(featureId, 10), promotion: this.#blockStore().promotion(featureId) ?? null };
+  /** The feature's newest block runs, newest first, its promotion and its expand promotions, oldest first. */
+  landing(featureId: string): { readonly runs: BlockRun[]; readonly promotion: Promotion | null; readonly expansions: Promotion[] } {
+    const store = this.#blockStore();
+    return { runs: store.runs(featureId, 10), promotion: store.promotion(featureId) ?? null, expansions: store.expansions(featureId) };
   }
 
   /**

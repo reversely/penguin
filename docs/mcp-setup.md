@@ -318,18 +318,27 @@ A session of a feature asks Penguin to move main to the feature's latest checkpo
 
 | Tool | Input | Answer |
 |---|---|---|
-| `land_feature` | `feature`; optionally `checkpoint`, which must be the feature's latest | `checking` with the run's id, the checkpoint, main's head it is checked against, the branch, the plan and every target fork with its head; or the reason the feature is not ready |
+| `land_feature` | `feature`; optionally `checkpoint`, which must be the feature's latest; optionally `expand: true` to promote only that checkpoint | `checking` with the run's id, the checkpoint, main's head it is checked against, the branch, the plan and every target fork with its head; or the reason the feature is not ready |
 
 The answer carries no token: Penguin moves main itself. A refusal names what is missing:
 `behind_main` (merge main into your fork, report the merge with `report_checkpoint` and land again),
 `plan_not_approved`, `protected_path_unconfirmed` (the feature's own change writes a path another
 person protects, and that person has not confirmed the lines on the dashboard; the message names
 each person with the protected paths), `fix_not_written`, `fix_not_in_block`, `fix_not_in_place`,
-`not_ready` (no checkpoint, or nothing past main) or `busy` (a land of the feature is already being
-checked).
+`not_ready` (no checkpoint, or nothing past main) or `busy` (a land or expand of the feature is
+already being checked).
+
+With `expand: true`, Penguin promotes only the latest checkpoint, the expand step of a split. The
+feature keeps building on its fork ([design.md](design.md#expand-in-the-build)). The checkpoint must
+hold main's head and only add. A change to a path another person protects waits on
+`protected_path_unconfirmed` as a land does. The expand's own refusals are `waiting_for_runner`
+(Penguin scheduled the impact run; call again once the check runner reported it), `impact_failed`,
+`not_only_adds` (the message lists each entry that fails) and `waiting_on_owner` (the checkpoint adds
+to a scope another person owns; that person approves once on the dashboard).
 
 `get_work` reports `landing`: the feature's state (`building`, `landing` or `landed`), its newest block
-runs and its promotion. Each run names its purpose (`land` or `plan_check`), its state, the failing
+runs, its promotion and under `expansions` each expand checkpoint promoted on its own. Each run names
+its purpose (`land`, `expand` or `plan_check`), its state, the failing
 checks and one next step per failure under `nextSteps`. A `raced` run met a main that moved; Penguin
 checks the block again, or returns the feature to `building` to take main. Check summaries and the
 evidence behind each next step come from the repos and the tools' runs, so they arrive only inside

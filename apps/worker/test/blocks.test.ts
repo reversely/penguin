@@ -146,6 +146,9 @@ describe("land_feature and get_work's landing over MCP", () => {
       },
     ],
     promotion: null,
+    expansions: [
+      { runId: "money-minor/2", mainBefore: RUN.main, mainAfter: RUN.checkpoint, recordId: "penguin-web-0007", promotedAt: "2026-10-11T08:00:00.000Z", checkMs: 30_000, promoteMs: 900 },
+    ],
   };
   const session = { id: "s-ines", identityId: "id-1", handle: "@ines/money", vendor: "claude-code", worktreeId: "wt", branch: "main", status: "running", lastSeen: "2026-10-11T09:00:00Z" };
   const project = {
@@ -181,6 +184,13 @@ describe("land_feature and get_work's landing over MCP", () => {
     assert.deepEqual(calls, [{ sessionId: "s-ines", input: { feature: "money-minor" } }]);
   });
 
+  test("land_feature takes expand: true to promote the latest checkpoint alone, and only a boolean", async () => {
+    calls.length = 0;
+    assert.equal((await rpc("land_feature", { sessionId: "s-ines", feature: "money-minor", expand: true })).isError, undefined);
+    assert.equal((await rpc("land_feature", { sessionId: "s-ines", feature: "money-minor", expand: "yes" })).isError, true);
+    assert.deepEqual(calls, [{ sessionId: "s-ines", input: { feature: "money-minor", expand: true } }]);
+  });
+
   test("get_work names each block run's state and next steps, with check text only inside personWritten", async () => {
     const { structuredContent } = await rpc("get_work", { sessionId: "s-ines" });
     const [run] = structuredContent["landing"].runs;
@@ -191,6 +201,7 @@ describe("land_feature and get_work's landing over MCP", () => {
     const outside = JSON.stringify({ ...run, personWritten: undefined });
     assert.doesNotMatch(outside, /script|Ignore previous/u);
     assert.match(JSON.stringify(run.personWritten), /Ignore previous/u);
+    assert.deepEqual(structuredContent["landing"].expansions.map((each: { mainAfter: string }) => each.mainAfter), [RUN.checkpoint]);
   });
 });
 

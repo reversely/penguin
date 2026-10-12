@@ -242,6 +242,27 @@ A checkpoint of a running feature whose area meets another feature's announced p
 `plan_check` run of that plan's block. It runs the same checks and never moves main.
 [design.md](design.md#block-promotion-in-the-build) has the rules.
 
+### Promoting an expand checkpoint
+
+The agent of a feature whose contract change is split promotes the expand step to main while it keeps
+working on the rest in the same fork.
+
+1. The agent calls `land_feature` with `expand: true`. The ProjectAgent checks that the latest checkpoint
+   holds main's head. It reads the facts run of the checkpoint against main's head from its
+   `PlanFactsRun` table: the impact run a merge plan reads. With none there, it schedules one for the
+   runner.
+2. The Only adds check reads that run's impact report. Every changed symbol must be added. No
+   signature, export or stored data shape may change. No place may have a caller or a break. A checkpoint that adds to
+   a scope another person owns opens an owner's-scope row in `OverlapLock` and waits until that person
+   approves on the dashboard.
+3. The FeatureAgent opens an `expand` block run. The runner checks and reports it as in
+   [Landing a feature](#landing-a-feature). A passing run takes the promotion slot and moves main with
+   the same two short-lived tokens and one push.
+4. The promotion is a signed `expand_promotion` record and a `Promotion` row marked `expand`. The fork
+   keeps its write tokens and the feature stays `building`.
+
+[design.md](design.md#expand-in-the-build) has the rules.
+
 ### Checkpoints to Huddles
 
 1. An owner's bridge pushes a checkpoint to `owner-<id>` after the owner consents, then reports it

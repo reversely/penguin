@@ -45,7 +45,8 @@
  *   - GET /api/overlaps: the overlapping starts that wait for the signed-in person's approval,
  *     checked against OVERLAP_REQUESTS_SCHEMA; an answer that breaks it answers 500.
  *   - POST /api/overlaps/approve: approves one of them, `{ feature, blockedFeature }`, as the
- *     signed-in person. The approver is the session's person: a body with any other field, such as
+ *     signed-in person. `feature` is `owner:<person>` for an expand checkpoint that adds to the
+ *     person's scopes. The approver is the session's person: a body with any other field, such as
  *     `approved_by`, is refused. The ProjectAgent refuses a lock on another person's feature and a
  *     second approval of the same lock.
  *   - GET /api/plan-parts: the merge plan parts waiting on the signed-in person as owner or
@@ -71,7 +72,7 @@
  * `Origin` header, on top of the SameSite=Lax session cookie.
  */
 
-import { checkInbox, checkOverlapRequests, checkPlanInbox, checkReviewDifferences, SEGMENT_PATTERN } from "@penguin/protocol";
+import { checkInbox, checkOverlapRequests, checkPlanInbox, checkReviewDifferences, isOwnerLockId, SEGMENT_PATTERN } from "@penguin/protocol";
 
 import type { FeatureOpenResult, FeatureView } from "./features.ts";
 import {
@@ -541,8 +542,8 @@ async function overlapRoute(request: Request, url: URL, session: DashboardSessio
   if (Object.keys(rest).length > 0) {
     return json({ error: "invalid", message: "the body takes only feature and blockedFeature; the approver is the signed-in person" }, 400);
   }
-  if (!isFeatureId(feature) || !isFeatureId(blockedFeature)) {
-    return json({ error: "invalid", message: "feature and blockedFeature must be feature ids" }, 400);
+  if (!(isFeatureId(feature) || isOwnerLockId(feature)) || !isFeatureId(blockedFeature)) {
+    return json({ error: "invalid", message: "feature must be a feature id or owner:<person>, and blockedFeature a feature id" }, 400);
   }
   const approved = await (await handlers.dashboard()).approveOverlap(session.owner, feature, blockedFeature);
   return json(approved, approved.status === "ok" ? 200 : (FEATURE_REJECTION_STATUS[approved.reason] ?? 422));

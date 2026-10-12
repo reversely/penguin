@@ -100,7 +100,7 @@ export interface FeatureDirectory {
   /** Checks and keeps the commit the originating agent pushed for a granted write. */
   reportFixWrite(owner: string, sessionId: string, input: FixPartInput & { readonly commit: unknown }, repos: ProjectRepos): Promise<FixWriteOutcome>;
   /** `land_feature`: checks the feature is ready and opens its block run (block-land.ts). */
-  landFeature(owner: string, sessionId: string, input: { readonly feature: unknown; readonly checkpoint?: unknown }, repos: ProjectRepos): Promise<LandAnswer>;
+  landFeature(owner: string, sessionId: string, input: { readonly feature: unknown; readonly checkpoint?: unknown; readonly expand?: unknown }, repos: ProjectRepos): Promise<LandAnswer>;
 }
 
 export interface FeatureConfig {

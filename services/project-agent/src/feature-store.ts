@@ -100,7 +100,9 @@ export type FeatureRecordType =
   | "promotion"
   | "promotion_refused"
   | "land_returned"
-  | "confirm_protected_change";
+  | "confirm_protected_change"
+  | "expand_requested"
+  | "expand_promotion";
 
 export interface FeatureRecord {
   readonly schema_version: 1;

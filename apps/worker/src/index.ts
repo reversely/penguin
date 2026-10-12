@@ -169,6 +169,8 @@ export default {
                 featureLanded: (feature, promotion) => project.featureLanded(feature, promotion, repos),
                 landFailed: async (feature, run) => project.landFailed(feature, run),
                 retryLand: (feature, run, charter) => project.retryLand(feature, run, charter, repos),
+                expandPromoted: async (feature, promotion) => project.expandPromoted(feature, promotion),
+                retryExpand: (feature, run, charter) => project.retryExpand(feature, run, charter, repos),
               };
               return (await agent.reportBlockRun(caller, runId, body, port, { base: names.base, prefix: names.prefix })) as BlockReportAnswer;
             },

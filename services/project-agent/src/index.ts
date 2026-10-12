@@ -144,6 +144,7 @@ import {
   type LandInput,
   type LandOutcome,
 } from "./block-land.ts";
+import { requestExpand, retryExpand, type ExpandDeps } from "./expand-promotion.ts";
 import { parseBreakLimit, proposePlan, type ProposePlanInput, type ProposePlanOutcome } from "./propose-plan.ts";
 import { claimToolRuns, recordToolResult, type ToolReportOutcome, type ToolRunClaim } from "./agent-tool-runner.ts";
 import {
@@ -385,6 +386,7 @@ export {
   type LandRejectReason,
   type LandRejection,
 } from "./block-land.ts";
+export { onlyAddsFailures, requestExpand, retryExpand, type ExpandDeps, type ExpandInput } from "./expand-promotion.ts";
 export { fastForwardMain, packEnd, parseAdvertisement, pktLine, readPktStream, type FastForward, type FastForwardOutcome, type GitEndpoint } from "./main-push.ts";
 export {
   agentFixGrant,
@@ -713,6 +715,9 @@ export type LandAnswer =
     }
   | { readonly status: "rejected"; readonly reason: string; readonly message: string };
 
+/** What a feature's FeatureAgent answers about its landing. */
+type FeatureLanding = { runs: BlockRun[]; promotion: Promotion | null; expansions: Promotion[] };
+
 /** Where a feature's landing stands, for `get_work` and the feature page. */
 export interface LandingView {
   readonly feature: string;
@@ -720,6 +725,8 @@ export interface LandingView {
   /** The feature's newest block runs, newest first. */
   readonly runs: readonly BlockRun[];
   readonly promotion: Promotion | null;
+  /** The feature's expand checkpoints promoted on their own, oldest first. */
+  readonly expansions: readonly Promotion[];
 }
 export {
   BRIDGE_ROLES,
@@ -2230,8 +2237,8 @@ export class ProjectAgent extends Agent {
    * One feature's FeatureAgent, named `<project>-feature-<id>` apart from every Huddle's instance. It
    * keeps the feature's plan, fix writes, block runs and promotion.
    */
-  #featureAgent(featureId: string): PlanKeeper & FeatureBlocks & { landing(featureId: string): Promise<{ runs: BlockRun[]; promotion: Promotion | null }> } {
-    type Stub = PlanKeeper & FeatureBlocks & { landing(featureId: string): Promise<{ runs: BlockRun[]; promotion: Promotion | null }> };
+  #featureAgent(featureId: string): PlanKeeper & FeatureBlocks & { landing(featureId: string): Promise<FeatureLanding> } {
+    type Stub = PlanKeeper & FeatureBlocks & { landing(featureId: string): Promise<FeatureLanding> };
     const named = getAgentByName(this.env.FeatureAgent, `${this.name}-feature-${featureId}`) as unknown as Promise<Stub>;
     return {
       planVersion: async (id) => (await named).planVersion(id),
@@ -2273,13 +2280,34 @@ export class ProjectAgent extends Agent {
     };
   }
 
+  /** What promoting an expand checkpoint reads besides a land (expand-promotion.ts). */
+  #expandDeps(repos: ProjectRepos): ExpandDeps {
+    const overlaps = this.#overlapDeps(repos);
+    return {
+      ...this.#landDeps(repos),
+      db: this.#database(),
+      facts: this.#planFactsStore(),
+      scopeMap: () => this.#scopeMap(repos),
+      dependents: (featureId) => this.#overlapStore().dependents(featureId),
+      overlaps: this.#overlapStore(),
+      ...(overlaps.listener === undefined ? {} : { listener: overlaps.listener }),
+    };
+  }
+
   /**
-   * `land_feature` (block-land.ts): `owner`'s session asks to land the feature it works on. A ready
-   * feature's block run waits for the check runner; anything else is refused with what is missing.
-   * Runs after the plan steps before it.
+   * `land_feature` (block-land.ts): `owner`'s session asks to land the feature it works on, or with
+   * `expand: true` to promote its latest checkpoint on its own (expand-promotion.ts). A ready block run
+   * waits for the check runner; anything else is refused with what is missing. Runs after the plan
+   * steps before it.
    */
-  landFeature(owner: string, sessionId: string, input: LandInput, repos: ProjectRepos): Promise<LandAnswer> {
-    return this.#featuresChanging(this.#planStep(async () => landAnswer(await requestLand(this.#landDeps(repos), owner, sessionId, input))));
+  landFeature(owner: string, sessionId: string, input: LandInput & { readonly expand?: unknown }, repos: ProjectRepos): Promise<LandAnswer> {
+    const { expand, ...rest } = input;
+    if (expand !== undefined && typeof expand !== "boolean") return Promise.resolve({ status: "rejected", reason: "invalid", message: "expand must be true or false" });
+    return this.#featuresChanging(
+      this.#planStep(async () =>
+        landAnswer(expand === true ? await requestExpand(this.#expandDeps(repos), owner, sessionId, rest) : await requestLand(this.#landDeps(repos), owner, sessionId, rest)),
+      ),
+    );
   }
 
   /** For the check runner only: the waiting block runs of every feature, each claimed by `caller`. */
@@ -2336,12 +2364,24 @@ export class ProjectAgent extends Agent {
     return this.#planStep(async () => landAnswer(await retryLand(this.#landDeps(repos), featureId, { runId, charter })));
   }
 
-  /** Where the feature's landing stands: its newest block runs and its promotion; undefined for no feature. */
+  /** Main moved to the feature's expand checkpoint: the feature keeps building, and its person hears. */
+  expandPromoted(featureId: string, _promotion: Promotion): void {
+    const feature = this.#featureStore().get(featureId);
+    this.#liveFeed().featuresChanged();
+    if (feature !== undefined) sendToOwner(this.getConnections<{ owner?: string }>(), feature.personId, inboxChangedMessage());
+  }
+
+  /** Penguin promotes the expand again after main refused its push (expand-promotion.ts retryExpand). */
+  retryExpand(featureId: string, runId: string, charter: CharterView, repos: ProjectRepos): Promise<LandAnswer> {
+    return this.#planStep(async () => landAnswer(await retryExpand(this.#expandDeps(repos), featureId, { runId, charter })));
+  }
+
+  /** Where the feature's landing stands: its newest block runs, its promotion and its expand promotions; undefined for no feature. */
   async landing(featureId: string): Promise<LandingView | undefined> {
     const feature = this.#featureStore().get(featureId);
     if (feature === undefined) return undefined;
-    const { runs, promotion } = await this.#featureAgent(featureId).landing(featureId);
-    return { feature: featureId, state: feature.state, runs, promotion };
+    const { runs, promotion, expansions } = await this.#featureAgent(featureId).landing(featureId);
+    return { feature: featureId, state: feature.state, runs, promotion, expansions };
   }
 
   /** For `get_work`: the landing of the feature `caller`'s session works on, or undefined. */

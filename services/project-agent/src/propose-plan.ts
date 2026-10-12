@@ -309,7 +309,7 @@ export interface AffectedPlace {
   readonly breaks: PlanBreakFact[];
 }
 
-function breakFacts(report: PlanFactsReport): PlanBreakFact[] {
+export function breakFacts(report: PlanFactsReport): PlanBreakFact[] {
   return report.results.flatMap((result) =>
     result.breaks.map((each) => ({
       target: result.target,
@@ -331,7 +331,7 @@ function breakFacts(report: PlanFactsReport): PlanBreakFact[] {
  * changed symbol or hold an unreadable file in its scopes, or that breaks on its merged tree. The
  * facts run reports a fork's uses only in files it changed since its merge base with main.
  */
-function affectedPlaces(
+export function affectedPlaces(
   impact: ImpactReport,
   breaks: readonly PlanBreakFact[],
   scopeMap: ScopeMap,

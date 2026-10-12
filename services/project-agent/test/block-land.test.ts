@@ -5,21 +5,11 @@
 // repository standing for the base repo, so every test can show where main is.
 
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "node:test";
 
-import {
-  BLOCK_SCHEMA_VERSION,
-  CHECK_COMMAND_IDS,
-  MAIN_TARGET,
-  type BlockCheck,
-  type BlockCheckName,
-  type BlockCheckResult,
-  type BlockRunReport,
-  type BlockRunRequest,
-  type Promotion,
-} from "@penguin/protocol";
+import { MAIN_TARGET, type BlockCheck, type BlockRunRequest, type Promotion } from "@penguin/protocol";
 import { parseScopeMap } from "@penguin/scope-map";
 
 import {
@@ -40,73 +30,15 @@ import {
 import { BlockStore } from "../src/block-store.ts";
 import { featureTokenGrant } from "../src/feature-open.ts";
 import { agentFixGrant, agentFixReport, type ForkReading } from "../src/fix-write.ts";
-import { fastForwardMain, pktLine } from "../src/main-push.ts";
+import { fastForwardMain } from "../src/main-push.ts";
 import { checkProtectedChanges, confirmProtectedChange, ownChange, ProtectedChangeStore, unconfirmedProtected } from "../src/protected-change.ts";
 import { fileDiffs } from "../src/repo-diff.ts";
+import { gitServer, reportOf } from "./block-support.ts";
 import { FixProject, git, SCOPES, SESSIONS, TAX, TAX_FIXED, TAX_FORK } from "./fix-project.ts";
 import { gitReader } from "./git-reader.ts";
 
 const BILLING = "money-minor/v1#1";
 const RUNNER = { bridgeId: "runner-1", role: "runner" as const };
-
-/** Serves bare or working repositories over a fetch, as Artifacts serves them over smart HTTP. */
-function gitServer(repos: Record<string, string>): typeof fetch {
-  return (async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = new URL(String(input));
-    const match = /^\/git\/([a-z0-9.-]+)\.git\/(info\/refs|git-upload-pack|git-receive-pack)$/u.exec(url.pathname);
-    const dir = match === null ? undefined : repos[match[1] as string];
-    if (match === null || dir === undefined) return new Response("not found", { status: 404 });
-    const service = (match[2] === "info/refs" ? url.searchParams.get("service") : match[2]) as string;
-    const program = service.replace(/^git-/u, "");
-    if (match[2] === "info/refs") {
-      const out = execFileSync("git", [program, "--stateless-rpc", "--advertise-refs", dir]);
-      return new Response(Buffer.concat([pktLine(`# service=${service}\n`), Buffer.from("0000"), out]));
-    }
-    return new Response(spawnSync("git", [program, "--stateless-rpc", dir], { input: Buffer.from(init?.body as Uint8Array) }).stdout);
-  }) as typeof fetch;
-}
-
-/** One check of a report, passing unless `result` says otherwise. */
-function blockCheck(run: BlockRunRequest, target: string, check: BlockCheckName, result: BlockCheckResult = "passed"): BlockCheck {
-  const commit = target === MAIN_TARGET ? run.main : (run.targets.find((each) => each.feature === target)?.sha as string);
-  return {
-    planId: run.planId,
-    target,
-    check,
-    result,
-    tool: { name: check === "tests" ? "test" : "git", version: null, commandId: check === "tests" ? "test:billing" : CHECK_COMMAND_IDS.merge },
-    input: { origin: run.checkpoint, target: commit, merged: null, paths: null },
-    findings: result === "failed" ? [{ path: "tax/tests/test_rounding.py", line: null, code: null, message: "fails: rounds each line" }] : [],
-    findingCount: result === "failed" ? 1 : 0,
-    summary: result === "failed" ? "1 failing test" : "passed",
-    fingerprint: null,
-    logRef: null,
-    durationMs: 3,
-  };
-}
-
-/** The runner's report of `run`: a merge and tests per target, with `failing` failing. */
-function reportOf(run: BlockRunRequest, failing: readonly { target: string; check: BlockCheckName }[] = []): BlockRunReport {
-  const checks: BlockCheck[] = [];
-  for (const target of [MAIN_TARGET, ...run.targets.map((each) => each.feature)]) {
-    for (const check of ["merge", "tests"] as const) {
-      const fails = failing.some((each) => each.target === target && each.check === check);
-      checks.push(blockCheck(run, target, check, fails ? "failed" : "passed"));
-    }
-  }
-  const decisions = failing.map(({ target, check }) => ({
-    target,
-    check,
-    failure: "behaviour" as const,
-    step: 5 as const,
-    nextStep: "the agent of the scope's owner adapts",
-    actor: { kind: "owner-agent" as const, id: "@rahul/work" },
-    fix: null,
-    reason: "a behaviour change outside the originating charter",
-    evidence: { summary: "1 failing test", findings: [] },
-  }));
-  return { schemaVersion: BLOCK_SCHEMA_VERSION, runId: run.runId, checkpoint: run.checkpoint, main: run.main, checks, decisions, summary: `${checks.length} checks`, durationMs: 40 };
-}
 
 describe("landing a feature as a block", () => {
   let fx: FixProject;
@@ -183,6 +115,8 @@ describe("landing a feature as a block", () => {
       const retried = await retryLand(landDeps(), feature, { runId: run, charter });
       return retried.status === "checking" ? { status: retried.status, runId: retried.run.runId } : retried;
     },
+    expandPromoted: async () => undefined,
+    retryExpand: async () => ({ status: "rejected", reason: "not_found", message: "no expand in these tests" }),
   });
   const reportDeps = (): BlockReportDeps => ({
     store: blocks,

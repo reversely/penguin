@@ -84,6 +84,8 @@ const RECORD_LABEL: Readonly<Record<string, string>> = {
   revise_plan_part: "Part revised",
   plan_round_limit: "Past the round limit",
   confirm_protected_change: "Protected lines confirmed",
+  expand_requested: "Expand requested",
+  expand_promotion: "Expand promoted",
 };
 
 /** A signed record's type as a label; a type the dashboard does not know shows as stored. */
