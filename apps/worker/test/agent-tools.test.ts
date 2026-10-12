@@ -23,7 +23,7 @@ import { sqlite } from "../../../services/project-agent/test/issues-repo.ts";
 
 const FIXTURE = join(import.meta.dirname, "../../../examples/helpful-fix/base");
 const scopeMap = parseScopeMap(JSON.parse(readFileSync(join(FIXTURE, "penguin/scopes.json"), "utf8")));
-const ownerOf = (scope: string) => scopeMap.scopes.get(scope)?.ownerId as string;
+const ownerOf = (scope: string) => scopeMap.scopes.get(scope)?.driId as string;
 const PRIYA = ownerOf("ingestion");
 const JUN = ownerOf("analytics");
 const SAM = ownerOf("messaging");
@@ -56,8 +56,8 @@ class Project {
     this.runs = new AgentToolStore(sql);
     for (const scope of scopeMap.scopes.values()) {
       this.identities.create(
-        scope.ownerId,
-        { handle: `@${scope.ownerId}/agent`, name: "agent", job: "Build", charterScopes: [scope.id], autoAccept: true },
+        scope.driId,
+        { handle: `@${scope.driId}/agent`, name: "agent", job: "Build", charterScopes: [scope.id], autoAccept: true },
         scopeMap,
       );
     }

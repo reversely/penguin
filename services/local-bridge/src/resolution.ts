@@ -98,9 +98,10 @@ export async function loadIdentities(repoPath: string, sha: string): Promise<Ide
 /**
  * The routing context of one originating identity, from the scope map and the identities. A failing
  * place outside the originating charter goes by PRD 4.4a step 1: to the builder of the target feature
- * when `builders` names one whose charter holds the scope, else to the steward of the scope's owner,
- * which Penguin keeps for every person who owns a scope. The ProjectAgent routes the task it opens
- * from the decision again, with every builder's charter (edit-tasks.ts).
+ * when `builders` names one whose charter holds the scope, else to the steward of the scope's DRI,
+ * which Penguin keeps for every person who is DRI for a scope. The bridge reads no availability, so the
+ * ProjectAgent routes the task it opens from the decision again, with every builder's charter and the
+ * scope's fallback order (edit-work.ts).
  */
 export function routingContext(
   scopeMap: ScopeMap,
@@ -116,11 +117,11 @@ export function routingContext(
     charter,
     roundLimit,
     scopeOf: (path) => scopeForPath(scopeMap, path),
-    ownerOf: (scope) => scopeMap.scopes.get(scope)?.ownerId,
+    ownerOf: (scope) => scopeMap.scopes.get(scope)?.driId,
     ownerAgentOf: (scope, target) => {
       const builder = target === MAIN_TARGET ? undefined : builders.get(target);
       if (builder !== undefined && charterHolds(builder, null, scope)) return builder.handle;
-      const owner = scopeMap.scopes.get(scope)?.ownerId;
+      const owner = scopeMap.scopes.get(scope)?.driId;
       return owner === undefined ? undefined : stewardHandle(owner);
     },
   };
@@ -134,7 +135,7 @@ export function charterPaths(scopeMap: ScopeMap, charter: CharterView): string[]
 
 /** The paths of every scope a person owns: where Penguin may write a fix into that person's fork. */
 function ownerPaths(scopeMap: ScopeMap, ownerId: string): string[] {
-  return [...scopeMap.scopes.values()].filter((scope) => scope.ownerId === ownerId).flatMap((scope) => [...scope.paths]);
+  return [...scopeMap.scopes.values()].filter((scope) => scope.driId === ownerId).flatMap((scope) => [...scope.paths]);
 }
 
 const ORIGIN = Symbol("origin");

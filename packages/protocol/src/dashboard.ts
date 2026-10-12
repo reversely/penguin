@@ -38,14 +38,19 @@ export type FeatureException =
   /** The check runner failed one of the feature's runs as often as the failure limit (run-failure.ts). */
   | { readonly kind: "run_failed"; readonly run: RunKind; readonly runId: string; readonly failures: number; readonly reason: string };
 
-/** A scope as the dashboard names it: its name and the person who owns it. */
+/** A scope as the dashboard names it: its name, its DRI, its team and its fallback order. */
 export interface DashboardScope {
   readonly id: string;
   readonly name: string;
+  /** The scope's DRI; for a scope that names only an owner, that owner. */
   readonly ownerId: string;
+  /** The team that owns the scope; `person:<owner>` for a scope that names only an owner. Absent from an older Worker. */
+  readonly teamId?: string;
+  /** The team members who take the scope's decisions while the DRI is away, in order. Absent from an older Worker. */
+  readonly fallbackIds?: readonly string[];
 }
 
-/** A person's role in `penguin/scopes.json`: what they own and how their scopes meet everyone else's. */
+/** A person's role in `penguin/scopes.json`: the scopes they are DRI for and how those meet everyone else's. */
 export interface PersonRole {
   readonly scopes: readonly DashboardScope[];
   /** Other people's scopes that depend on one of the person's scopes. */
@@ -124,9 +129,33 @@ export interface TeamPerson {
   readonly idleAgents: readonly DashboardAgent[];
 }
 
+/** One scope a team owns, with the person who answers for it and who stands in. */
+export interface TeamScopeSummary {
+  readonly id: string;
+  readonly name: string;
+  readonly dri: string;
+  readonly fallback: readonly string[];
+}
+
+/**
+ * A team from `penguin/teams.json`, or the one-person team a scope that names only an owner stands
+ * for (`implicit`, id `person:<owner>`).
+ */
+export interface TeamSummary {
+  readonly id: string;
+  readonly name: string;
+  readonly lead: string;
+  readonly members: readonly string[];
+  readonly implicit: boolean;
+  /** The scopes the team owns, by id. */
+  readonly scopes: readonly TeamScopeSummary[];
+}
+
 /** GET /api/team: every person, the signed-in person first. */
 export interface TeamView {
   readonly people: readonly TeamPerson[];
+  /** Every team that owns a scope or is declared, by id. Absent from an older Worker. */
+  readonly teams?: readonly TeamSummary[];
 }
 
 /** A side-by-side outcome as a line of text: the value as JSON, or the exception raised. */

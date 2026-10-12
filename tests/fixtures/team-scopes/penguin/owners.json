@@ -1,0 +1,10 @@
+{
+  "$comment": "People of this repository, as in examples/identity-unification/base/penguin/owners.json. Maya leads the data-platform team without being a member of it.",
+  "owners": [
+    { "id": "priya", "display_name": "Priya", "delegate_owner_id": null, "role": "owner" },
+    { "id": "jun", "display_name": "Jun", "delegate_owner_id": "lee", "role": "owner" },
+    { "id": "sam", "display_name": "Sam", "delegate_owner_id": null, "role": "owner" },
+    { "id": "lee", "display_name": "Lee", "delegate_owner_id": null, "role": "delegate" },
+    { "id": "maya", "display_name": "Maya", "delegate_owner_id": null, "role": "observer" }
+  ]
+}

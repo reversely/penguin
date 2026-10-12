@@ -73,15 +73,14 @@ test("a person's role names their scopes, the other scopes that read them and th
       { id: "orders", name: "Orders", owner: "tomas", paths: ["orders/"], test_command: "true", depends_on: [{ scope: "money", kind: "imports" }] },
     ],
   });
+  // A scope that names only an owner reads as that owner's one-person team, with the owner as DRI.
+  const ref = (id: string, name: string, owner: string) => ({ id, name, ownerId: owner, teamId: `person:${owner}`, fallbackIds: [] });
   assert.deepEqual(personRole(scopeMap, "ines"), {
-    scopes: [{ id: "money", name: "Money", ownerId: "ines" }],
-    dependents: [
-      { id: "orders", name: "Orders", ownerId: "tomas" },
-      { id: "tax", name: "Tax", ownerId: "rahul" },
-    ],
+    scopes: [ref("money", "Money", "ines")],
+    dependents: [ref("orders", "Orders", "tomas"), ref("tax", "Tax", "rahul")],
     dependencies: [],
   });
-  assert.deepEqual(personRole(scopeMap, "rahul").dependencies, [{ id: "money", name: "Money", ownerId: "ines" }]);
+  assert.deepEqual(personRole(scopeMap, "rahul").dependencies, [ref("money", "Money", "ines")]);
   assert.deepEqual(personRole(scopeMap, "nobody"), { scopes: [], dependents: [], dependencies: [] });
 });
 
@@ -90,6 +89,7 @@ test("the plan route sends a part's patch only to the feature's person, the part
   const part = (partId: string, owner: string) => ({
     partId,
     owner,
+    scopes: ["tax"],
     approvalState: "pending",
     diff: { source: "patch", repo: `feature-${owner}`, ref: "r", commit: null, base: "b", patch: "--- a/tax/a.py\n+++ b/tax/a.py\n", files: [file], truncated: false },
   });
@@ -98,6 +98,7 @@ test("the plan route sends a part's patch only to the feature's person, the part
     features: { get: (id: string) => (id === "money" || id === "bare" ? ({ id } as Feature) : undefined) } as unknown as FeatureStore,
     delegates: async () => new Map([["rahul", "lee"]]),
     plan: async (id: string) => (id === "money" ? plan : undefined),
+    scopeMap: async () => parseScopeMap({ scopes: [] }),
   };
   const readable = async (viewer: string) => {
     const seen = await buildFeaturePlan(deps, "money", viewer);

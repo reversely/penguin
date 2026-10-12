@@ -134,8 +134,8 @@ class Project {
     this.sessions = sessions;
     for (const scope of scopeMap.scopes.values()) {
       const outcome = this.identities.create(
-        scope.ownerId,
-        { handle: `@${scope.ownerId}/agent`, name: "agent", job: "Build features", charterScopes: [scope.id], autoAccept: true },
+        scope.driId,
+        { handle: `@${scope.driId}/agent`, name: "agent", job: "Build features", charterScopes: [scope.id], autoAccept: true },
         scopeMap,
       );
       assert.equal(outcome.status, "ok", JSON.stringify(outcome));
@@ -276,8 +276,8 @@ async function callWith(
   return { value: parsed.result.structuredContent, isError: parsed.result.isError === true };
 }
 
-const owner = firstScope.ownerId;
-const other = secondScope.ownerId;
+const owner = firstScope.driId;
+const other = secondScope.driId;
 
 describe("opening a feature", () => {
   let project: Project;
@@ -561,7 +561,7 @@ describe("the declared area", () => {
 });
 
 describe("the overlap lock", () => {
-  const third = [...scopeMap.scopes.values()].map((scope) => scope.ownerId).find((id) => id !== owner && id !== other) as string;
+  const third = [...scopeMap.scopes.values()].map((scope) => scope.driId).find((id) => id !== owner && id !== other) as string;
   const coveredPath = `${(firstScope.paths[0] as string).replace(/\/$/u, "")}/ids.py`;
   const freePath = `${(secondScope.paths[0] as string).replace(/\/$/u, "")}/report.py`;
   let project: Project;

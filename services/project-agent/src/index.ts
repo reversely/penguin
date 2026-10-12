@@ -86,7 +86,7 @@ import { dropProjectVerificationTable, huddleIssueOfRun } from "./verification-s
 import { reassignUpstream } from "./upstream.ts";
 import { IngestLedger, ingestPush, type IngestReport } from "./push-ingest.ts";
 import { rebuildIndex, type RebuildReport } from "./rebuild.ts";
-import { OWNERS_PATH, parseOwnersFile, parseScopeFile, SCOPE_MAP_PATH } from "./scope-file.ts";
+import { OWNERS_PATH, parseOwnersFile, parseScopeFile, SCOPE_MAP_PATH, TEAMS_PATH } from "./scope-file.ts";
 import { ReviewStore, submitReview, type ReviewInput, type ReviewOutcome, type StoredReview } from "./review-submit.ts";
 import { buildFeaturePage, buildFeaturePlan, buildTeamView, type DashboardViewDeps } from "./dashboard-views.ts";
 import { claimReviews, recordReview, type ReviewClaim, type ReviewReportOutcome } from "./review-record.ts";
@@ -142,6 +142,7 @@ import {
 import { EditRoster } from "./edit-roster.ts";
 import { EditTaskStore, type EditReportOutcome, type EditSource, type EditTask } from "./edit-tasks.ts";
 import {
+  availability,
   blockReported,
   claimEditTasks,
   deliverEditTasks,
@@ -267,7 +268,7 @@ import {
   parseRunFailureLimit,
   type RunFailureOutcome,
 } from "@penguin/protocol";
-import { INVARIANTS_PATH, type ScopeMap } from "@penguin/scope-map";
+import { INVARIANTS_PATH, routeScope, type ScopeMap } from "@penguin/scope-map";
 
 import {
   BridgeRegistry,
@@ -1829,6 +1830,7 @@ export class ProjectAgent extends Agent {
           feature,
           checkpoint,
           await this.#scopeMap(repos),
+          this.#available(),
         ),
       // A running feature that starts touching an announced plan's area gains a part in it (plan-coverage.ts).
       joinPlans: (feature: Feature) =>
@@ -2035,6 +2037,7 @@ export class ProjectAgent extends Agent {
    * the feature's plan whose checks are clean.
    */
   async reportPartTrial(caller: BridgeCaller, trialId: number, report: unknown, repos: ProjectRepos): Promise<PartTrialOutcome> {
+    const personFor = await this.#reviewExceptionRoute(repos);
     const outcome = await this.#featuresChanging(recordPartTrial(
       {
         trials: this.#partTrialStore(),
@@ -2043,6 +2046,7 @@ export class ProjectAgent extends Agent {
           this.#inboxStore().reviewException(ownerId, review.featureId, review.scopeId);
           sendToOwner(this.getConnections<{ owner?: string }>(), ownerId, inboxChangedMessage());
         },
+        personFor,
       },
       caller,
       trialId,
@@ -2070,6 +2074,7 @@ export class ProjectAgent extends Agent {
    * of a part of the feature's plan, so Penguin then approves each clean part (plan-approval.ts).
    */
   async reportReview(caller: BridgeCaller, reviewId: number, record: unknown, repos: ProjectRepos): Promise<ReviewReportOutcome> {
+    const personFor = await this.#reviewExceptionRoute(repos);
     const outcome = await this.#featuresChanging(recordReview(
       {
         reviews: this.#reviewStore(),
@@ -2077,6 +2082,7 @@ export class ProjectAgent extends Agent {
           this.#inboxStore().reviewException(ownerId, review.featureId, review.scopeId);
           sendToOwner(this.getConnections<{ owner?: string }>(), ownerId, inboxChangedMessage());
         },
+        personFor,
       },
       caller,
       reviewId,
@@ -2266,8 +2272,9 @@ export class ProjectAgent extends Agent {
           },
           // Every author hears of their part at once (plan-approval.ts); the plan is then announced to
           // later features that meet its area (plan-coverage.ts).
+          available: () => this.#available(),
           announce: (plan, scopeMap) => {
-            announcePlan(this.#planApprovalDeps(repos), plan, scopeMap);
+            announcePlan(this.#planApprovalDeps(repos), plan, scopeMap, this.#available());
             // Each part revision is tested on the tree it would land as (part-trial.ts).
             queueTrials(this.#trialDeps(), plan);
             this.#planCoverageStore().announce(plan, this.#featureStore().list(), scopeMap);
@@ -2308,8 +2315,8 @@ export class ProjectAgent extends Agent {
         trial: (featureId, part) => trialStanding(this.#partTrialStore(), this.#reviewStore(), featureId, part),
         records: (featureId) => this.#featureStore().records(featureId),
         ownFeatures: (person) => this.#featureStore().list().filter((feature) => feature.personId === person && feature.state !== "landed").map((feature) => feature.id),
-        protectedChanges: (owners, items, delegates) =>
-          protectedChangeRequests(this.#protectedChangeStore(), this.#featureStore(), items, owners, caller, delegates),
+        protectedChanges: (owners, items, delegates, scopeMap) =>
+          protectedChangeRequests(this.#protectedChangeStore(), this.#featureStore(), items, owners, caller, delegates, scopeMap),
       },
       caller,
     );
@@ -2438,6 +2445,7 @@ export class ProjectAgent extends Agent {
         adminMode: this.#adminMode(),
         trial: (featureId, part) => trialStanding(this.#partTrialStore(), this.#reviewStore(), featureId, part),
       },
+      available: () => this.#available(),
     };
   }
 
@@ -3067,21 +3075,41 @@ export class ProjectAgent extends Agent {
     return { upstreamScopes: (issueId) => this.#huddleStore().fixOf(this.#index().resolve(issueId))?.huddle.triggerScopes };
   }
 
-  /** The scope map in the base repo's `penguin/scopes.json` on its branch, read fresh for each call. */
+  /**
+   * The scope map in the base repo's `penguin/scopes.json` on its branch, with the teams of its
+   * `penguin/teams.json` (#135), read fresh for each call.
+   */
   async #scopeMap(repos: ProjectRepos): Promise<ScopeMap> {
-    return parseScopeFile(await this.#baseFile(repos, SCOPE_MAP_PATH));
+    const [scopes, teams] = await Promise.all([this.#baseFile(repos, SCOPE_MAP_PATH), this.#baseFile(repos, TEAMS_PATH)]);
+    return parseScopeFile(scopes, teams);
   }
 
   /**
-   * The scope map and each owner's delegate, from the base repo's `penguin/scopes.json` and
-   * `penguin/owners.json` on its branch, read fresh for each call.
+   * The scope map with its teams and each owner's delegate, from the base repo's `penguin/scopes.json`,
+   * `penguin/teams.json` and `penguin/owners.json` on its branch, read fresh for each call.
    */
   async #reviewRules(repos: ProjectRepos): Promise<ReviewRules> {
-    const [scopes, owners] = await Promise.all([
+    const [scopes, teams, owners] = await Promise.all([
       this.#baseFile(repos, SCOPE_MAP_PATH),
+      this.#baseFile(repos, TEAMS_PATH),
       this.#baseFile(repos, OWNERS_PATH),
     ]);
-    return { scopeMap: parseScopeFile(scopes), delegates: parseOwnersFile(owners) };
+    return { scopeMap: parseScopeFile(scopes, teams), delegates: parseOwnersFile(owners) };
+  }
+
+  /**
+   * Whether a person can take a decision now: their bridge polled within the online window or a
+   * session of theirs runs (edit-work.ts `availability`). Built once per routing decision (#135).
+   */
+  #available(): (person: string) => boolean {
+    return availability({ tasks: this.#editTaskStore(), running: () => this.#sessionStore().running() });
+  }
+
+  /** Who a review exception goes to: the scope's DRI, or down its fallback order while the DRI is away. */
+  async #reviewExceptionRoute(repos: ProjectRepos): Promise<(review: { readonly scopeId: string }) => string | undefined> {
+    const scopeMap = await this.#scopeMap(repos);
+    const available = this.#available();
+    return (review) => routeScope(scopeMap, review.scopeId, available);
   }
 
   /** A file on the base repo's branch, or null when there is none. */

@@ -1,0 +1,11 @@
+{
+  "$comment": "Teams of this repository. Format: a JSON object whose 'teams' array holds one entry per team with 'id' (lowercase letters, digits and hyphens, referenced by the 'team' of a scope in penguin/scopes.json), 'name', 'lead' (a person id from penguin/owners.json, usually the engineering manager, who need not be a member) and 'members' (the person ids of the team).",
+  "teams": [
+    {
+      "id": "data-platform",
+      "name": "Data platform",
+      "lead": "maya",
+      "members": ["priya", "jun"]
+    }
+  ]
+}

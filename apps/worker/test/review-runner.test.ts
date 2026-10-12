@@ -147,7 +147,7 @@ class Deployment {
   readonly inbox: InboxStore;
   readonly registry = new BridgeRegistry(this.sql);
   readonly scopeMap = parseScopeMap(JSON.parse(execGit("show", "main:penguin/scopes.json")));
-  readonly owner = (scope: string) => this.scopeMap.scopes.get(scope)?.ownerId as string;
+  readonly owner = (scope: string) => this.scopeMap.scopes.get(scope)?.driId as string;
   readonly fetchImpl: Fetch;
   readonly tokens = new Map<string, string>();
   readonly reported: number[] = [];
@@ -162,8 +162,8 @@ class Deployment {
     this.inbox = new InboxStore(this.sql, this.identities);
     for (const scope of this.scopeMap.scopes.values()) {
       this.identities.create(
-        scope.ownerId,
-        { handle: `@${scope.ownerId}/agent`, name: "agent", job: "Review", charterScopes: [scope.id], autoAccept: true },
+        scope.driId,
+        { handle: `@${scope.driId}/agent`, name: "agent", job: "Review", charterScopes: [scope.id], autoAccept: true },
         this.scopeMap,
       );
     }

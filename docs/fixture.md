@@ -170,6 +170,42 @@ check passes.
 with its own. It checks the same tablet differences, the refusals for missing evidence and the
 stored data rule for a scope that reads the changed shape and one that does not.
 
+## Teams
+
+This fixture declares no teams. Each scope in its `penguin/scopes.json` names only an `owner`, so
+each reads as that owner's one-person team, `person:<owner>`, with the owner as DRI and no fallback.
+Priya, Jun and Sam are each asked exactly as before teams.
+
+A repo with teams adds `penguin/teams.json` beside `penguin/scopes.json`:
+
+```json
+{
+  "teams": [
+    { "id": "data-platform", "name": "Data platform", "lead": "maya", "members": ["priya", "jun"] }
+  ]
+}
+```
+
+| Field | Holds |
+|---|---|
+| `id` | Lowercase letters, digits and hyphens, at most 64 characters, unique in the file |
+| `name` | The team's name, at most 128 characters |
+| `lead` | A person id from `penguin/owners.json`, usually the engineering manager. The lead need not be a member |
+| `members` | One to 256 person ids, each once |
+
+Each scope then names `team`, `dri` and an optional `fallback` in place of `owner`:
+
+```json
+{ "id": "identity-map", "team": "data-platform", "dri": "priya", "fallback": ["jun"], "paths": ["ingestion/"] }
+```
+
+The DRI and every fallback must be members of the team. The fallback order names no one twice and
+leaves out the DRI. A scope names either `owner` or `team` and `dri`. Penguin refuses the whole scope
+file when any of these rules fails. `tests/fixtures/team-scopes/penguin/` holds a two-person team with
+a DRI and a fallback, a lead outside the team and one scope that still names an owner. Ticket #130
+adds teams to the use-case fixtures. The routing rules are in
+[design.md](design.md#teams-dris-and-routing).
+
 ## Manual reproduction
 
 The steps need Git 2.38 or later for `git merge-tree --write-tree`. They also need Python 3 with

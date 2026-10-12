@@ -16,12 +16,13 @@ reads only the records that concern their own features and scopes.
 
 | Concept | Meaning |
 |---|---|
-| Person | A member of the team. A person owns scopes and features. A person approves an overlapping start in their area and the part of a plan that touches their code |
-| Scope | A part of the codebase with one owner: paths, contracts and declared invariants. One scope depends on another when it reads the other's data or calls its contracts |
+| Team | A group of people with a lead, usually the engineering manager. A team owns scopes. The lead sees every exception in the team's scopes and decides none of them |
+| Person | A member of one or more teams. A person runs features and is the DRI (directly responsible individual) for some of the team's scopes. A person approves an overlapping start in their area and the part of a plan that touches a scope they answer for |
+| Scope | A part of the codebase owned by one team, with one DRI and a fallback order of other team members: paths, contracts and declared invariants. One scope depends on another when it reads the other's data or calls its contracts |
 | Feature | One unit of work heading to main. Each feature is a fork of main in Cloudflare Artifacts, created when the feature opens. A feature declares its area: the scopes, paths and contracts it expects to touch |
 | Agent identity | A named agent a person creates, such as `@ines/money`, with a job and a charter. The charter lists the scopes and paths the identity may change. Identities follow the model of Grok Bot ([Grok Bot](https://docs.x.ai/grok-bot/bots)) |
 | Session | One running agent working as an identity on one feature |
-| Steward | One identity per person, `@<person>/steward`, which Penguin creates. Its charter lists every scope the person owns. It takes review forms and edits to those scopes that colleagues' work asks for |
+| Steward | One identity per person, `@<person>/steward`, which Penguin creates. Its charter lists every scope the person is DRI for. It takes review forms and edits to those scopes that colleagues' work asks for |
 | Builder | One identity per feature, `@<person>/<feature>`, which Penguin creates when the feature opens. Its charter is the feature's declared area |
 | Edit task | One edit Penguin needs made: a migration part, an approved fix written into a fork, a next step after a failed check or a review form. It names the fork, the files or scopes, the instructions and the checks that verify it |
 | Merge plan | The plan written by the agent whose feature changes something other features depend on. It lists the change, each affected feature and scope, plus the fix proposed for each |
@@ -37,6 +38,60 @@ reads only the records that concern their own features and scopes.
 - **Escalation.** Penguin decides anything it can decide from facts. An agent does anything that
   fits inside its charter. A person sees a decision only when the decision touches their code or
   breaks a declared rule.
+
+### Teams, DRIs and routing
+
+The hierarchy runs org, team, person, feature, part, file. Each level answers to the one above it.
+
+- **Files.** `penguin/teams.json` in the base repo declares each team: `id` (lowercase letters,
+  digits and hyphens), `name`, `lead` and `members`. The lead need not be a member. Each scope in
+  `penguin/scopes.json` names its `team`, its `dri` (a member of that team) and an optional
+  `fallback` order of other members. A scope that names only `owner` reads as that person's
+  one-person team, `person:<owner>`, with the owner as DRI and no fallback. A repo written before
+  teams therefore routes as it did. A scope names either `owner` or `team` and `dri`. The format is
+  in [fixture.md](fixture.md#teams).
+- **Routing.** Parts needing a person, review exceptions, protected-path confirmations and check
+  failures go to the scope's DRI or the DRI's delegate. When the DRI has no bridge online and no
+  session, they go to the first person in the fallback order who has one. When nobody in the order
+  has one, they stay with the DRI. A bridge counts as online when it polled in the last two minutes.
+  Penguin builds the availability check once per routing decision. Each scope lookup is one map read
+  (`routeScope` in `packages/scope-map/src/index.ts`).
+- **Stewards.** A person's steward is chartered on the scopes that person is DRI for. When a fallback
+  takes a scope's edit task, that person's steward stands in for the DRI's (`driOf` in
+  `routeEdit`).
+- **Visibility.** A part's changed lines are readable by the feature's person, the person the part
+  waits on and their delegate, each part scope's DRI and the DRI's delegate, plus the members of the
+  team that owns the scope (`mayReadPartLines`).
+- **Team lead.** The lead sees every exception in the team's scopes, read-only. The lead decides
+  nothing unless the lead is also the person asked or that person's delegate.
+- **Security.** Team membership comes only from `penguin/teams.json` and `penguin/scopes.json` on
+  the base repo's branch. A scope that names an undeclared team fails the whole scope file. The bridge
+  reads `penguin/scopes.json` without the teams file. Each scope still names its DRI there, so the
+  bridge routes by the DRI alone.
+
+Where each rule lives in the build:
+
+| Rule | Code |
+|---|---|
+| Parsing and the one-person reading | `packages/scope-map/src/teams.ts`, `parseScopeMap` |
+| Loading both files from the base repo | `services/project-agent/src/scope-file.ts` |
+| Who can take work now | `availability` in `services/project-agent/src/edit-work.ts` |
+| Plan parts on a scope | `affectedPlaces` in `services/project-agent/src/propose-plan.ts` |
+| Protected paths | `checkProtectedChanges` and `announcePlan`. A person already asked keeps the row while they still answer for the scope. The feature's own person is never asked |
+| Review exceptions | `personFor` in `review-record.ts` and `part-trial.ts` |
+| Check failures and review forms | `editRouting` in `edit-work.ts` |
+| Who may submit a scope's review form | The DRI or a member of the fallback order (`review-submit.ts`) |
+| Stewards and builders | `edit-roster.ts` |
+| The lead's read-only list | `teamExceptions` in `plan-approval.ts` |
+
+The API the team views read (#136 renders them):
+
+| Field | Where | Holds |
+|---|---|---|
+| `teams` | `GET /api/team` (`TeamView`) | Every team that owns a scope, sorted by id: `id`, `name`, `lead`, `members`, `implicit` (true for a one-person team) and `scopes`, each with `id`, `name`, `dri` and `fallback` |
+| `role.scopes` | `GET /api/team` (`TeamPerson`) | The scopes the person is DRI for |
+| `ownerId`, `teamId`, `fallbackIds` | Every `DashboardScope` | The scope's DRI, its team and its fallback order |
+| `teamExceptions` | `GET /api/plan-parts` (`PlanInbox`) | For each team the viewer leads, every exception in its scopes: `kind` (`plan_part`, `protected_path` or `review_exception`), `team`, `feature`, `ref`, `scopes`, `waitingOn`, `state` and `raisedAt`. It carries no changed lines. A one-person team adds nothing, as its owner sees their own items already |
 
 ### Pieces
 
@@ -611,7 +666,8 @@ agent becomes an edit task for one of them.
 
 1. Penguin routes each place of a task by charter. A place in a feature's fork goes to that
    feature's builder when the builder's charter holds it. Any other place goes to the steward of
-   the place's scope owner. A review form or an edit to a scope on main goes to that steward too.
+   the place's scope DRI, or of the first person in the scope's fallback order who is online while
+   the DRI is not. A review form or an edit to a scope on main goes to that steward too.
 2. A task whose places fall under two charters becomes one task per charter. The tasks share one
    block, so one block check covers them.
 3. A running session of the identity takes the task at its next safe checkpoint.
@@ -626,19 +682,19 @@ agent becomes an edit task for one of them.
 #### Edit tasks in the build
 
 - **Stewards and builders** (`services/project-agent/src/edit-roster.ts`). Both are ordinary
-  identities in the identity store, owned by their person. Penguin keeps every scope owner's steward
-  chartered on exactly the scopes that person owns in `penguin/scopes.json`. The identity store
-  refuses a charter scope its owner does not own, so a steward's charter never holds another
-  person's scope. A feature's builder is created when the feature opens. Its charter scopes are the
-  declared area's scopes the person owns. Its charter paths are the area's paths plus the paths of
-  the area's scopes another person owns. The charter follows the area as checkpoints grow it.
+  identities in the identity store, owned by their person. Penguin keeps every scope DRI's steward
+  chartered on exactly the scopes that person is DRI for in `penguin/scopes.json`. The identity
+  store refuses a charter scope whose DRI is not the identity's owner, so a steward's charter never
+  holds another person's scope. A feature's builder is created when the feature opens. Its charter
+  scopes are the declared area's scopes the person is DRI for. Its charter paths are the area's paths
+  plus the paths of the area's other scopes. The charter follows the area as checkpoints grow it.
   Charters are cut at 32 scopes and 64 paths. A builder handle another identity already holds moves
   to `-2`, then `-3`.
 - **Sources** (`services/project-agent/src/edit-work.ts`). Four kinds of work open tasks:
 
   | Kind | Opened by | Routed | Done when |
   |---|---|---|---|
-  | `review` | A plan part revision waiting on its owner, one task per scope of the part | The steward of the scope's owner | A review form for that scope reaches the plan's feature; the part leaving `pending` without one drops it |
+  | `review` | A plan part revision waiting on its owner, one task per scope of the part | The steward of the scope's DRI, or of the fallback standing in | A review form for that scope reaches the plan's feature; the part leaving `pending` without one drops it |
   | `fix` | An approved behavioural part whose place is a running feature | The whole part to the target feature's builder, else the steward of the target's person: an approved patch is written as one commit, so it never splits | The write is kept as a `fix_write` record |
   | `next_step` | A failed block run's decision at ladder step 4 or 5, one source per failing target and check | Each failing file by charter, in the failing feature's fork, or in the originating fork for a failure on main | A newer run of the feature no longer shows it, a passing run, or the feature reaching main |
   | `migration` | A migration part of a split, through `openEditTask` | Each file by charter in the target fork | The bridge's commit is kept |
@@ -1012,7 +1068,7 @@ attached. The charter is the originating identity's `charter_scopes` and `charte
 place lies inside it when its file falls in a charter scope or under a charter path. A check that
 names no file is placed by the target's scopes. Step 5 follows the routing of
 [Edit tasks](#edit-tasks-and-who-runs-them): the target feature's builder when the runner knows a
-builder whose charter holds the scope, else the steward of the scope's owner (`routingContext` in
+builder whose charter holds the scope, else the steward of the scope's DRI (`routingContext` in
 `services/local-bridge/src/resolution.ts`). A place in no scope goes to a person at step 6. The
 ProjectAgent turns each step 4 and step 5 decision into an edit task and routes it again with every
 builder's charter. A fix Penguin applied that did not clear its failure turns that failure into a behaviour
@@ -1258,9 +1314,9 @@ People see only the exceptions in this table. Everything else proceeds without t
 |---|---|
 | A new feature starts in an area another running feature covers | The person whose agent works in that area; the start waits for their approval |
 | A plan part fails a check of [Advance notice](#advance-notice) step 3 | That part's author, once |
-| A plan touches a path its owner protects | That owner, who confirms the final lines |
-| A review form reports a broken invariant, or a side-by-side run shows a difference on a protected invariant | That scope's owner |
-| A check fails in an area with no tests and no type coverage | That scope's owner |
+| A plan touches a protected path | The scope's DRI, who confirms the final lines |
+| A review form reports a broken invariant, or a side-by-side run shows a difference on a protected invariant | That scope's DRI |
+| A check fails in an area with no tests and no type coverage | That scope's DRI |
 | Agents pass a fix back and forth past the project's round limit (default 3) | The originating feature's person |
 | A plan has more parts needing a person than the break limit | The originating feature's person, to split it |
 | The check runner fails one run past the project's failure limit (default 3) | The feature's person, with the last reason |
@@ -1278,12 +1334,15 @@ branch that needs the feature's person. A
 combined run of an owner fork goes to the person whose checkpoint triggered it. A stopped block run
 fails, so a land returns the feature to building.
 
-A plan part that needs its owner goes to them as a `plan_part` item. A part Penguin approved goes
+Each exception that goes to a scope's DRI goes down the scope's fallback order while the DRI has no
+bridge online and no session ([Teams, DRIs and routing](#teams-dris-and-routing)). The team's lead
+sees each of them, read-only. A plan part that needs its owner goes to them as a `plan_part` item. A part Penguin approved goes
 to its owner as a `penguin_approved` item the owner may reverse. A protected path a part or the
-feature's own change writes goes to that path's scope owner as a `protected_path` item. A part past
+feature's own change writes goes to the person who answers for that path's scope as a
+`protected_path` item. A part past
 the round limit goes to the originating person as a `round_limit` item
 ([Advance notice in the build](#advance-notice-in-the-build)). A review exception goes to the
-scope's owner as a `review_exception` item. The dashboard inbox shows the plan parts in one card per
+person who answers for the scope as a `review_exception` item. The dashboard inbox shows the plan parts in one card per
 merge plan with each shared review once. It lists a feature's own protected changes under Protected
 paths and review exceptions under their own heading ([dashboard.md](dashboard.md#inbox)).
 

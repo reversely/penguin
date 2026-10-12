@@ -58,9 +58,10 @@ import {
   type ProtectedPathHit,
   type ReturnedPlanRequest,
   type ReviewExceptionRequest,
+  type TeamExceptionView,
 } from "@penguin/protocol";
 import type { Delegates } from "@penguin/issues";
-import { scopeForPath, type ScopeMap } from "@penguin/scope-map";
+import { answerers, ledScopes, routeScope, scopeForPath, type ScopeMap } from "@penguin/scope-map";
 
 import type { FeatureRejection } from "./feature-open.ts";
 import { parseFeatureId, type FeatureRecord, type FeatureStore, type StoredFeatureRecord, type UnsignedFeatureRecord } from "./feature-store.ts";
@@ -235,6 +236,11 @@ export interface PlanApprovalDeps {
    */
   readonly checks?: PartCheckDeps;
   readonly now?: () => number;
+  /**
+   * Whether a person can take a decision now (edit-work.ts `availability`): a protected path a
+   * revision writes goes down its scope's fallback order while the DRI is not. Absent, the DRI is asked.
+   */
+  readonly available?: () => (person: string) => boolean;
 }
 
 export interface PartCheckDeps {
@@ -319,23 +325,35 @@ export function routePart(
   );
 }
 
-/** The people who protect a path the part's fix writes. */
-function protectingOwners(part: PlanPart, scopeMap: ScopeMap): Set<string> {
+/**
+ * The people asked to confirm the protected paths the part's fix writes: each protecting scope's DRI,
+ * or down its fallback order while the DRI is away (#135).
+ */
+function protectingOwners(part: PlanPart, scopeMap: ScopeMap, available: (person: string) => boolean): Set<string> {
   const lookup = protectedLookup(scopeMap);
-  return new Set(part.diff.files.flatMap((file) => lookup(file.path)?.owner ?? []));
+  return new Set(part.diff.files.flatMap((file) => {
+    const hit = lookup(file.path);
+    return hit === undefined ? [] : (routeScope(scopeMap, hit.scope, available) ?? []);
+  }));
 }
 
 /**
- * Sends a stored plan to every author at once: each part's owner gets a `plan_part` item, each owner
- * of a protected path a part writes gets a `protected_path` item, and the older plan's items go.
+ * Sends a stored plan to every author at once: each part's owner gets a `plan_part` item, the person
+ * who answers for each protected path a part writes gets a `protected_path` item, and the older plan's
+ * items go. `available` says who can take work now; absent, every DRI is asked.
  */
-export function announcePlan(deps: Pick<PlanApprovalDeps, "routes" | "inbox" | "notify">, plan: Plan, scopeMap: ScopeMap): void {
+export function announcePlan(
+  deps: Pick<PlanApprovalDeps, "routes" | "inbox" | "notify">,
+  plan: Plan,
+  scopeMap: ScopeMap,
+  available: (person: string) => boolean = () => true,
+): void {
   const told = new Set<string>();
   for (const old of deps.routes.announce(plan)) for (const person of deps.inbox.partWithdrawn(old.partId)) told.add(person);
   for (const part of plan.parts) {
     deps.inbox.planPartAsked(part.owner, part.partId);
     told.add(part.owner);
-    for (const owner of protectingOwners(part, scopeMap)) {
+    for (const owner of protectingOwners(part, scopeMap, available)) {
       deps.inbox.protectedPathTouched(owner, part.partId);
       told.add(owner);
     }
@@ -683,7 +701,7 @@ export async function revisePlanPart(deps: ReviseDeps, caller: string, sessionId
   deps.routes.set(featureId, next);
   deps.inbox.planPartAsked(part.owner, part.partId);
   const told = new Set([part.owner]);
-  for (const owner of protectingOwners(next, scopeMap)) {
+  for (const owner of protectingOwners(next, scopeMap, deps.available?.() ?? (() => true))) {
     deps.inbox.protectedPathTouched(owner, part.partId);
     told.add(owner);
   }
@@ -805,7 +823,7 @@ export interface PlanInboxDeps {
    * The features' own changes to paths one of `owners` protects (protected-change.ts
    * protectedChangeRequests), with `items` the viewer's inbox. Absent, none are listed.
    */
-  readonly protectedChanges?: (owners: readonly string[], items: readonly InboxItem[], delegates: Delegates) => readonly ProtectedChangeRequest[];
+  readonly protectedChanges?: (owners: readonly string[], items: readonly InboxItem[], delegates: Delegates, scopeMap: ScopeMap) => readonly ProtectedChangeRequest[];
 }
 
 const REVIEW_REF = /^([^/]+)\/([^/]+)$/u;
@@ -932,8 +950,53 @@ export async function buildPlanInbox(deps: PlanInboxDeps, caller: string): Promi
     if (returned === undefined) return [];
     return [{ feature: featureId, ...returnedPayload(returned.payload), read: item.read, raisedAt: item.raisedAt }];
   });
-  const protectedChanges = [...(deps.protectedChanges?.(owners, items, delegates) ?? [])];
-  return { parts, protectedChanges, reviewExceptions, returnedPlans };
+  const protectedChanges = [...(deps.protectedChanges?.(owners, items, delegates, scopeMap) ?? [])];
+  return { parts, protectedChanges, reviewExceptions, returnedPlans, teamExceptions: teamExceptions(deps, caller, scopeMap, delegates) };
+}
+
+/**
+ * Every exception in the scopes of the teams `lead` leads (#135), read-only: parts waiting on a
+ * person, protected paths waiting for a confirmation and reviews that raised an exception, whoever
+ * they wait on. Only a declared team counts; the lead of a one-person team is its owner, who sees
+ * their own items already. Nothing here grants a decision: deciding stays with the person asked and
+ * their delegate. Lines are left out; `mayReadPartLines` governs them where the person asked reads.
+ */
+export function teamExceptions(
+  deps: Pick<PlanInboxDeps, "routes" | "reviews" | "items" | "protectedChanges">,
+  lead: string,
+  scopeMap: ScopeMap,
+  delegates: Delegates,
+): TeamExceptionView[] {
+  const led = new Map(
+    ledScopes(scopeMap, lead).flatMap((id) => {
+      const team = scopeMap.teams.get(scopeMap.scopes.get(id)?.teamId ?? "");
+      return team === undefined || team.implicit ? [] : [[id, team.id] as const];
+    }),
+  );
+  if (led.size === 0) return [];
+  const people = answerers({ ...scopeMap, scopes: new Map([...scopeMap.scopes].filter(([id]) => led.has(id))) });
+  const teamOf = (scopes: readonly string[]): string | undefined => scopes.map((scope) => led.get(scope)).find((team) => team !== undefined);
+  const out: TeamExceptionView[] = [];
+  for (const route of deps.routes.waitingOn(people, ["pending", "round_limit"])) {
+    const team = teamOf(route.scopes);
+    if (team === undefined) continue;
+    out.push({ kind: "plan_part", team, feature: route.featureId, ref: route.partId, scopes: route.scopes.filter((scope) => led.has(scope)), waitingOn: route.ownerId, state: route.state, raisedAt: route.updatedAt });
+  }
+  for (const request of deps.protectedChanges?.(people, [], delegates, scopeMap) ?? []) {
+    const scopes = [...new Set(request.files.map((file) => file.scope))].filter((scope) => led.has(scope));
+    const team = teamOf(scopes);
+    if (team === undefined || request.state !== "pending") continue;
+    out.push({ kind: "protected_path", team, feature: request.feature, ref: request.checkpoint, scopes, waitingOn: request.owner, state: request.state, raisedAt: request.raisedAt });
+  }
+  for (const person of people) {
+    for (const item of deps.items(person)) {
+      const ref = item.reason === "review_exception" ? REVIEW_REF.exec(item.issueId) : null;
+      const team = ref === null ? undefined : led.get(ref[2] as string);
+      if (ref === null || team === undefined) continue;
+      out.push({ kind: "review_exception", team, feature: ref[1] as string, ref: item.issueId, scopes: [ref[2] as string], waitingOn: person, state: item.read ? "read" : "unread", raisedAt: item.raisedAt });
+    }
+  }
+  return out.sort((a, b) => (a.raisedAt < b.raisedAt ? -1 : a.raisedAt > b.raisedAt ? 1 : 0));
 }
 
 /**

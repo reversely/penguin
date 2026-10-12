@@ -1152,7 +1152,7 @@ async function moneyMinorUnits(preview: PreviewProject): Promise<void> {
     for (const part of (await preview.plan(wave.id))?.parts ?? []) {
       for (const scope of part.scopes) {
         const file = join(ROOT, "examples", preview.fixture, "reviews", `${scope}.json`);
-        const reviewer = early.find((feature) => feature.owner === preview.scopeMap.scopes.get(scope)?.ownerId);
+        const reviewer = early.find((feature) => feature.owner === preview.scopeMap.scopes.get(scope)?.driId);
         if (!existsSync(file) || reviewer === undefined) continue;
         const form = JSON.parse(await readFile(file, "utf8")) as ReviewForm;
         await preview.step(`submit_review ${scope} on ${wave.id}`, () => preview.review(reviewer.id, wave.id, scope, form));

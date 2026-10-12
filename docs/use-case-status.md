@@ -66,4 +66,5 @@ not work yet), **rule needed** (the procedure does not yet say what should happe
 | A failed runner pass holds its run 30 minutes | works | The pass reports the failure and Penguin frees the run at once for any runner; the third failure goes to the feature's person (`services/project-agent/test/run-failures.test.ts`, `services/local-bridge/test/run-failure.test.ts`). Not yet run in the walkthrough |
 | Signed records in a record repo | gap | #123 |
 | Reads derived from the code, readable at hundreds of scopes | gap | #134 |
-| Teams above people (an engineering manager's view) | gap | #135, #136 |
+| Teams own scopes; each scope names a DRI and a fallback order | works | `penguin/teams.json` parses; a scope that names only an owner reads as a one-person team, so every example fixture routes to its owner as before (`packages/scope-map/test/teams.test.ts`). Plan parts, review forms, review exceptions and protected paths go to the DRI, then down the fallback order (`services/project-agent/test/teams.test.ts`, on `tests/fixtures/team-scopes`). Not yet in a use-case fixture (#130) |
+| Teams above people (an engineering manager's view) | partial | The API carries each team, its scopes with their DRIs and the lead's read-only exceptions (#135). The views are #136 |

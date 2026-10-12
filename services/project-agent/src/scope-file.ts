@@ -1,24 +1,39 @@
-// The files in the project base repo that the ProjectAgent judges review rights by, read through the
-// Artifacts binding: `penguin/scopes.json`, the scope map, and `penguin/owners.json`, which names each
-// owner's delegate (PRD section 7, `Owner.delegate_owner_id`).
+// The files in the project base repo that the ProjectAgent judges review rights and routes by, read
+// through the Artifacts binding at main: `penguin/scopes.json`, the scope map; `penguin/teams.json`,
+// the teams that own scopes (#135); and `penguin/owners.json`, which names each person's delegate (PRD
+// section 7, `Owner.delegate_owner_id`). Team membership comes only from these files at main.
 
 import type { Delegates } from "@penguin/issues";
-import { parseScopeMap, type ScopeMap } from "@penguin/scope-map";
+import { parseScopeMap, parseTeams, TEAMS_PATH, type ScopeMap, type Team } from "@penguin/scope-map";
 
 export const SCOPE_MAP_PATH = "penguin/scopes.json";
 export const OWNERS_PATH = "penguin/owners.json";
+export { TEAMS_PATH };
 
 /**
- * Parses the scope file's bytes. A base repo without one has no scopes, so every review is refused
- * for want of a right. An unreadable file throws, so operations wait for a fix instead of being
- * judged against no scopes.
+ * Parses the scope file's bytes, with the teams file's when the repo has one. A base repo without a
+ * scope file has no scopes, so every review is refused for want of a right. A repo without a teams
+ * file has only the one-person teams of scopes that name an owner, and a scope naming a team is then
+ * refused. An unreadable file throws, so operations wait for a fix instead of being judged against no
+ * scopes.
  */
-export function parseScopeFile(file: Uint8Array | null): ScopeMap {
-  if (file === null) return parseScopeMap({ scopes: [] });
+export function parseScopeFile(file: Uint8Array | null, teamsFile: Uint8Array | null = null): ScopeMap {
+  const teams = parseTeamsFile(teamsFile);
+  if (file === null) return parseScopeMap({ scopes: [] }, { teams });
   try {
-    return parseScopeMap(JSON.parse(new TextDecoder().decode(file)));
+    return parseScopeMap(JSON.parse(new TextDecoder().decode(file)), { teams });
   } catch (error) {
     throw new Error(`${SCOPE_MAP_PATH}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+/** The teams in the teams file's bytes; none for a repo without the file. An unreadable file throws. */
+export function parseTeamsFile(file: Uint8Array | null): ReadonlyMap<string, Team> {
+  if (file === null) return new Map();
+  try {
+    return parseTeams(JSON.parse(new TextDecoder().decode(file)));
+  } catch (error) {
+    throw new Error(`${TEAMS_PATH}: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 

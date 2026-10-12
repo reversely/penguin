@@ -335,8 +335,8 @@ function fields(changes: IdentityChanges, current: Identity, scopeMap: ScopeMap)
 }
 
 /**
- * A charter scope must exist and belong to the identity's owner, or for a team identity to one of
- * its owners: an owner cannot grant an identity the right to change another owner's scope.
+ * A charter scope must exist and have the identity's owner as its DRI, or for a team identity one of
+ * its owners: a person cannot grant an identity the right to change a scope another person answers for.
  */
 function ownedScope(scope: unknown, owners: readonly string[], scopeMap: ScopeMap): string {
   if (typeof scope !== "string") throw new Invalid("each charter scope must be a scope id");
@@ -344,8 +344,8 @@ function ownedScope(scope: unknown, owners: readonly string[], scopeMap: ScopeMa
   if (found === undefined) {
     throw new Invalid(`charter scope ${JSON.stringify(scope.slice(0, 64))} is not in the scope map`);
   }
-  if (!owners.includes(found.ownerId)) {
-    throw new Invalid(`charter scope ${scope} belongs to ${found.ownerId}, not to ${owners.join(" or ")}`);
+  if (!owners.includes(found.driId)) {
+    throw new Invalid(`charter scope ${scope} belongs to ${found.driId}, not to ${owners.join(" or ")}`);
   }
   return scope;
 }

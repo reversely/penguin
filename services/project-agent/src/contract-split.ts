@@ -133,7 +133,7 @@ export interface ContractSplitDeps {
 
 /** The scopes `person` owns in the scope map: the author's scopes of the sort. */
 export function ownScopes(person: string, scopeMap: ScopeMap): Set<string> {
-  return new Set([...scopeMap.scopes.values()].filter((scope) => scope.ownerId === person).map((scope) => scope.id));
+  return new Set([...scopeMap.scopes.values()].filter((scope) => scope.driId === person).map((scope) => scope.id));
 }
 
 /**

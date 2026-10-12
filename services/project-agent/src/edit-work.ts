@@ -3,7 +3,8 @@
 //
 // Sources:
 // - `review`: each revision of a plan part waiting on its owner asks for one review form per scope
-//   of the part. It is routed to the steward of the scope's owner. A review form submitted for that
+//   of the part. It is routed to the steward of the scope's DRI, or down the scope's fallback order
+//   while the DRI has no bridge online and no session (#135). A review form submitted for that
 //   scope on the plan's feature since the revision started waiting does it; the part leaving
 //   `pending` without one drops it.
 // - `fix`: each approved behavioural part whose place is a running feature asks for its patch to be
@@ -36,7 +37,7 @@ import {
   type EditTaskView,
   type LadderDecision,
 } from "@penguin/protocol";
-import { scopeForPath, type ScopeMap } from "@penguin/scope-map";
+import { answerers, routeScope, scopeForPath, type ScopeMap } from "@penguin/scope-map";
 
 import type { EditRoster } from "./edit-roster.ts";
 import type { EditReportOutcome, EditSource, EditTask, EditTaskStore, SessionFor } from "./edit-tasks.ts";
@@ -70,11 +71,29 @@ export interface EditWorkDeps {
 
 const personOfHandle = (handle: string): string => handle.slice(1, handle.indexOf("/"));
 
-/** Routing by the roster's charters and the scope map. */
-export function editRouting(deps: Pick<EditWorkDeps, "roster" | "features">, scopeMap: ScopeMap): EditRoutingContext {
+/**
+ * Whether a person can take work now (#135): their bridge polled within the online window or one of
+ * their sessions runs. Built once per routing pass; each answer is one lookup.
+ */
+export function availability(deps: { readonly tasks: Pick<EditTaskStore, "bridgeOnline">; readonly running: () => readonly Session[] }): (person: string) => boolean {
+  const live = new Set(deps.running().map((session) => personOfHandle(session.handle)));
+  return (person) => live.has(person) || deps.tasks.bridgeOnline(person);
+}
+
+/**
+ * Routing by the roster's charters and the scope map. A scope's work goes to its DRI's steward, or
+ * down its fallback order while the DRI is away (`routeScope`); a fallback's steward stands in for the
+ * DRI's.
+ */
+export function editRouting(
+  deps: Pick<EditWorkDeps, "roster" | "features">,
+  scopeMap: ScopeMap,
+  available: (person: string) => boolean,
+): EditRoutingContext {
   return {
     scopeOf: (path) => scopeForPath(scopeMap, path),
-    ownerOf: (scope) => scopeMap.scopes.get(scope)?.ownerId,
+    ownerOf: (scope) => routeScope(scopeMap, scope, available),
+    driOf: (scope) => scopeMap.scopes.get(scope)?.driId,
     builderOf: (featureId) => {
       const feature = deps.features.get(featureId);
       return feature === undefined ? undefined : deps.roster.builderOf(feature.personId, featureId);
@@ -115,7 +134,7 @@ function counts(deps: Pick<EditWorkDeps, "features">, session: Session): Session
 export async function syncEditWork(deps: EditWorkDeps): Promise<EditRoutingContext> {
   const scopeMap = await deps.scopeMap();
   deps.roster.sync(scopeMap, deps.features.list());
-  const routing = editRouting(deps, scopeMap);
+  const routing = editRouting(deps, scopeMap, availability(deps));
   const routes = deps.routes.waitingOn(owners(deps, scopeMap), ["pending", "approved"]);
   syncReviews(deps, routes.filter((route) => route.state === "pending"), routing);
   syncFixes(deps, routes.filter((route) => route.state === "approved"), routing);
@@ -124,9 +143,9 @@ export async function syncEditWork(deps: EditWorkDeps): Promise<EditRoutingConte
   return routing;
 }
 
-/** Every person a plan part may wait on: the scope owners and the feature people. */
+/** Every person a plan part may wait on: each scope's DRI and fallback order, and the feature people. */
 function owners(deps: Pick<EditWorkDeps, "features">, scopeMap: ScopeMap): string[] {
-  return [...new Set([...[...scopeMap.scopes.values()].map((scope) => scope.ownerId), ...deps.features.list().map((feature) => feature.personId)])];
+  return [...new Set([...answerers(scopeMap), ...deps.features.list().map((feature) => feature.personId)])];
 }
 
 const reviewKey = (route: PartRoute, scope: string) => `review:${route.partId}@${route.revision}:${scope}`;
@@ -215,7 +234,7 @@ export async function blockReported(
   const scopeMap = await deps.scopeMap();
   deps.roster.sync(scopeMap, deps.features.list());
   const sources = nextStepSources(deps, featureId, run, decisions);
-  deps.tasks.replace(prefix, sources, editRouting(deps, scopeMap), "dropped", `block run ${run.runId} no longer shows the failure`);
+  deps.tasks.replace(prefix, sources, editRouting(deps, scopeMap, availability(deps)), "dropped", `block run ${run.runId} no longer shows the failure`);
   for (const person of new Set(deps.tasks.forFeature(featureId).map((task) => task.person))) deps.notify(person);
 }
 
@@ -265,7 +284,7 @@ function findingLine(finding: LadderDecision["evidence"]["findings"][number]): s
 export async function openEditTask(deps: EditWorkDeps, source: EditSource): Promise<EditTask[]> {
   const scopeMap = await deps.scopeMap();
   deps.roster.sync(scopeMap, deps.features.list());
-  const opened = deps.tasks.open(source, editRouting(deps, scopeMap));
+  const opened = deps.tasks.open(source, editRouting(deps, scopeMap, availability(deps)));
   for (const person of new Set(opened.map((task) => task.person))) deps.notify(person);
   return opened;
 }

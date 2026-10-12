@@ -363,11 +363,36 @@ export interface ProtectedChangeFile {
   readonly lines: readonly string[] | null;
 }
 
+export const TEAM_EXCEPTION_KINDS = ["plan_part", "protected_path", "review_exception"] as const;
+export type TeamExceptionKind = (typeof TEAM_EXCEPTION_KINDS)[number];
+
+/**
+ * One exception in a scope of a team the viewer leads (#135), read-only: the lead sees it and decides
+ * nothing. It names who it waits on, not the changed lines.
+ */
+export interface TeamExceptionView {
+  readonly kind: TeamExceptionKind;
+  /** The declared team whose scope it is in. */
+  readonly team: string;
+  readonly feature: string;
+  /** The part id, the checkpoint a protected change waits at, or the review's inbox reference. */
+  readonly ref: string;
+  /** The team's scopes it concerns. */
+  readonly scopes: readonly string[];
+  /** The person it is routed to: the scope's DRI, or the fallback standing in. */
+  readonly waitingOn: string;
+  /** A part's state, `pending` for a protected change, `read` or `unread` for a review exception. */
+  readonly state: string;
+  readonly raisedAt: string;
+}
+
 export interface PlanInbox {
   readonly parts: readonly PlanPartRequest[];
   readonly protectedChanges: readonly ProtectedChangeRequest[];
   readonly reviewExceptions: readonly ReviewExceptionRequest[];
   readonly returnedPlans: readonly ReturnedPlanRequest[];
+  /** The exceptions in the scopes of the teams the viewer leads, read-only. Absent from an older Worker. */
+  readonly teamExceptions?: readonly TeamExceptionView[];
 }
 
 const FEATURE_ID: JsonSchema = { type: "string", pattern: `^${SEGMENT_PATTERN}$`, maxLength: FEATURE_ID_MAX_LENGTH };
@@ -403,10 +428,8 @@ const REASON: JsonSchema = {
   ],
 };
 
-/** JSON Schema (draft 2020-12) for the GET /api/plan-parts answer. */
-export const PLAN_INBOX_SCHEMA: JsonSchema = {
-  $schema: "https://json-schema.org/draft/2020-12/schema",
-  title: "Penguin plan parts",
+/** The plan inbox fields every Worker answers with, all required. */
+const INBOX_FIELDS = {
   ...record({
     parts: {
       type: "array",
@@ -499,6 +522,29 @@ export const PLAN_INBOX_SCHEMA: JsonSchema = {
       }),
     },
   }),
+} as { readonly properties: Record<string, JsonSchema> };
+
+/** JSON Schema (draft 2020-12) for the GET /api/plan-parts answer. `teamExceptions` may be absent. */
+export const PLAN_INBOX_SCHEMA: JsonSchema = {
+  $schema: "https://json-schema.org/draft/2020-12/schema",
+  title: "Penguin plan parts",
+  ...INBOX_FIELDS,
+  properties: {
+    ...INBOX_FIELDS.properties,
+    teamExceptions: {
+      type: "array",
+      items: record({
+        kind: { type: "string", enum: [...TEAM_EXCEPTION_KINDS] },
+        team: TEXT,
+        feature: FEATURE_ID,
+        ref: TEXT,
+        scopes: { type: "array", items: TEXT },
+        waitingOn: PERSON,
+        state: TEXT,
+        raisedAt: { type: "string" },
+      }),
+    },
+  },
 };
 
 /** Where an answer breaks PLAN_INBOX_SCHEMA; empty when it conforms. */

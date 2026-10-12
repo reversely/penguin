@@ -44,7 +44,7 @@ function assertRejected(json: unknown, field: string, options = {}): void {
 test("the fixture scope file parses into three scopes", () => {
   assert.deepEqual([...map.scopes.keys()].sort(), ["analytics", "identity-map", "messaging"]);
   const identityMap = map.scopes.get("identity-map");
-  assert.equal(identityMap?.ownerId, "priya");
+  assert.equal(identityMap?.driId, "priya");
   assert.deepEqual(identityMap?.paths, ["ingestion"]);
   assert.equal(identityMap?.testCommand, "python -m pytest ingestion");
   assert.deepEqual(map.scopes.get("analytics")?.dependsOn, [

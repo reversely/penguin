@@ -425,7 +425,7 @@ export async function scheduleCombinedRuns(deps: ScheduleDeps, owner: string, sh
 
   const byOwner = new Map<string, string[]>();
   for (const scopeId of affected.dependentScopes) {
-    const scopeOwner = deps.scopeMap.scopes.get(scopeId)?.ownerId;
+    const scopeOwner = deps.scopeMap.scopes.get(scopeId)?.driId;
     if (scopeOwner === undefined || scopeOwner === owner) continue;
     byOwner.set(scopeOwner, [...(byOwner.get(scopeOwner) ?? []), scopeId]);
   }
@@ -435,7 +435,7 @@ export async function scheduleCombinedRuns(deps: ScheduleDeps, owner: string, sh
   const withoutCheckpoint: string[] = [];
   const tested = new Set<string>();
   const dependents = new Set(affected.dependentScopes);
-  const scopeOwner = (scopeId: string) => deps.scopeMap.scopes.get(scopeId)?.ownerId;
+  const scopeOwner = (scopeId: string) => deps.scopeMap.scopes.get(scopeId)?.driId;
   // Each running feature is a target of its own, so one person's features are merged one by one.
   const running = (deps.features?.() ?? [])
     .filter((feature) => RUNNING_STATES.has(feature.state) && feature.repo !== null && feature.latestCheckpointSha !== null)

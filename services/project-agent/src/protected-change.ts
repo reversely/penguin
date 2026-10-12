@@ -6,22 +6,25 @@
 // - At each checkpoint, Penguin reads the feature's own change: the files that differ between the
 //   checkpoint and its merge base with main, the newest commit of main's history the checkpoint
 //   reaches through any parent. Files main brought in by a merge are not the feature's own. Each
-//   changed file is matched once against the scope map's protected paths. A path the feature's own
-//   person protects raises nothing, as the overlap lock makes no lock between one person's features.
-// - Each other person who protects a touched path gets one ProtectedChange row for the feature, with
-//   the changed lines of those files, and a `protected_path` inbox item. A later checkpoint that leaves
-//   those files' contents as confirmed keeps the confirmation; one that changes them asks again, and
-//   one that no longer touches the person's paths withdraws the row and the item.
-// - Only the protecting person, or the delegate they name in `penguin/owners.json`, confirms, on the
+//   changed file is matched once against the scope map's protected paths. A path in a scope the
+//   feature's own person is DRI for raises nothing, as the overlap lock makes no lock between one
+//   person's features.
+// - The person who answers for each touched scope (#135) gets one ProtectedChange row for the feature,
+//   with the changed lines of those files, and a `protected_path` inbox item: the scope's DRI, or down
+//   its fallback order while the DRI has no bridge online and no session, never the feature's own
+//   person. A person already asked keeps the row while they still answer for the scope. A later
+//   checkpoint that leaves those files' contents as confirmed keeps the confirmation; one that changes
+//   them asks again, and one that no longer touches the person's paths withdraws the row and the item.
+// - Only the person asked, or the delegate they name in `penguin/owners.json`, confirms, on the
 //   dashboard, naming the checkpoint they saw. A confirmation is a signed `confirm_protected_change`
 //   record on the feature. The feature's land is refused while any row waits (block-land.ts).
 //
 // The row's lines follow the plan patches' rule (dashboard-views.ts mayReadPartLines): the feature's
-// person, the protecting person and their delegate read them.
+// person, the person asked and their delegate, and each touched scope's DRI, delegate and team.
 
 import type { PlanFileDiff, ProtectedChangeFile, ProtectedChangeRequest, ProtectedChangeState } from "@penguin/protocol";
 import type { Delegates } from "@penguin/issues";
-import type { ScopeMap } from "@penguin/scope-map";
+import { answerersOf, routeScope, type ScopeMap } from "@penguin/scope-map";
 
 import { BASE_BRANCH } from "./base-repo.ts";
 import { BASELINE_SEARCH_LIMIT } from "./combined-run-schedule.ts";
@@ -212,18 +215,38 @@ export interface CheckpointProtectionDeps extends ProtectedChangeDeps {
   readonly readDiffs: (repo: string, files: readonly ChangedFile[]) => Promise<readonly PlanFileDiff[]>;
 }
 
-/** Whether any person other than `person` protects a path in `scopeMap`: else no checkpoint reads anything. */
+/** Whether a scope whose DRI is not `person` protects a path in `scopeMap`: else no checkpoint reads anything. */
 function othersProtect(scopeMap: ScopeMap, person: string): boolean {
-  for (const scope of scopeMap.scopes.values()) if (scope.ownerId !== person && scope.protectedPaths.length > 0) return true;
+  for (const scope of scopeMap.scopes.values()) if (scope.driId !== person && scope.protectedPaths.length > 0) return true;
   return false;
 }
 
 /**
- * Checkpoint `sha` of `feature`: each person other than the feature's own whose protected paths its
- * own change touches gets a row and an item; a person whose paths it no longer touches loses both.
- * Returns the people asked to confirm.
+ * Who confirms the protected paths of scope `scopeId` that a feature of `featurePerson` touches: a
+ * person already asked for the feature who still answers for the scope keeps it, so a checkpoint never
+ * moves a waiting confirmation; otherwise the scope's DRI, or down its fallback order while the DRI is
+ * away, never the feature's own person (#135).
  */
-export async function checkProtectedChanges(deps: CheckpointProtectionDeps, feature: Feature, sha: string, scopeMap: ScopeMap): Promise<string[]> {
+function confirmer(scopeMap: ScopeMap, scopeId: string, featurePerson: string, asked: ReadonlySet<string>, available: (person: string) => boolean): string | undefined {
+  const scope = scopeMap.scopes.get(scopeId);
+  if (scope === undefined) return undefined;
+  const kept = answerersOf(scope).find((person) => person !== featurePerson && asked.has(person));
+  return kept ?? routeScope(scopeMap, scopeId, available, featurePerson);
+}
+
+/**
+ * Checkpoint `sha` of `feature`: for each scope whose protected paths its own change touches, the
+ * person who confirms them (`confirmer`) gets a row and an item, unless the feature's own person is the
+ * scope's DRI; a person whose paths it no longer touches loses both. Returns the people asked to
+ * confirm. `available` says who can take work now; absent, every DRI is asked.
+ */
+export async function checkProtectedChanges(
+  deps: CheckpointProtectionDeps,
+  feature: Feature,
+  sha: string,
+  scopeMap: ScopeMap,
+  available: (person: string) => boolean = () => true,
+): Promise<string[]> {
   const before = new Map(deps.store.ofFeature(feature.id).map((row) => [row.ownerId, row]));
   const touched = new Map<string, { file: ChangedFile; scope: string; protectedPath: string }[]>();
   let mergeBase = "";
@@ -231,10 +254,13 @@ export async function checkProtectedChanges(deps: CheckpointProtectionDeps, feat
     const own = await deps.readOwnChange(feature.repo, sha);
     mergeBase = own.mergeBase;
     const lookup = protectedLookup(scopeMap);
+    const asked = new Set(before.keys());
     for (const file of own.files) {
       const hit = lookup(file.path);
       if (hit === undefined || hit.owner === feature.personId) continue;
-      touched.set(hit.owner, [...(touched.get(hit.owner) ?? []), { file, scope: hit.scope, protectedPath: hit.path }]);
+      const owner = confirmer(scopeMap, hit.scope, feature.personId, asked, available);
+      if (owner === undefined || owner === feature.personId) continue;
+      touched.set(owner, [...(touched.get(owner) ?? []), { file, scope: hit.scope, protectedPath: hit.path }]);
     }
   }
   const told = new Set<string>();
@@ -356,24 +382,30 @@ export function protectedChangeRequests(
   owners: readonly string[],
   viewer: string,
   delegates: ReadonlyMap<string, string>,
+  scopeMap?: ScopeMap,
 ): ProtectedChangeRequest[] {
   return store.forOwners(owners).flatMap((row) => {
     const person = features.get(row.featureId)?.personId;
     if (person === undefined) return [];
     const item = items.find((each) => each.reason === "protected_path" && each.personId === row.ownerId && each.issueId === changeRef(row.featureId));
-    return [protectedChangeRequest(row, person, viewer, delegates, item)];
+    return [protectedChangeRequest(row, person, viewer, delegates, item, scopeMap)];
   });
 }
 
-/** One row as the dashboard lists it for `viewer`, with its item's read flag and time. */
+/**
+ * One row as the dashboard lists it for `viewer`, with its item's read flag and time. Its lines follow
+ * `mayReadPartLines` over the row's scopes; without `scopeMap`, only over its person and owner.
+ */
 export function protectedChangeRequest(
   row: ProtectedChange,
   person: string,
   viewer: string,
   delegates: ReadonlyMap<string, string>,
   item: InboxItem | undefined,
+  scopeMap?: ScopeMap,
 ): ProtectedChangeRequest {
-  const lines = mayReadPartLines({ person }, row.ownerId, viewer, delegates);
+  const scopes = [...new Set(row.files.map((file) => file.scope))];
+  const lines = mayReadPartLines({ person }, { owner: row.ownerId, scopes }, viewer, delegates, scopeMap);
   const files: ProtectedChangeFile[] = row.files.map((file) => ({
     path: file.path,
     status: file.status,

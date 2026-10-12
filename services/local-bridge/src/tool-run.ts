@@ -169,7 +169,7 @@ function runTool(options: ToolPassOptions, claim: ClaimedToolRun): Promise<Agent
 
 /** The scopes each person owns, which the impact analysis searches in that person's fork. */
 function ownedScopes(scopeMap: ScopeMap, person: string): string[] {
-  return [...scopeMap.scopes.values()].filter((scope) => scope.ownerId === person).map((scope) => scope.id);
+  return [...scopeMap.scopes.values()].filter((scope) => scope.driId === person).map((scope) => scope.id);
 }
 
 /** The retiring symbols a request carries, as the ProjectAgent recorded them; empty when none. */
@@ -199,7 +199,7 @@ async function runImpact(options: ToolPassOptions, claim: ClaimedToolRun): Promi
     symbols: retiring.map((each) => each.contract),
   });
   const person = new Map(claim.forks.map((other) => [other.feature, other.person]));
-  const migration = migrationGroups(callers, retiring, (scope) => scopeMap.scopes.get(scope)?.ownerId, (feature) => person.get(feature));
+  const migration = migrationGroups(callers, retiring, (scope) => scopeMap.scopes.get(scope)?.driId, (feature) => person.get(feature));
   const places = migration.groups.reduce((sum, group) => sum + group.places.length, 0);
   const listed = `; retiring symbols: ${plural(places, "place")} left in ${plural(migration.groups.length, "owner group")}`;
   return { ...emptyResult(claim), impact, migration, summary: bounded(`${summary}${listed}`) };
@@ -219,7 +219,7 @@ async function runCallerCount(options: ToolPassOptions, claim: ClaimedToolRun, s
     symbols: retiring.map((each) => each.contract),
   });
   const person = new Map(claim.forks.map((other) => [other.feature, other.person]));
-  const migration = migrationGroups(impact, retiring, (scope) => scopeMap.scopes.get(scope)?.ownerId, (feature) => person.get(feature));
+  const migration = migrationGroups(impact, retiring, (scope) => scopeMap.scopes.get(scope)?.driId, (feature) => person.get(feature));
   const uses = retiringUses(impact.headUses, retiring).length + impact.forks.reduce((sum, fork) => sum + retiringUses(fork.uses, retiring).length, 0);
   const summary =
     `${plural(uses, "caller")} of ${plural(retiring.length, "retiring symbol")} on main and in the own changes of ${plural(claim.forks.length, "running feature")}` +

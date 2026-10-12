@@ -36,7 +36,7 @@ const preview = await seed(fixture);
 for (const step of preview.steps) console.log(`${String(step.ms).padStart(6)} ms  ${step.step}`);
 console.log(`${fixture}: seeded in ${Math.round(performance.now() - started)} ms`);
 
-const people = [...new Set([...preview.scopeMap.scopes.values()].map((scope) => scope.ownerId))];
+const people = [...new Set([...preview.scopeMap.scopes.values()].map((scope) => scope.driId))];
 // The originating person: the one whose agent called the tools, as the demo story's seat.
 const defaultOwner = args.as ?? preview.features.list().find((feature) => preview.tools.list(feature.id).length > 0)?.personId ?? people[0] ?? "";
 

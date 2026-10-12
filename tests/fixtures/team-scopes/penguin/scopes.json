@@ -1,0 +1,35 @@
+{
+  "$comment": "Scope map for a two-person team. Each scope names either 'team' (an id from penguin/teams.json), 'dri' (the team member who decides the scope's parts that need a person) and an optional 'fallback' (other team members, in order, who decide while the DRI has no bridge online and no session), or only 'owner', which reads as that person's one-person team with the owner as DRI. The other fields are as in examples/identity-unification/base/penguin/scopes.json.",
+  "scopes": [
+    {
+      "id": "identity-map",
+      "name": "Ingestion and identity map",
+      "team": "data-platform",
+      "dri": "priya",
+      "fallback": ["jun"],
+      "paths": ["ingestion/"],
+      "contracts": ["ingestion/identity_map.py::IdentityMap"],
+      "protected_paths": ["ingestion/identity_map.py"],
+      "test_command": "python -m pytest ingestion",
+      "depends_on": []
+    },
+    {
+      "id": "analytics",
+      "name": "Analytics models",
+      "team": "data-platform",
+      "dri": "jun",
+      "paths": ["analytics/"],
+      "contracts": ["analytics/models.py::daily_active_users"],
+      "test_command": "python -m pytest analytics",
+      "depends_on": [{ "scope": "identity-map", "kind": "imports" }]
+    },
+    {
+      "id": "messaging",
+      "name": "Messaging and CRM sync",
+      "owner": "sam",
+      "paths": ["messaging/"],
+      "test_command": "python -m pytest messaging",
+      "depends_on": [{ "scope": "identity-map", "kind": "imports" }]
+    }
+  ]
+}

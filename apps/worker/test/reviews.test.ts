@@ -27,7 +27,7 @@ const PREFIX = "t-";
 const FIXTURE = join(import.meta.dirname, "../../../examples/identity-unification/base");
 const scopesFile = readFileSync(join(FIXTURE, "penguin/scopes.json"), "utf8");
 const scopeMap = parseScopeMap(JSON.parse(scopesFile));
-const owners = new Map([...scopeMap.scopes.values()].map((scope) => [scope.id, scope.ownerId]));
+const owners = new Map([...scopeMap.scopes.values()].map((scope) => [scope.id, scope.driId]));
 const JUN = owners.get("analytics") as string;
 const PRIYA = owners.get("identity-map") as string;
 
@@ -67,8 +67,8 @@ class Project {
     this.reviews = new ReviewStore(sql);
     for (const scope of scopeMap.scopes.values()) {
       this.identities.create(
-        scope.ownerId,
-        { handle: `@${scope.ownerId}/agent`, name: "agent", job: "Review", charterScopes: [scope.id], autoAccept: true },
+        scope.driId,
+        { handle: `@${scope.driId}/agent`, name: "agent", job: "Review", charterScopes: [scope.id], autoAccept: true },
         scopeMap,
       );
     }

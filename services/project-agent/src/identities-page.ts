@@ -38,7 +38,7 @@ export function buildIdentitiesPage(sources: IdentitiesPageSources): IdentitiesP
   const history = sources.history();
   const handles = new Map(identities.map((identity) => [identity.id, identity.handle]));
   const checkpoints = new Map(sources.forks().flatMap((fork) => (fork.reportedBySession === null ? [] : [[fork.reportedBySession, fork] as const])));
-  const scopes = [...sources.scopeMap.scopes.values()].map(({ id, name, ownerId, testCommand }) => ({ id, name, ownerId, testCommand }));
+  const scopes = [...sources.scopeMap.scopes.values()].map(({ id, name, driId, testCommand }) => ({ id, name, ownerId: driId, testCommand }));
   const owners = new Set(scopes.map((scope) => scope.ownerId));
   const entries = identities.map((identity): IdentityEntry => {
     const identityOwners = identity.ownerId === null ? identity.teamOwners : [identity.ownerId];

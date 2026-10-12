@@ -69,6 +69,11 @@ export interface ReviewRecordDeps {
   readonly reviews: ReviewStore;
   /** Puts a review with exceptions before its scope's owner, such as an inbox item. */
   readonly routeToOwner: (ownerId: string, review: StoredReview) => void;
+  /**
+   * Who a review exception goes to: the scope's DRI, or down its fallback order while the DRI is away
+   * (#135). Absent, or undefined for the scope, it goes to the person who submitted the review.
+   */
+  readonly personFor?: (review: StoredReview) => string | undefined;
 }
 
 const rejected = (reason: Extract<ReviewReportOutcome, { status: "rejected" }>["reason"], message: string): ReviewReportOutcome => ({
@@ -108,7 +113,7 @@ export async function recordReview(deps: ReviewRecordDeps, caller: BridgeCaller,
     exceptions,
   });
   if (completed === undefined) return rejected("conflict", `review ${reviewId} was completed by another report`);
-  const routedTo = exceptions.length > 0 ? completed.ownerId : null;
+  const routedTo = exceptions.length > 0 ? (deps.personFor?.(completed) ?? completed.ownerId) : null;
   if (routedTo !== null) deps.routeToOwner(routedTo, completed);
   return { status: "recorded", review: completed, routedTo };
 }

@@ -8,9 +8,10 @@
 //
 // What a person may see: the team view and every feature's declaration, plan places, states, checks
 // and records, since a person approves overlapping starts and plan parts from them. A part's changed
-// lines show only to the feature's person, the part's owner and that owner's delegate (PRD 13: another
-// person's work is visible as the affected lines, to the people they affect), on the feature page and
-// in the plan the plan route answers alike (`mayReadPartLines`). No view carries an
+// lines show only to the feature's person, the part's owner and that owner's delegate, and for each
+// scope of the part its DRI, the DRI's delegate and the members of the team that owns it (PRD 13:
+// another person's work is visible as the affected lines, to the people they affect; #135), on the
+// feature page and in the plan the plan route answers alike (`mayReadPartLines`). No view carries an
 // agent's session transcript; Penguin holds none.
 
 import {
@@ -36,11 +37,13 @@ import {
   type PersonRole,
   type Plan,
   type TeamPerson,
+  type TeamScopeSummary,
+  type TeamSummary,
   type TeamView,
   type ToolRunView,
   type ViewerPlan,
 } from "@penguin/protocol";
-import type { ScopeMap } from "@penguin/scope-map";
+import { dris, inScopeTeam, type ScopeMap } from "@penguin/scope-map";
 
 import type { AgentToolRun, AgentToolStore } from "./agent-tools.ts";
 import type { Feature, FeatureRecord, FeatureStore } from "./feature-store.ts";
@@ -195,14 +198,20 @@ export function featureExceptions(
 
 const byName = (a: DashboardScope, b: DashboardScope) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
 
-/** The person's scopes, the scopes that depend on them and the scopes they depend on. */
+/** A scope as the dashboard names it: `ownerId` is its DRI. */
+function dashboardScope(scopeMap: ScopeMap, id: string): DashboardScope {
+  const found = scopeMap.scopes.get(id);
+  return { id, name: found?.name ?? id, ownerId: found?.driId ?? "", teamId: found?.teamId ?? "", fallbackIds: found?.fallbackIds ?? [] };
+}
+
+/** The scopes the person is DRI for, the scopes that depend on them and the scopes they depend on. */
 export function personRole(scopeMap: ScopeMap, person: string): PersonRole {
   const all = [...scopeMap.scopes.values()];
-  const ref = ({ id, name, ownerId }: (typeof all)[number]): DashboardScope => ({ id, name, ownerId });
-  const own = all.filter((scope) => scope.ownerId === person);
+  const ref = ({ id }: (typeof all)[number]): DashboardScope => dashboardScope(scopeMap, id);
+  const own = all.filter((scope) => scope.driId === person);
   const ownIds = new Set(own.map((scope) => scope.id));
   const providers = new Set(own.flatMap((scope) => scope.dependsOn.map((dependency) => dependency.providerScopeId)));
-  const others = all.filter((scope) => scope.ownerId !== person);
+  const others = all.filter((scope) => scope.driId !== person);
   return {
     scopes: own.map(ref).sort(byName),
     dependents: others.filter((scope) => scope.dependsOn.some((dependency) => ownIds.has(dependency.providerScopeId))).map(ref).sort(byName),
@@ -253,8 +262,10 @@ export async function buildTeamView(deps: DashboardViewDeps, viewer: string): Pr
       openedAt: feature.openedAt,
     };
   });
+  const teams = teamSummaries(scopeMap);
   const people = new Set<string>([
-    ...[...scopeMap.scopes.values()].map((scope) => scope.ownerId),
+    ...dris(scopeMap),
+    ...teams.flatMap((team) => [team.lead, ...team.members]),
     ...features.map((feature) => feature.personId),
     ...identities.map(identityPerson).filter((person) => person !== ""),
   ]);
@@ -271,7 +282,30 @@ export async function buildTeamView(deps: DashboardViewDeps, viewer: string): Pr
           .map((identity) => ({ handle: identity.handle, identityId: identity.id, person: id, online: false })),
       }),
     ),
+    teams,
   };
+}
+
+/**
+ * Every team that owns a scope, by id, with its lead, members and the scopes it owns, each with its
+ * DRI and fallback order: the org, team and person levels of the hierarchy (#135; #136 renders them).
+ */
+export function teamSummaries(scopeMap: ScopeMap): TeamSummary[] {
+  const owned = new Map<string, TeamScopeSummary[]>();
+  for (const scope of scopeMap.scopes.values()) {
+    owned.set(scope.teamId, [...(owned.get(scope.teamId) ?? []), { id: scope.id, name: scope.name, dri: scope.driId, fallback: [...scope.fallbackIds] }]);
+  }
+  return [...scopeMap.teams.values()]
+    .filter((team) => owned.has(team.id) || !team.implicit)
+    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+    .map((team) => ({
+      id: team.id,
+      name: team.name,
+      lead: team.leadId,
+      members: [...team.memberIds],
+      implicit: team.implicit,
+      scopes: (owned.get(team.id) ?? []).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
+    }));
 }
 
 const CUT_USES = 50;
@@ -308,31 +342,45 @@ function toolRunView(run: AgentToolRun): ToolRunView {
 }
 
 /**
- * Whether `viewer` may read a part's changed lines and patch: the feature's person, the part's owner
- * and that owner's delegate (PRD 13). The feature page and the plan route both apply it.
+ * Whether `viewer` may read a part's changed lines and patch (PRD 13, #135): the feature's person, the
+ * part's owner and that owner's delegate, and for each of the part's scopes its DRI, the DRI's
+ * delegate and the members of the team that owns it. Team membership comes only from the scope map,
+ * which the base repo's files at main make. The feature page, the plan route and protected changes
+ * all apply it.
  */
-export function mayReadPartLines(plan: Pick<Plan, "person">, owner: string, viewer: string, delegates: ReadonlyMap<string, string>): boolean {
-  return viewer === plan.person || viewer === owner || delegates.get(owner) === viewer;
+export function mayReadPartLines(
+  plan: Pick<Plan, "person">,
+  part: { readonly owner: string; readonly scopes: readonly string[] },
+  viewer: string,
+  delegates: ReadonlyMap<string, string>,
+  scopeMap: ScopeMap | undefined,
+): boolean {
+  if (viewer === plan.person || viewer === part.owner || delegates.get(part.owner) === viewer) return true;
+  if (scopeMap === undefined) return false;
+  return part.scopes.some((id) => {
+    const dri = scopeMap.scopes.get(id)?.driId;
+    return dri !== undefined && (viewer === dri || delegates.get(dri) === viewer || inScopeTeam(scopeMap, id, viewer));
+  });
 }
 
 /** GET /api/features/<id>/plan: the feature's newest plan as `viewer` may see it, or undefined for no feature or no plan. */
 export async function buildFeaturePlan(
-  deps: Pick<DashboardViewDeps, "features" | "delegates" | "plan">,
+  deps: Pick<DashboardViewDeps, "features" | "delegates" | "plan" | "scopeMap">,
   featureId: string,
   viewer: string,
 ): Promise<ViewerPlan | undefined> {
   if (deps.features.get(featureId) === undefined) return undefined;
-  const [plan, delegates] = await Promise.all([deps.plan(featureId), deps.delegates()]);
+  const [plan, delegates, scopeMap] = await Promise.all([deps.plan(featureId), deps.delegates(), deps.scopeMap()]);
   if (plan === undefined) return undefined;
   return {
     ...plan,
     parts: plan.parts.map((part) =>
-      mayReadPartLines(plan, part.owner, viewer, delegates) ? part : { ...part, diff: { ...part.diff, patch: null, files: null } },
+      mayReadPartLines(plan, part, viewer, delegates, scopeMap) ? part : { ...part, diff: { ...part.diff, patch: null, files: null } },
     ),
   };
 }
 
-function planView(plan: Plan, viewer: string, delegates: ReadonlyMap<string, string>, roundLimit: number): FeaturePlanView {
+function planView(plan: Plan, viewer: string, delegates: ReadonlyMap<string, string>, scopeMap: ScopeMap, roundLimit: number): FeaturePlanView {
   const diff = plan.facts.contractDiff;
   return {
     planId: plan.planId,
@@ -371,7 +419,7 @@ function planView(plan: Plan, viewer: string, delegates: ReadonlyMap<string, str
       breaks: part.breaks.map(breakView),
       invariants: part.invariants,
       note: part.note,
-      files: mayReadPartLines(plan, part.owner, viewer, delegates)
+      files: mayReadPartLines(plan, part, viewer, delegates, scopeMap)
         ? part.diff.files.map((file) => pageFile(file))
         : null,
     })),
@@ -425,10 +473,7 @@ export async function buildFeaturePage(deps: DashboardViewDeps, featureId: strin
   const locks = deps.overlaps.locksOn(featureId);
   const runs = deps.tools.list(featureId);
   const checkRun = runs.filter((run) => run.tool === "check" && run.outcome !== null).at(-1);
-  const scope = (id: string): DashboardScope => {
-    const found = scopeMap.scopes.get(id);
-    return { id, name: found?.name ?? id, ownerId: found?.ownerId ?? "" };
-  };
+  const scope = (id: string): DashboardScope => dashboardScope(scopeMap, id);
   return {
     feature: {
       id: feature.id,
@@ -460,7 +505,7 @@ export async function buildFeaturePage(deps: DashboardViewDeps, featureId: strin
       consumerScope: dependent.consumerScopeId,
       providerScope: dependent.providerScopeId,
     })),
-    plan: plan === undefined ? null : planView(plan, viewer, delegates, deps.roundLimit ?? PLAN_ROUND_LIMIT_DEFAULT),
+    plan: plan === undefined ? null : planView(plan, viewer, delegates, scopeMap, deps.roundLimit ?? PLAN_ROUND_LIMIT_DEFAULT),
     reviews: deps.reviews.list(featureId).map(reviewView),
     fixes: (plan?.parts ?? []).flatMap((part) => {
       if (part.place.kind !== "feature") return [];

@@ -26,7 +26,7 @@ import {
   type ReviewRecord,
   type ReviewRefusal,
 } from "@penguin/protocol";
-import { InvariantsFileError, parseInvariantsBytes, type ScopeMap } from "@penguin/scope-map";
+import { answerersOf, InvariantsFileError, parseInvariantsBytes, type ScopeMap } from "@penguin/scope-map";
 
 import { parseFeatureId, type FeatureStore } from "./feature-store.ts";
 import type { FeatureRejection } from "./feature-open.ts";
@@ -368,7 +368,8 @@ export async function submitReview(deps: ReviewDeps, caller: string, sessionId: 
   const scopeMap = await deps.scopeMap();
   const scope = typeof input.scope === "string" ? scopeMap.scopes.get(input.scope) : undefined;
   if (scope === undefined) return rejected("invalid", "the scope must be a scope id from penguin/scopes.json");
-  if (scope.ownerId !== caller) return rejected("forbidden", `a review covers its own scope; ${scope.id} belongs to another person`);
+  // The DRI reviews; a member of the fallback order may when the review task stood in for them (#135).
+  if (!answerersOf(scope).includes(caller)) return rejected("forbidden", `a review covers its own scope; ${scope.id} belongs to another person`);
 
   let invariants: InvariantView[];
   try {

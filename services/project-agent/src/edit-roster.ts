@@ -1,20 +1,20 @@
 // Stewards and builders (PRD 0.5 core concepts). Both are ordinary identities in the IdentityStore,
 // created by Penguin for a person; this module only remembers which identity plays which role.
 //
-// - A person's steward, `@<person>/steward`, is chartered on every scope the person owns in the scope
-//   map, and on nothing else: IdentityStore refuses a charter scope its owner does not own, so the
-//   steward's charter never exceeds its person's scopes. An identity the person already made under that
-//   handle is taken as the steward.
+// - A person's steward, `@<person>/steward`, is chartered on every scope the person is DRI for in the
+//   scope map (#135), and on nothing else: IdentityStore refuses a charter scope whose DRI is not its
+//   owner, so the steward's charter never exceeds its person's scopes. An identity the person already
+//   made under that handle is taken as the steward.
 // - A feature's builder, `@<person>/<feature>`, is created when the feature first routes a task or opens,
-//   chartered on the feature's declared area: the area's scopes the person owns, and as paths the area's
-//   paths plus the paths of the area's scopes another person owns. The charter follows the area as the
+//   chartered on the feature's declared area: the area's scopes the person is DRI for, and as paths the
+//   area's paths plus the paths of the area's other scopes. The charter follows the area as the
 //   area grows. A handle another identity holds moves the builder to `-2`, `-3`.
 //
 // Charters are cut at IDENTITY_LIMITS (32 scopes, 64 paths), sorted first, so a place past the cut
 // routes to a steward instead of the builder.
 
 import { builderHandle, builderJob, PENGUIN_AUTHOR_SEGMENT, STEWARD_JOB, stewardHandle, type EditCharter } from "@penguin/protocol";
-import type { ScopeMap } from "@penguin/scope-map";
+import { driScopes, type ScopeMap } from "@penguin/scope-map";
 
 import type { Feature } from "./feature-store.ts";
 import { IDENTITY_LIMITS, type Identity, type IdentityStore } from "./identity-store.ts";
@@ -43,19 +43,15 @@ export class EditRoster {
     for (const statement of EDIT_ROSTER_SCHEMA) db.exec(statement);
   }
 
-  /** Creates every scope owner's steward and every running feature's builder, and keeps each charter current. */
+  /** Creates every scope DRI's steward and every running feature's builder, and keeps each charter current. */
   sync(scopeMap: ScopeMap, features: readonly Feature[]): void {
-    for (const person of new Set([...scopeMap.scopes.values()].map((scope) => scope.ownerId))) this.steward(person, scopeMap);
+    for (const person of new Set([...scopeMap.scopes.values()].map((scope) => scope.driId))) this.steward(person, scopeMap);
     for (const feature of features) if (RUNNING_STATES.has(feature.state)) this.builder(feature, scopeMap);
   }
 
   /** The person's steward, created or brought up to date; undefined when the person id cannot own an identity. */
   steward(person: string, scopeMap: ScopeMap): Identity | undefined {
-    const charterScopes = [...scopeMap.scopes.values()]
-      .filter((scope) => scope.ownerId === person)
-      .map((scope) => scope.id)
-      .sort()
-      .slice(0, IDENTITY_LIMITS.scopes);
+    const charterScopes = driScopes(scopeMap, person).slice(0, IDENTITY_LIMITS.scopes);
     const known = this.#identityOf("steward", person, "");
     const existing = known ?? this.#identities.byHandle(stewardHandle(person));
     if (existing !== undefined && existing.ownerId === person) {
@@ -76,7 +72,7 @@ export class EditRoster {
   /** The feature's builder, created or brought up to date with the feature's area. */
   builder(feature: Feature, scopeMap: ScopeMap): Identity | undefined {
     const person = feature.personId;
-    const owned = (scope: string) => scopeMap.scopes.get(scope)?.ownerId === person;
+    const owned = (scope: string) => scopeMap.scopes.get(scope)?.driId === person;
     const charterScopes = feature.area.scopes.filter(owned).sort().slice(0, IDENTITY_LIMITS.scopes);
     const borrowed = feature.area.scopes.filter((scope) => !owned(scope)).flatMap((scope) => [...(scopeMap.scopes.get(scope)?.paths ?? [])]);
     const charterPaths = [...new Set([...feature.area.paths, ...borrowed])].filter((path) => path !== "").sort().slice(0, IDENTITY_LIMITS.paths);

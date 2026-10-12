@@ -321,7 +321,7 @@ export class CombinedRunner {
 
     const targets: (DependentTarget & { readonly ownerCheckpoint: string | undefined })[] = [];
     for (const scopeId of affected.dependentScopes) {
-      const owner = scopeMap.scopes.get(scopeId)?.ownerId as string;
+      const owner = scopeMap.scopes.get(scopeId)?.driId as string;
       const commandId = testCommandId(scopeId);
       if (wanted !== undefined && !wanted.has(commandId)) continue;
       const covering = forks.filter((fork) => (fork.scopes === undefined ? fork.person === owner : fork.scopes.includes(scopeId)));
@@ -389,7 +389,7 @@ export class CombinedRunner {
     // the resolution ladder just fixed it.
     for (const fork of forks) {
       if (merges.has(fork.id)) continue;
-      const scopes = fork.scopes ?? [...scopeMap.scopes.values()].filter((scope) => scope.ownerId === fork.person).map((scope) => scope.id);
+      const scopes = fork.scopes ?? [...scopeMap.scopes.values()].filter((scope) => scope.driId === fork.person).map((scope) => scope.id);
       const affectedTarget = request.recheck?.includes(fork.id) ?? false;
       blockTargets.push({ id: fork.id, commit: fork.checkpoint, scopes: [...scopes], affected: affectedTarget, ...(await this.#timedMerge(checkpointSha, fork.checkpoint)) });
     }
@@ -410,7 +410,7 @@ export class CombinedRunner {
     const scopes = [...scopeMap.scopes.values()].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
     const results: CombinedResult[] = [];
     for (const scope of scopes) {
-      const target = { target: MAIN_TARGET, ownerId: scope.ownerId, scopeId: scope.id, commandId: testCommandId(scope.id) };
+      const target = { target: MAIN_TARGET, ownerId: scope.driId, scopeId: scope.id, commandId: testCommandId(scope.id) };
       results.push(
         merge.kind === "conflict"
           ? { ...target, status: "conflict", ownerCheckpoint: mainSha, conflictedPaths: merge.conflictedPaths }

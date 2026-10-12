@@ -104,7 +104,7 @@ interface PreparedExpand {
 function otherOwners(impact: ImpactReport, scopeMap: ScopeMap, personId: string): Map<string, { scopes: Set<string>; paths: Set<string>; contracts: Set<string> }> {
   const owners = new Map<string, { scopes: Set<string>; paths: Set<string>; contracts: Set<string> }>();
   for (const change of impact.changes) {
-    const owner = change.scope === null ? undefined : scopeMap.scopes.get(change.scope)?.ownerId;
+    const owner = change.scope === null ? undefined : scopeMap.scopes.get(change.scope)?.driId;
     if (owner === undefined || owner === personId) continue;
     const entry = owners.get(owner) ?? { scopes: new Set<string>(), paths: new Set<string>(), contracts: new Set<string>() };
     entry.scopes.add(change.scope as string);

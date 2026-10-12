@@ -285,6 +285,8 @@ export interface PartTrialRecordDeps {
   readonly reviews: ReviewStore;
   /** Puts a review with exceptions before its scope's owner, as a review's own report does. */
   readonly routeToOwner: (ownerId: string, review: StoredReview) => void;
+  /** Who a review exception goes to, as for a review's own report (review-record.ts). */
+  readonly personFor?: (review: StoredReview) => string | undefined;
   /** Called once a trial is kept, such as to let Penguin approve the parts whose checks are now clean. */
   readonly recorded?: (featureId: string, trial: StoredPartTrial) => Promise<void> | void;
 }
@@ -347,7 +349,8 @@ export async function recordPartTrial(deps: PartTrialRecordDeps, caller: BridgeC
     const completed = deps.reviews.complete(reviewId, { state: record.state, refusals: record.refusals, record, sideBySideRef: await sha256Ref(JSON.stringify(record)), exceptions });
     if (completed === undefined) continue;
     completedReviews.push(reviewId);
-    if (exceptions.length > 0 && completed.ownerId !== null) deps.routeToOwner(completed.ownerId, completed);
+    const person = exceptions.length > 0 ? (deps.personFor?.(completed) ?? completed.ownerId) : null;
+    if (person !== null) deps.routeToOwner(person, completed);
   }
   const evidence = partTrialEvidence(stored.request.target.id, parsed.report, sources);
   await deps.recorded?.(stored.featureId, kept);

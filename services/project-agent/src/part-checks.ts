@@ -13,7 +13,7 @@ import { protectedPathFor, type ScopeMap } from "@penguin/scope-map";
 
 import type { StoredReview } from "./review-submit.ts";
 
-/** A protected-path lookup over `scopeMap`, naming each covering path's scope and that scope's owner. */
+/** A protected-path lookup over `scopeMap`, naming each covering path's scope and that scope's DRI. */
 export function protectedLookup(scopeMap: ScopeMap): (path: string) => ProtectedPathHit | undefined {
   return (path) => {
     let hit;
@@ -22,7 +22,7 @@ export function protectedLookup(scopeMap: ScopeMap): (path: string) => Protected
     } catch {
       return undefined;
     }
-    const owner = hit === undefined ? undefined : scopeMap.scopes.get(hit.scopeId)?.ownerId;
+    const owner = hit === undefined ? undefined : scopeMap.scopes.get(hit.scopeId)?.driId;
     return hit === undefined || owner === undefined ? undefined : { scope: hit.scopeId, owner, path: hit.path };
   };
 }

@@ -251,7 +251,7 @@ test("identity unification's plan has a part for each scope's code on main and f
   const onMain = plan.parts.filter((part) => part.place.kind === "scope");
   assert.deepEqual(
     onMain.map((part) => [part.place, part.owner, part.scopes, part.diff.source, part.diff.commit]),
-    fixes.map((fix) => [{ kind: "scope", scope: fix.scope }, fixture.scopeMap.scopes.get(fix.scope)?.ownerId, [fix.scope], "commit", fix.commit]),
+    fixes.map((fix) => [{ kind: "scope", scope: fix.scope }, fixture.scopeMap.scopes.get(fix.scope)?.driId, [fix.scope], "commit", fix.commit]),
   );
   // Main's callers are the uses on main in that scope; no test of main breaks on the checkpoint alone.
   for (const part of onMain) {

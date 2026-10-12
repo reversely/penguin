@@ -47,7 +47,7 @@ export function labelledScopes(labels: Iterable<string>): string[] {
 export function reviewOwners(labels: Iterable<string>, scopeMap: ScopeMap): string[] {
   const owners = new Set<string>();
   for (const id of labelledScopes(labels)) {
-    const owner = scopeMap.scopes.get(id)?.ownerId;
+    const owner = scopeMap.scopes.get(id)?.driId;
     if (owner !== undefined) owners.add(owner);
   }
   return [...owners].sort();
@@ -73,11 +73,11 @@ export function reviewRight(
   const scopes = labelledScopes(labels);
   const standsFor = (owner: string): boolean => owner === person || delegates.get(owner) === person;
   const held = scopes.filter((id) => {
-    const owner = scopeMap.scopes.get(id)?.ownerId;
+    const owner = scopeMap.scopes.get(id)?.driId;
     return owner !== undefined && standsFor(owner);
   });
   if (held.length > 0) {
-    const countsFor = [...new Set(held.map((id) => scopeMap.scopes.get(id)?.ownerId as string))].sort();
+    const countsFor = [...new Set(held.map((id) => scopeMap.scopes.get(id)?.driId as string))].sort();
     return { allowed: true, owner: person, scopes: held, countsFor };
   }
   const listed = scopes.length === 0 ? "the issue has no scope labels" : `labelled scopes: ${scopes.join(", ")}`;

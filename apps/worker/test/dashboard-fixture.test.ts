@@ -24,7 +24,7 @@ let key: CryptoKey;
 
 before(async () => {
   preview = await seed("money-minor-units", { runnerTools: false });
-  people = [...new Set([...preview.scopeMap.scopes.values()].map((scope) => scope.ownerId))];
+  people = [...new Set([...preview.scopeMap.scopes.values()].map((scope) => scope.driId))];
   key = await sessionKey(SECRET);
 });
 
@@ -40,7 +40,7 @@ async function read<T>(owner: string, path: string): Promise<{ status: number; b
 }
 
 test("each person sees only the approvals and exceptions that wait on them", async () => {
-  const ownerOfScope = (scope: string) => preview.scopeMap.scopes.get(scope)?.ownerId;
+  const ownerOfScope = (scope: string) => preview.scopeMap.scopes.get(scope)?.driId;
   const personOf = (feature: string) => preview.features.get(feature)?.personId;
   const seen = new Map<string, string>();
   for (const person of people) {

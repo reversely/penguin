@@ -276,7 +276,7 @@ class Opening {
   }
 
   #ensureUnassignedThread(issueId: string): Promise<void> {
-    const owners = [...new Set([...this.#deps.scopeMap.scopes.values()].map((scope) => scope.ownerId))]
+    const owners = [...new Set([...this.#deps.scopeMap.scopes.values()].map((scope) => scope.driId))]
       .filter((owner) => PERSON.test(owner))
       .sort()
       .slice(0, THREAD_NEEDS_MAX);

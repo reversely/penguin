@@ -57,7 +57,7 @@ export function withinCharter(
   const servesAssigner = assigningOwner !== undefined && identity.teamOwners.includes(assigningOwner);
   // A scope or path counts for a team identity only when the assigning owner owns it.
   const inAssignerScope = (scopeId: string | undefined): boolean =>
-    !team || (servesAssigner && scopeId !== undefined && scopeMap.scopes.get(scopeId)?.ownerId === assigningOwner);
+    !team || (servesAssigner && scopeId !== undefined && scopeMap.scopes.get(scopeId)?.driId === assigningOwner);
   const allowedScopes = new Set(identity.charterScopes.filter(inAssignerScope));
 
   const outside: string[] = [];

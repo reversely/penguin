@@ -83,7 +83,7 @@ import {
   type RetiringSymbol,
   type RewriteRule,
 } from "@penguin/protocol";
-import { InvariantsFileError, parseInvariantsBytes, scopeForPath, type ScopeMap } from "@penguin/scope-map";
+import { InvariantsFileError, parseInvariantsBytes, routeScope, scopeForPath, type ScopeMap } from "@penguin/scope-map";
 
 import type { FeatureRejection, FeatureRejectReason } from "./feature-open.ts";
 import { parseFeatureId, type Feature, type FeatureRecord, type FeatureStore, type UnsignedFeatureRecord } from "./feature-store.ts";
@@ -125,6 +125,12 @@ export interface ProposePlanDeps {
    * item each, and their running sessions at the next safe checkpoint. Absent, the plan is only kept.
    */
   readonly announce?: (plan: Plan, scopeMap: ScopeMap) => void;
+  /**
+   * Whether a person can take a decision now: their bridge is online or a session of theirs runs
+   * (edit-work.ts `availability`). A scope's part goes down its fallback order while its DRI is not.
+   * Absent, every DRI counts as available.
+   */
+  readonly available?: () => (person: string) => boolean;
   /** The project's retiring symbols (retiring-store.ts). Absent, a plan that declares any is refused. */
   readonly retiring?: {
     heldElsewhere(featureId: string, symbols: readonly RetiringSymbol[]): string[];
@@ -382,7 +388,8 @@ export function breakFacts(report: PlanFactsReport): PlanBreakFact[] {
  * The places the change reaches. Code on main: each scope outside the changed scopes with a caller on
  * main or a break on the main target. Unfinished work: each running feature whose own changes use a
  * changed symbol or hold an unreadable file in its scopes, or that breaks on its merged tree. The
- * facts run reports a fork's uses only in files it changed since its merge base with main.
+ * facts run reports a fork's uses only in files it changed since its merge base with main. A scope's
+ * part waits on its DRI, or down its fallback order while the DRI is away (`available`, #135).
  */
 export function affectedPlaces(
   impact: ImpactReport,
@@ -390,11 +397,12 @@ export function affectedPlaces(
   scopeMap: ScopeMap,
   features: FeatureStore,
   heads: ReadonlyMap<string, string>,
+  available: (person: string) => boolean = () => true,
 ): AffectedPlace[] {
   const changed = new Set(impact.changes.flatMap((change) => (change.scope === null ? [] : [change.scope])));
   const places = new Map<string, AffectedPlace>();
   const scopePlace = (scope: string): AffectedPlace | undefined => {
-    const owner = scopeMap.scopes.get(scope)?.ownerId;
+    const owner = routeScope(scopeMap, scope, available);
     if (owner === undefined || changed.has(scope)) return undefined;
     const key = `scope:${scope}`;
     const place = places.get(key) ?? { place: { kind: "scope", scope }, owner, head: null, scopes: new Set([scope]), callers: [], breaks: [] };
@@ -703,7 +711,7 @@ export async function proposePlan(deps: ProposePlanDeps, caller: string, session
   const report = run.state === "reported" ? run.report : null;
   const breaks = report === null ? [] : breakFacts(report);
   const heads = new Map(run.request.targets.filter((target) => target.id !== PLAN_MAIN_TARGET).map((target) => [target.id, target.sha]));
-  const places = report?.impact == null ? [] : affectedPlaces(report.impact, breaks, scopeMap, deps.features, heads);
+  const places = report?.impact == null ? [] : affectedPlaces(report.impact, breaks, scopeMap, deps.features, heads, deps.available?.());
   const invariantsOf = (scopes: Iterable<string>): PlanInvariantFact[] => {
     const wanted = new Set(scopes);
     return invariantsFile.invariants

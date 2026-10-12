@@ -276,6 +276,11 @@ test("the dashboard answer schema takes a part with its routing and refuses mark
   assert.deepEqual(checkPlanInbox({ ...empty, reviewExceptions: [exception], returnedPlans: [returned] }), []);
   assert.notDeepEqual(checkPlanInbox({ ...empty, returnedPlans: [{ ...returned, feature: "../main" }] }), []);
   assert.notDeepEqual(checkPlanInbox({ parts: [], reviewExceptions: [] }), []);
+  // A team lead's read-only list (#135) may be absent; present, each entry names a known kind and a person.
+  const teamException = { kind: "plan_part", team: "data-platform", feature: "money-minor", ref: "money-minor/v1#1", scopes: ["tax"], waitingOn: "jun", state: "pending", raisedAt: "2026-10-11T09:00:00.000Z" };
+  assert.deepEqual(checkPlanInbox({ ...empty, teamExceptions: [teamException] }), []);
+  assert.notDeepEqual(checkPlanInbox({ ...empty, teamExceptions: [{ ...teamException, kind: "decide" }] }), []);
+  assert.notDeepEqual(checkPlanInbox({ ...empty, teamExceptions: [{ ...teamException, waitingOn: "<b>jun</b>" }] }), []);
   // A feature's own protected lines: a SHA checkpoint, a known state, and lines or null for a viewer the line rule leaves out.
   const change = {
     feature: "money-analytics",

@@ -118,15 +118,24 @@ export interface EditPlace {
 
 /**
  * The fork a task edits: a feature's fork, or main for a review form or an edit to a scope on main,
- * which goes to the scope owner's steward.
+ * which goes to the steward of the scope's DRI, or of the fallback standing in.
  */
 export type EditTarget = { readonly kind: "feature"; readonly feature: string; readonly person: string } | { readonly kind: "main" };
 
 export interface EditRoutingContext {
   /** The scope a repository path falls in. */
   readonly scopeOf: (path: string) => string | undefined;
-  /** A scope's owner. */
+  /**
+   * The person who answers for a scope now: its DRI, or while the DRI is away the first available
+   * member of its fallback order (#135).
+   */
   readonly ownerOf: (scope: string) => string | undefined;
+  /**
+   * The scope's DRI. When `ownerOf` names someone else, that person stands in, and their steward takes
+   * the scope's places though its charter holds only the scopes its person is DRI for. Absent, nobody
+   * stands in.
+   */
+  readonly driOf?: (scope: string) => string | undefined;
   /** A feature's builder, or undefined when the feature has none. */
   readonly builderOf: (featureId: string) => EditCharter | undefined;
   /** A person's steward, or undefined when the person has none. */
@@ -157,8 +166,9 @@ export function charterHolds(charter: Pick<EditCharter, "scopes" | "paths">, pat
 /**
  * Routes each place of a task by charter (PRD 4.4a step 1) and groups the places by who takes them.
  * A place in a feature's fork goes to that feature's builder when its charter holds the place; any
- * other place goes to the steward of its scope's owner; a place no charter holds goes to a person:
- * its scope's owner, else the target feature's person, else `fallbackPerson`. Groups keep the order
+ * other place goes to the steward of the person who answers for its scope (`ownerOf`), when its
+ * charter holds the place or that person stands in for the DRI; a place no charter holds goes to a
+ * person: that person, else the target feature's person, else `fallbackPerson`. Groups keep the order
  * in which their first place appears, and each lists its paths and scopes sorted.
  */
 export function routeEdit(target: EditTarget, places: readonly EditPlace[], context: EditRoutingContext, fallbackPerson: string): EditRoute[] {
@@ -172,9 +182,10 @@ export function routeEdit(target: EditTarget, places: readonly EditPlace[], cont
     let person: string;
     const owner = scope === undefined ? undefined : context.ownerOf(scope);
     const steward = owner === undefined ? undefined : context.stewardOf(owner);
+    const standsIn = scope !== undefined && context.driOf !== undefined && context.driOf(scope) !== owner;
     if (builder !== undefined && charterHolds(builder, path, scope)) {
       [via, handle, person] = ["builder", builder.handle, builder.person];
-    } else if (steward !== undefined && charterHolds(steward, path, scope)) {
+    } else if (steward !== undefined && (standsIn || charterHolds(steward, path, scope))) {
       [via, handle, person] = ["steward", steward.handle, steward.person];
     } else {
       [via, handle, person] = ["person", null, owner ?? (target.kind === "feature" ? target.person : fallbackPerson)];

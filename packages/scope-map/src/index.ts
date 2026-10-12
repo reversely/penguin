@@ -1,4 +1,5 @@
 import { enclosingPaths, InvalidPathError, normalizeRepoPath } from "./paths.ts";
+import { personTeam, personTeamId, type Team } from "./teams.ts";
 
 export { InvalidPathError, normalizeRepoPath } from "./paths.ts";
 
@@ -11,11 +12,20 @@ export interface ScopeDependency {
   readonly kind: string;
 }
 
-/** A part of the codebase with one human owner. */
+/**
+ * A part of the codebase owned by one team, with one DRI (directly responsible individual) and a
+ * fallback order of other team members (PRD 0.5 core concepts). A scope that names only an `owner`
+ * belongs to that person's one-person team, with the owner as DRI and no fallback.
+ */
 export interface Scope {
   readonly id: string;
   readonly name: string;
-  readonly ownerId: string;
+  /** The owning team's id; `person:<owner>` for a scope that names only an owner. */
+  readonly teamId: string;
+  /** The person who decides the scope's parts that need a person, and whose steward acts for it. */
+  readonly driId: string;
+  /** Other team members, in order, who take the scope's decisions while the DRI is away. */
+  readonly fallbackIds: readonly string[];
   /** Normalized path prefixes relative to the repository root, without a trailing slash. */
   readonly paths: readonly string[];
   readonly testCommand: string;
@@ -42,6 +52,11 @@ export interface ScopeMap {
   readonly dependents: ReadonlyMap<string, readonly string[]>;
   /** Each contract, as `path::symbol`, mapped to the id of the scope that declares it. */
   readonly contracts: ReadonlyMap<string, string>;
+  /**
+   * The teams the scopes name: every team from `penguin/teams.json` when it was given, plus the
+   * one-person team of each scope that names only an owner.
+   */
+  readonly teams: ReadonlyMap<string, Team>;
 }
 
 /** The separator between a contract's path and its symbol. */
@@ -100,13 +115,19 @@ export class ScopeMapError extends Error {
 
 /** Options for `parseScopeMap`. */
 export interface ParseScopeMapOptions {
-  /** Owner ids from `penguin/owners.json`. When given, every scope's owner must be one of them. */
+  /** Person ids from `penguin/owners.json`. When given, every scope's owner, DRI and fallback must be one of them. */
   readonly ownerIds?: Iterable<string>;
+  /**
+   * The teams from `penguin/teams.json` (`parseTeams`). When given, every named team must be one of
+   * them and a scope's DRI and fallback must be its members. A reader that only routes by DRI, such
+   * as the bridge, may leave it out.
+   */
+  readonly teams?: ReadonlyMap<string, Team>;
 }
 
 /** The result of `affectedOwners`. Every list is sorted and holds no duplicates. */
 export interface AffectedOwners {
-  /** Owners of the scopes that declare a dependency on a changed scope. */
+  /** DRIs of the scopes that declare a dependency on a changed scope. */
   readonly owners: readonly string[];
   /** Scopes that contain at least one changed path. */
   readonly changedScopes: readonly string[];
@@ -164,6 +185,7 @@ export function parseScopeMap(json: unknown, options: ParseScopeMapOptions = {})
   const enclosedBy = new Map<string, string>();
   const declaredContracts: { contract: string; path: string; scopeId: string; field: string }[] = [];
   const declaredProtected: { path: string; scopeId: string; field: string }[] = [];
+  const teams = new Map<string, Team>(options.teams ?? []);
 
   rawScopes.forEach((raw, index) => {
     const at = `scopes[${index}]`;
@@ -171,14 +193,10 @@ export function parseScopeMap(json: unknown, options: ParseScopeMapOptions = {})
       report(at, "must be an object");
       return;
     }
-    const { id, name, owner, paths, test_command, depends_on, contracts, protected_paths } = raw;
+    const { id, name, paths, test_command, depends_on, contracts, protected_paths } = raw;
     if (!isNonEmptyString(id)) report(`${at}.id`, "is missing or empty");
     if (!isNonEmptyString(name)) report(`${at}.name`, "is missing or empty");
-    if (!isNonEmptyString(owner)) {
-      report(`${at}.owner`, "is missing or empty");
-    } else if (knownOwners !== undefined && !knownOwners.has(owner)) {
-      report(`${at}.owner`, `names unknown owner "${owner}"`);
-    }
+    const responsibility = scopeResponsibility(raw, at, report, knownOwners, options.teams);
     if (!isNonEmptyString(test_command)) report(`${at}.test_command`, "is missing or empty");
 
     const scopePaths: string[] = [];
@@ -288,13 +306,16 @@ export function parseScopeMap(json: unknown, options: ParseScopeMapOptions = {})
     const isComplete =
       isNonEmptyString(id) &&
       isNonEmptyString(name) &&
-      isNonEmptyString(owner) &&
+      responsibility !== undefined &&
       isNonEmptyString(test_command);
     if (isComplete && !scopes.has(id)) {
+      if (responsibility.implicit) teams.set(responsibility.teamId, personTeam(responsibility.driId));
       scopes.set(id, {
         id,
         name,
-        ownerId: owner,
+        teamId: responsibility.teamId,
+        driId: responsibility.driId,
+        fallbackIds: responsibility.fallbackIds,
         paths: scopePaths,
         testCommand: test_command,
         dependsOn,
@@ -350,8 +371,133 @@ export function parseScopeMap(json: unknown, options: ParseScopeMapOptions = {})
       dependents.set(dependency.providerScopeId, list);
     }
   }
-  return { scopes, pathIndex, dependents, contracts: contractIndex };
+  return { scopes, pathIndex, dependents, contracts: contractIndex, teams };
 }
+
+/** Who answers for one scope, as `parseScopeMap` reads it. */
+interface Responsibility {
+  readonly teamId: string;
+  readonly driId: string;
+  readonly fallbackIds: readonly string[];
+  readonly implicit: boolean;
+}
+
+/**
+ * A scope's team, DRI and fallback order: `team`, `dri` and an optional `fallback`, or only `owner`,
+ * which reads as that person's one-person team with the owner as DRI. Undefined when any is invalid.
+ */
+function scopeResponsibility(
+  raw: Record<string, unknown>,
+  at: string,
+  report: (field: string, message: string) => void,
+  knownOwners: ReadonlySet<string> | undefined,
+  teams: ReadonlyMap<string, Team> | undefined,
+): Responsibility | undefined {
+  const { owner, team, dri, fallback } = raw;
+  const person = (field: string, value: unknown): value is string => {
+    if (!isNonEmptyString(value)) report(field, "is missing or empty");
+    else if (knownOwners !== undefined && !knownOwners.has(value)) report(field, `names unknown owner "${value}"`);
+    else return true;
+    return false;
+  };
+  const named = team !== undefined || dri !== undefined || fallback !== undefined;
+  if (owner !== undefined && named) {
+    report(`${at}.owner`, "name either owner, or team and dri with an optional fallback, not both");
+    return undefined;
+  }
+  if (!named) {
+    if (!person(`${at}.owner`, owner)) return undefined;
+    return { teamId: personTeamId(owner), driId: owner, fallbackIds: [], implicit: true };
+  }
+
+  let ok = true;
+  const found = isNonEmptyString(team) ? teams?.get(team) : undefined;
+  if (!isNonEmptyString(team)) {
+    report(`${at}.team`, "is missing or empty");
+    ok = false;
+  } else if (teams !== undefined && found === undefined) {
+    report(`${at}.team`, `names unknown team "${team}"`);
+    ok = false;
+  }
+  const member = (field: string, value: string): boolean => {
+    if (found === undefined || found.memberIds.includes(value)) return true;
+    report(field, `"${value}" is not a member of team "${found.id}"`);
+    return false;
+  };
+  if (!person(`${at}.dri`, dri) || !member(`${at}.dri`, dri)) ok = false;
+  const fallbackIds: string[] = [];
+  if (fallback !== undefined && !Array.isArray(fallback)) {
+    report(`${at}.fallback`, "must be an array of team members when present");
+    ok = false;
+  } else {
+    (fallback ?? []).forEach((each: unknown, index: number) => {
+      const field = `${at}.fallback[${index}]`;
+      if (!person(field, each) || !member(field, each)) ok = false;
+      else if (each === dri || fallbackIds.includes(each)) {
+        report(field, `repeats "${each}"; the fallback order names each other member once`);
+        ok = false;
+      } else fallbackIds.push(each);
+    });
+  }
+  return ok ? { teamId: team as string, driId: dri as string, fallbackIds, implicit: false } : undefined;
+}
+
+/** The people who answer for a scope, in order: its DRI, then its fallback order. */
+export function answerersOf(scope: Pick<Scope, "driId" | "fallbackIds">): readonly string[] {
+  return [scope.driId, ...scope.fallbackIds];
+}
+
+/**
+ * The person a decision on scope `scopeId` goes to now (PRD 0.5 sections 4.4a and 7): the DRI when
+ * `available` holds for them, else the first available person in the fallback order, else the DRI, who
+ * keeps it until someone is back. `exclude`, such as the person whose own change raised the decision,
+ * is never picked from the fallback order. Undefined for a scope the map does not hold. One map lookup;
+ * the caller builds `available` once per decision.
+ */
+export function routeScope(map: ScopeMap, scopeId: string, available: (person: string) => boolean, exclude?: string): string | undefined {
+  const scope = map.scopes.get(scopeId);
+  if (scope === undefined) return undefined;
+  if (available(scope.driId)) return scope.driId;
+  return scope.fallbackIds.find((person) => person !== exclude && available(person)) ?? scope.driId;
+}
+
+/** The ids of the scopes `person` is DRI for, sorted. */
+export function driScopes(map: ScopeMap, person: string): string[] {
+  return [...map.scopes.values()].filter((scope) => scope.driId === person).map((scope) => scope.id).sort();
+}
+
+/** Every person who is DRI for at least one scope, sorted. */
+export function dris(map: ScopeMap): string[] {
+  return [...new Set([...map.scopes.values()].map((scope) => scope.driId))].sort();
+}
+
+/** Every person who answers for at least one scope, as DRI or in a fallback order, sorted. */
+export function answerers(map: ScopeMap): string[] {
+  return [...new Set([...map.scopes.values()].flatMap((scope) => answerersOf(scope)))].sort();
+}
+
+/** The team that owns scope `scopeId`, or undefined. */
+export function teamOfScope(map: ScopeMap, scopeId: string): Team | undefined {
+  const scope = map.scopes.get(scopeId);
+  return scope === undefined ? undefined : map.teams.get(scope.teamId);
+}
+
+/**
+ * Whether `person` belongs to the team that owns `scopeId`: a member of its team, or, when the map
+ * was read without its teams file, one of the scope's DRI and fallback order.
+ */
+export function inScopeTeam(map: ScopeMap, scopeId: string, person: string): boolean {
+  const scope = map.scopes.get(scopeId);
+  if (scope === undefined) return false;
+  const team = map.teams.get(scope.teamId);
+  return team !== undefined ? team.memberIds.includes(person) : answerersOf(scope).includes(person);
+}
+
+/** The ids of the scopes owned by a team `person` leads, sorted. A one-person team's lead is its owner. */
+export function ledScopes(map: ScopeMap, person: string): string[] {
+  return [...map.scopes.values()].filter((scope) => map.teams.get(scope.teamId)?.leadId === person).map((scope) => scope.id).sort();
+}
+
 
 /**
  * Return the id of the scope that owns a repository path, or `undefined` when no scope does.
@@ -388,7 +534,7 @@ export function dependentsOf(map: ScopeMap, scopeId: string): readonly string[] 
 }
 
 /**
- * Find the owners of every scope that directly depends on a scope containing a changed path,
+ * Find the DRIs of every scope that directly depends on a scope containing a changed path,
  * plus the changed paths that fall in no scope.
  *
  * Raises:
@@ -409,7 +555,7 @@ export function affectedOwners(map: ScopeMap, changedPaths: Iterable<string>): A
     for (const dependent of dependentsOf(map, changed)) {
       dependentScopes.add(dependent);
       const scope = map.scopes.get(dependent);
-      if (scope !== undefined) owners.add(scope.ownerId);
+      if (scope !== undefined) owners.add(scope.driId);
     }
   }
 
@@ -420,6 +566,18 @@ export function affectedOwners(map: ScopeMap, changedPaths: Iterable<string>): A
     unmapped: [...unmapped].sort(),
   };
 }
+
+export {
+  parseTeams,
+  personTeam,
+  personTeamId,
+  TEAM_LIMITS,
+  TEAMS_PATH,
+  TeamsError,
+  type ParseTeamsOptions,
+  type Team,
+  type TeamsIssue,
+} from "./teams.ts";
 
 export {
   INVARIANT_LIMITS,

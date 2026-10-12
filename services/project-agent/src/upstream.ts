@@ -49,7 +49,7 @@ export function upstreamOwner(
   const outside = huddle.triggerScopes.filter(
     (scope) => sender === undefined || !withinCharter(sender, undefined, [scope], [], scopeMap).allowed,
   );
-  const ownerOf = (scope: string): string | undefined => scopeMap.scopes.get(scope)?.ownerId;
+  const ownerOf = (scope: string): string | undefined => scopeMap.scopes.get(scope)?.driId;
   const owners = new Set(outside.flatMap((scope) => ownerOf(scope) ?? []));
   const owner = owners.size === 0 || owners.has(huddle.triggerOwner) ? huddle.triggerOwner : [...owners].sort()[0]!;
   return { owner, scopes: outside.filter((scope) => ownerOf(scope) === owner) };
