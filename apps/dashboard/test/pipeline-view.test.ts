@@ -62,6 +62,7 @@ test("every job reads as a bare label and one clause with no comma", () => {
   assert.deepEqual(lines[13], { label: "Main", fact: "Moved to dddddddddddd" });
   assert.deepEqual(lines[17], { label: "rahul", fact: "1 of 2 parts approved" });
   assert.deepEqual(lines[19], { label: "Block run", fact: "Stopped after 3 failures" });
+  assert.deepEqual(jobText({ kind: "plan", planId: null, parts: 0, returned: false, inPerson: 0, needed: false }), { label: "Plan", fact: "No plan needed" });
   for (const line of lines) {
     assert.doesNotMatch(line.fact, /[,.;]/u, line.fact);
     assert.doesNotMatch(line.label, /[,;]/u, line.label);
@@ -74,6 +75,12 @@ test("a stage counts its passed jobs and the strip names the current stage with 
   const strip = { path: "plan" as const, current: 2, stages: [{ key: "open" as const, status: "passed" as const, passed: 0, jobs: 0 }, { key: "plan" as const, status: "passed" as const, passed: 2, jobs: 2 }, { key: "review" as const, status: "person" as const, passed: 2, jobs: 4 }] };
   assert.equal(currentStageText(strip), "Review needs a person");
   assert.equal(currentStageText({ ...strip, stages: strip.stages.map((stage) => ({ ...stage, status: "running" as const })) }), "Review");
+  // A last stage main has not moved for names the promotion it waits on; one main moved for reads Promoted.
+  const promoted = (status: "waiting" | "passed") => ({ path: "plan" as const, current: 0, stages: [{ key: "promoted" as const, status, passed: status === "passed" ? 1 : 0, jobs: 1 }] });
+  assert.equal(currentStageText(promoted("waiting")), "Promotion");
+  assert.equal(currentStageText(promoted("passed")), "Promoted");
+  // A feature that needs no plan reads Building until its agent asks to land.
+  assert.equal(currentStageText({ ...strip, building: true, current: 1, stages: strip.stages.map((stage) => ({ ...stage, status: "waiting" as const })) }), "Building");
 });
 
 test("branches hang from the latest stage first, so each rail passes only rows that start to its right", () => {

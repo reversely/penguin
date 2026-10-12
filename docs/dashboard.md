@@ -72,10 +72,14 @@ block under its name, with each cell beside its column's name.
 Each feature counts at its current stage of its pipeline
 ([design.md](design.md#the-merge-as-a-pipeline-in-the-build)). A feature whose current stage needs a
 person or failed, or that carries an exception, counts in its own stage pill in the attention colour,
-apart from the same stage's running features. A feature at its last stage whose block has not
-reached main counts under Promotion (#152). A feature whose block reached main counts under On main.
+apart from the same stage's running features. A feature that needs no plan counts under Building
+until its agent asks to land: its own changes reach no one else, so the facts run of its latest
+checkpoint shows no place, or that run has not reported yet. Its strip reads Building too. A feature
+whose facts show a place and no stored plan counts under Plan. A feature reaches its last stage once
+its block was checked. Until main moves to its checkpoint it counts under Promotion. Its strip reads
+Promotion too. A feature whose block reached main counts under On main.
 A block Penguin closed with nothing left to carry counts under Closed. Pills order the stages
-needing a person first, then the pipeline's order, then On main and Closed. A pill of one feature
+needing a person first, then Open, Building and the rest of the pipeline's order, then On main and Closed. A pill of one feature
 opens that feature; a pill of several opens the level that lists them.
 
 ### Org page
@@ -163,8 +167,8 @@ the latest step first:
 |---|---|
 | promoting | Every part of the feature's merge plan is approved, or its block run is being checked or moving main (`land_feature`) |
 | waiting on approvals | The feature's start waits for an overlap approval, or a plan part waits for its author |
-| planning | Its agent proposed a plan and the check runner's facts run waits, or Penguin answered with what the plan lacks and no plan is stored, or the plan was returned over the break limit, or a part waits on the agent's revision |
-| building | Anything else |
+| planning | The facts run of its latest checkpoint shows a place its change reaches and no plan is stored, or a plan is stored and a newer checkpoint's facts run waits or found no plan parts, or the plan was returned over the break limit, or a part waits on the agent's revision |
+| building | Anything else, including a feature whose facts run shows no place or still waits for the runner while no plan is stored |
 | promoted | Main moved to the feature's checkpoint; its fork is read-only |
 | closed | A block feature Penguin opened was left with no part to carry and closed; nothing landed and its fork is read-only ([design.md](design.md#migration-plans-in-the-build)) |
 

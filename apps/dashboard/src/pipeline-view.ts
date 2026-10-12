@@ -34,11 +34,23 @@ export function stageCount(stage: { readonly passed: number; readonly jobs: numb
   return stage.jobs === 0 ? null : `${stage.passed} of ${stage.jobs}`;
 }
 
-/** The current stage's name, with its status when it is not simply running: `Review`, `Review needs a person`. */
+/** The name of a feature that needs no plan and has not asked to land, as its strip and its stage pill read it. */
+export const BUILDING_LABEL = "Building";
+
+/** The name of a last stage main has not moved for, as its strip and its stage pill read it. */
+export const PROMOTION_LABEL = "Promotion";
+
+/**
+ * The current stage's name, with its status when it is not simply running: `Review`, `Review needs a
+ * person`. A feature still building reads `Building`. A last stage main has not moved for reads
+ * `Promotion`, so only a feature on main reads `Promoted` or `Done`.
+ */
 export function currentStageText(strip: PipelineStrip): string {
   const stage = strip.stages[strip.current];
   if (stage === undefined) return "";
-  const name = STAGE_LABEL[stage.key];
+  if (strip.building === true && stage.status !== "person" && stage.status !== "failed") return BUILDING_LABEL;
+  const last = stage.key === "promoted" || stage.key === "done";
+  const name = last && stage.status !== "passed" ? PROMOTION_LABEL : STAGE_LABEL[stage.key];
   if (stage.status === "person") return `${name} needs a person`;
   if (stage.status === "failed") return `${name} failed`;
   return name;
@@ -63,6 +75,7 @@ export function jobText(fact: JobFact): { readonly label: string; readonly fact:
       return { label: "Facts run", fact: fact.state === "pending" ? "With the runner" : fact.state === "reported" ? "Reported" : "Replaced" };
     case "plan":
       if (fact.returned) return { label: "Plan", fact: `Returned with ${fact.inPerson} needing a person` };
+      if (fact.needed === false) return { label: "Plan", fact: "No plan needed" };
       return { label: fact.planId ?? "Plan", fact: fact.planId === null ? "No plan yet" : counted(fact.parts, "part") };
     case "part":
       return { label: `${partNumber(fact.partId)} ${placeName(fact.place)}`, fact: partFact(fact) };

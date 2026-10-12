@@ -12,11 +12,19 @@
 // - **Plan** (PRD 4.2 step 3 to 4.5), for a behaviour change: Open, Plan, Review, Fixes written, Block
 //   checks, Promoted.
 //
+// A feature whose own changes reach no one else needs no plan: no plan is stored, and the facts run of
+// its latest checkpoint shows no place, waits for the runner or has not been asked. It is building
+// until its agent asks to land: Plan passes with no plan needed, Block checks waits, and the strip
+// carries `building` so the dashboard words its current stage Building.
+//
 // A stage's status follows its jobs: failed when any job failed, needing a person when any job does,
 // running when any job runs, passed when every job passed. A stage with no job passes once the stage
-// before it passed, since nothing in it waits. A failed stage stops every stage after it, which then
-// waits, as in GitLab: "If any job in a stage fails, the next stage" does not run. The current stage is
-// the first that has not passed.
+// before it passed, since nothing in it waits. Three stages never pass on nothing, so a feature reaches
+// Promoted only once its block was checked, and passes it only once main moved to its checkpoint:
+// Plan waits for a stored plan while the facts show a place and no land asked for the block; Block
+// checks waits until a `check` run or a land asks for the block; Promoted and Done wait for main's
+// move. A failed stage stops every stage after it, which then waits, as in GitLab: "If any job in a
+// stage fails, the next stage" does not run. The current stage is the first that has not passed.
 //
 // A branch is the work reaching another person or their agent: a start waiting on their approval, a
 // plan part sent to them, a fix written into their fork, a migration group of theirs, a protected-path
@@ -48,8 +56,11 @@ export type JobFact =
   | { readonly kind: "start"; readonly feature: string; readonly person: string; readonly by: string | null }
   /** The plan facts run on the check runner. */
   | { readonly kind: "facts"; readonly state: "pending" | "reported" | "superseded" }
-  /** The newest plan: stored with its parts, or returned over the break limit with the parts needing a person. */
-  | { readonly kind: "plan"; readonly planId: string | null; readonly parts: number; readonly returned: boolean; readonly inPerson: number }
+  /**
+   * The newest plan: stored with its parts, or returned over the break limit with the parts needing a
+   * person. `needed` is false when no plan is stored and the facts run shows no place; absent, a plan is needed.
+   */
+  | { readonly kind: "plan"; readonly planId: string | null; readonly parts: number; readonly returned: boolean; readonly inPerson: number; readonly needed?: false }
   /** One plan part in review. */
   | {
       readonly kind: "part";
@@ -137,6 +148,8 @@ export interface PipelineActivity {
 /** The stage strip alone, as the team view shows it beside each feature. */
 export interface PipelineStrip {
   readonly path: PipelinePath;
+  /** The feature needs no plan and its agent has not asked to land: it is still building. Absent, false. */
+  readonly building?: boolean;
   /** Index into `stages` of the current stage. */
   readonly current: number;
   readonly stages: readonly { readonly key: PipelineStageKey; readonly status: JobStatus; readonly passed: number; readonly jobs: number }[];
@@ -145,6 +158,8 @@ export interface PipelineStrip {
 /** The pipeline as the feature page shows it. */
 export interface FeaturePipeline {
   readonly path: PipelinePath;
+  /** The feature needs no plan and its agent has not asked to land: it is still building. Absent, false. */
+  readonly building?: boolean;
   readonly current: number;
   readonly stages: readonly PipelineStage[];
   readonly branches: readonly PipelineBranch[];
@@ -170,6 +185,11 @@ export interface PipelineFacts {
   readonly records: readonly PipelineRecord[];
   /** The plan facts run of the latest checkpoint, or undefined for none. */
   readonly factsRun: "pending" | "reported" | "superseded" | undefined;
+  /**
+   * How many places the reported facts run shows the change reaches (propose-plan.ts affectedPlaces);
+   * null when its analysis failed, absent before it reported.
+   */
+  readonly places?: number | null;
   readonly locks: readonly { readonly feature: string; readonly person: string; readonly state: "open" | "approved"; readonly approvedBy: string | null }[];
   /** The locks an expand checkpoint opened on other owners' scopes (`owner:<person>`). */
   readonly expandLocks: PipelineFacts["locks"];
@@ -255,13 +275,34 @@ function startJobs(locks: PipelineFacts["locks"]): PipelineJob[] {
   }));
 }
 
+const newestPlan = (facts: PipelineFacts) => last(facts.records, (record) => record.type === "propose_plan" || record.type === "plan_returned");
+const landAsked = (facts: PipelineFacts) => facts.records.some((record) => record.type === "land_requested");
+
+/**
+ * Whether the feature needs no plan: none is stored, and the facts run of its latest checkpoint shows
+ * no place, still waits for the runner or was never asked.
+ */
+function needsNoPlan(facts: PipelineFacts): boolean {
+  if (newestPlan(facts) !== undefined) return false;
+  return facts.factsRun === undefined || facts.factsRun === "pending" || (facts.factsRun === "reported" && facts.places === 0);
+}
+
 function planJobs(facts: PipelineFacts): PipelineJob[] {
   const jobs: PipelineJob[] = [];
   if (facts.factsRun !== undefined) {
     const status: JobStatus = facts.factsRun === "pending" ? "running" : facts.factsRun === "reported" ? "passed" : "waiting";
     jobs.push({ key: "facts", status, fact: { kind: "facts", state: facts.factsRun } });
   }
-  const plan = last(facts.records, (record) => record.type === "propose_plan" || record.type === "plan_returned");
+  const plan = newestPlan(facts);
+  // With no plan stored the stage waits for one when the facts show a place, unless a land asked for
+  // the block without a plan. Facts that show no place pass it with no plan needed.
+  if (plan === undefined && !landAsked(facts)) {
+    if (facts.factsRun === "reported" && facts.places === 0) {
+      jobs.push({ key: "plan", status: "passed", fact: { kind: "plan", planId: null, parts: 0, returned: false, inPerson: 0, needed: false } });
+    } else if (!needsNoPlan(facts)) {
+      jobs.push({ key: "plan", status: "waiting", fact: { kind: "plan", planId: null, parts: 0, returned: false, inPerson: 0 } });
+    }
+  }
   if (plan !== undefined) {
     const returned = plan.type === "plan_returned";
     const places = plan.payload["in_person"] ?? plan.payload["behavioural"];
@@ -351,6 +392,9 @@ function promotionJobs(facts: PipelineFacts): PipelineJob[] {
     jobs.push({ key: "promotion", status: "failed", fact: { kind: "promotion", state, mainAfter: null } });
   } else if (facts.state === "landing") {
     jobs.push({ key: "promotion", status: "running", fact: { kind: "promotion", state: "running", mainAfter: null } });
+  } else {
+    // Main has not moved: the stage waits on it even once every confirmation is in.
+    jobs.push({ key: "promotion", status: "waiting", fact: { kind: "promotion", state: "waiting", mainAfter: null } });
   }
   return jobs;
 }
@@ -446,15 +490,21 @@ export function isSplit(records: readonly Pick<PipelineRecord, "type">[]): boole
 }
 
 /**
- * Each stage's status in order. A stage with no job passes once the stage before it passed; every
- * stage after a failed one waits.
+ * The stages that wait with no job rather than pass on nothing: Block checks with no job checked
+ * nothing, so a plan of no places stops there, not at Promoted.
+ */
+const HELD_WITHOUT_JOBS: ReadonlySet<PipelineStageKey> = new Set(["checks"]);
+
+/**
+ * Each stage's status in order. A stage with no job passes once the stage before it passed, unless it
+ * is held without jobs; every stage after a failed one waits.
  */
 function sequence(stages: readonly { readonly key: PipelineStageKey; readonly jobs: readonly PipelineJob[] }[]): PipelineStage[] {
   const out: PipelineStage[] = [];
   let before: JobStatus = "passed";
   let stopped = false;
   for (const stage of stages) {
-    const own: JobStatus = stage.jobs.length === 0 ? (before === "passed" ? "passed" : "waiting") : stageStatus(stage.jobs);
+    const own: JobStatus = stage.jobs.length === 0 ? (before === "passed" && !HELD_WITHOUT_JOBS.has(stage.key) ? "passed" : "waiting") : stageStatus(stage.jobs);
     const status: JobStatus = stopped ? "waiting" : own;
     out.push({ key: stage.key, status, jobs: stage.jobs });
     if (own === "failed") stopped = true;
@@ -546,6 +596,8 @@ function activity(facts: PipelineFacts): PipelineActivity[] {
 /** The feature's pipeline: its path, each stage with its jobs, the current stage, its branches and its agents' checkpoints. */
 export function featurePipeline(facts: PipelineFacts): FeaturePipeline {
   const path: PipelinePath = facts.split !== null || isSplit(facts.records) ? "split" : "plan";
+  const settled = facts.state === "landing" || facts.state === "landed" || facts.state === "closed";
+  const building = path === "plan" && !settled && !landAsked(facts) && needsNoPlan(facts);
   const approved = approvers(facts);
   const parts = facts.parts.map((part) => partJob(facts, part, approved.get(part.partId) ?? null));
   let stages: PipelineStage[];
@@ -564,31 +616,30 @@ export function featurePipeline(facts: PipelineFacts): FeaturePipeline {
       { key: "done", jobs: done },
     ], facts, path));
   } else {
-    const plan = planJobs(facts);
     stages = sequence(withStopped([
       { key: "open", jobs: startJobs(facts.locks) },
-      // A feature with no plan yet has nothing past Plan: it waits there.
-      { key: "plan", jobs: plan.length === 0 ? [{ key: "plan", status: "waiting", fact: { kind: "plan", planId: null, parts: 0, returned: false, inPerson: 0 } }] : plan },
+      { key: "plan", jobs: planJobs(facts) },
       { key: "review", jobs: parts },
       { key: "fixes", jobs: writeJobs(facts) },
       { key: "checks", jobs: checkJobs(facts) },
       { key: "promoted", jobs: promotionJobs(facts) },
     ], facts, path));
-    // Without a promotion job the last stage passes only once main moved.
-    const final = stages.at(-1) as PipelineStage;
-    if (final.jobs.length === 0) stages[stages.length - 1] = { ...final, status: "waiting" };
+    // A feature still building checks its block only once its agent asks to land: until then a check
+    // run of its own does not pass Block checks.
+    if (building) stages = stages.map((stage) => (stage.key === "checks" && stage.status === "passed" ? { ...stage, status: "waiting" } : stage));
   }
   // Main moved to the feature's checkpoint, or Penguin closed a block left with nothing to carry:
   // every stage is settled, whatever its own jobs recorded.
   if (facts.state === "landed" || facts.state === "closed") stages = stages.map((stage) => ({ ...stage, status: "passed" }));
   const index = stages.findIndex((stage) => stage.status !== "passed");
-  return { path, current: index === -1 ? stages.length - 1 : index, stages, branches: branches(facts, stages, path), activity: activity(facts) };
+  return { path, building, current: index === -1 ? stages.length - 1 : index, stages, branches: branches(facts, stages, path), activity: activity(facts) };
 }
 
 /** The strip alone, for the team view. */
 export function pipelineStrip(pipeline: FeaturePipeline): PipelineStrip {
   return {
     path: pipeline.path,
+    building: pipeline.building,
     current: pipeline.current,
     stages: pipeline.stages.map((stage) => ({ key: stage.key, status: stage.status, passed: stage.jobs.filter((job) => job.status === "passed").length, jobs: stage.jobs.length })),
   };

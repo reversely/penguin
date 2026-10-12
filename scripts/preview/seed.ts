@@ -1110,7 +1110,7 @@ export class PreviewProject {
       tools: this.tools,
       session: (sessionId) => this.sessions.get(sessionId),
       identities: () => this.identities.list(),
-      factsRun: (featureId, checkpoint) => this.facts.forCheckpoint(featureId, checkpoint)?.state,
+      factsRun: (featureId, checkpoint) => this.facts.forCheckpoint(featureId, checkpoint),
       scopeMap: async () => this.scopeMap,
       delegates: async () => new Map(),
       plan: async (featureId) => this.plans.latestPlan(featureId),

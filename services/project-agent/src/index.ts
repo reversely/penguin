@@ -2637,7 +2637,7 @@ export class ProjectAgent extends Agent {
       tools: this.#toolStore(),
       session: (sessionId) => this.#sessionStore().get(sessionId),
       identities: () => this.#identityStore().list(),
-      factsRun: (featureId, checkpoint) => this.#planFactsStore().forCheckpoint(featureId, checkpoint)?.state,
+      factsRun: (featureId, checkpoint) => this.#planFactsStore().forCheckpoint(featureId, checkpoint),
       scopeMap: async () => rules.scopeMap,
       delegates: async () => rules.delegates,
       plan: async (featureId) => this.#planKeeper(featureId).latestPlan(featureId),

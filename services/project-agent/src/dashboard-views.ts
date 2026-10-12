@@ -18,7 +18,9 @@ import {
   FEATURE_PAGE_LIMITS,
   featurePipeline,
   pipelineStrip,
+  PLAN_MAIN_TARGET,
   PLAN_ROUND_LIMIT_DEFAULT,
+  withoutWatched,
   type PartFileView,
   type PlanFileDiff,
   type PlanHunk,
@@ -57,6 +59,8 @@ import type { FixGrant } from "./fix-write.ts";
 import type { Identity } from "./identity-store.ts";
 import { RUNNING_STATES, type OverlapStore } from "./overlap-lock.ts";
 import { breakView, newestReviews, returnedPayload, type PartRoute, type PlanRouteStore } from "./plan-approval.ts";
+import type { PlanFactsRun } from "./plan-facts.ts";
+import { affectedPlaces, breakFacts } from "./propose-plan.ts";
 import type { ReviewStore, StoredReview } from "./review-submit.ts";
 import { reviewView } from "./review-view.ts";
 import type { RunFailure } from "./run-failures.ts";
@@ -71,8 +75,8 @@ export interface DashboardViewDeps {
   readonly tools: AgentToolStore;
   readonly session: (sessionId: string) => Session | undefined;
   readonly identities: () => readonly Identity[];
-  /** Where the plan facts run of a feature's checkpoint stands (PlanFactsStore.forCheckpoint), or undefined for none. */
-  readonly factsRun: (featureId: string, checkpoint: string) => "pending" | "reported" | "superseded" | undefined;
+  /** The plan facts run of a feature's checkpoint (PlanFactsStore.forCheckpoint), or undefined for none. */
+  readonly factsRun: (featureId: string, checkpoint: string) => Pick<PlanFactsRun, "state" | "report" | "request"> | undefined;
   readonly scopeMap: () => Promise<ScopeMap>;
   /** Owner id to the delegate `penguin/owners.json` names. */
   readonly delegates: () => Promise<ReadonlyMap<string, string>>;
@@ -110,7 +114,7 @@ export interface DashboardViewDeps {
  * the ProjectAgent's own SQLite; no plan is read from the feature's Durable Object, so the team view
  * derives every feature's strip in one pass.
  */
-function pipelineFacts(deps: DashboardViewDeps, feature: Feature, records: readonly FeatureRecord[], parts: readonly PartRoute[]): PipelineFacts {
+function pipelineFacts(deps: DashboardViewDeps, feature: Feature, records: readonly FeatureRecord[], parts: readonly PartRoute[], latest: LatestFacts): PipelineFacts {
   const lock = (each: ReturnType<OverlapStore["locksOn"]>[number]) => ({ feature: each.featureId, person: each.personId, state: each.state, approvedBy: each.approvedBy });
   const writes = new Map<string, "waiting" | "queued" | "granted" | "written" | "withdrawn">();
   for (const part of parts) {
@@ -126,7 +130,8 @@ function pipelineFacts(deps: DashboardViewDeps, feature: Feature, records: reado
     person: feature.personId,
     state: feature.state,
     records: records.map((record) => ({ type: record.type, author: authorLabel(record), at: record.created_at, payload: record.payload })),
-    factsRun: feature.latestCheckpointSha === null ? undefined : deps.factsRun(feature.id, feature.latestCheckpointSha),
+    factsRun: latest.factsRun,
+    ...(latest.places === undefined ? {} : { places: latest.places }),
     locks: deps.overlaps.locksOn(feature.id).map(lock),
     expandLocks: deps.overlaps.ownerLocksOn(feature.id).map(lock),
     parts: parts.map(({ partId, ownerId, place, scopes, revision, state, verify }) => ({ partId, owner: ownerId, place, scopes, revision, state, verify })),
@@ -148,8 +153,29 @@ function splitFact(split: ContractSplitView | undefined): PipelineFacts["split"]
 }
 
 /** One feature's pipeline from the ProjectAgent's own state. */
-function pipelineOf(deps: DashboardViewDeps, feature: Feature, records: readonly FeatureRecord[], parts: readonly PartRoute[]): FeaturePipeline {
-  return featurePipeline(pipelineFacts(deps, feature, records, parts));
+function pipelineOf(deps: DashboardViewDeps, feature: Feature, records: readonly FeatureRecord[], parts: readonly PartRoute[], latest: LatestFacts): FeaturePipeline {
+  return featurePipeline(pipelineFacts(deps, feature, records, parts, latest));
+}
+
+/** The facts run of a feature's latest checkpoint: where it stands and how many places it shows. */
+interface LatestFacts {
+  readonly factsRun: PipelineFacts["factsRun"];
+  /** The places the reported run shows (affectedPlaces); null when its analysis failed, undefined before it reported. */
+  readonly places: number | null | undefined;
+}
+
+/**
+ * Reads the facts run of the feature's latest checkpoint once per view. Its places are counted as
+ * propose_plan counts them, without the callers of a declared retiring contract.
+ */
+function latestFacts(deps: DashboardViewDeps, feature: Feature, scopeMap: ScopeMap): LatestFacts {
+  const run = feature.latestCheckpointSha === null ? undefined : deps.factsRun(feature.id, feature.latestCheckpointSha);
+  if (run === undefined || run.state !== "reported" || run.report === null) return { factsRun: run?.state, places: undefined };
+  const impact = run.report.impact;
+  if (impact === null) return { factsRun: run.state, places: null };
+  const heads = new Map(run.request.targets.filter((target) => target.id !== PLAN_MAIN_TARGET).map((target) => [target.id, target.sha]));
+  const places = affectedPlaces(withoutWatched(impact, run.request.retiring), breakFacts(run.report), scopeMap, deps.features, heads);
+  return { factsRun: run.state, places: places.length };
 }
 
 /** What a feature's state is read from. */
@@ -158,8 +184,10 @@ export interface FeatureStateFacts {
   /** The locks this feature's start waits on, open or approved. */
   readonly locks: readonly { readonly state: "open" | "approved" }[];
   readonly parts: readonly Pick<PartRoute, "state">[];
-  /** Where the facts run of the feature's latest checkpoint stands: its agent asked for a plan. */
+  /** Where the facts run of the feature's latest checkpoint stands. */
   readonly factsRun: "pending" | "reported" | "superseded" | undefined;
+  /** The places its reported facts run shows; 0 means the feature needs no plan. Absent, unknown. */
+  readonly places?: number | null;
   /** The type of the feature's newest plan record: `propose_plan`, `plan_returned` or undefined. */
   readonly lastPlanRecord: string | undefined;
 }
@@ -181,7 +209,12 @@ export function featureState(facts: FeatureStateFacts): FeatureStateWord {
   if (facts.locks.some((lock) => lock.state === "open") || parts.some((part) => part.state === "pending" || part.state === "round_limit")) {
     return "waiting on approvals";
   }
-  const asked = facts.factsRun === "pending" || (facts.factsRun === "reported" && parts.length === 0);
+  // With no plan stored, only facts that show a place ask for one; a feature whose change reaches no
+  // one else, or whose facts still wait for the runner, is building.
+  const asked =
+    facts.lastPlanRecord === undefined
+      ? facts.factsRun === "reported" && facts.places !== 0
+      : facts.factsRun === "pending" || (facts.factsRun === "reported" && parts.length === 0);
   if (asked || facts.lastPlanRecord === "plan_returned" || parts.some((part) => part.state === "change_requested")) return "planning";
   return "building";
 }
@@ -262,6 +295,7 @@ export async function buildTeamView(deps: DashboardViewDeps, viewer: string): Pr
     const unseen = tasks.filter((task) => !seenTasks.has(task.id));
     for (const task of unseen) seenTasks.add(task.id);
     tallyWaiting(waiting, deps, feature.id, parts, unseen, running);
+    const latest = latestFacts(deps, feature, scopeMap);
     const builderTasks = taskCounts(tasks.filter((task) => task.via === "builder" && task.target === feature.id));
     return {
       id: feature.id,
@@ -270,10 +304,10 @@ export async function buildTeamView(deps: DashboardViewDeps, viewer: string): Pr
         feature,
         locks: deps.overlaps.locksOn(feature.id),
         parts,
-        factsRun: feature.latestCheckpointSha === null ? undefined : deps.factsRun(feature.id, feature.latestCheckpointSha),
+        ...latest,
         lastPlanRecord: records.filter((record) => record.type === "propose_plan" || record.type === "plan_returned").at(-1)?.type,
       }),
-      strip: pipelineStrip(pipelineOf(deps, feature, records, parts)),
+      strip: pipelineStrip(pipelineOf(deps, feature, records, parts, latest)),
       exceptions: featureExceptions(parts, deps.reviews.list(feature.id), records, deps.stoppedRuns?.(feature.id)),
       agents,
       openedAt: feature.openedAt,
@@ -573,6 +607,7 @@ export async function buildFeaturePage(deps: DashboardViewDeps, featureId: strin
   const locks = deps.overlaps.locksOn(featureId);
   const runs = deps.tools.list(featureId);
   const checkRun = runs.filter((run) => run.tool === "check" && run.outcome !== null).at(-1);
+  const latest = latestFacts(deps, feature, scopeMap);
   const scope = (id: string): DashboardScope => dashboardScope(scopeMap, id);
   const commits = deps.recordCommits?.(featureId);
   return {
@@ -584,7 +619,7 @@ export async function buildFeaturePage(deps: DashboardViewDeps, featureId: strin
         feature,
         locks,
         parts,
-        factsRun: feature.latestCheckpointSha === null ? undefined : deps.factsRun(featureId, feature.latestCheckpointSha),
+        ...latest,
         lastPlanRecord: records.filter((record) => record.type === "propose_plan" || record.type === "plan_returned").at(-1)?.type,
       }),
       openedAt: feature.openedAt,
@@ -592,7 +627,7 @@ export async function buildFeaturePage(deps: DashboardViewDeps, featureId: strin
       area: { scopes: feature.area.scopes.map(scope), paths: feature.area.paths, contracts: feature.area.contracts },
     },
     agents: featureAgents(deps, featureId, byHandle, feature.personId),
-    pipeline: pipelineOf(deps, feature, records, parts),
+    pipeline: pipelineOf(deps, feature, records, parts, latest),
     waitingOn: locks.map((lock) => ({
       feature: lock.featureId,
       person: lock.personId,

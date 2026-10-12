@@ -26,9 +26,13 @@ const facts = (changes: Partial<FeatureStateFacts>): FeatureStateFacts => ({
 test("a feature's state is the latest step its facts show", () => {
   assert.equal(featureState(facts({})), "building");
   assert.equal(featureState(facts({ feature: { state: "opening" } })), "building");
-  // Its agent asked for a plan: the facts run waits, or answered and no plan is stored yet.
-  assert.equal(featureState(facts({ factsRun: "pending" })), "planning");
-  assert.equal(featureState(facts({ factsRun: "reported" })), "planning");
+  // Facts that show a place ask for a plan; facts that show none, or still wait, leave it building.
+  assert.equal(featureState(facts({ factsRun: "reported", places: 2 })), "planning");
+  assert.equal(featureState(facts({ factsRun: "reported", places: null })), "planning");
+  assert.equal(featureState(facts({ factsRun: "reported", places: 0 })), "building");
+  assert.equal(featureState(facts({ factsRun: "pending" })), "building");
+  // With a plan stored, a new checkpoint's facts run waits for the runner while the plan is remade.
+  assert.equal(featureState(facts({ factsRun: "pending", lastPlanRecord: "propose_plan" })), "planning");
   assert.equal(featureState(facts({ lastPlanRecord: "plan_returned" })), "planning");
   assert.equal(featureState(facts({ parts: [{ state: "change_requested" }, { state: "approved" }] })), "planning");
   // A start or a part waiting on a person.

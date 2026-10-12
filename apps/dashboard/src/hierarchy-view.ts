@@ -8,7 +8,7 @@
 import type { DashboardAgent, EditTaskCounts, FeaturePlanView, PipelineStageKey, TeamFeature, TeamPerson, TeamScopeSummary, TeamSummary, TeamView, WaitingItem, WaitingKind } from "@penguin/protocol";
 
 import { partNumber } from "./feature-view.ts";
-import { partAnchor, placeName, STAGE_LABEL } from "./pipeline-view.ts";
+import { BUILDING_LABEL, partAnchor, placeName, PROMOTION_LABEL, STAGE_LABEL } from "./pipeline-view.ts";
 
 /** The teams a person leads or belongs to: declared teams first, each in the view's order. */
 export function personTeams(teams: readonly TeamSummary[], person: string): TeamSummary[] {
@@ -75,7 +75,7 @@ export interface StageBucket {
   readonly tasks: EditTaskCounts;
 }
 
-const STAGE_ORDER: readonly PipelineStageKey[] = ["open", "plan", "expand", "review", "migrate", "fixes", "contract", "checks", "done", "promoted"];
+const STAGE_ORDER: readonly (PipelineStageKey | "building")[] = ["open", "building", "plan", "expand", "review", "migrate", "fixes", "contract", "checks", "done", "promoted"];
 const NO_TASKS: EditTaskCounts = { running: 0, queued: 0, asked: 0 };
 const addTasks = (a: EditTaskCounts, b: EditTaskCounts | undefined): EditTaskCounts =>
   b === undefined ? a : { running: a.running + b.running, queued: a.queued + b.queued, asked: a.asked + b.asked };
@@ -89,12 +89,15 @@ export function stageBuckets(features: readonly TeamFeature[]): StageBucket[] {
   const buckets = new Map<string, { key: string; label: string; features: string[]; attention: boolean; tasks: EditTaskCounts; order: number }>();
   for (const feature of features) {
     const group = featureGroup(feature);
-    const stage = feature.strip.stages[feature.strip.current]?.key ?? "open";
+    // A running feature that needs no plan and has not asked to land counts as building, after Open.
+    const building = group === "running" && feature.strip.building === true;
+    const stage = building ? "building" : (feature.strip.stages[feature.strip.current]?.key ?? "open");
     const settled = SETTLED.indexOf(group);
     const key = settled === -1 ? `${stage}:${group}` : group;
     // A feature at its last stage has not reached main yet: its pill names the step it waits for, so
     // it does not read as promoted beside On main.
-    const label = settled !== -1 ? GROUP_LABEL[group] : stage === "promoted" || stage === "done" ? "Promotion" : STAGE_LABEL[stage];
+    const label =
+      settled !== -1 ? GROUP_LABEL[group] : stage === "building" ? BUILDING_LABEL : stage === "promoted" || stage === "done" ? PROMOTION_LABEL : STAGE_LABEL[stage];
     const order = settled !== -1 ? 2 * STAGE_ORDER.length + settled : (group === "person" ? 0 : STAGE_ORDER.length) + STAGE_ORDER.indexOf(stage);
     const bucket = buckets.get(key) ?? { key, label, features: [], attention: group === "person", tasks: NO_TASKS, order };
     bucket.features.push(feature.id);

@@ -75,14 +75,67 @@ function identityUnification(): PipelineFacts {
   });
 }
 
-test("a feature with no plan waits at Plan, and its facts run runs there", () => {
+test("a feature with no facts run yet is building, and a facts run with the runner runs at Plan", () => {
   const opened = featurePipeline(facts());
   assert.equal(opened.path, "plan");
-  assert.deepEqual(keys(opened), ["open:passed", "plan:waiting", "review:waiting", "fixes:waiting", "checks:waiting", "promoted:waiting"]);
-  assert.equal(opened.current, 1);
+  assert.equal(opened.building, true);
+  assert.deepEqual(keys(opened), ["open:passed", "plan:passed", "review:passed", "fixes:passed", "checks:waiting", "promoted:waiting"]);
+  assert.equal(opened.current, 4);
   const asked = featurePipeline(facts({ factsRun: "pending" }));
+  assert.equal(asked.building, true);
   assert.equal(asked.stages[1]?.status, "running");
-  assert.deepEqual(asked.stages[1]?.jobs.map((job) => job.fact.kind), ["facts"]);
+  assert.deepEqual(asked.stages[1]?.jobs.map((job) => [job.fact.kind, job.status]), [["facts", "running"]]);
+});
+
+test("facts that show a place with no plan stored wait at Plan, never at Promoted", () => {
+  const records = [record("open_feature", {}, "ines"), record("checkpoint_area", { checkpoint: "c".repeat(40) })];
+  const pipeline = featurePipeline(facts({ factsRun: "reported", places: 2, records }));
+  assert.equal(pipeline.building, false);
+  assert.deepEqual(keys(pipeline), ["open:passed", "plan:running", "review:waiting", "fixes:waiting", "checks:waiting", "promoted:waiting"]);
+  assert.equal(pipeline.current, 1);
+  assert.deepEqual(pipeline.stages[1]?.jobs.at(-1)?.fact, { kind: "plan", planId: null, parts: 0, returned: false, inPerson: 0 });
+  // An analysis that failed shows no places either way: the plan still waits.
+  assert.equal(featurePipeline(facts({ factsRun: "reported", places: null, records })).current, 1);
+});
+
+test("facts that show no place need no plan: the feature is building until its agent asks to land", () => {
+  const records = [record("open_feature", {}, "ines"), record("checkpoint_area", { checkpoint: "c".repeat(40) })];
+  const building = featurePipeline(facts({ factsRun: "reported", places: 0, records }));
+  assert.equal(building.building, true);
+  assert.deepEqual(keys(building), ["open:passed", "plan:passed", "review:passed", "fixes:passed", "checks:waiting", "promoted:waiting"]);
+  assert.deepEqual(building.stages[1]?.jobs.at(-1)?.fact, { kind: "plan", planId: null, parts: 0, returned: false, inPerson: 0, needed: false });
+  // A check run of its own does not pass Block checks before the land.
+  const checked = featurePipeline(facts({ factsRun: "reported", places: 0, records, checks: { checks: [check("tests", "main", "passed")], waiting: false, checkpoint: null } }));
+  assert.equal(checked.stages[4]?.status, "waiting");
+  assert.equal(checked.current, 4);
+  // Its land runs the block at Block checks, then Promotion waits on main.
+  const landing = featurePipeline(facts({ state: "landing", factsRun: "reported", places: 0, records: [...records, record("land_requested", { run_id: "r1" }, "ines")] }));
+  assert.equal(landing.building, false);
+  assert.deepEqual(keys(landing).slice(4), ["checks:running", "promoted:running"]);
+  assert.equal(landing.current, 4);
+  assert.equal(pipelineStrip(landing).building, false);
+});
+
+test("a plan of no places passes Review and Fixes written and waits at Block checks until the block is checked", () => {
+  const planned = facts({ factsRun: "reported", records: [record("open_feature", {}, "ines"), record("propose_plan", { plan_id: "store-credit/v1" })] });
+  const pipeline = featurePipeline(planned);
+  assert.deepEqual(keys(pipeline), ["open:passed", "plan:passed", "review:passed", "fixes:passed", "checks:waiting", "promoted:waiting"]);
+  assert.equal(pipeline.current, 4);
+  // Checks that passed leave it waiting at Promoted for main's move, which a confirmation alone does not make.
+  const checked = featurePipeline({
+    ...planned,
+    checks: { checks: [check("tests", "main", "passed")], waiting: false, checkpoint: null },
+    protectedChanges: [{ owner: "jun", state: "confirmed" }],
+  });
+  assert.deepEqual(keys(checked).slice(4), ["checks:passed", "promoted:running"]);
+  assert.equal(checked.current, 5);
+  assert.deepEqual(checked.stages[5]?.jobs.at(-1)?.fact, { kind: "promotion", state: "waiting", mainAfter: null });
+});
+
+test("a land asked with no plan passes Plan and runs its block", () => {
+  const pipeline = featurePipeline(facts({ state: "landing", records: [record("open_feature", {}, "ines"), record("land_requested", { run_id: "r1" }, "ines")] }));
+  assert.deepEqual(keys(pipeline), ["open:passed", "plan:passed", "review:passed", "fixes:passed", "checks:running", "promoted:running"]);
+  assert.equal(pipeline.current, 4);
 });
 
 test("an overlapping start needs its person at Open and branches to them until approved", () => {
@@ -149,7 +202,7 @@ test("a write waiting for its fork's turn is a waiting branch on both timelines"
   const target = featurePipeline(facts({ person: "sam", incoming: [{ partId: "p/v1#4", feature: "person-id-merge-rules", person: "priya" }] }));
   assert.deepEqual(
     target.branches.map((branch) => [branch.key, branch.stage, branch.person, branch.label, branch.partId, branch.settled]),
-    [["incoming:p/v1#4", "plan", "priya", "waiting", null, false]],
+    [["incoming:p/v1#4", "checks", "priya", "waiting", null, false]],
   );
 });
 

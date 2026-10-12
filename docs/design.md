@@ -1720,11 +1720,11 @@ split in the split store) or it asked for an expand promotion. Any other feature
 | Split | Migrate | One per owner group of the plan's parts: passed once every part of the group is approved |
 | Split | Contract | The retiring symbols: running once Penguin approves the contract step (`contract_proposed`) or the last land asks for its run, waiting again when Penguin withdraws the step, passed once the symbols are removed (`symbols_removed`) or main moved |
 | Split | Done | Main's move, with each protected-path confirmation |
-| Plan | Plan | The facts run (running while the check runner holds it) and the newest plan (failed when returned over the break limit) |
+| Plan | Plan | The facts run (running while the check runner holds it) and the newest plan (failed when returned over the break limit). With no plan stored, one plan job waits for it while the reported facts show a place, or passes as No plan needed when they show none. A land asked without a plan needs no plan job |
 | Plan | Review | One per part: waiting with no review yet, running while the runner holds the review or the originating agent revises, needing a person once a review is in, passed once approved, failed past the round limit |
 | Plan | Fixes written | One per part whose fix goes into a running feature's fork: waiting while it waits for the fork's turn, running while queued or granted, passed once written, failed when Penguin refused the pushed commit |
 | Plan | Block checks | A running job while the runner holds a `check` run, one job per check kind of the newest run with its target count and the findings its passing targets still name (the dependency diff's changed library and each place the target imports it), and the block run a `land` asked for |
-| Plan | Promoted | Each protected-path confirmation and main's move |
+| Plan | Promoted | Each protected-path confirmation and main's move: waiting, running while the block moves main, failed when refused or returned, passed once main moved to the feature's checkpoint |
 
 A run the check runner stopped at the failure limit is a failed job of the stage it served: Plan for a
 facts run, Review for a review or a part trial, Fixes written for a fix write and Block checks for the
@@ -1732,10 +1732,20 @@ rest; on a split, Expand for a facts run and Migrate for the rest. It hangs a br
 feature's person.
 
 A stage takes the worst status of its jobs: failed, then needing a person, then running. It passes when
-every job passed. A stage with no job passes once the stage before it passed. A failed stage stops the
-stages after it: they wait, as GitLab's pipelines do ("If any job in a stage fails, the next stage" does
-not run; `docs/research/gitlab-pipelines.txt`). The current stage is the first that has not passed. A
-feature whose block reached main has passed every stage.
+every job passed. A stage with no job passes once the stage before it passed, so a plan of no places
+passes Review and Fixes written. Block checks with no job waits instead, since nothing checked the
+block yet. A feature whose facts show a place and no plan is stored waits at Plan. A feature reaches
+Promoted only once its block was checked. It passes Promoted only once main moved to its checkpoint. A
+failed stage stops the stages after it: they wait, as GitLab's pipelines do ("If any job in a stage
+fails, the next stage" does not run; `docs/research/gitlab-pipelines.txt`). The current stage is the
+first that has not passed. A feature whose block reached main has passed every stage.
+
+A feature needs no plan when no plan is stored and the facts run of its latest checkpoint shows no
+place, or has not reported yet: its own changes reach no one else. The ProjectAgent counts the places
+as `propose_plan` does (`affectedPlaces` in `services/project-agent/src/propose-plan.ts`). Such a
+feature is building until its agent asks to land. Its pipeline carries `building`. Its Block checks
+wait even after a `check` run of its own. The dashboard reads its current stage as Building. Once the
+land is asked, its Block checks and Promoted run as for any feature.
 
 A branch is the feature's work reaching another person or their agent: an overlapping start waiting on
 them, a part sent to them, a fix written into their fork, a migration group of theirs or a confirmation

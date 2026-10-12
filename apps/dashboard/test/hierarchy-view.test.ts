@@ -61,11 +61,14 @@ test("features count by their current stage: what needs a person first, then in 
     feature("h", { state: "planning", strip: strip("plan", 5, "waiting") }),
     // A block Penguin closed with nothing left to carry has settled apart from main.
     feature("i", { state: "closed", strip: strip("split", 2, "passed") }),
+    // A feature that needs no plan and has not asked to land counts as building, after Open.
+    feature("j", { strip: { ...strip("plan", 4, "waiting"), building: true } }),
   ];
   assert.deepEqual(
     stageBuckets(features).map((bucket) => [bucket.label, bucket.features.length, bucket.attention, taskText(bucket.tasks)]),
     [
       ["Review", 2, true, "2 tasks 1 asked"],
+      ["Building", 1, false, null],
       ["Plan", 1, false, "2 tasks"],
       ["Expand", 1, false, null],
       ["Review", 1, false, null],
@@ -78,7 +81,7 @@ test("features count by their current stage: what needs a person first, then in 
     Object.entries(groupFeatures(features)).map(([group, held]) => [group, held.map((each) => each.id)]),
     [
       ["person", ["b", "f"]],
-      ["running", ["c", "d", "g", "h"]],
+      ["running", ["c", "d", "g", "h", "j"]],
       ["main", ["a", "e"]],
       ["closed", ["i"]],
     ],
