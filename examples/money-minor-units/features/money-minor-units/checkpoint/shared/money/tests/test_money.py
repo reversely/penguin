@@ -28,7 +28,8 @@ def test_percent_off_rounds_to_the_cent():
 def test_money_is_a_whole_number_of_minor_units():
     assert Money(1299, "USD").amount_minor == 1299
     with pytest.raises(TypeError):
-        Money(12.99, "USD")
+        # A float on purpose: Money refuses anything but whole minor units.
+        Money(12.99, "USD")  # pyright: ignore[reportArgumentType]
 
 
 def test_sum_adds_one_currency():
