@@ -86,6 +86,9 @@ export const PLAN_ROUTE_SCHEMA: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS PlanPartRoute_feature ON PlanPartRoute (feature_id)`,
 ];
 
+/** Columns added since the table was first made, each added to an older table when missing. */
+const ROUTE_COLUMNS: readonly (readonly [string, string])[] = [["kind", "kind TEXT NOT NULL DEFAULT ''"]];
+
 /** Where one part of a feature's newest plan stands, as the routing reads it. */
 export interface PartRoute {
   readonly partId: string;
@@ -96,6 +99,8 @@ export interface PartRoute {
   readonly scopes: readonly string[];
   readonly revision: number;
   readonly state: PlanPartState;
+  /** A verify part, a place that needs no change: it gets no review task and no fix task. */
+  readonly verify: boolean;
   readonly updatedAt: string;
 }
 
@@ -109,6 +114,7 @@ function route(row: Row): PartRoute {
     scopes: JSON.parse(row["scopes"] as string) as string[],
     revision: Number(row["revision"]),
     state: row["state"] as PlanPartState,
+    verify: row["kind"] === "verify",
     updatedAt: new Date(Number(row["updated_at"])).toISOString(),
   };
 }
@@ -122,6 +128,11 @@ export class PlanRouteStore {
     this.#db = db;
     this.#now = now;
     for (const statement of PLAN_ROUTE_SCHEMA) db.exec(statement);
+    // Column names and definitions come from the constant above, never from input.
+    const present = new Set(db.exec(`PRAGMA table_info(PlanPartRoute)`).map((row) => row["name"]));
+    for (const [name, definition] of ROUTE_COLUMNS) {
+      if (!present.has(name)) db.exec(`ALTER TABLE PlanPartRoute ADD COLUMN ${definition}`);
+    }
   }
 
   /** Routes the parts of a newly kept plan and returns the routes of the older plan it replaces. */
@@ -138,10 +149,10 @@ export class PlanRouteStore {
   /** Records where a part of feature `featureId`'s newest plan now stands. */
   set(featureId: string, part: PlanPart): void {
     this.#db.exec(
-      `INSERT INTO PlanPartRoute (part_id, plan_id, feature_id, owner_id, place, scopes, revision, state, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO PlanPartRoute (part_id, plan_id, feature_id, owner_id, place, scopes, revision, state, kind, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (part_id) DO UPDATE SET owner_id = excluded.owner_id, revision = excluded.revision,
-         state = excluded.state, updated_at = excluded.updated_at`,
+         state = excluded.state, kind = excluded.kind, updated_at = excluded.updated_at`,
       part.partId,
       part.partId.slice(0, part.partId.lastIndexOf("#")),
       featureId,
@@ -150,6 +161,8 @@ export class PlanRouteStore {
       JSON.stringify(part.scopes),
       part.revision,
       part.approvalState,
+      // Only a verify part is marked: the routing tells it apart from parts with a fix.
+      part.kind === "verify" ? "verify" : "",
       this.#now(),
     );
   }
@@ -541,6 +554,8 @@ export async function approveCleanParts(deps: PlanApprovalDeps, featureId: strin
   const approved: PlanPart[] = [];
   for (const part of pending) {
     const trial = checks.trial?.(featureId, part);
+    // A verify part is approved on its own trial's tests, never on the facts run alone.
+    if (part.kind === "verify" && trial?.state !== "recorded") continue;
     if (routePart(plan, part, reviews, scopeMap, false, trial).inPerson) continue;
     const tests = trialPart(part, trial).tests;
     const record = await deps.sign(

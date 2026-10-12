@@ -4,9 +4,9 @@
 // The check runner builds the trial tree from the part's place: the affected running feature's fork
 // head, or main at the plan's baseline for a scope on main. It applies the part's proposed patch to
 // the fork head, merges the originating checkpoint, and applies the part's fix commit on top for a
-// scope on main. On that tree it runs each of the part's scopes' tests, and the review harness for the
-// newest form each scope's agent submitted: the evidence check, the stored data rule and the
-// side-by-side run. The harness compares the place before the part (the target) with the trial
+// scope on main. A verify part has no fix, so its tree is the checkpoint merged onto the target. On
+// that tree it runs each of the part's scopes' tests, and the review harness for the newest form
+// each scope's agent submitted: the evidence check, the stored data rule and the side-by-side run. The harness compares the place before the part (the target) with the trial
 // tree, and reads the scope's invariants and examples at the target, so a running feature's own
 // declared examples run. A part the plan's rewrite rules write in full needs no form (PRD 0.5 section
 // 4.2 step 2): its request names its scopes in `sideBySide`, and the runner runs the side-by-side run
@@ -49,11 +49,13 @@ export interface PartTrialTarget {
 
 /**
  * The part's fix. A commit in the originating fork is applied as its own change against `base`, on top
- * of the merged tree. A patch is applied to the target's fork head, where Penguin would write it.
+ * of the merged tree. A patch is applied to the target's fork head, where Penguin would write it. A
+ * verify part has none: its trial tree is the checkpoint merged onto the target.
  */
 export type PartTrialFix =
   | { readonly kind: "commit"; readonly repo: string; readonly commit: string; readonly base: string }
-  | { readonly kind: "patch"; readonly patch: string };
+  | { readonly kind: "patch"; readonly patch: string }
+  | { readonly kind: "none" };
 
 /** One form the trial checks: the newest a scope's agent submitted on the plan's checkpoint. */
 export interface PartTrialReviewRequest {

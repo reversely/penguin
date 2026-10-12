@@ -646,6 +646,15 @@ const planPart = z.union([
       .describe("The proposed fix as a patch against the running feature's fork head."),
     note: partNote,
   }),
+  z.strictObject({
+    place: z
+      .union([z.strictObject({ scope: z.string().min(1).max(128) }), z.strictObject({ feature: featureId })])
+      .describe("An affected place, a scope on main or a running feature, that needs no change."),
+    verify: z
+      .literal(true)
+      .describe("No fix: the part's trial runs the place's tests on the merged tree, and Penguin approves it when they pass."),
+    note: partNote,
+  }),
 ]);
 // A rewrite rule (rewrite-rule.ts in @penguin/protocol); the ProjectAgent checks the form again and the
 // check runner parses it.
@@ -1260,7 +1269,8 @@ function registerFeatureTools(server: McpServer, features: McpFeatures): void {
         "Submits the merge plan for the feature this session works on, when its latest checkpoint changes a " +
         "contract, a stored data shape or an invariant that other scopes or running features depend on. Name " +
         "one part per affected place: a commit in your fork for code on main, a patch against the fork head for a " +
-        "running feature. Penguin fills in the facts: the change from the " +
+        "running feature, or `verify: true` with no fix for a place that needs no change: its trial runs the place's tests " +
+        "on the merged tree, and Penguin approves it when they pass. Penguin fills in the facts: the change from the " +
         "checkpoint's commit subject, the contract diff and callers from the impact graph, the affected running " +
         "features, each affected scope's invariants, each break with its test's docstring and failing line, and " +
         "each part's changed lines, and classifies each fix as mechanical or behavioural: mechanical when it only swaps names as " +

@@ -748,7 +748,8 @@ function revise(deps: FixWriteDeps, approved: ApprovedPart): (head: string, prob
  * fix task asks for a behavioural one's.
  */
 export function openFixWrite(grants: FixGrantStore, featureId: string, plan: Plan, part: PlanPart): void {
-  if (part.place.kind !== "feature" || part.approvalState !== "approved") return;
+  // A verify part has nothing to write.
+  if (part.place.kind !== "feature" || part.approvalState !== "approved" || part.kind === "verify") return;
   grants.open(featureId, plan.planId, part, part.place.feature, part.kind === "mechanical" ? "runner" : "agent");
 }
 

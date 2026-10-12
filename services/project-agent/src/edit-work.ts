@@ -181,7 +181,8 @@ function syncReviews(deps: EditWorkDeps, pending: readonly PartRoute[], routing:
   const sources: EditSource[] = [];
   for (const route of pending) {
     const feature = deps.features.get(route.featureId);
-    if (feature === undefined) continue;
+    // A verify part needs no form: its trial's tests decide it.
+    if (feature === undefined || route.verify) continue;
     const since = Date.parse(route.updatedAt);
     // A form Penguin refused at submission is no review: the task stays open for a corrected one.
     const reviewed = new Set(
@@ -215,7 +216,7 @@ function syncReviews(deps: EditWorkDeps, pending: readonly PartRoute[], routing:
 function syncFixes(deps: EditWorkDeps, approved: readonly PartRoute[], routing: EditRoutingContext): void {
   const sources: EditSource[] = [];
   for (const route of approved) {
-    if (route.place.kind !== "feature") continue;
+    if (route.place.kind !== "feature" || route.verify) continue;
     const target = deps.features.get(route.place.feature);
     if (target === undefined || !RUNNING_STATES.has(target.state)) continue;
     const key = `fix:${route.partId}@${route.revision}`;

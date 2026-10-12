@@ -208,6 +208,9 @@ The procedure moves conflict handling to the start of the work. Each step below 
    - **Unfinished work** in affected running features: the fix goes into that feature's fork.
 4. Penguin classifies each fix as mechanical or behavioural ([Routing](#routing-and-the-resolution-ladder)).
    Penguin's tools generate the mechanical fixes. The originating agent writes the behavioural ones.
+   An affected place that needs no change is a verify part with no diff. Its trial runs the scope's
+   tests on the merged tree. Penguin approves it when they pass; otherwise it needs a fix like any
+   other part.
 5. **Break limit.** If a plan has more parts needing a person than the project's limit (default 10),
    Penguin returns it to its author to split or restructure. A part needs a person when it fails a
    condition of [Advance notice](#advance-notice) step 3.
@@ -237,6 +240,19 @@ The procedure moves conflict handling to the start of the work. Each step below 
   run tested. The plan keeps the patch whole, so the fix can be written into the affected fork once
   its person approves. Penguin refuses a session of another person and a session that works on
   another feature (`services/project-agent/src/propose-plan.ts`).
+- **Verify parts.** An affected place that needs no change takes `{ place, verify: true }`, with no
+  diff and no patch (#148). Its part is of kind `verify`, with `diff.source` `none`: no file and
+  nothing to write. The facts run's merged tree is its tree, so its `tests` come from that run with
+  `fixInTree` true, and the break limit counts it only when those tests fail. Its trial merges the
+  checkpoint onto main at the baseline, or onto the running feature's fork head, and runs the
+  scope's tests there with no form ([Part trials](#part-trials)). Penguin approves it on that trial
+  alone, never on the facts run: no review form is asked for, and no review task or fix task is
+  opened for it. A failing trial leaves it with its author with the failing tests as the reason; the
+  author asks for a change and the originating agent revises it with a fix like any other part. On
+  the money fixture a checkpoint that turns `tax.rates.RATES` into Decimal rates makes tax-filing,
+  which reads RATES, the plan's one affected place. Its verify part's trial passes and Penguin
+  approves it. The same checkpoint without Washington fails
+  `test_monthly_and_quarterly_regions` on the trial (`tests/integration/verify-part.test.ts`).
 - **Symbols a patch imports.** A patch's trial tree is the fork head with the patch applied and the
   plan's checkpoint merged. Each `from <module> import <name>` on a patch's added lines must find the
   name in that tree: bound at module level in the patched module, or, for a module the patch leaves
@@ -281,9 +297,10 @@ The procedure moves conflict handling to the start of the work. Each step below 
   Its tests do not run. The `affected_features` source names each such feature with the reason. A
   part proposed for it is `not_affected` with the same reason. The scope's owner or the feature's
   person approves the part.
-- **What is missing.** Penguin answers `missing` with every gap: an affected place with no part, a
-  part for an unaffected place, two parts for one place, a diff commit missing from the fork, a diff
-  that changes no file in the place's scopes, or a failed analysis. A patch is also refused when it
+- **What is missing.** Penguin answers `missing` with every gap: an affected place with no part
+  (`no_part`, whose message names the verify part), a part for an unaffected place, two parts for
+  one place, a diff commit missing from the fork, a diff that changes no file in the place's scopes
+  (`diff_empty`: a place with nothing to fix takes a verify part instead), or a failed analysis. A patch is also refused when it
   names another base than the feature's fork head, cannot be parsed, writes outside the place's
   scopes or does not match the fork's lines at the head. `parsePatch` (`packages/protocol`) takes only
   text edits of regular files: no rename, copy, mode change or binary file.
@@ -624,7 +641,7 @@ reason too:
 | Check | Clean when | Read from |
 |---|---|---|
 | Tests | Each of the part's scopes is `passed` on the merged tree of the part's place. That tree holds the fix | The part revision's recorded [trial](#part-trials); without one, `PlanPart.tests`, kept from the facts run when the plan is proposed |
-| Review | The newest review of each of the part's scopes was submitted on the plan's checkpoint. The check runner accepted it. Every row says the invariant holds | The feature's reviews (`review-submit.ts`), each form the part's trial ran read from that trial |
+| Review | The newest review of each of the part's scopes was submitted on the plan's checkpoint. The check runner accepted it. Every row says the invariant holds. A verify part needs no form, so this check and the side-by-side and stored data checks are left out for it | The feature's reviews (`review-submit.ts`), each form the part's trial ran read from that trial |
 | Side by side | That review's run shows no difference on a protected invariant | The review's exceptions |
 | Protected paths | No file of the diff lies under a path a scope's owner protects in `penguin/scopes.json` | The scope map |
 | Place | Every changed file lies in the part's scopes, and a fix commit changes no file outside them. For code on main the place is the scope's paths, tests included: a fix that moves the scope's own tests onto the new API stays inside the scope. For a running feature it is the scopes its own changes reach, where its patch must lie. The place never widens beyond the part's scopes | `PlanPart.diff.files`, `diff.outside` and `scopes` |
@@ -648,6 +665,7 @@ that also fails another check stays with its author. Its stored data reason is l
 - **When Penguin looks.** `approveCleanParts` (`services/project-agent/src/plan-approval.ts`) runs
   after a plan is stored and announced, after the check runner records a review of the feature or a
   part trial, and after the originating agent revises a part. It approves each pending part with no reason.
+  A verify part also needs a recorded trial of its current revision.
 - **The approval.** Each approval is a signed `approve_plan_part` record authored by Penguin, with
   `approved_by: "penguin"` and a `checks` field naming the checkpoint, the run its tests came from
   (`trial-<id>` or the facts run), the trial tree when a trial ran, each test result and each review
@@ -1562,6 +1580,9 @@ tree from Git objects alone, with no checkout and no ref (`trial-tree.ts`):
    merges it.
 4. A fix commit in the originating fork is applied on top as its own change against its base, with
    `git merge-tree --merge-base`: a cherry-pick of the fix without the rest of the fork.
+
+A verify part's trial names no fix (`fix: { kind: "none" }`) and no form: its tree is steps 1 and 3,
+the checkpoint merged onto the target.
 
 Each commit is written with fixed identities and dates, so one trial gives one tree commit. A step
 that does not apply makes the trial a `conflict`, with the reason and no tree. On a built tree the

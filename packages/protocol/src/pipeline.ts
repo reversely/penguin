@@ -173,8 +173,16 @@ export interface PipelineFacts {
   readonly locks: readonly { readonly feature: string; readonly person: string; readonly state: "open" | "approved"; readonly approvedBy: string | null }[];
   /** The locks an expand checkpoint opened on other owners' scopes (`owner:<person>`). */
   readonly expandLocks: PipelineFacts["locks"];
-  /** The parts of the newest plan, as the routing keeps them. */
-  readonly parts: readonly { readonly partId: string; readonly owner: string; readonly place: PlanPlace; readonly scopes: readonly string[]; readonly revision: number; readonly state: PlanPartState }[];
+  /** The parts of the newest plan, as the routing keeps them. A verify part (`verify`) has no write. */
+  readonly parts: readonly {
+    readonly partId: string;
+    readonly owner: string;
+    readonly place: PlanPlace;
+    readonly scopes: readonly string[];
+    readonly revision: number;
+    readonly state: PlanPartState;
+    readonly verify?: boolean;
+  }[];
   /** The reviews submitted on the feature, oldest first. */
   readonly reviews: readonly { readonly reviewId: number; readonly scope: string; readonly reviewer: string; readonly state: "pending" | "accepted" | "refused" }[];
   /** The write of each part's current revision into another fork; `waiting` while it waits for the fork's turn. */
@@ -291,7 +299,7 @@ function partJob(facts: PipelineFacts, part: PipelineFacts["parts"][number], app
 function writeJobs(facts: PipelineFacts): PipelineJob[] {
   const refused = new Set(facts.records.filter((record) => record.type === "fix_write_refused").map((record) => text(record.payload["part_id"])));
   return facts.parts.flatMap((part): PipelineJob[] => {
-    if (part.place.kind !== "feature") return [];
+    if (part.place.kind !== "feature" || part.verify === true) return [];
     const write = facts.writes.get(part.partId);
     const state = write ?? (refused.has(part.partId) ? "refused" : "none");
     const status: JobStatus = state === "written" ? "passed" : state === "queued" || state === "granted" ? "running" : state === "refused" ? "failed" : "waiting";

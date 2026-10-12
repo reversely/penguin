@@ -66,7 +66,12 @@ export const PLAN_LIMITS = {
   changeRequestLength: 2_000,
 } as const;
 
-export const PLAN_PART_KINDS = ["mechanical", "behavioural"] as const;
+/**
+ * `mechanical` and `behavioural` classify a fix (PRD 4.2 step 3). `verify` is a part with no fix: an
+ * affected place that needs no change. Its trial runs the scope's tests on the merged tree, and
+ * Penguin approves it when they pass; otherwise it needs a fix like any other part.
+ */
+export const PLAN_PART_KINDS = ["mechanical", "behavioural", "verify"] as const;
 export type PlanPartKind = (typeof PLAN_PART_KINDS)[number];
 
 /** `passed`, `failed`: the tests ran on the merged tree. `not-affected`: the impact graph shows no use, so they did not run. */
@@ -380,17 +385,24 @@ export interface PlanPart {
   /**
    * The proposed fix. For code on main: a commit in the originating fork against its base, read
    * through Artifacts. For a running feature: a patch against that feature's fork head, kept whole
-   * so the fix can be written into the fork once its person approves.
+   * so the fix can be written into the fork once its person approves. A verify part has no fix
+   * (`none`): no file, nothing to write.
    */
   readonly diff: {
-    readonly source: "commit" | "patch";
-    /** The fork the fix is read from (a commit) or written into (a patch). */
+    readonly source: "commit" | "patch" | "none";
+    /** The fork the fix is read from (a commit) or written into (a patch); for `none`, the place's fork. */
     readonly repo: string;
-    /** `<repo>@<commit>`, or `<repo>@<base>+patch:sha256:<hex>` for a patch: how records name the fix. */
+    /**
+     * `<repo>@<commit>`, `<repo>@<base>+patch:sha256:<hex>` for a patch, or `<repo>@<checkpoint>+verify`
+     * for no fix: how records name the fix.
+     */
     readonly ref: string;
-    /** The commit holding the fix, or null for a patch. */
+    /** The commit holding the fix, or null for a patch and for no fix. */
     readonly commit: string | null;
-    /** The commit the fix applies to: the commit's base, or the feature's fork head for a patch. */
+    /**
+     * The commit the fix applies to: the commit's base, or the feature's fork head for a patch. For no
+     * fix, the fork head a running feature's trial starts from, or null for code on main.
+     */
     readonly base: string | null;
     /** The patch as the agent submitted it, or null for a commit. */
     readonly patch: string | null;
@@ -598,6 +610,10 @@ export function formatPlan(plan: Plan): string {
       lines.push(`  breaks on ${each.target}: ${each.statement} (${each.nodeId})`);
       if (each.assertion !== null) lines.push(`    at: ${each.assertion}`);
       if (each.error !== null) lines.push(`    error: ${each.error}`);
+    }
+    if (part.diff.source === "none") {
+      lines.push("  proposed fix: none; the place needs no change, and its trial runs its tests on the merged tree");
+      continue;
     }
     const at = part.diff.source === "patch" ? `patch on ${part.diff.repo} at ${(part.diff.base ?? "").slice(0, 12)}` : `commit ${part.diff.repo}@${(part.diff.commit ?? "").slice(0, 12)}`;
     lines.push(`  proposed fix: ${at}:`);

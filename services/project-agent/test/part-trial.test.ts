@@ -214,6 +214,22 @@ describe("part trials", () => {
     assert.deepEqual(onFork?.reviews.map((each) => [each.reviewId, each.scope]), [[form.id, "analytics"]]);
   });
 
+  test("a verify part is tried with no fix and no form: the checkpoint merged onto its place (#148)", async () => {
+    submit();
+    const none = { source: "none" as const, ref: "", commit: null, patch: null, files: [], truncated: false, outside: [] };
+    const onMain = part(3, { kind: "verify", diff: { ...none, repo: "feature-utc-day", base: null } });
+    const onFork = part(4, { kind: "verify", place: { kind: "feature", feature: "weekly-report" }, owner: "jun", scopes: ["analytics"], diff: { ...none, repo: "feature-weekly-report", base: JUN_HEAD } });
+    queueTrials({ trials, reviews }, plan(1, [onMain, onFork]));
+    const [main, fork] = claimed();
+    assert.deepEqual([main?.target, main?.fix, main?.commandIds, main?.reviews], [{ id: "main", repo: "base", sha: BASELINE }, { kind: "none" }, ["test:messaging"], []]);
+    // Jun's form on the plan's checkpoint is not carried: a verify part needs none.
+    assert.deepEqual([fork?.target, fork?.fix, fork?.reviews], [{ id: "weekly-report", repo: "feature-weekly-report", sha: JUN_HEAD }, { kind: "none" }, []]);
+    // A clean trial clears every check, with no review asked for.
+    await recordPartTrial(recordDeps(), RUNNER, (fork as PartTrialRequest).trialId, report(fork as PartTrialRequest));
+    const standing = trialStanding(trials, reviews, "utc-day", onFork);
+    assert.deepEqual(routePart(plan(1, [onMain, onFork]), onFork, reviews.list("utc-day"), scopeMap, false, standing).reasons, []);
+  });
+
   test("a review task carries its part revision's trial tree, as the part's trial builds it (#140)", () => {
     const task = (partId: string, revision = 1) => ({ target: "utc-day", ref: { part: partId, revision, scope: "analytics" }, scopes: ["analytics"] });
     const onFork = reviewTarget(task(FEATURE_PART.partId), plan(1));

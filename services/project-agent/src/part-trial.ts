@@ -7,7 +7,9 @@
 //   only the newest trial of the current revision counts.
 // - Target. A part for a running feature starts from the fork head its patch was written against,
 //   which is the head the fix is written onto once approved. A part for a scope on main starts from
-//   main at the plan's baseline and applies the part's fix commit from the originating fork.
+//   main at the plan's baseline and applies the part's fix commit from the originating fork. A verify
+//   part, a place that needs no change, has no fix: its trial is the checkpoint merged onto the
+//   place and runs the scope's tests, with no form.
 // - Reviews. Each trial carries the newest form of each of the part's scopes submitted on the plan's
 //   checkpoint. The runner runs the review harness for it on the trial tree against the target, so the
 //   evidence check, the stored data rule and the side-by-side run read the affected code with the fix
@@ -210,7 +212,16 @@ export function trialSpec(plan: Plan, part: PlanPart, reviews: readonly StoredRe
   const { diff, place } = part;
   let target: PartTrialRequest["target"];
   let fix: PartTrialRequest["fix"];
-  if (diff.source === "patch") {
+  if (diff.source === "none") {
+    // A verify part: the checkpoint merged onto main at the baseline, or onto the feature's fork head.
+    if (place.kind === "feature") {
+      if (diff.base === null) return undefined;
+      target = { id: place.feature, repo: diff.repo, sha: diff.base };
+    } else {
+      target = { id: "main", repo: "base", sha: plan.facts.change.baseline };
+    }
+    fix = { kind: "none" };
+  } else if (diff.source === "patch") {
     if (place.kind !== "feature" || diff.base === null || diff.patch === null) return undefined;
     target = { id: place.feature, repo: diff.repo, sha: diff.base };
     fix = { kind: "patch", patch: diff.patch };
@@ -230,7 +241,8 @@ export function trialSpec(plan: Plan, part: PlanPart, reviews: readonly StoredRe
     target,
     fix,
     commandIds: [...part.scopes].sort().map((scope) => `test:${scope}`),
-    reviews: trialForms(reviews, part.scopes, checkpoint).map((review) => ({ reviewId: review.id, scope: review.scopeId, form: review.form })),
+    // A verify part needs no form, so its trial reviews none.
+    reviews: part.kind === "verify" ? [] : trialForms(reviews, part.scopes, checkpoint).map((review) => ({ reviewId: review.id, scope: review.scopeId, form: review.form })),
   };
 }
 

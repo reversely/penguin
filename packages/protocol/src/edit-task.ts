@@ -288,6 +288,7 @@ const REVIEW_TRIAL_SCHEMA: JsonSchema = closed({
     oneOf: [
       closed({ kind: { const: "commit" }, repo: projectRepo, commit: objectId, base: objectId }),
       closed({ kind: { const: "patch" }, patch: { type: "string", minLength: 1, maxLength: PATCH_LIMITS.bytes } }),
+      closed({ kind: { const: "none" } }),
     ],
   },
 });

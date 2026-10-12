@@ -12,6 +12,7 @@ import {
   IMPACT_COMMAND_ID,
   IMPACT_SCHEMA_VERSION,
   IMPACT_TOOL,
+  PART_TRIAL_SCHEMA_VERSION,
   PLAN_LIMITS,
   REVIEW_SCHEMA_VERSION,
   SIDE_BY_SIDE_COMMAND_ID,
@@ -19,6 +20,7 @@ import {
   type ImpactReport,
   type ImpactUse,
   type PlanFactsReport,
+  type PlanPart,
 } from "@penguin/protocol";
 import { parseScopeMap } from "@penguin/scope-map";
 
@@ -26,6 +28,7 @@ import type { FeatureRecord } from "../src/feature-store.ts";
 import { IdentityStore } from "../src/identity-store.ts";
 import { IssueIndex } from "../src/issue-index.ts";
 import { reviewResult } from "../src/part-checks.ts";
+import { claimPartTrials, PartTrialStore, queueTrials, recordPartTrial, trialStanding } from "../src/part-trial.ts";
 import {
   announcePlan,
   approveCleanParts,
@@ -39,6 +42,7 @@ import {
   requestPlanChange,
   reversePenguinApproval,
   revisePlanPart,
+  routePart,
   type PartDecisionOutcome,
   type PlanApprovalDeps,
 } from "../src/plan-approval.ts";
@@ -489,14 +493,14 @@ describe("Penguin approves the parts whose checks are clean", () => {
   };
 
   /** Proposes the plan at a checkpoint holding the billing fix, with the facts run's results. */
-  async function propose(results: PlanFactsReport["results"]): Promise<void> {
+  async function propose(results: PlanFactsReport["results"], submitted: () => unknown[] = parts): Promise<void> {
     project.announce = (plan, map) => announcePlan(deps(), plan, map);
-    assert.equal((await project.propose("ines", "s-ines", "money-minor", parts())).status, "missing");
+    assert.equal((await project.propose("ines", "s-ines", "money-minor", submitted())).status, "missing");
     const [request] = project.facts.pending();
     assert.ok(request);
     const report: PlanFactsReport = { impact: impactReport(built.main, built.billingFix, built.main), impactError: null, results, durationMs: 10 };
     assert.equal(project.facts.record(request.runId, "runner", JSON.parse(JSON.stringify(report))).status, "recorded");
-    const stored = await project.propose("ines", "s-ines", "money-minor", parts());
+    const stored = await project.propose("ines", "s-ines", "money-minor", submitted());
     assert.equal(stored.status, "stored", JSON.stringify(stored));
   }
   const parts = () => [
@@ -553,6 +557,38 @@ describe("Penguin approves the parts whose checks are clean", () => {
     // A second look approves nothing twice.
     assert.deepEqual(await approveCleanParts(deps(), "money-minor"), []);
     assert.equal(project.records("money-minor", "approve_plan_part").length, 1);
+  });
+
+  test("a verify part is approved on its own trial's passing tests, with no review; a failing trial needs a fix (#148)", async () => {
+    const verifyParts = () => [{ place: { scope: "billing" }, verify: true }, parts()[1]];
+    await propose(PASSING(), verifyParts);
+    assert.deepEqual([part(BILLING)?.kind, routes.get(BILLING)?.verify, routes.get(TAX)?.verify], ["verify", true, false]);
+    // The facts run passed, but Penguin waits for the part's trial; no review is asked for.
+    assert.deepEqual(await approveCleanParts(deps(), "money-minor"), []);
+    const trials = new PartTrialStore(project.sql);
+    const withTrials = (): PlanApprovalDeps => ({ ...deps(), checks: { ...(deps().checks as NonNullable<PlanApprovalDeps["checks"]>), trial: (id, each) => trialStanding(trials, reviews, id, each) } });
+    const plan = project.plans.latestPlan("money-minor");
+    assert.ok(plan);
+    const runTrial = async (status: "passed" | "failed") => {
+      queueTrials({ trials, reviews }, plan, [part(BILLING) as PlanPart]);
+      const claim = claimPartTrials(trials, { bridgeId: "runner-1", role: "runner" });
+      const [request] = claim.status === "ok" ? claim.trials : [];
+      assert.ok(request);
+      assert.deepEqual([request.fix, request.target.sha, request.reviews], [{ kind: "none" }, built.main, []]);
+      const tests = [{ scopeId: "billing", commandId: "test:billing", status, breaks: status === "failed" ? ["billing/tests/test_fee.py::test_fee"] : [], reason: null, durationMs: 1 }];
+      const report = { schemaVersion: PART_TRIAL_SCHEMA_VERSION, trialId: request.trialId, partId: request.partId, revision: request.revision, checkpoint: request.checkpoint, target: request.target.sha, status: "built", tree: "1".repeat(40), reason: null, tests, reviews: [], durationMs: 2 };
+      assert.equal((await recordPartTrial({ trials, reviews, routeToOwner: () => undefined }, { bridgeId: "runner-1", role: "runner" }, request.trialId, report)).status, "recorded");
+    };
+    await runTrial("failed");
+    assert.deepEqual(await approveCleanParts(withTrials(), "money-minor"), []);
+    const standing = trialStanding(trials, reviews, "money-minor", part(BILLING) as PlanPart);
+    assert.deepEqual(routePart(plan, part(BILLING) as PlanPart, reviews.list("money-minor"), openMap, false, standing).reasons, [{ kind: "tests", scope: "billing", status: "failed", breaks: 1 }]);
+    assert.equal(part(BILLING)?.approvalState, "pending");
+    await runTrial("passed");
+    const approved = await approveCleanParts(withTrials(), "money-minor");
+    assert.deepEqual(approved.map((each) => [each.partId, each.kind, each.approvedBy]), [[BILLING, "verify", "penguin"]]);
+    const [record] = project.records("money-minor", "approve_plan_part");
+    assert.deepEqual((record?.payload["checks"] as { reviews: number[]; tests: unknown[] }).reviews, []);
   });
 
   test("one failing check leaves the part to its author", async () => {

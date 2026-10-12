@@ -422,6 +422,41 @@ describe("propose_plan", () => {
     assert.equal(project.records("money-minor", "propose_plan").length, 0);
   });
 
+  test("a place that needs no change is a verify part with no diff, stored with the facts run's tests (#148)", async () => {
+    await reportFacts();
+    const [, tax, orders, billing] = parts();
+    // Billing's code on main passes on the merged tree, so the plan names it with no fix.
+    const outcome = await project.propose("ines", "s-ines", "money-minor", [{ place: { scope: "billing" }, verify: true, note: HOSTILE }, tax, orders, billing]);
+    assert.equal(outcome.status, "stored", JSON.stringify(outcome).slice(0, 500));
+    if (outcome.status !== "stored") return;
+    const [verify] = outcome.plan.parts;
+    assert.deepEqual([verify?.kind, verify?.owner, verify?.scopes, verify?.note], ["verify", "bea", ["billing"], HOSTILE]);
+    assert.match(verify?.kindReason ?? "", /needs no change/u);
+    assert.deepEqual(verify?.diff, {
+      source: "none",
+      repo: "feature-money-minor",
+      ref: `feature-money-minor@${built.checkpoint}+verify`,
+      commit: null,
+      base: null,
+      patch: null,
+      files: [],
+      truncated: false,
+      outside: [],
+    });
+    // Nothing to add to the facts run's merged tree: its tests stand for the part until its trial runs.
+    assert.deepEqual(verify?.tests, { target: "main", runId: verify?.tests?.runId, fixInTree: true, results: [{ scopeId: "billing", commandId: "test:billing", status: "passed", breaks: 0 }] });
+    const [record] = project.records("money-minor", "propose_plan");
+    assert.deepEqual((record?.payload["parts"] as { kind: string; diff: string }[])[0], { part_id: verify?.partId, place: verify?.place, kind: "verify", diff: verify?.diff.ref });
+    // A running feature's verify part keeps the fork head its trial starts from.
+    const again = await project.propose("ines", "s-ines", "money-minor", [parts()[0], tax, orders, { place: { feature: "billing-v2" }, verify: true }]);
+    assert.ok(again.status === "stored");
+    assert.deepEqual([again.plan.parts[3]?.kind, again.plan.parts[3]?.diff.repo, again.plan.parts[3]?.diff.base], ["verify", "feature-billing-v2", built.billingWork]);
+    // A place left out is still missing, and the answer names the verify part.
+    const missing = await project.propose("ines", "s-ines", "money-minor", [tax, orders, billing]);
+    assert.ok(missing.status === "missing");
+    assert.match(missing.missing.find((item) => item.code === "no_part")?.message ?? "", /verify: true/u);
+  });
+
   test("the break limit counts parts needing a person, mechanical ones included", async () => {
     project.breakLimit = 3;
     await reportFacts();
@@ -628,6 +663,14 @@ describe("propose_plan", () => {
     assert.deepEqual(parseParts([{ place: { feature: "tax-rounding" }, patch: { base: "b".repeat(40), diff: "d" } }]), [
       { place: { kind: "feature", feature: "tax-rounding" }, fix: { kind: "patch", base: "b".repeat(40), text: "d" }, note: null },
     ]);
+    // A place that needs no change: `verify: true` and no fix, on main or in a running feature.
+    assert.deepEqual(parseParts([{ place: { scope: "tax" }, verify: true }, { place: { feature: "tax-rounding" }, verify: true, note: "n" }]), [
+      { place: { kind: "scope", scope: "tax" }, fix: { kind: "none" }, note: null },
+      { place: { kind: "feature", feature: "tax-rounding" }, fix: { kind: "none" }, note: "n" },
+    ]);
+    assert.equal(typeof parseParts([{ place: { scope: "tax" }, verify: false }]), "string");
+    assert.equal(typeof parseParts([{ place: { scope: "tax" }, verify: true, diff: { commit: "a".repeat(40) } }]), "string");
+    assert.equal(typeof parseParts([{ place: { feature: "tax-rounding" }, verify: "yes" }]), "string");
   });
 });
 

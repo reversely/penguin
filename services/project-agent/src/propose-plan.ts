@@ -27,6 +27,11 @@
 // reports each file's blob before and after, which Penguin compares with the fix's own blobs. Any
 // other fix is behavioural.
 //
+// An affected place that needs no change is a verify part (PRD 0.5 section 4.2 step 3): the agent
+// names the place with `verify: true` and no fix. The part has no diff and nothing to write. Its trial
+// runs the scope's tests on the merged tree, and Penguin approves it when they pass
+// (plan-approval.ts `approveCleanParts`); otherwise it needs a fix like any other part.
+//
 // A plan may also mark contracts as retiring, each with its replacement (retiring.ts), once its
 // expand step has put the replacement beside them. Each must be a declared contract of a scope the
 // feature's area names. A rewrite rule may then name a retiring contract the contract diff does not
@@ -224,7 +229,9 @@ export type SubmittedFix =
   /** A commit in the originating fork, read against `base` or its first parent. */
   | { readonly kind: "commit"; readonly commit: string; readonly base: string | null }
   /** A unified diff against the running feature's fork head `base`. */
-  | { readonly kind: "patch"; readonly base: string; readonly text: string };
+  | { readonly kind: "patch"; readonly base: string; readonly text: string }
+  /** No fix: `verify: true`, a place that needs no change (PRD 0.5 section 4.2 step 3). */
+  | { readonly kind: "none" };
 
 /** One part as the agent submits it. */
 export interface SubmittedPart {
@@ -257,7 +264,7 @@ export function parseParts(value: unknown): SubmittedPart[] | string {
     const at = `parts[${index}]`;
     if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return `${at} must be an object`;
     const fields = raw as Record<string, unknown>;
-    if (Object.keys(fields).some((key) => !["place", "diff", "patch", "note"].includes(key))) return `${at} takes only place, diff, patch and note`;
+    if (Object.keys(fields).some((key) => !["place", "diff", "patch", "verify", "note"].includes(key))) return `${at} takes only place, diff, patch, verify and note`;
     const place = parsePlace(fields["place"]);
     if (place === undefined) return `${at}.place must be { scope: <scope id> } or { feature: <feature id> }`;
     const fix = parseFixFields(place, fields, at);
@@ -269,11 +276,12 @@ export function parseParts(value: unknown): SubmittedPart[] | string {
 
 /**
  * A part's fix and note for `place`, as `propose_plan` and `revise_plan_part` take them: `diff` for
- * code on main, `patch` for a running feature, and an optional note. A message naming the first field
- * that breaks the form otherwise.
+ * code on main, `patch` for a running feature, and an optional note. `propose_plan` also takes
+ * `verify: true` with neither, for a place that needs no change; a revision always carries a fix. A
+ * message naming the first field that breaks the form otherwise.
  */
 export function parseFixFields(place: PlanPlace, fields: Record<string, unknown>, at: string): { fix: SubmittedFix; note: string | null } | string {
-  const fix = place.kind === "scope" ? parseCommitFix(fields, at) : parsePatchFix(fields, at);
+  const fix = parseVerify(fields, at) ?? (place.kind === "scope" ? parseCommitFix(fields, at) : parsePatchFix(fields, at));
   if (typeof fix === "string") return fix;
   const note = fields["note"];
   if (note !== undefined && (typeof note !== "string" || note.length > PLAN_LIMITS.noteLength)) {
@@ -283,6 +291,14 @@ export function parseFixFields(place: PlanPlace, fields: Record<string, unknown>
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** `verify: true` with no diff and no patch: no fix. Undefined when the part names no `verify`. */
+function parseVerify(fields: Record<string, unknown>, at: string): SubmittedFix | string | undefined {
+  if (fields["verify"] === undefined) return undefined;
+  if (fields["verify"] !== true) return `${at}.verify must be true: the place needs no change`;
+  if (fields["diff"] !== undefined || fields["patch"] !== undefined) return `${at}: a verify part carries no diff and no patch`;
+  return { kind: "none" };
+}
 
 /** Code on main: `diff: { commit, base? }`, a commit in the originating fork. */
 function parseCommitFix(fields: Record<string, unknown>, at: string): SubmittedFix | string {
@@ -599,9 +615,13 @@ export function classifyByRules(
   return { kind: "mechanical", reason: `every changed file is what the plan's rules write (${[...used].join(", ")})` };
 }
 
+/** Why a part with no fix is `verify`. */
+export const VERIFY_REASON = "the place needs no change: its trial runs the scope's tests on the merged tree, and Penguin approves it when they pass";
+
 /**
- * A part's kind: mechanical by the contract diff's name swaps (classifyFix), or by the plan's rewrite
- * rules (classifyByRules). When rules ran in the place, a behavioural part gives the rules' reason.
+ * A part's kind: `verify` for a part with no fix; otherwise mechanical by the contract diff's name
+ * swaps (classifyFix), or by the plan's rewrite rules (classifyByRules). When rules ran in the place,
+ * a behavioural part gives the rules' reason.
  */
 export function classifyPart(
   read: FixReading,
@@ -611,6 +631,7 @@ export function classifyPart(
   rewrites: PlanRewriteReport | null | undefined,
   inside: (path: string) => boolean,
 ): { kind: PlanPartKind; reason: string } {
+  if (read.diff.source === "none") return { kind: "verify", reason: VERIFY_REASON };
   const named = classifyFix(read.diff.files, impact, classifyFixPlace(place));
   if (named.kind === "mechanical" || rules.length === 0) return named;
   return classifyByRules(read.image, rewrites, place, inside) ?? named;
@@ -785,7 +806,8 @@ export async function proposePlan(deps: ProposePlanDeps, caller: string, session
   }
   for (const place of places) {
     if (!claimed.has(placeKey(place.place))) {
-      missing.push({ code: "no_part", place: place.place, message: `${placeLabel(place.place)} is affected and has no part` });
+      const hint = "; a place that needs no change takes a verify part, { place, verify: true }";
+      missing.push({ code: "no_part", place: place.place, message: `${placeLabel(place.place)} is affected and has no part${hint}` });
     }
   }
 
@@ -914,7 +936,7 @@ function retiringOutsideArea(retiring: readonly RetiringSymbol[], feature: Featu
 }
 
 /** How a plan names a part's fix: the commit, or the patch's base and the patch's SHA-256. */
-async function fixRef(repo: string, fix: SubmittedFix): Promise<string> {
+async function fixRef(repo: string, fix: Exclude<SubmittedFix, { kind: "none" }>): Promise<string> {
   if (fix.kind === "commit") return `${repo}@${fix.commit}`;
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(fix.text)));
   return `${repo}@${fix.base}+patch:sha256:${[...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
@@ -978,6 +1000,7 @@ export async function readFix(
 ): Promise<FixRead> {
   const inside = inScopes(scopeMap, place.scopes);
   const scopes = [...place.scopes].join(", ");
+  if (part.fix.kind === "none") return verifyReading(place, originRepo, checkpoint);
   if (part.fix.kind === "commit") {
     if (place.place.kind === "feature") return { code: "wrong_fix_form", message: "a part for a running feature carries a patch against its fork head" };
     const fix = part.fix;
@@ -1035,6 +1058,17 @@ export async function readFix(
   const repo = `feature-${place.place.feature}`;
   // Every file of a patch lies inside the place's scopes, or it was refused above.
   return { diff: { source: "patch", repo, ref: await fixRef(repo, fix), commit: null, base: fix.base, patch: fix.text, files, truncated: false, outside: [] }, image, fixInTree: false };
+}
+
+/**
+ * A verify part's reading: no file and nothing to write. The facts run's merged tree is its tree,
+ * since there is no fix to add (`fixInTree`). A running feature's trial starts from the fork head
+ * the facts run tested, kept as `base`.
+ */
+function verifyReading(place: AffectedPlace, originRepo: string, checkpoint: string | undefined): FixReading {
+  const repo = place.place.kind === "feature" ? `feature-${place.place.feature}` : originRepo.slice(originRepo.indexOf("feature-"));
+  const ref = `${repo}@${checkpoint ?? place.head ?? "none"}+verify`;
+  return { diff: { source: "none", repo, ref, commit: null, base: place.head, patch: null, files: [], truncated: false, outside: [] }, image: new Map(), fixInTree: true };
 }
 
 /**

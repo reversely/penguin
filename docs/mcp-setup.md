@@ -371,6 +371,7 @@ optional on each part.
 |---|---|
 | `{ "scope": "<scope id>" }`, code already on main | `diff: { commit, base? }`, a commit in your feature's fork. `base` defaults to the commit's first parent |
 | `{ "feature": "<feature id>" }`, a running feature | `patch: { base, diff }`, a unified diff as `git diff` prints it, against that feature's fork head. `base` is the head the answer lists under `affectedFeatures[].head` |
+| Either place, when it needs no change | `verify: true` and no `diff` or `patch`. The part's trial runs the place's tests on the merged tree, and Penguin approves it when they pass, with no review form. When they fail, the part waits on its author like any other, who asks you for a fix |
 
 The first call for a checkpoint answers `missing` with `waiting_for_runner`: Penguin has asked the
 check runner for the impact graph and the test runs. The agent calls again once the runner has

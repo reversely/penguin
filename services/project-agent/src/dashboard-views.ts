@@ -120,7 +120,7 @@ function pipelineFacts(deps: DashboardViewDeps, feature: Feature, records: reado
     factsRun: feature.latestCheckpointSha === null ? undefined : deps.factsRun(feature.id, feature.latestCheckpointSha),
     locks: deps.overlaps.locksOn(feature.id).map(lock),
     expandLocks: deps.overlaps.ownerLocksOn(feature.id).map(lock),
-    parts: parts.map(({ partId, ownerId, place, scopes, revision, state }) => ({ partId, owner: ownerId, place, scopes, revision, state })),
+    parts: parts.map(({ partId, ownerId, place, scopes, revision, state, verify }) => ({ partId, owner: ownerId, place, scopes, revision, state, verify })),
     reviews: deps.reviews.list(feature.id).map((review) => ({ reviewId: review.id, scope: review.scopeId, reviewer: review.reviewer, state: review.state })),
     writes,
     incoming: deps.incomingWrites?.(feature.id) ?? [],

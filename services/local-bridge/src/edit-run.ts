@@ -152,7 +152,9 @@ export function reviewPrompt(spec: EditTaskSpec, files: readonly string[] = []):
     const fix =
       trial.fix.kind === "patch"
         ? `the part's patch, applied to ${trial.target.repo} at ${trial.target.sha.slice(0, 12)}`
-        : `the part's fix commit ${trial.fix.commit.slice(0, 12)} from ${trial.fix.repo}, applied as its change against ${trial.fix.base.slice(0, 12)}`;
+        : trial.fix.kind === "none"
+          ? "no fix: the part is a place that needs no change"
+          : `the part's fix commit ${trial.fix.commit.slice(0, 12)} from ${trial.fix.repo}, applied as its change against ${trial.fix.base.slice(0, 12)}`;
     const named = files.slice(0, PROMPT_FILES).join(", ");
     const more = files.length > PROMPT_FILES ? ` and ${files.length - PROMPT_FILES} more` : "";
     lines.push(
@@ -418,6 +420,7 @@ async function fixFiles(repoPath: string, fix: EditReviewTrial["fix"]): Promise<
     const parsed = parsePatch(fix.patch);
     return parsed.ok ? parsed.files.map((file) => file.path).sort() : [];
   }
+  if (fix.kind === "none") return [];
   return (await runGit(repoPath, ["diff", "--name-only", "-z", "--no-renames", fix.base, fix.commit])).split("\0").filter(Boolean).sort();
 }
 

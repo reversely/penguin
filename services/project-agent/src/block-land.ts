@@ -297,7 +297,8 @@ async function prepareLand(deps: LandDeps, feature: Feature, checkpoint: unknown
   if (unconfirmed !== undefined) return unconfirmed;
   const writes = plan === undefined ? [] : await deps.agent(feature.id).fixWrites(feature.id);
   const written = new Map(writes.map((write) => [`${write.partId}@${write.revision}`, write]));
-  const featureParts = plan?.parts.filter((part) => part.place.kind === "feature") ?? [];
+  // A verify part has no fix, so nothing is written into its fork.
+  const featureParts = plan?.parts.filter((part) => part.place.kind === "feature" && part.kind !== "verify") ?? [];
   const unwritten = featureParts.filter((part) => !written.has(`${part.partId}@${part.revision}`));
   if (unwritten.length > 0) {
     return rejected("fix_not_written", `the fixes of ${unwritten.map((part) => part.partId).join(", ")} are approved but not yet written into their forks; write each with fix_token and report_fix_write`);

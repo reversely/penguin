@@ -9,7 +9,9 @@
 // 1. Tests. The plan's facts run reports each of the part's scopes as `passed` on the merged tree of
 //    the part's place, and that tree holds the part's fix (PartTestEvidence.fixInTree).
 // 2. Review. The newest review of each of the part's scopes was submitted on the plan's checkpoint,
-//    the check runner accepted it, and every row of its form says the invariant holds.
+//    the check runner accepted it, and every row of its form says the invariant holds. A verify
+//    part, an affected place that needs no change, needs no form: this check and the next are left
+//    out for it, so its tests decide it (PRD 0.5 section 4.2 step 3).
 // 3. Side by side. That review's run shows no difference on a protected invariant.
 // 4. Protected paths. The part's diff touches no path a scope's owner protects in `penguin/scopes.json`.
 // 5. Place. Every file the diff changes lies in the part's scopes, and a fix commit changes no file
@@ -219,7 +221,7 @@ function placeReasons(part: Pick<PlanPart, "scopes" | "diff">): PartRoutingReaso
  * one. `protectedFor` names the protected path covering a repository path, or undefined.
  */
 export function partRouting(
-  part: Pick<PlanPart, "scopes" | "diff" | "breaks" | "tests" | "revision" | "reversal">,
+  part: Pick<PlanPart, "scopes" | "diff" | "breaks" | "tests" | "revision" | "reversal"> & { readonly kind?: PlanPartKind },
   evidence: PartEvidence,
   protectedFor: (path: string) => ProtectedPathHit | undefined,
 ): PartRouting {
@@ -227,7 +229,8 @@ export function partRouting(
   if (evidence.adminMode) reasons.push({ kind: "admin_mode" });
   const reversal = part.reversal;
   if (reversal !== undefined && reversal !== null && reversal.revision === part.revision) reasons.push({ kind: "reversed", by: reversal.by });
-  reasons.push(...testReasons(part), ...reviewReasons(part.scopes, evidence));
+  // A verify part changes nothing, so it needs no review form: its tests on the merged tree decide it.
+  reasons.push(...testReasons(part), ...(part.kind === "verify" ? [] : reviewReasons(part.scopes, evidence)));
   for (const file of part.diff.files) {
     const hit = protectedFor(file.path);
     if (hit !== undefined) reasons.push({ kind: "protected_path", scope: hit.scope, owner: hit.owner, path: hit.path, file: file.path });

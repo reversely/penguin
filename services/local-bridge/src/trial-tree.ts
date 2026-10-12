@@ -9,6 +9,8 @@
 // 4. A fix commit in the originating fork is applied on top as its own change against its base,
 //    with `git merge-tree --merge-base`: a cherry-pick of the fix without the rest of the fork.
 //
+// A verify part has no fix (`none`): its tree is the checkpoint merged onto the target, steps 1 and 3.
+//
 // Every commit is written with commitMergedTree's fixed identity and dates, so one trial always gives
 // one tree commit. A step that does not apply is a conflict, named with its paths.
 
@@ -52,7 +54,7 @@ export async function buildTrialTree(repoPath: string, request: Pick<PartTrialRe
   const merge = await simulateMerge(repoPath, checkpoint, head);
   if (merge.kind === "conflict") return conflict(`the checkpoint's merge conflicts in ${merge.conflictedPaths.join(", ")}`);
   const merged = await commitMergedTree(repoPath, merge.tree, [checkpoint, head]);
-  if (fix.kind === "patch") return { status: "built", tree: merged };
+  if (fix.kind !== "commit") return { status: "built", tree: merged };
   // Exit 0 is a clean merge and 1 a conflicted one, as in simulateMerge.
   const picked = await runGitWithStatus(
     repoPath,
