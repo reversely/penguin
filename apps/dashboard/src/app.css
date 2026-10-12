@@ -4527,3 +4527,1061 @@ details[open] > summary .disclosure-mark {
   gap: var(--space-1) var(--space-2);
   min-width: 0;
 }
+
+/*
+ * The feature page's timeline bar (#124): one node per stage on a line, the current one ringed. Status
+ * hues are the signal hues: passed verified, failed failure, needs a person the attention dot; a
+ * running stage is a half-filled ink dot and a waiting one an empty ring. Every status also reads as
+ * text, so the grayscale test holds.
+ */
+.timeline {
+  display: grid;
+  gap: 0;
+  min-width: 0;
+  container-type: inline-size;
+}
+
+.timeline-bar,
+.branches,
+.jobs,
+.activity,
+.tree,
+.feature-summary,
+.signature-list {
+  display: grid;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.cols-5 {
+  --stages: 5;
+}
+
+.cols-6 {
+  --stages: 6;
+}
+
+.timeline-bar,
+.branch-row {
+  grid-template-columns: repeat(var(--stages, 6), minmax(0, 1fr));
+}
+
+.stage {
+  position: relative;
+  display: grid;
+  align-content: start;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+/* The bar: each stage draws the segment from its dot to the next stage's dot. */
+.stage:not(:last-child)::after {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  right: 0;
+  height: 2px;
+  background: var(--line);
+  content: "";
+}
+
+/* A stage with open branches runs a rail down from its dot to the first of them. */
+.stage[data-branches]::before {
+  position: absolute;
+  top: 15px;
+  bottom: 0;
+  left: 6px;
+  width: 2px;
+  background: var(--line);
+  content: "";
+}
+
+.stage[data-status="passed"]:not(:last-child)::after {
+  background: var(--verified);
+}
+
+.stage-node {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  justify-items: start;
+  column-gap: var(--space-2);
+  row-gap: 2px;
+  min-width: 0;
+  min-height: 2.75rem;
+  padding: var(--space-2) var(--space-2) var(--space-1) 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: var(--text-ui);
+  text-align: left;
+  cursor: pointer;
+}
+
+.stage-node:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+
+/* The dot sits on the bar; the name and its facts sit below it, right of the rail. */
+.stage-node .stage-dot {
+  grid-column: 1 / -1;
+  margin-bottom: 2px;
+}
+
+.stage-node > :not(.stage-dot) {
+  grid-column: 2;
+}
+
+.stage-dot {
+  position: relative;
+  z-index: 1;
+  width: 14px;
+  height: 14px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--field);
+  box-shadow: inset 0 0 0 2px var(--line);
+}
+
+[data-status="passed"] > .stage-dot,
+[data-status="passed"] > .stage-node .stage-dot {
+  background: var(--verified);
+  box-shadow: none;
+}
+
+[data-status="failed"] > .stage-dot,
+[data-status="failed"] > .stage-node .stage-dot {
+  background: var(--failure);
+  box-shadow: none;
+}
+
+[data-status="person"] > .stage-dot,
+[data-status="person"] > .stage-node .stage-dot {
+  background: var(--attention-dot);
+  box-shadow: none;
+}
+
+[data-status="running"] > .stage-dot,
+[data-status="running"] > .stage-node .stage-dot {
+  background: linear-gradient(90deg, var(--ink) 50%, var(--field) 50%);
+  box-shadow: inset 0 0 0 2px var(--ink);
+}
+
+/* The current stage: a ring around its dot and its name in the heading weight. */
+.stage[data-current] .stage-dot {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+.stage-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.stage[data-current] .stage-name {
+  font-weight: 500;
+}
+
+.stage-meta {
+  min-width: 0;
+  color: var(--ink-muted);
+  font: var(--text-meta);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.stage-status {
+  color: var(--attention);
+  font-weight: 500;
+}
+
+.stage[data-status="failed"] .stage-status {
+  color: var(--failure);
+}
+
+/* People whose branch settled have rejoined the bar beside their stage. */
+.stage-rejoined {
+  display: flex;
+  align-items: center;
+  color: var(--ink-muted);
+  font: var(--text-meta);
+}
+
+.stage-rejoined {
+  gap: 2px;
+}
+
+.stage-rejoined-more {
+  margin-left: var(--space-1);
+}
+
+/*
+ * A branch hangs from its stage's dot: a rail runs down from the bar, and an elbow (the last branch of
+ * its stage) or a tee (more follow) turns into the branch's line. Rows run from the latest stage to the
+ * earliest, so a rail only passes rows whose content starts to its right.
+ */
+.branch-row {
+  display: grid;
+  min-width: 0;
+}
+
+.branch-row > * {
+  grid-row: 1;
+}
+
+.rail {
+  position: relative;
+}
+
+.rail::before,
+.branch::before,
+.branch::after {
+  position: absolute;
+  background: var(--line);
+  content: "";
+}
+
+.rail::before {
+  top: 0;
+  bottom: 0;
+  left: 6px;
+  width: 2px;
+}
+
+.branch {
+  position: relative;
+  min-width: 0;
+  padding-left: 22px;
+}
+
+.branch::before {
+  top: 0;
+  left: 6px;
+  width: 2px;
+  height: 22px;
+}
+
+.branch[data-rail="tee"]::before {
+  height: 100%;
+}
+
+.branch::after {
+  top: 21px;
+  left: 6px;
+  width: 12px;
+  height: 2px;
+}
+
+.branch > summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  min-height: 2.75rem;
+  cursor: pointer;
+  list-style: none;
+  font: var(--text-meta);
+}
+
+.branch > summary::-webkit-details-marker {
+  display: none;
+}
+
+.branch-diff,
+.job-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.75rem;
+  color: var(--link);
+  font: var(--text-meta);
+  text-underline-offset: 3px;
+}
+
+.branch-stage {
+  display: none;
+  color: var(--ink-muted);
+}
+
+.branch-fact {
+  margin: 0 0 var(--space-2);
+  font: var(--text-meta);
+  overflow-wrap: anywhere;
+}
+
+.col-1 {
+  grid-column: 1;
+}
+
+.col-2 {
+  grid-column: 2;
+}
+
+.col-3 {
+  grid-column: 3;
+}
+
+.col-4 {
+  grid-column: 4;
+}
+
+.col-5 {
+  grid-column: 5;
+}
+
+.col-from-1 {
+  grid-column: 1 / -1;
+}
+
+.col-from-2 {
+  grid-column: 2 / -1;
+}
+
+.col-from-3 {
+  grid-column: 3 / -1;
+}
+
+.col-from-4 {
+  grid-column: 4 / -1;
+}
+
+.col-from-5 {
+  grid-column: 5 / -1;
+}
+
+/* A branch from the last stage turns left of its rail, since no column follows it. */
+.col-from-6 {
+  grid-column: 4 / -1;
+  justify-self: end;
+  padding: 0 22px 0 0;
+}
+
+.col-from-6::before,
+.col-from-6::after {
+  left: auto;
+  right: 6px;
+}
+
+.cols-5 .col-from-5 {
+  grid-column: 3 / -1;
+  justify-self: end;
+  padding: 0 22px 0 0;
+}
+
+.cols-5 .col-from-5::before,
+.cols-5 .col-from-5::after {
+  left: auto;
+  right: 6px;
+}
+
+.jobs {
+  gap: 0;
+}
+
+.job,
+.activity-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  min-width: 0;
+  min-height: 2.25rem;
+  padding: var(--space-1) 0;
+  border-top: 1px solid var(--line);
+  font: var(--text-meta);
+  overflow-wrap: anywhere;
+}
+
+.job:first-child {
+  border-top: 0;
+}
+
+.job .stage-dot {
+  width: 10px;
+  height: 10px;
+}
+
+.job-label {
+  min-width: 0;
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.job-fact {
+  min-width: 0;
+  color: var(--ink-muted);
+}
+
+.job[data-status="person"] .job-fact {
+  color: var(--attention);
+}
+
+.job[data-status="failed"] .job-fact {
+  color: var(--failure);
+}
+
+.job-more {
+  flex-basis: 100%;
+  padding-left: 18px;
+}
+
+.activity {
+  gap: 0;
+}
+
+.activity-row {
+  border-top: 0;
+}
+
+/* The summary: a few lines, each opening the diff or the section it sums up. */
+.feature-summary {
+  gap: 0;
+  font: var(--text-ui);
+}
+
+.feature-summary li {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.feature-summary a {
+  display: inline-block;
+  padding-block: 4px;
+  color: var(--ink);
+  font-weight: 500;
+  text-underline-offset: 3px;
+}
+
+.feature-summary li[data-tone="attention"] a {
+  color: var(--attention);
+}
+
+.feature-summary li[data-tone="failure"] a {
+  color: var(--failure);
+}
+
+/* The change tree and the folded detail sections: a chevron line per node, its body indented under it. */
+.tree {
+  gap: var(--space-1);
+}
+
+.fold > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 2.75rem;
+  cursor: pointer;
+  list-style: none;
+}
+
+.fold > summary::-webkit-details-marker {
+  display: none;
+}
+
+.fold > summary:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+
+.tree-node {
+  min-width: 0;
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  box-shadow: var(--elevation-raised);
+  padding: 0 var(--space-3);
+}
+
+.tree-node .tree-node {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.tree-contract {
+  box-shadow:
+    inset 3px 0 0 var(--ink),
+    var(--elevation-raised);
+}
+
+.tree-head {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  min-width: 0;
+  padding-block: var(--space-1);
+  font: var(--text-meta);
+}
+
+.tree-title {
+  min-width: 0;
+  color: var(--ink);
+  font: var(--text-ui);
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.tree-path {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.tree-body {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: 0 0 var(--space-3) var(--space-6);
+}
+
+.tree-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+  min-width: 0;
+  margin: 0;
+  font: var(--text-meta);
+}
+
+.tree-file > .diff-scroll,
+.tree-file > p {
+  margin: 0 0 var(--space-3);
+}
+
+.signature-list {
+  gap: var(--space-2);
+}
+
+.signature-list li {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.signature-symbol {
+  font: 400 13px / 1.4 var(--mono);
+  overflow-wrap: anywhere;
+}
+
+.diff-count {
+  font: 400 13px / 1.4 var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.diff-count-add {
+  color: var(--verified);
+}
+
+.diff-count-remove {
+  color: var(--failure);
+}
+
+/* A unified diff: both sides' line numbers, then the line. The block scrolls inside itself on a phone. */
+.diff-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.diff-table {
+  width: 100%;
+  border-collapse: collapse;
+  font: 400 13px / 1.5 var(--mono);
+}
+
+.diff-hunk td {
+  padding: var(--space-1) var(--space-3);
+  color: var(--ink-muted);
+  background: var(--selected);
+}
+
+.diff-number {
+  width: 1%;
+  padding: 0 var(--space-2);
+  color: var(--ink-muted);
+  text-align: right;
+  white-space: nowrap;
+  user-select: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.diff-text {
+  padding: 0 var(--space-3) 0 var(--space-1);
+  white-space: pre;
+}
+
+.diff-mark {
+  display: inline-block;
+  width: 1.25ch;
+  user-select: none;
+}
+
+.diff-row.diff-add {
+  background: var(--verified-tint);
+}
+
+.diff-row.diff-remove {
+  background: var(--failure-tint);
+}
+
+.diff-scroll > .show-more {
+  margin: var(--space-1) var(--space-3);
+}
+
+/* The folded sections below the change tree. */
+.feature-details {
+  gap: var(--space-1);
+}
+
+.detail {
+  min-width: 0;
+  border-top: 1px solid var(--line);
+}
+
+.detail > summary {
+  font: var(--text-heading);
+}
+
+.detail[open] {
+  display: grid;
+  gap: var(--space-3);
+  padding-bottom: var(--space-4);
+}
+
+.detail-head {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* The compact strip on the team view: a dot per stage, the current one ringed, then its name. */
+.strip {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  min-width: 0;
+  font: var(--text-meta);
+}
+
+.strip-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.strip-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--ink-muted);
+}
+
+.strip-dot[data-status="passed"] {
+  background: var(--verified);
+  box-shadow: none;
+}
+
+.strip-dot[data-status="failed"] {
+  background: var(--failure);
+  box-shadow: none;
+}
+
+.strip-dot[data-status="person"] {
+  background: var(--attention-dot);
+  box-shadow: none;
+}
+
+.strip-dot[data-status="running"] {
+  background: linear-gradient(90deg, var(--ink) 50%, transparent 50%);
+  box-shadow: inset 0 0 0 1.5px var(--ink);
+}
+
+.strip-dot[data-current] {
+  outline: 1.5px solid var(--ink);
+  outline-offset: 1.5px;
+}
+
+.strip-stage {
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+.strip-stage[data-status="person"] {
+  color: var(--attention);
+  font-weight: 500;
+}
+
+.strip-stage[data-status="failed"] {
+  color: var(--failure);
+  font-weight: 500;
+}
+
+/*
+ * On a narrow page the bar wraps: stages flow as a list of dots and names, and each branch drops its
+ * rails and names its stage instead.
+ */
+@container (max-width: 39rem) {
+  .timeline-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0 var(--space-3);
+  }
+
+  .stage::after,
+  .stage::before {
+    display: none;
+  }
+
+  .stage-node .stage-dot {
+    grid-column: 1;
+    grid-row: 1;
+    margin: 3px 0 0;
+  }
+
+  .stage-name {
+    grid-row: 1;
+  }
+
+  .branch-stage {
+    display: inline;
+  }
+
+  .branch-row {
+    display: block;
+  }
+
+  .rail {
+    display: none;
+  }
+
+  .branch,
+  .col-from-6,
+  .cols-5 .col-from-5 {
+    justify-self: stretch;
+    padding: 0 0 0 22px;
+  }
+
+  .col-from-6::before,
+  .col-from-6::after,
+  .cols-5 .col-from-5::before,
+  .cols-5 .col-from-5::after {
+    left: 6px;
+    right: auto;
+  }
+}
+
+@media (max-width: 520px) {
+  .tree-body {
+    padding-left: var(--space-2);
+  }
+}
+
+/* On a touch screen every link in the timeline, the jobs and the summary takes a 44px target. */
+@media (pointer: coarse) {
+  .branch-diff,
+  .job-link,
+  .feature-summary a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 2.75rem;
+  }
+}
+
+/* The feature page's breadcrumb: Team, the person, the feature. */
+.breadcrumb ol {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font: var(--text-meta);
+}
+
+.breadcrumb li {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  color: var(--ink-muted);
+  overflow-wrap: anywhere;
+}
+
+.breadcrumb li + li::before {
+  width: 5px;
+  height: 5px;
+  border-top: 1.5px solid var(--ink-muted);
+  border-right: 1.5px solid var(--ink-muted);
+  rotate: 45deg;
+  content: "";
+}
+
+.breadcrumb a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
+  color: var(--ink-muted);
+  text-underline-offset: 3px;
+}
+
+.breadcrumb [aria-current="page"] {
+  color: var(--ink);
+}
+
+/*
+ * Pills: a person in their hue, a scope in its owner's hue, a status in one fixed colour per tone.
+ * The tints mix 16 percent of the hue into the raised surface, as the signal tints do.
+ */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  min-height: 1.5rem;
+  padding: 0 var(--space-2);
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--selected);
+  color: var(--ink);
+  font: var(--text-meta);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.pill-person {
+  padding-left: 2px;
+}
+
+.pill-person,
+.pill-scope {
+  background: color-mix(in oklab, var(--person) 16%, var(--surface-raised));
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--person) 45%, transparent);
+}
+
+.pill-person .avatar {
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
+.pill-tone-waiting {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--line);
+  color: var(--ink-muted);
+}
+
+.pill-tone-running {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--ink);
+}
+
+.pill-tone-passed {
+  background: var(--verified-tint);
+  color: var(--verified);
+}
+
+.pill-tone-failed {
+  background: var(--failure-tint);
+  color: var(--failure);
+}
+
+/* Needs a person: the attention hue, the one exception the dashboard highlights. */
+.pill-tone-person {
+  background: color-mix(in oklab, var(--attention-dot) 16%, var(--surface-raised));
+  color: var(--attention);
+}
+
+.pill-scope,
+.pill-tone-passed,
+.pill-tone-failed,
+.pill-tone-person {
+  font-weight: 500;
+}
+
+a.pill:focus-visible,
+button.pill:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.pill-list {
+  display: flex;
+  flex-basis: 100%;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* The four views as tabs, each with its own anchor. */
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--space-1);
+  border-bottom: 1px solid var(--line);
+}
+
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 2.75rem;
+  margin-bottom: -1px;
+  padding: 0 var(--space-3);
+  border-bottom: 2px solid transparent;
+  color: var(--ink-muted);
+  font: var(--text-ui);
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.tab[aria-selected="true"] {
+  border-bottom-color: var(--ink);
+  color: var(--ink);
+}
+
+.tab:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+  border-radius: var(--radius-xs);
+}
+
+.view,
+.view-body {
+  display: grid;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.stage-fold > summary .tree-head .stage-dot {
+  width: 12px;
+  height: 12px;
+}
+
+.tree-head[data-status="passed"] > .stage-dot {
+  background: var(--verified);
+  box-shadow: none;
+}
+
+.tree-head[data-status="failed"] > .stage-dot {
+  background: var(--failure);
+  box-shadow: none;
+}
+
+.tree-head[data-status="person"] > .stage-dot {
+  background: var(--attention-dot);
+  box-shadow: none;
+}
+
+.tree-head[data-status="running"] > .stage-dot {
+  background: linear-gradient(90deg, var(--ink) 50%, var(--field) 50%);
+  box-shadow: inset 0 0 0 2px var(--ink);
+}
+
+.stage-body,
+.plan-facts {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+/* The Read by and Start tables scroll inside themselves on a phone; the page never scrolls sideways. */
+.table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.people-table {
+  width: 100%;
+  border-collapse: collapse;
+  font: var(--text-meta);
+}
+
+.people-table th {
+  padding: var(--space-2) var(--space-3) var(--space-2) 0;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink-muted);
+  font-weight: 500;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.people-table td {
+  padding: var(--space-1) var(--space-3) var(--space-1) 0;
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.reads {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.reads-arrow {
+  display: inline-flex;
+  color: var(--ink-muted);
+  rotate: 180deg;
+}
+
+.record-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.pill-filter {
+  min-height: 2rem;
+  cursor: pointer;
+}
+
+.pill-filter[aria-pressed="true"] {
+  background: var(--ink);
+  color: var(--field);
+}
+
+.pill-filter[aria-pressed="true"] .tab-count {
+  color: var(--field);
+}
+
+.stage-node {
+  text-decoration: none;
+}
+
+.tree-node > summary {
+  font: var(--text-meta);
+}
+
+@media (max-width: 520px) {
+  .tabs {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+  }
+
+  .tab {
+    flex: none;
+    padding: 0 var(--space-2);
+  }
+}
+
+@media (pointer: coarse) {
+  .pill-filter,
+  .people-table a {
+    min-height: 2.75rem;
+  }
+}
+
+.job-link,
+.branch-diff,
+.tree-meta .feature-link {
+  min-width: 1.5rem;
+  justify-content: center;
+}

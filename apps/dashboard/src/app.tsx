@@ -160,7 +160,7 @@ function Page({ route, session, live, approvals, team, navigate, onSignedOut }: 
     return <TeamPage team={team} person={route.person} navigate={navigate} />;
   }
   if (route?.page === "feature") {
-    return <FeaturePageView key={route.featureId} featureId={route.featureId} live={live} navigate={navigate} onSignedOut={onSignedOut} />;
+    return <FeaturePageView key={route.featureId} featureId={route.featureId} viewer={session.owner} team={team.view.kind === "ready" ? team.view.value : undefined} live={live} navigate={navigate} onSignedOut={onSignedOut} />;
   }
   if (route?.page === "inbox") {
     return <InboxPage approvals={approvals} navigate={navigate} onSignedOut={onSignedOut} />;

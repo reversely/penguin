@@ -1,136 +1,432 @@
-// The feature page (PRD section 10): the feature's declaration and who it waits on, its agents, the
-// merge plan with each affected place and its state, the reviews, the fixes that go into other forks,
-// the block's checks grouped by the tool that ran them, every agent tool call with what the tool
-// reported, and the signed record. Each deterministic tool shows by name beside its output, so a
-// reader sees which step a tool settled and which needed an agent or a person (docs/demo-story.md,
-// Tools on screen). A part's changed lines show only to the people the server sends them to. The page
-// reads again on every live message. Every value renders as React text.
+// The feature page (PRD section 10, #124): one feature, the unit of work, in three levels.
+//
+// 1. The header stays in view: the breadcrumb (Team, the person, the feature), the feature with its
+//    person and its scopes, the timeline bar with the branches to other people, and at most three
+//    summary lines, each opening the place it sums up.
+// 2. Four views below it, each a tab with its own anchor: Changes (the contract change, then each place
+//    the plan fixes, its files and their hunks), Pipeline (each stage with its jobs and what they ran),
+//    People (the features that read this one, the starts it waited on, its agents) and Record.
+// 3. Rows inside a view stay folded except those that need the viewer.
+//
+// A part's changed lines show only to the people the server sends them to. The page reads again on
+// every live message. Every value renders as React text.
 
-import type { BlockCheck, FeaturePage, FeaturePlanView, PlanPartView, ToolRunView } from "@penguin/protocol";
-import { useCallback, useState } from "react";
+import type { BlockCheck, FeaturePage, PipelineStageKey, PipelineStrip, TeamView, ToolRunView } from "@penguin/protocol";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { Agent } from "./agent-directory.tsx";
 import { fetchFeaturePage } from "./api.ts";
-import { Disclosure } from "./disclosure.tsx";
-import { PersonAvatar } from "./avatar.tsx";
-import {
-  checksByTool,
-  counted,
-  partStateText,
-  partNumber,
-  placeText,
-  recordLabel,
-  roundText,
-  shortSha,
-  stateClass,
-} from "./feature-view.ts";
+import { ChangeTree } from "./change-tree.tsx";
+import { checksByTool, counted, partStateText, recordLabel, shortSha } from "./feature-view.ts";
+import { Fold, FoldProvider, useFolds } from "./fold.tsx";
 import { Icon } from "./icon.tsx";
 import { useRead } from "./inbox-page.tsx";
 import { linkHandler } from "./links.ts";
-import { BreakList, DiffFiles, ReviewCard } from "./review-card.tsx";
+import {
+  foldParents,
+  initialFolds,
+  readByRows,
+  recordKinds,
+  stageAnchor,
+  summaryLines,
+  viewOf,
+  VIEW_LABEL,
+  VIEWS,
+  type ReadByRow,
+  type SummaryLine,
+  type Tone,
+  type View,
+} from "./page-view.ts";
+import { PersonPill, ScopePill, TonePill } from "./pills.tsx";
+import { partAnchor, STAGE_LABEL, stageCount, STATUS_LABEL } from "./pipeline-view.ts";
+import { ReviewCard } from "./review-card.tsx";
 import { featurePath, personPath } from "./routes.ts";
+import { StageBody, Timeline } from "./timeline.tsx";
 import type { Live } from "./use-live.ts";
 
 interface Props {
   readonly featureId: string;
+  /** The signed-in person, whose parts open on their own. */
+  readonly viewer: string;
+  /** The team view, for each reading feature's stage and each scope's owner. */
+  readonly team: TeamView | undefined;
   readonly live: Live;
   readonly navigate: (path: string) => void;
   readonly onSignedOut: () => void;
 }
 
-export function FeaturePageView({ featureId, live, navigate, onSignedOut }: Props) {
+export function FeaturePageView({ featureId, viewer, team, live, navigate, onSignedOut }: Props) {
   const read = useCallback(() => fetchFeaturePage(featureId), [featureId]);
   const page = useRead(read, `${live.revision}:${live.inboxRevision}:${live.featuresRevision}:${live.status === "live"}`, onSignedOut);
-  const back = (
-    <a className="back-link" href="/" onClick={linkHandler(navigate, "/")}>
-      <Icon name="back" />
-      Team
-    </a>
-  );
   if (page.kind === "loading") return <div className="feature" aria-busy="true" />;
   if (page.kind === "failed" || page.value === undefined) {
     return (
       <div className="feature">
-        {back}
+        <a className="back-link" href="/" onClick={linkHandler(navigate, "/")}>
+          <Icon name="back" />
+          Team
+        </a>
         <h1>{page.kind === "failed" ? "Feature" : "Feature not found"}</h1>
         <p className="muted">{page.kind === "failed" ? "Please reload the page" : "Please choose a feature on the team view"}</p>
       </div>
     );
   }
-  return <FeatureView page={page.value} navigate={navigate} back={back} />;
+  return <FeatureView page={page.value} viewer={viewer} team={team} navigate={navigate} />;
 }
 
-const LIST_CAP = 8;
+interface ViewProps {
+  readonly page: FeaturePage;
+  readonly viewer: string;
+  readonly team?: TeamView | undefined;
+  readonly navigate: (path: string) => void;
+  /** Folds open from the start besides the viewer's own, such as every section in a test. */
+  readonly open?: readonly string[];
+  /** The view shown first; the page's anchor picks it in a browser. */
+  readonly view?: View;
+}
+
+/** Each feature's strip and each scope's owner, from the team view. */
+function teamFacts(team: TeamView | undefined): { readonly strips: Map<string, PipelineStrip>; readonly owners: Map<string, string> } {
+  const strips = new Map<string, PipelineStrip>();
+  const owners = new Map<string, string>();
+  for (const person of team?.people ?? []) {
+    for (const feature of person.features) strips.set(feature.id, feature.strip);
+    for (const scope of [...person.role.scopes, ...person.role.dependents, ...person.role.dependencies]) owners.set(scope.id, scope.ownerId);
+  }
+  return { strips, owners };
+}
 
 /** The page as read, without the fetch, so it renders on the server in a test. */
-export function FeatureView({ page, navigate, back }: { readonly page: FeaturePage; readonly navigate: (path: string) => void; readonly back?: React.ReactNode }) {
+export function FeatureView({ page, viewer, team, navigate, open = [], view: firstView = "changes" }: ViewProps) {
   const { feature } = page;
+  const ownStages = feature.person === viewer ? page.pipeline.stages.filter((stage) => stage.status === "person" || stage.status === "failed").map((stage) => stageAnchor(stage.key)) : [];
+  const folds = useFolds(() => [...initialFolds(page, viewer), ...ownStages, ...open], foldParents);
+  const [view, setView] = useState<View>(firstView);
+  const reveal = useCallback(
+    (id: string) => {
+      const target = viewOf(id) ?? foldParents(id).map(viewOf).find((each) => each !== undefined);
+      if (target !== undefined) setView(target);
+      if (!(VIEWS as readonly string[]).includes(id)) folds.reveal(id);
+    },
+    [folds],
+  );
+  // A link from the inbox, a banner or the team view names a view, a part or a file in the anchor.
+  useEffect(() => {
+    const id = decodeURIComponent(window.location.hash.slice(1));
+    if (id !== "") reveal(id);
+    // Only the anchor the page opened with.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const facts = useMemo(() => teamFacts(team), [team]);
+  const lines = useMemo(() => summaryLines(page), [page]);
   const personLink = personPath(feature.person);
+  const choose = (next: View) => {
+    setView(next);
+    window.history.replaceState(null, "", `#${next}`);
+  };
   return (
-    <article className="feature" aria-labelledby="feature-heading">
-      {back}
-      <header className="feature-head">
-        <h1 id="feature-heading">{feature.id}</h1>
-        <span className={stateClass(feature.state)}>{feature.state}</span>
-        <p className="feature-meta">
-          <a className="approval-person" href={personLink} onClick={linkHandler(navigate, personLink)}>
-            <PersonAvatar id={feature.person} size="card" />
-            {feature.person}
-          </a>
-          {feature.repo === null ? null : <code>{feature.repo}</code>}
-          {feature.latestCheckpoint === null ? null : (
-            <span>
-              checkpoint <code>{shortSha(feature.latestCheckpoint)}</code>
-            </span>
-          )}
-        </p>
-      </header>
-
-      <Section id="declaration" title="Declaration">
-        <dl className="facts">
-          <Fact term="Scopes">
-            {feature.area.scopes.length === 0 ? <span className="muted">None</span> : feature.area.scopes.map((scope) => <span key={scope.id} className="chip">{scope.name}</span>)}
-          </Fact>
-          {feature.area.contracts.length === 0 ? null : (
-            <Fact term="Contracts">
-              {feature.area.contracts.map((contract) => (
-                <code key={contract} className="code-chip">
-                  {contract}
-                </code>
-              ))}
-            </Fact>
-          )}
-          {feature.area.paths.length === 0 ? null : (
-            <Fact term="Paths">
-              <Capped inline items={feature.area.paths} render={(path) => <code key={path} className="code-chip">{path}</code>} />
-            </Fact>
-          )}
-        </dl>
-        {page.waitingOn.length === 0 ? null : (
-          <ul className="plain-list" aria-label="Start">
-            {page.waitingOn.map((lock) => (
-              <li key={lock.feature} className={lock.state === "open" ? "attention" : undefined}>
-                {lock.state === "open" ? `Start waits for ${lock.person} beside ` : `Start approved by ${lock.approvedBy ?? lock.person} beside `}
-                <FeatureLink feature={lock.feature} navigate={navigate} />
-              </li>
-            ))}
-          </ul>
-        )}
-        {page.dependents.length === 0 ? null : (
-          <ul className="plain-list" aria-label="Read by">
-            <Capped
-              items={page.dependents}
-              render={(dependent) => (
-                <li key={`${dependent.feature} ${dependent.consumerScope}`}>
-                  <FeatureLink feature={dependent.feature} navigate={navigate} /> of {dependent.person} reads {dependent.providerScope} from {dependent.consumerScope}
+    <FoldProvider value={folds.value}>
+      <article className="feature" aria-labelledby="feature-heading">
+        <nav className="breadcrumb" aria-label="Breadcrumb">
+          <ol>
+            <li>
+              <a href="/" onClick={linkHandler(navigate, "/")}>
+                Team
+              </a>
+            </li>
+            <li>
+              <a href={personLink} onClick={linkHandler(navigate, personLink)}>
+                {feature.person}
+              </a>
+            </li>
+            <li aria-current="page">{feature.id}</li>
+          </ol>
+        </nav>
+        <header className="feature-head">
+          <h1 id="feature-heading">{feature.id}</h1>
+          <PersonPill id={feature.person} navigate={navigate} />
+          {feature.area.scopes.length === 0 ? null : (
+            <ul className="pill-list" aria-label="Scopes">
+              {feature.area.scopes.map((scope) => (
+                <li key={scope.id}>
+                  <ScopePill name={scope.name} owner={scope.ownerId === "" ? null : scope.ownerId} />
                 </li>
-              )}
-            />
-          </ul>
-        )}
-      </Section>
+              ))}
+            </ul>
+          )}
+        </header>
+        <Timeline pipeline={page.pipeline} reveal={reveal} />
+        {lines.length === 0 ? null : <Summary lines={lines} reveal={reveal} />}
+        <div className="tabs" role="tablist" aria-label="Views">
+          {VIEWS.map((each) => (
+            <a
+              key={each}
+              id={`tab-${each}`}
+              className="tab"
+              role="tab"
+              href={`#${each}`}
+              aria-selected={view === each}
+              aria-controls={each}
+              tabIndex={view === each ? 0 : -1}
+              onClick={(event) => {
+                event.preventDefault();
+                choose(each);
+              }}
+              onKeyDown={(event) => {
+                const step = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
+                if (step === 0) return;
+                event.preventDefault();
+                const next = VIEWS[(VIEWS.indexOf(each) + step + VIEWS.length) % VIEWS.length] as View;
+                choose(next);
+                document.getElementById(`tab-${next}`)?.focus();
+              }}
+            >
+              {VIEW_LABEL[each]}
+              {each === "record" ? <span className="tab-count">{page.records.length}</span> : null}
+            </a>
+          ))}
+        </div>
+        <section className="view" id={view} role="tabpanel" aria-labelledby={`tab-${view}`}>
+          {view === "changes" ? <ChangesView page={page} navigate={navigate} /> : null}
+          {view === "pipeline" ? <PipelineView page={page} reveal={reveal} /> : null}
+          {view === "people" ? <PeopleView page={page} strips={facts.strips} owners={facts.owners} navigate={navigate} reveal={reveal} /> : null}
+          {view === "record" ? <RecordView page={page} /> : null}
+        </section>
+      </article>
+    </FoldProvider>
+  );
+}
 
-      <Section id="agents" title="Agents" count={page.agents.length}>
+/** At most three lines, each opening the place it sums up. */
+function Summary({ lines, reveal }: { readonly lines: readonly SummaryLine[]; readonly reveal: (id: string) => void }) {
+  return (
+    <ul className="feature-summary" aria-label="Summary">
+      {lines.map((line) => (
+        <li key={line.target} data-tone={line.tone}>
+          <a
+            href={`#${line.target}`}
+            onClick={(event) => {
+              event.preventDefault();
+              reveal(line.target);
+            }}
+          >
+            {line.label}
+          </a>
+          {line.fact === null ? null : <span className="muted"> {line.fact}</span>}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** Changes: the contract change, each place the plan fixes, then the declared area. */
+function ChangesView({ page, navigate }: { readonly page: FeaturePage; readonly navigate: (path: string) => void }) {
+  const { feature } = page;
+  return (
+    <div className="view-body">
+      <ChangeTree plan={page.plan} contract={page.contract ?? null} fixes={page.fixes} person={feature.person} navigate={navigate} />
+      <Fold id="area" className="tree-node" summary={<span className="tree-title">Area</span>}>
+        <div className="tree-body">
+          <dl className="facts">
+            {feature.area.contracts.length === 0 ? null : (
+              <Fact term="Contracts">
+                {feature.area.contracts.map((contract) => (
+                  <code key={contract} className="code-chip">
+                    {contract}
+                  </code>
+                ))}
+              </Fact>
+            )}
+            <Fact term="Paths">
+              {feature.area.paths.length === 0 ? <span className="muted">None</span> : <Capped inline items={feature.area.paths} render={(path) => <code key={path} className="code-chip">{path}</code>} />}
+            </Fact>
+            {feature.latestCheckpoint === null ? null : (
+              <Fact term="Checkpoint">
+                <code>{shortSha(feature.latestCheckpoint)}</code>
+              </Fact>
+            )}
+          </dl>
+        </div>
+      </Fold>
+    </div>
+  );
+}
+
+/** Which stage holds what a job ran: reviews, tool runs and the block checks. */
+function stageOf(keys: readonly PipelineStageKey[], wanted: PipelineStageKey, fallback: PipelineStageKey): PipelineStageKey {
+  return keys.includes(wanted) ? wanted : fallback;
+}
+
+/** Pipeline: each stage with its jobs, then what they ran: the plan's facts, reviews, writes, checks and tool runs. */
+function PipelineView({ page, reveal }: { readonly page: FeaturePage; readonly reveal: (id: string) => void }) {
+  const { pipeline } = page;
+  const keys = pipeline.stages.map((stage) => stage.key);
+  const planStage = stageOf(keys, "plan", "expand");
+  const reviewStage = stageOf(keys, "review", "migrate");
+  const checkStage = stageOf(keys, "checks", "migrate");
+  const fixStage = stageOf(keys, "fixes", "migrate");
+  const toolStage = (tool: string): PipelineStageKey => (tool === "check" ? checkStage : tool === "apply_fix" ? fixStage : planStage);
+  return (
+    <ol className="tree">
+      {pipeline.stages.map((stage, index) => {
+        const tools = page.tools.filter((run) => toolStage(run.tool) === stage.key);
+        const count = stageCount({ passed: stage.jobs.filter((job) => job.status === "passed").length, jobs: stage.jobs.length });
+        return (
+          <li key={stage.key}>
+            <Fold
+              id={stageAnchor(stage.key)}
+              className="tree-node stage-fold"
+              summary={
+                <span className="tree-head" data-status={stage.status}>
+                  <span className="stage-dot" aria-hidden="true" />
+                  <span className="tree-title">{STAGE_LABEL[stage.key]}</span>
+                  <span className={stage.status === "person" ? "tag tag-attention" : stage.status === "failed" ? "tag tag-failure" : "muted"}>{STATUS_LABEL[stage.status]}</span>
+                  {count === null ? null : <span className="muted">{count}</span>}
+                </span>
+              }
+            >
+              <div className="tree-body">
+                <StageBody stage={stage} current={index === pipeline.current} pipeline={pipeline} reveal={reveal}>
+                  {stage.key === planStage && page.plan !== null ? <PlanFacts page={page} /> : null}
+                  {stage.key === reviewStage && page.reviews.length > 0 ? (
+                    <Fold id="reviews" className="tree-node" summary={<span className="tree-title">Reviews {page.reviews.length}</span>}>
+                      {page.reviews.map((review) => (
+                        <ReviewCard key={review.reviewId} review={review} />
+                      ))}
+                    </Fold>
+                  ) : null}
+                  {stage.key === checkStage && page.checks !== null ? (
+                    <Fold id="checks" className="tree-node" summary={<span className="tree-title">Results {page.checks.checks.length}</span>}>
+                      <ChecksView run={page.checks} />
+                    </Fold>
+                  ) : null}
+                  {tools.length === 0 ? null : (
+                    <Fold id={`${stageAnchor(stage.key)}-tools`} className="tree-node" summary={<span className="tree-title">Tool runs {tools.length}</span>}>
+                      <ol className="tool-runs">
+                        {[...tools].reverse().map((run) => (
+                          <ToolRun key={run.id} run={run} />
+                        ))}
+                      </ol>
+                    </Fold>
+                  )}
+                </StageBody>
+              </div>
+            </Fold>
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+/** The plan's id, its agent, its change in plain words and each fact with the tool or read that produced it. */
+function PlanFacts({ page }: { readonly page: FeaturePage }) {
+  const plan = page.plan;
+  if (plan === null) return null;
+  return (
+    <div className="plan-facts">
+      <p className="plan-head">
+        <span className="plan-id">{plan.planId}</span>
+        <Agent handle={plan.proposedBy} person={page.feature.person} variant="compact" />
+        <time dateTime={plan.proposedAt}>{timeText(plan.proposedAt)}</time>
+      </p>
+      <blockquote className="plan-change">
+        <p>{plan.change.subject}</p>
+      </blockquote>
+      <ul className="tool-facts" aria-label="Facts">
+        {plan.sources.map((source) => (
+          <li key={source.fact} className="tool-fact">
+            <span className="tool-fact-name">{source.fact.replaceAll("_", " ")}</span>
+            <code className="tool-name">{source.tool}</code>
+            <span className="muted">{source.detail}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+const LABEL_TONE: Readonly<Record<string, Tone>> = { "needs a person": "person", approved: "passed", "fix written": "passed", reviewing: "running", sent: "waiting" };
+
+interface PeopleProps {
+  readonly page: FeaturePage;
+  readonly strips: ReadonlyMap<string, PipelineStrip>;
+  readonly owners: ReadonlyMap<string, string>;
+  readonly navigate: (path: string) => void;
+  readonly reveal: (id: string) => void;
+}
+
+/** People: the running features that read this one, the starts it waited on and its agents. */
+function PeopleView({ page, strips, owners, navigate, reveal }: PeopleProps) {
+  const rows = readByRows(page, strips, owners);
+  return (
+    <div className="view-body">
+      <section className="feature-section" id="read-by" aria-labelledby="read-by-heading">
+        <h2 id="read-by-heading" className="team-section-heading">
+          Read by <span className="tab-count">{rows.length}</span>
+        </h2>
+        {rows.length === 0 ? (
+          <p className="muted">None</p>
+        ) : (
+          <div className="table-scroll">
+            <table className="people-table">
+              <thead>
+                <tr>
+                  <th scope="col">Feature</th>
+                  <th scope="col">Person</th>
+                  <th scope="col">Reads</th>
+                  <th scope="col">Stage</th>
+                  <th scope="col">Part</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row) => (
+                  <ReadByLine key={`${row.feature} ${row.reads.scope} ${row.from.scope}`} row={row} page={page} navigate={navigate} reveal={reveal} />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+      {page.waitingOn.length === 0 ? null : (
+        <section className="feature-section" id="start" aria-labelledby="start-heading">
+          <h2 id="start-heading" className="team-section-heading">
+            Start <span className="tab-count">{page.waitingOn.length}</span>
+          </h2>
+          <div className="table-scroll">
+            <table className="people-table">
+              <thead>
+                <tr>
+                  <th scope="col">Feature</th>
+                  <th scope="col">Person</th>
+                  <th scope="col">Lock</th>
+                  <th scope="col">Approved by</th>
+                </tr>
+              </thead>
+              <tbody>
+                {page.waitingOn.map((lock) => (
+                  <tr key={lock.feature}>
+                    <td>
+                      <FeatureLink feature={lock.feature} navigate={navigate} />
+                    </td>
+                    <td>
+                      <PersonPill id={lock.person} navigate={navigate} />
+                    </td>
+                    <td>
+                      <TonePill tone={lock.state === "open" ? "person" : "passed"}>{lock.state === "open" ? "waiting" : "approved"}</TonePill>
+                    </td>
+                    <td>{lock.state === "approved" ? <PersonPill id={lock.approvedBy ?? lock.person} navigate={navigate} /> : null}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+      <section className="feature-section" id="agents" aria-labelledby="agents-heading">
+        <h2 id="agents-heading" className="team-section-heading">
+          Agents <span className="tab-count">{page.agents.length}</span>
+        </h2>
         {page.agents.length === 0 ? (
           <p className="muted">None</p>
         ) : (
@@ -142,108 +438,90 @@ export function FeatureView({ page, navigate, back }: { readonly page: FeaturePa
             ))}
           </ul>
         )}
-      </Section>
-
-      <Section id="plan" title="Merge plan">
-        {page.plan === null ? <p className="muted">No merge plan</p> : <PlanView plan={page.plan} person={feature.person} navigate={navigate} />}
-      </Section>
-
-      {page.reviews.length === 0 ? null : (
-        <Section id="reviews" title="Reviews" count={page.reviews.length}>
-          {page.reviews.map((review) => (
-            <ReviewCard key={review.reviewId} review={review} />
-          ))}
-        </Section>
-      )}
-
-      {page.fixes.length === 0 ? null : (
-        <Section id="fixes" title="Fixes in other forks" count={page.fixes.length}>
-          <ul className="fix-list">
-            {page.fixes.map((fix) => (
-              <li key={fix.partId} className="fix-row">
-                <code>feature-{fix.feature}</code>
-                <span className="approval-person">
-                  <PersonAvatar id={fix.person} size="card" />
-                  {fix.person}
-                </span>
-                <span className="muted">
-                  part {partNumber(fix.partId)} revision {fix.revision}
-                </span>
-                <span className={fix.state === "approved" ? "tag tag-verified" : fix.state === "pending" ? "tag tag-attention" : "tag"}>{partStateText(fix.state, fix.approvedBy)}</span>
-                {fix.write === null ? null : <FixWriteText write={fix.write} />}
-              </li>
-            ))}
-          </ul>
-        </Section>
-      )}
-
-      <Section id="checks" title="Block checks">
-        {page.checks === null ? <p className="muted">No block checks yet</p> : <ChecksView run={page.checks} />}
-      </Section>
-
-      <Section id="tools" title="Tool runs" count={page.tools.length}>
-        {page.tools.length === 0 ? (
-          <p className="muted">None</p>
-        ) : (
-          <ol className="tool-runs">
-            {[...page.tools].reverse().map((run) => (
-              <ToolRun key={run.id} run={run} />
-            ))}
-          </ol>
-        )}
-      </Section>
-
-      <Section id="record" title="Record" count={page.records.length}>
-        <ol className="record-list">
-          {page.records.map((record) => (
-            <li key={record.recordId} className="record-row">
-              <span className="record-type">{recordLabel(record.type)}</span>
-              <span className="muted">{record.author}</span>
-              <time dateTime={record.createdAt}>{timeText(record.createdAt)}</time>
-              <code className="record-path">{record.path}</code>
-            </li>
-          ))}
-        </ol>
-      </Section>
-    </article>
+      </section>
+    </div>
   );
 }
 
-const WRITE_STATE: Readonly<Record<string, string>> = {
-  queued: "write queued for the check runner",
-  granted: "write token granted",
-  written: "written",
-  withdrawn: "write withdrawn",
-};
-
-/** Where a fix's write stands: who writes it and, once written, the commit in the fork. */
-function FixWriteText({ write }: { readonly write: NonNullable<FeaturePage["fixes"][number]["write"]> }) {
+function ReadByLine({ row, page, navigate, reveal }: { readonly row: ReadByRow; readonly page: FeaturePage; readonly navigate: (path: string) => void; readonly reveal: (id: string) => void }) {
+  const branch = row.part === null ? undefined : page.pipeline.branches.find((each) => each.partId === row.part?.partId);
+  const label = row.part === null ? null : (branch?.label ?? partStateText(row.part.state, null));
+  const anchor = row.part === null ? null : partAnchor(row.part.partId);
   return (
-    <span className="fix-write">
-      <span className={write.state === "written" ? "verdict-holds" : "muted"}>{WRITE_STATE[write.state] ?? write.state}</span>
-      <span className="muted">by {write.writer === "runner" ? "the check runner" : "the originating agent"}</span>
-      {write.commit === null ? null : <code>{shortSha(write.commit)}</code>}
-      {write.rebased ? <span className="muted">rebased onto the fork head</span> : null}
-    </span>
+    <tr>
+      <td>
+        <FeatureLink feature={row.feature} navigate={navigate} />
+      </td>
+      <td>
+        <PersonPill id={row.person} navigate={navigate} />
+      </td>
+      <td>
+        <span className="reads">
+          <ScopePill name={row.reads.scope} owner={row.reads.owner} />
+          <span className="reads-arrow">
+            <Icon name="back" />
+          </span>
+          <span className="visually-hidden">reads</span>
+          <ScopePill name={row.from.scope} owner={row.from.owner} />
+        </span>
+      </td>
+      <td>{row.stage === null ? null : <TonePill tone={row.stage.status}>{STAGE_LABEL[row.stage.key]}</TonePill>}</td>
+      <td>
+        {anchor === null || label === null ? null : (
+          <a
+            className={`pill pill-tone-${LABEL_TONE[label] ?? "waiting"}`}
+            href={`#${anchor}`}
+            onClick={(event) => {
+              event.preventDefault();
+              reveal(anchor);
+            }}
+          >
+            {label}
+          </a>
+        )}
+      </td>
+    </tr>
   );
 }
+
+/** Record: the signed records, filtered by kind. */
+function RecordView({ page }: { readonly page: FeaturePage }) {
+  const [kind, setKind] = useState<string | null>(null);
+  const kinds = recordKinds(page.records);
+  const shown = kind === null ? page.records : page.records.filter((record) => record.type === kind);
+  return (
+    <div className="view-body">
+      <div className="record-filter" role="group" aria-label="Kind">
+        <button type="button" className="pill pill-filter" aria-pressed={kind === null} onClick={() => setKind(null)}>
+          All <span className="tab-count">{page.records.length}</span>
+        </button>
+        {kinds.map((each) => (
+          <button key={each.type} type="button" className="pill pill-filter" aria-pressed={kind === each.type} onClick={() => setKind(kind === each.type ? null : each.type)}>
+            {recordLabel(each.type)} <span className="tab-count">{each.count}</span>
+          </button>
+        ))}
+      </div>
+      <ol className="record-list">
+        {shown.map((record) => (
+          <li key={record.recordId} className="record-row">
+            <span className="record-type">{recordLabel(record.type)}</span>
+            <span className="muted">{record.author}</span>
+            <time dateTime={record.createdAt}>{timeText(record.createdAt)}</time>
+            <code className="record-path">{record.path}</code>
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
+const LIST_CAP = 8;
 
 const TIME = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
 
 function timeText(iso: string): string {
   const time = Date.parse(iso);
   return Number.isNaN(time) ? iso : TIME.format(time);
-}
-
-function Section({ id, title, count, children }: { readonly id: string; readonly title: string; readonly count?: number; readonly children: React.ReactNode }) {
-  return (
-    <section className="feature-section" aria-labelledby={`feature-${id}`}>
-      <h2 id={`feature-${id}`} className="team-section-heading">
-        {title} {count === undefined ? null : <span className="tab-count">{count}</span>}
-      </h2>
-      {children}
-    </section>
-  );
 }
 
 function Fact({ term, children }: { readonly term: string; readonly children: React.ReactNode }) {
@@ -282,158 +560,6 @@ function FeatureLink({ feature, navigate }: { readonly feature: string; readonly
   );
 }
 
-function PlanView({ plan, person, navigate }: { readonly plan: FeaturePlanView; readonly person: string; readonly navigate: (path: string) => void }) {
-  const diff = plan.contractDiff;
-  return (
-    <div className="plan">
-      <p className="plan-head">
-        <span className="plan-id">{plan.planId}</span>
-        <span className="muted">proposed by</span>
-        <Agent handle={plan.proposedBy} person={person} variant="compact" />
-        <time dateTime={plan.proposedAt}>{timeText(plan.proposedAt)}</time>
-      </p>
-      <blockquote className="plan-change">
-        <p>{plan.change.subject}</p>
-        <footer className="muted">
-          checkpoint <code>{shortSha(plan.change.checkpoint)}</code>
-        </footer>
-      </blockquote>
-      <h3 className="plan-subheading">Facts and their tools</h3>
-      <ul className="tool-facts">
-        {plan.sources.map((source) => (
-          <li key={source.fact} className="tool-fact">
-            <span className="tool-fact-name">{source.fact.replaceAll("_", " ")}</span>
-            <code className="tool-name">{source.tool}</code>
-            <span className="muted">{source.detail}</span>
-          </li>
-        ))}
-      </ul>
-      {diff === null ? null : (
-        <>
-          <h3 className="plan-subheading">Contract diff</h3>
-          <ul className="code-list">
-            <Capped
-              items={diff.changes}
-              render={(change) => (
-                <li key={`${change.symbol} ${change.change}`}>
-                  <span className="tag tag-data">{change.change}</span> <code>{change.symbol}</code>{" "}
-                  <span className="muted">
-                    {change.kind} at {change.path}:{change.line}
-                  </span>
-                </li>
-              )}
-            />
-          </ul>
-          {diff.signatures.length === 0 ? null : (
-            <ul className="code-list" aria-label="Signatures">
-              {diff.signatures.map((signature) => (
-                <li key={signature.symbol}>
-                  <code>{signature.before}</code> <span className="muted">to</span> <code>{signature.after}</code>
-                  {signature.breaking ? <span className="tag tag-attention">breaking</span> : null}
-                </li>
-              ))}
-            </ul>
-          )}
-          {diff.dataShapes.length === 0 ? null : (
-            <ul className="code-list" aria-label="Stored data shapes">
-              {diff.dataShapes.map((shape) => (
-                <li key={shape.symbol}>
-                  <code>{shape.symbol}</code> <span className="muted">fields</span> <code>{shape.before.join(", ")}</code> <span className="muted">to</span>{" "}
-                  <code>{shape.after.join(", ")}</code>
-                </li>
-              ))}
-            </ul>
-          )}
-        </>
-      )}
-      {plan.mainCallers.length === 0 ? null : (
-        <>
-          <h3 className="plan-subheading">Callers on main</h3>
-          <ul className="code-list">
-            <Capped
-              items={plan.mainCallers}
-              render={(use) => (
-                <li key={`${use.path}:${use.line}:${use.symbol}`}>
-                  <code>
-                    {use.path}:{use.line}
-                  </code>{" "}
-                  <span className="muted">
-                    {use.kind} {use.symbol}
-                  </span>
-                </li>
-              )}
-            />
-          </ul>
-        </>
-      )}
-      <h3 className="plan-subheading">
-        Affected places <span className="tab-count">{plan.parts.length}</span>
-      </h3>
-      <ol className="part-list">
-        {plan.parts.map((part) => (
-          <PartView key={part.partId} part={part} plan={plan} person={person} navigate={navigate} />
-        ))}
-      </ol>
-    </div>
-  );
-}
-
-function PartView({ part, plan, person, navigate }: { readonly part: PlanPartView; readonly plan: FeaturePlanView; readonly person: string; readonly navigate: (path: string) => void }) {
-  const ownerPath = personPath(part.owner);
-  return (
-    <li className="part card-raised">
-      <header className="approval-card-head">
-        <h4 className="part-title">
-          {partNumber(part.partId)} {part.place.kind === "feature" ? <FeatureLink feature={part.place.feature} navigate={navigate} /> : placeText(part.place)}
-        </h4>
-        <span className={part.state === "approved" ? "tag tag-verified" : part.state === "pending" ? "tag tag-attention" : "tag"}>{partStateText(part.state, part.approvedBy)}</span>
-      </header>
-      <p className="approval-line">
-        <a className="approval-person" href={ownerPath} onClick={linkHandler(navigate, ownerPath)}>
-          <PersonAvatar id={part.owner} size="card" />
-          {part.owner}
-        </a>
-        <span className="tag tag-data">{part.kind}</span>
-        <span className="muted">
-          revision {part.revision}, {roundText(part.changeRequests, plan.roundLimit)}
-        </span>
-      </p>
-      {part.changeRequest === null ? null : (
-        <blockquote className="approval-quote">
-          <p>{part.changeRequest.text}</p>
-          <footer className="muted">
-            {part.changeRequest.by} on revision {part.changeRequest.revision}
-          </footer>
-        </blockquote>
-      )}
-      {/* A plan holds a part per affected place, so each part's facts open on request. */}
-      <Disclosure
-        className="part-details"
-        summary={`${counted(part.breaks.length, "break")}, ${counted(part.invariants.length, "invariant")}, ${counted(part.callers.length, "use")}`}
-      >
-        <p className="muted approval-kind">{part.kindReason}</p>
-        <BreakList breaks={part.breaks} />
-        {part.invariants.length === 0 ? null : (
-          <ul className="plain-list" aria-label="Invariants">
-            {part.invariants.map((invariant) => (
-              <li key={`${invariant.scopeId} ${invariant.id}`}>
-                {invariant.statement} {invariant.protected ? <span className="tag tag-data">protected</span> : null}
-              </li>
-            ))}
-          </ul>
-        )}
-        {part.files === null ? (
-          <p className="muted">
-            Changed lines show to {part.owner} and {person}
-          </p>
-        ) : (
-          <DiffFiles files={part.files} />
-        )}
-      </Disclosure>
-    </li>
-  );
-}
-
 const RESULT_CLASS: Readonly<Record<string, string>> = {
   passed: "tag tag-verified",
   failed: "tag tag-failure",
@@ -448,7 +574,8 @@ function ChecksView({ run }: { readonly run: ToolRunView }) {
   return (
     <div className="checks-view">
       <p className="muted">
-        {run.summary}, <time dateTime={run.completedAt ?? run.createdAt}>{timeText(run.completedAt ?? run.createdAt)}</time>
+        {counted(run.checks.length, "check")} {counted(groups.reduce((sum, group) => sum + group.failing, 0), "failing", "failing")}{" "}
+        <time dateTime={run.completedAt ?? run.createdAt}>{timeText(run.completedAt ?? run.createdAt)}</time>
       </p>
       <ul className="tool-groups">
         {groups.map((group) => (
@@ -463,7 +590,13 @@ function ChecksView({ run }: { readonly run: ToolRunView }) {
               {group.checks.filter(shownAsRow).map((check, index) => (
                 <CheckRow key={`${check.target} ${index}`} check={check} />
               ))}
-              {group.checks.every(shownAsRow) ? null : <li className="muted target-others">{otherResults(group.checks.filter((check) => !shownAsRow(check)))}</li>}
+              {group.checks.every(shownAsRow) ? null : (
+                <li className="muted target-others">
+                  {otherResults(group.checks.filter((check) => !shownAsRow(check))).map((text) => (
+                    <span key={text}>{text} </span>
+                  ))}
+                </li>
+              )}
             </ul>
           </li>
         ))}
@@ -474,7 +607,7 @@ function ChecksView({ run }: { readonly run: ToolRunView }) {
           <ul className="plain-list">
             {run.decisions.map((decision, index) => (
               <li key={index}>
-                <span className="tag tag-data">step {decision.step}</span> {decision.check} on {decision.target}: {decision.nextStep} <span className="muted">{decision.actor}</span>
+                <span className="tag tag-data">step {decision.step}</span> {decision.check} on {decision.target} <span className="next-step">{decision.nextStep}</span> <span className="muted">{decision.actor}</span>
               </li>
             ))}
           </ul>
@@ -492,11 +625,11 @@ function shownAsRow(check: BlockCheck): boolean {
   return check.result === "failed" || check.result === "error" || check.findingCount > 0;
 }
 
-/** The targets left without a row, counted by result: `passed on 3 targets, not-affected on 1`. */
-function otherResults(checks: readonly BlockCheck[]): string {
+/** The targets left without a row, counted by result, one label each: `passed on 3 targets`. */
+function otherResults(checks: readonly BlockCheck[]): string[] {
   const counts = new Map<string, number>();
   for (const check of checks) counts.set(check.result, (counts.get(check.result) ?? 0) + 1);
-  return [...counts].map(([result, count]) => `${result} on ${counted(count, "target")}`).join(", ");
+  return [...counts].map(([result, count]) => `${result} on ${counted(count, "target")}`);
 }
 
 function CheckRow({ check }: { readonly check: BlockCheck }) {

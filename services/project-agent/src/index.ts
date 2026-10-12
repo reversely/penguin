@@ -2346,6 +2346,8 @@ export class ProjectAgent extends Agent {
       fixWrite: (partId, revision) => this.#fixGrantStore().get(partId, revision),
       contract: (feature) => contractWork(this.#splitDeps(), feature, rules.scopeMap),
       stoppedRuns: (featureId) => this.#runFailureStore().stopped(featureId),
+      protectedChanges: (featureId) => this.#protectedChangeStore().ofFeature(featureId),
+      split: (featureId) => this.#splitStore().get(featureId),
     };
   }
 

@@ -1237,7 +1237,9 @@ run at once for any runner. Only the runner holding the claim may free it. A run
 without reporting loses the claim when the 30-minute lease ends. Penguin counts every failure of a
 run in `RunFailure` (`services/project-agent/src/run-failures.ts`). At `PENGUIN_RUN_FAILURE_LIMIT`
 failures it stops handing the run out. The person of the run's feature gets a `run_failed` inbox
-item. The team view shows the stopped run on the feature with its failure count and last reason. A
+item. The team view shows the stopped run on the feature with its failure count. The feature's
+pipeline shows it as a failed job, with the last reason, in the stage the run served, and as a
+branch that needs the feature's person. A
 combined run of an owner fork goes to the person whose checkpoint triggered it. A stopped block run
 fails, so a land returns the feature to building.
 
@@ -1261,12 +1263,57 @@ with an Approve start control.
 
 | View | Shows |
 |---|---|
-| Team | Each person as a square with their features. Each feature carries its agents and a one-word state: building, planning, waiting on approvals, promoting or promoted. Only exceptions are highlighted |
+| Team | Each person as a square with their features. Each feature carries its agents and its stage strip with the current stage's name. Only exceptions are highlighted |
 | Approvals inbox | Overlapping starts, plan parts touching the person's code, protected-path confirmations and exceptions. Each item shows the facts behind it: the changed lines in the person's scope, the side-by-side differences and the review form |
-| Feature page | The declaration, the merge plan with each affected place and its state, the fixes written into other forks, the block's checks, the promotion and the record |
+| Feature page | The feature's merge as a timeline of stages with the work that reached other people and at most three summary lines, over four views: Changes (the contract change, each place the plan fixes, its files and their hunks), Pipeline (each stage with its jobs and what they ran), People (the features that read this one and the starts it waited on) and Record |
 | Identities | Creating and editing agent identities with their charters |
 
 Session transcripts stay on each person's machine. No dashboard page shows one.
+
+#### The merge as a pipeline in the build
+
+The ProjectAgent derives each feature's pipeline on every read of the team view and the feature page
+(`featurePipeline` in `packages/protocol/src/pipeline.ts`, called from
+`services/project-agent/src/dashboard-views.ts`). Nothing is stored for it. It reads the feature's
+signed records, its overlap locks, its plan's parts as the routing keeps them, the reviews, the fix
+writes, the `check` tool runs, the protected-path confirmations and the split. Every read is the
+ProjectAgent's own SQLite, so the team view derives every feature's strip without reading a plan from a
+feature's Durable Object.
+
+A feature takes the split path once Penguin split its contract change (a `contract_split` record or a
+split in the split store) or it asked for an expand promotion. Any other feature takes the plan path.
+
+| Path | Stage | Jobs |
+|---|---|---|
+| Both | Open | One per overlapping start: passed once approved, needing a person while open |
+| Split | Expand | One per expand promotion asked for: running, passed once promoted, failed once returned. Before the first request, one job waits for the expand checkpoint. Each owner's-scope lock the expand opened is a job too |
+| Split | Migrate | One per owner group of the plan's parts: passed once every part of the group is approved |
+| Split | Contract | The retiring symbols: running once Penguin approves the contract step (`contract_proposed`) or the last land asks for its run, waiting again when Penguin withdraws the step, passed once the symbols are removed (`symbols_removed`) or main moved |
+| Split | Done | Main's move, with each protected-path confirmation |
+| Plan | Plan | The facts run (running while the check runner holds it) and the newest plan (failed when returned over the break limit) |
+| Plan | Review | One per part: waiting with no review yet, running while the runner holds the review or the originating agent revises, needing a person once a review is in, passed once approved, failed past the round limit |
+| Plan | Fixes written | One per part whose fix goes into a running feature's fork: running while queued or granted, passed once written, failed when Penguin refused the pushed commit |
+| Plan | Block checks | A running job while the runner holds a `check` run, one job per check kind of the newest run with its target count and the findings its passing targets still name (the dependency diff's changed library and each place the target imports it), and the block run a `land` asked for |
+| Plan | Promoted | Each protected-path confirmation and main's move |
+
+A run the check runner stopped at the failure limit is a failed job of the stage it served: Plan for a
+facts run, Review for a review or a part trial, Fixes written for a fix write and Block checks for the
+rest; on a split, Expand for a facts run and Migrate for the rest. It hangs a branch that needs the
+feature's person.
+
+A stage takes the worst status of its jobs: failed, then needing a person, then running. It passes when
+every job passed. A stage with no job passes once the stage before it passed. A failed stage stops the
+stages after it: they wait, as GitLab's pipelines do ("If any job in a stage fails, the next stage" does
+not run; `docs/research/gitlab-pipelines.txt`). The current stage is the first that has not passed. A
+feature whose block reached main has passed every stage.
+
+A branch is the feature's work reaching another person or their agent: an overlapping start waiting on
+them, a part sent to them, a fix written into their fork, a migration group of theirs or a confirmation
+of their protected path. Its label is one of sent, reviewing, fix written, approved or needs a person.
+It names the reviewing agent once a review is in. A branch settles once approved, written or confirmed.
+
+Each checkpoint an agent reported shows in the current stage with the newest `check` run on that
+checkpoint.
 
 ### MCP for agent sessions
 

@@ -24,7 +24,7 @@ test("a feature's state takes a neutral tag and only the attention edge marks an
   assert.equal(exceptionText({ kind: "protected_difference", scope: "analytics", invariant: "tablet", differing: 2 }), "2 inputs differ on protected tablet");
   assert.equal(
     exceptionText({ kind: "run_failed", run: "block", runId: "money/4", failures: 3, reason: "commit 0e252bbf is not in the fetched repos" }),
-    "The check runner stopped the block run after 3 failures: commit 0e252bbf is not in the fetched repos",
+    "Block run stopped after 3 failures",
   );
   assert.equal(recordLabel("approve_plan_part"), "Part approved");
   assert.equal(recordLabel("some_later_type"), "some_later_type");
@@ -132,7 +132,7 @@ test("markup and long strings in a team's people, scopes, features and agents re
       {
         id: "<s>rahul</s>",
         role: { scopes: [scope], dependents: [scope], dependencies: [] },
-        features: [{ id: UNBROKEN, person: "rahul", state: "planning", exceptions: [{ kind: "broken_invariant", scope: "tax", invariant: MARKUP }], agents: [agent], openedAt: "2026-10-11T09:00:00.000Z" }],
+        features: [{ id: UNBROKEN, person: "rahul", state: "planning", strip: { path: "plan", current: 1, stages: [{ key: "open", status: "passed", passed: 0, jobs: 0 }, { key: "plan", status: "person", passed: 0, jobs: 1 }] }, exceptions: [{ kind: "broken_invariant", scope: "tax", invariant: MARKUP }], agents: [agent], openedAt: "2026-10-11T09:00:00.000Z" }],
         idleAgents: [agent],
       },
     ],
@@ -150,12 +150,16 @@ test("markup and long strings in a team's people, scopes, features and agents re
 });
 
 test("markup in a feature page's declaration, plan, review, checks, tools and record renders as text", async () => {
-  const { render } = await load<{ render: (page: unknown) => string }>(`
+  const { render, renderClosed } = await load<{ render: (page: unknown) => string; renderClosed: (page: unknown) => string }>(`
     import { renderToStaticMarkup } from "react-dom/server";
     import { createElement } from "react";
     import { FeatureView } from "./src/feature-page.tsx";
+    const open = ["change-contract", "part-1-facts", "area", "stage-open", "stage-plan", "stage-review", "stage-fixes", "stage-checks", "stage-promoted", "stage-plan-tools", "stage-checks-tools", "reviews", "checks"];
     export function render(page) {
-      return renderToStaticMarkup(createElement(FeatureView, { page, navigate() {} }));
+      return ["changes", "pipeline", "people", "record"].map((view) => renderToStaticMarkup(createElement(FeatureView, { page, viewer: "rahul", navigate() {}, open, view }))).join("");
+    }
+    export function renderClosed(page) {
+      return renderToStaticMarkup(createElement(FeatureView, { page, viewer: "ines", navigate() {} }));
     }`);
   const check = {
     planId: null,
@@ -188,6 +192,24 @@ test("markup in a feature page's declaration, plan, review, checks, tools and re
   const page = {
     feature: { id: "money", person: "<b>ines</b>", repo: "feature-money", state: "waiting on approvals", openedAt: "2026-10-11T09:00:00.000Z", latestCheckpoint: "a".repeat(40), area: { scopes: [{ id: "money", name: MARKUP, ownerId: "ines" }], paths: [UNBROKEN], contracts: [SCRIPT] } },
     agents: [{ handle: "@ines/money", identityId: null, person: "ines", online: true }],
+    pipeline: {
+      path: "plan",
+      current: 2,
+      stages: [
+        { key: "open", status: "passed", jobs: [] },
+        { key: "plan", status: "passed", jobs: [] },
+        {
+          key: "review",
+          status: "person",
+          jobs: [{ key: "part:money/v1#1", status: "person", fact: { kind: "part", partId: "money/v1#1", place: { kind: "scope", scope: MARKUP }, owner: "rahul", state: "pending", approvedBy: null, review: "refused", reviewer: `@rahul/${SCRIPT}` } }],
+        },
+        { key: "fixes", status: "waiting", jobs: [] },
+        { key: "checks", status: "failed", jobs: [{ key: "check:tests", status: "failed", fact: { kind: "check", check: SCRIPT, targets: 1, failed: 1, failing: [MARKUP], findings: [{ target: "main", path: UNBROKEN, message: SCRIPT }] } }] },
+        { key: "promoted", status: "waiting", jobs: [] },
+      ],
+      branches: [{ key: "part:money/v1#1", stage: "review", person: "<b>rahul</b>", agent: `@rahul/${SCRIPT}`, label: "needs a person", partId: "money/v1#1", settled: false }],
+      activity: [{ agent: `@ines/${SCRIPT}`, checkpoint: "a".repeat(40), at: "2026-10-11T09:00:00.000Z", checks: { total: 2, failed: 1 } }],
+    },
     waitingOn: [{ feature: "rounding", person: "<i>hugo</i>", state: "open", approvedBy: null, overlap: { scopes: [], paths: [], contracts: [] } }],
     dependents: [{ feature: "tax-exempt", person: "rahul", consumerScope: MARKUP, providerScope: "money" }],
     plan: {
@@ -219,28 +241,39 @@ test("markup in a feature page's declaration, plan, review, checks, tools and re
           breaks: [{ target: "main", statement: MARKUP, nodeId: UNBROKEN, assertion: SCRIPT, error: MARKUP }],
           invariants: [{ scopeId: "tax", id: "tax-per-line", statement: MARKUP, protected: true }],
           note: null,
-          files: null,
+          files: [{ path: UNBROKEN, scope: "tax", status: "modified", hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: [`-${MARKUP}`, `+${SCRIPT}`] }], omitted: null }],
         },
       ],
     },
     reviews: [REVIEW],
-    fixes: [{ partId: "money/v1#2", feature: "<b>tax-exempt</b>", person: "rahul", state: "approved", revision: 1, write: { state: "written", writer: "agent", commit: "c".repeat(40), rebased: false } }],
+    fixes: [{ partId: "money/v1#1", feature: "<b>tax-exempt</b>", person: "rahul", state: "approved", revision: 1, write: { state: "written", writer: "agent", commit: "c".repeat(40), rebased: false } }],
     checks: run,
     tools: [run],
     records: [{ recordId: "r1", type: MARKUP, author: SCRIPT, createdAt: "2026-10-11T09:00:00.000Z", path: UNBROKEN }],
   };
+  // The feature's person has no part to decide: every fold stays closed, and no closed body renders.
+  const closed = renderClosed(page);
+  assert.doesNotMatch(closed, /<details[^>]* open=""/);
+  assert.doesNotMatch(closed, /class="diff-table"|class="record-list"|class="tool-runs"/);
   const html = render(page);
-  for (const text of ["&lt;script&gt;globalThis.pwned = 2&lt;/script&gt;", "&lt;b&gt;ines&lt;/b&gt;", "&lt;i&gt;hugo&lt;/i&gt;", "&lt;b&gt;tax-exempt&lt;/b&gt;", UNBROKEN]) {
+  for (const text of ["&lt;script&gt;globalThis.pwned = 2&lt;/script&gt;", "&lt;b&gt;ines&lt;/b&gt;", "&lt;i&gt;hugo&lt;/i&gt;", "&lt;b&gt;rahul&lt;/b&gt;", UNBROKEN]) {
     assert.ok(html.includes(text), text);
   }
   // A fix written into another fork names its writer and the commit.
-  assert.match(html, /written<\/span><span class="muted">by the originating agent<\/span><code>cccccccccccc<\/code>/);
+  assert.match(html, /Written<\/span><span class="muted">by the originating agent<\/span><code>cccccccccccc<\/code>/);
+  // The part waiting on the viewer opens with its file: both sides' line numbers and the marked lines.
+  assert.match(html, /<td class="diff-number">1<\/td><td class="diff-number"><\/td><td class="diff-text"><span class="diff-mark" aria-label="removed">-<\/span>&lt;img/);
+  // The timeline marks the current stage and hangs the branch to the part's owner from it.
+  assert.match(html, /<li class="stage" data-status="person" data-current="true" data-branches="true" aria-current="step">/);
+  assert.match(html, /needs a person<\/span><a class="branch-diff" href="#part-1">#1 &lt;img/);
+  // A check job lists what its passing targets still name, such as the dependency diff's changed library.
+  assert.match(html, /<ul class="plain-list job-more job-findings" aria-label="Findings"><li><span class="target-name">main<\/span> <code>x{400}<\/code> &lt;script&gt;/);
   // Each tool shows by name beside what it reported.
   assert.match(html, /class="tool-name">analysis:python-impact</);
   assert.match(html, /class="tool-name">side-by-side</);
   assert.match(html, /class="tool-name">test</);
   // Each part's facts and lines stay closed behind a line counting them until the reader opens it.
-  assert.match(html, /1 break, 1 invariant, 0 uses<\/summary>/);
+  assert.match(html, /1 break 1 invariant 0 uses<\/span><\/summary>/);
   // No page prints a session transcript; the feature page has no field for one.
   assert.doesNotMatch(html, /transcript/i);
   assert.doesNotMatch(html, LEAKS);

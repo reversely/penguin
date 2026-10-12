@@ -62,11 +62,14 @@ Each square holds:
   other people's scopes that depend on theirs and Reads lists the scopes theirs depend on. Each scope
   another person owns carries that person's id. A row with no scope is left out, except Owns, which
   says None;
-- each of the person's features, newest first, linking to its page, with its one-word state and the
-  agents whose sessions joined it;
+- each of the person's features, newest first, linking to its page, with its stage strip and the
+  agents whose sessions joined it. The strip is a dot per stage of the feature's pipeline
+  ([design.md](design.md#the-merge-as-a-pipeline-in-the-build)), the current one ringed, then the
+  current stage's name, such as `Review needs a person`;
 - the person's agents on no feature.
 
-A feature's state comes from facts Penguin holds, the latest step first:
+Each feature in `GET /api/team` also carries a one-word state, which comes from facts Penguin holds,
+the latest step first:
 
 | State | When |
 |---|---|
@@ -76,12 +79,12 @@ A feature's state comes from facts Penguin holds, the latest step first:
 | building | Anything else |
 | promoted | Main moved to the feature's checkpoint; its fork is read-only |
 
-States take a neutral tag. Only exceptions are highlighted: a feature carries each exception PRD
+Only exceptions are highlighted: a feature carries each exception PRD
 section 7 routes to a person as a line in the attention colour, with an attention edge on its row.
 The exceptions are a part past the round limit, a plan returned over the break limit, a broken
 invariant or a protected difference in the newest review of each scope. A run the check runner
-stopped at the failure limit is the last kind. Its line reads "The check runner stopped the block run after 3
-failures:" followed by the last reason.
+stopped at the failure limit is the last kind. Its line reads "Block run stopped after 3 failures"; the
+feature page shows the last reason on the run's failed job.
 
 ### Person view
 
@@ -91,19 +94,33 @@ Assigned, Review, Reply or Session to start.
 
 ## Feature page
 
-`/features/<id>` shows one feature (`feature-page.tsx`, read from `GET /api/features/<id>/page`):
+`/features/<id>` shows one feature, the unit of work (`feature-page.tsx`, read from one request,
+`GET /api/features/<id>/page`). It has three levels.
 
-| Section | Content |
+**Header.** It stays at the top of every view:
+
+| Part | Content |
 |---|---|
-| Header | The feature id, its state, its person, its fork and its latest checkpoint |
-| Declaration | Its scopes, contracts and paths; whose approval its start waits for or got; the running features that read what it changes |
-| Agents | The agents whose sessions joined it |
-| Merge plan | The change in plain words; each fact with the tool or read that produced it; the contract diff; the callers on main; each affected place as a part with its owner, kind, state and rounds. An approved part names its approver: Approved by Penguin, or Approved by the person who approved it. A part's breaks, invariants and changed lines open from a line that counts them |
-| Reviews | Each review form with the check runner's verdict and side-by-side run |
-| Fixes in other forks | Each part whose fix goes into a running feature's fork, with its approval state and its write: queued for the check runner, granted to the originating agent, or written with its commit ([design.md](design.md#steps-1-and-3-in-the-build)) |
-| Block checks | The newest `check` run's results grouped by the tool that ran them, with its version and command ID: the failing targets with their findings, each passing target whose check names findings (the dependency diff's changed library and the places the target imports it), a count of the rest and one next step per failing check |
-| Tool runs | Every agent tool call on the feature, newest first: the tool, its caller, its result and what it reported, such as the impact graph's changed symbols and the forks that use them |
-| Record | Each signed record with its type, author, time and path in the record repo. An expand checkpoint promoted on its own shows as its own `Expand promoted` record after its `Expand requested` record. The contract step shows as `Contract step approved` when Penguin approves removing a retiring symbol with no caller left, `Contract step withdrawn` when a caller comes back and `Symbols removed` once the block that removes it reaches main |
+| Breadcrumb | Team, the feature's person, the feature |
+| Title | The feature's name, its person as a pill in the person's hue and its scopes as pills in their owners' hues |
+| Timeline bar | One node per stage of the feature's pipeline ([design.md](design.md#the-merge-as-a-pipeline-in-the-build)): split features run Open, Expand, Migrate, Contract and Done; the rest run Open, Plan, Review, Fixes written, Block checks and Promoted. Each node shows its status as a dot and its count of passed jobs, such as `2 of 4`, with Needs a person or Failed when a job is. The current stage is ringed. A node opens its stage in the Pipeline view |
+| Branches | Each piece of work that reached another person and has not settled hangs from its stage as one line: the reviewing agent, or the person before an agent took it; one label (sent, reviewing, fix written, approved or needs a person); and the part's number and place, which opens its diff. Opening the line shows the job's fact. A settled branch has rejoined the bar as the person's avatar under its stage. Six branches show before a button counts the rest |
+| Summary | At most three lines: the contract change with its counts of changes, breaking signatures and incompatible entries; how many features and people the feature reaches; the first place needing a person, else the first failed job. Each line opens what it sums up |
+
+**Views.** Four tabs, each with its own anchor, so a link can open one: `#changes`, `#pipeline`,
+`#people` and `#record`. An anchor naming a part, a file or a stage (`#part-3`, `#part-3-file-1`,
+`#stage-review`) opens its view and every fold that holds it.
+
+| View | Content |
+|---|---|
+| Changes | The contract change first: each signature and stored data shape before and after as a diff, the retiring symbols with their replacements, the incompatible and behaviour entries Penguin sorted, and the callers on main. Then each place the plan fixes: its number and place, owner, state (an approved part names its approver: Approved by Penguin, or the person) and file count; its kind, revision and rounds; a fix written into another fork with its writer and commit; the latest requested change; each file as a unified diff with both sides' line numbers, cut at 80 lines with a button for the rest; and its breaks, invariants and uses behind a line that counts them. Last, the declared area: contracts, paths and latest checkpoint |
+| Pipeline | Each stage with its status and count, then its jobs: each job's status, label and one fact, with a link to its diff or its results. A failed or person-needed job shows its failing targets or its reviewing agent. A check job lists the findings its passing targets still name, such as the dependency diff's changed library and each place the target imports it. A run the check runner stopped at the failure limit is a failed job with its last reason. The current stage lists each checkpoint the feature's agents reported with the checks run on it. What a stage's jobs ran sits under it: the plan's facts with the tool or read behind each under Plan, the review forms with their side-by-side runs under Review, the newest `check` run's results by tool under Block checks (the failing targets with their findings, each passing target whose check names findings, a count of the rest and one next step per failing check), and each agent tool call under the stage it served |
+| People | Read by: one row per running feature that reads what this feature changes, the one whose part needs a person first, then by stage. Its columns are the feature, its person as a pill, the reading scope and the scope it reads as pills in their owners' hues, the reader's current stage and this plan's part for it, which opens the part's diff. Start: one row per running feature whose person approves this feature's start, with its person, the lock (waiting or approved) and who approved it. Agents: the agents whose sessions joined the feature. Each table scrolls inside itself on a phone |
+| Record | Each signed record with its type, author, time and path in the record repo, filtered by kind. An expand checkpoint promoted on its own shows as its own `Expand promoted` record after its `Expand requested` record. The contract step shows as `Contract step approved` when Penguin approves removing a retiring symbol with no caller left, `Contract step withdrawn` when a caller comes back and `Symbols removed` once the block that removes it reaches main |
+
+**Rows.** Every fold starts closed except what needs the viewer: a part the viewer decides that
+waits on them, with its files when it has two or fewer, and, for the feature's person, each stage
+that needs a person or failed. A fold's body renders only while it is open.
 
 Each deterministic tool shows by name beside its output, as [demo-story.md](demo-story.md#tools-on-screen)
 asks. A part's changed lines go only to the feature's person, the part's owner and that owner's
@@ -271,7 +288,8 @@ decision, a fix write or a review. Those writes are a feature's opening, area an
 overlap approval; a plan proposal and its facts run; a part's approval, change request and revision;
 a fix write; a review's submission and the runner's record of it; a land request, a landing and a
 failed land run. Every open team view then shows the new state, including the views of people the
-change does not concern. The ProjectAgent's live feed sends one
+change does not concern. A feature page's timeline, jobs and branches come from the same answer it
+reads again, so they move with no reload and no request per job. The ProjectAgent's live feed sends one
 such message per task, however many writes the task made (`services/project-agent/src/live-feed.ts`).
 
 The dashboard opens a WebSocket at `/api/live` (`use-live.ts`). The Worker accepts it only with a

@@ -14,9 +14,14 @@
 // agent's session transcript; Penguin holds none.
 
 import {
+  featurePipeline,
+  pipelineStrip,
   PLAN_ROUND_LIMIT_DEFAULT,
+  type ContractSplitView,
   type ContractWorkView,
   type DashboardAgent,
+  type FeaturePipeline,
+  type PipelineFacts,
   type DashboardScope,
   type EditTaskView,
   type StewardView,
@@ -38,7 +43,7 @@ import type { Feature, FeatureRecord, FeatureStore } from "./feature-store.ts";
 import type { FixGrant } from "./fix-write.ts";
 import type { Identity } from "./identity-store.ts";
 import { RUNNING_STATES, type OverlapStore } from "./overlap-lock.ts";
-import { breakView, newestReviews, partFiles, returnedPayload, type PartRoute, type PlanRouteStore } from "./plan-approval.ts";
+import { breakView, newestReviews, returnedPayload, type PartRoute, type PlanRouteStore } from "./plan-approval.ts";
 import type { ReviewStore, StoredReview } from "./review-submit.ts";
 import { reviewView } from "./review-view.ts";
 import type { RunFailure } from "./run-failures.ts";
@@ -70,6 +75,56 @@ export interface DashboardViewDeps {
   readonly editTasks?: (featureId: string) => readonly EditTaskView[];
   /** A person's steward with their queue (edit-work.ts); absent, the team view shows none. */
   readonly steward?: (person: string) => StewardView | null;
+  /** The protected-path confirmations the feature's own change waits on or got (ProtectedChangeStore.ofFeature). */
+  readonly protectedChanges?: (featureId: string) => readonly { readonly ownerId: string; readonly state: "pending" | "confirmed" }[];
+  /** The feature's split, when Penguin split its contract change (ContractSplitStore.get). */
+  readonly split?: (featureId: string) => ContractSplitView | undefined;
+}
+
+/**
+ * What the feature's pipeline is derived from (featurePipeline in @penguin/protocol): its records,
+ * locks, routed parts, reviews, fix writes, check runs and protected-path confirmations. Every read is
+ * the ProjectAgent's own SQLite; no plan is read from the feature's Durable Object, so the team view
+ * derives every feature's strip in one pass.
+ */
+function pipelineFacts(deps: DashboardViewDeps, feature: Feature, records: readonly FeatureRecord[], parts: readonly PartRoute[]): PipelineFacts {
+  const lock = (each: ReturnType<OverlapStore["locksOn"]>[number]) => ({ feature: each.featureId, person: each.personId, state: each.state, approvedBy: each.approvedBy });
+  const writes = new Map<string, "queued" | "granted" | "written" | "withdrawn">();
+  for (const part of parts) {
+    const write = part.place.kind === "feature" ? deps.fixWrite(part.partId, part.revision) : undefined;
+    if (write !== undefined) writes.set(part.partId, write.state);
+  }
+  const checkRuns = deps.tools.list(feature.id).filter((run) => run.tool === "check");
+  const reported = checkRuns.filter((run) => run.outcome !== null);
+  const newest = reported.at(-1);
+  const waiting = checkRuns.at(-1)?.result === "waiting";
+  return {
+    person: feature.personId,
+    state: feature.state,
+    records: records.map((record) => ({ type: record.type, author: authorLabel(record), at: record.created_at, payload: record.payload })),
+    factsRun: feature.latestCheckpointSha === null ? undefined : deps.factsRun(feature.id, feature.latestCheckpointSha),
+    locks: deps.overlaps.locksOn(feature.id).map(lock),
+    expandLocks: deps.overlaps.ownerLocksOn(feature.id).map(lock),
+    parts: parts.map(({ partId, ownerId, place, scopes, revision, state }) => ({ partId, owner: ownerId, place, scopes, revision, state })),
+    reviews: deps.reviews.list(feature.id).map((review) => ({ reviewId: review.id, scope: review.scopeId, reviewer: review.reviewer, state: review.state })),
+    writes,
+    checks: newest === undefined && !waiting ? null : { checks: newest?.outcome?.checks ?? [], waiting, checkpoint: newest?.checkpointSha ?? null },
+    checkRuns: reported.map((run) => ({ checkpoint: run.checkpointSha, checks: run.outcome?.checks ?? [] })),
+    protectedChanges: (deps.protectedChanges?.(feature.id) ?? []).map((change) => ({ owner: change.ownerId, state: change.state })),
+    stopped: (deps.stoppedRuns?.(feature.id) ?? []).map(({ kind, runId, failures, reason }) => ({ run: kind, runId, failures, reason })),
+    split: splitFact(deps.split?.(feature.id)),
+  };
+}
+
+/** The split as the pipeline reads it: whether the expand step reached main and what retires. */
+function splitFact(split: ContractSplitView | undefined): PipelineFacts["split"] {
+  if (split === undefined) return null;
+  return { state: split.state, entries: split.entries.length, promotion: split.promotion, retiring: split.retiring.length };
+}
+
+/** One feature's pipeline from the ProjectAgent's own state. */
+function pipelineOf(deps: DashboardViewDeps, feature: Feature, records: readonly FeatureRecord[], parts: readonly PartRoute[]): FeaturePipeline {
+  return featurePipeline(pipelineFacts(deps, feature, records, parts));
 }
 
 /** What a feature's state is read from. */
@@ -188,6 +243,7 @@ export async function buildTeamView(deps: DashboardViewDeps, viewer: string): Pr
         factsRun: feature.latestCheckpointSha === null ? undefined : deps.factsRun(feature.id, feature.latestCheckpointSha),
         lastPlanRecord: records.filter((record) => record.type === "propose_plan" || record.type === "plan_returned").at(-1)?.type,
       }),
+      strip: pipelineStrip(pipelineOf(deps, feature, records, parts)),
       exceptions: featureExceptions(parts, deps.reviews.list(feature.id), records, deps.stoppedRuns?.(feature.id)),
       agents,
       openedAt: feature.openedAt,
@@ -311,7 +367,9 @@ function planView(plan: Plan, viewer: string, delegates: ReadonlyMap<string, str
       breaks: part.breaks.map(breakView),
       invariants: part.invariants,
       note: part.note,
-      files: mayReadPartLines(plan, part.owner, viewer, delegates) ? partFiles(part) : null,
+      files: mayReadPartLines(plan, part.owner, viewer, delegates)
+        ? part.diff.files.map(({ path, scopeId, status, hunks, omitted }) => ({ path, scope: scopeId, status, hunks, omitted }))
+        : null,
     })),
   };
 }
@@ -356,6 +414,7 @@ export async function buildFeaturePage(deps: DashboardViewDeps, featureId: strin
       area: { scopes: feature.area.scopes.map(scope), paths: feature.area.paths, contracts: feature.area.contracts },
     },
     agents: featureAgents(deps, featureId, byHandle, feature.personId),
+    pipeline: pipelineOf(deps, feature, records, parts),
     waitingOn: locks.map((lock) => ({
       feature: lock.featureId,
       person: lock.personId,

@@ -12,8 +12,8 @@ import type { BlockCheck } from "./block-check.ts";
 import type { ContractWorkView } from "./contract-sort.ts";
 import type { EditAskReason, EditQueue, EditRouteVia, EditTaskKind, EditTaskState } from "./edit-task.ts";
 import type { ImpactUse } from "./impact.ts";
-import type { Plan, PlanFactSource, PlanFileDiff, PlanInvariantFact, PlanPart, PlanPartKind, PlanPartState, PlanPlace } from "./plan.ts";
-import type { PlanPartFile } from "./plan-approval.ts";
+import type { FeaturePipeline, PipelineStrip } from "./pipeline.ts";
+import type { Plan, PlanFactSource, PlanFileDiff, PlanHunk, PlanInvariantFact, PlanPart, PlanPartKind, PlanPartState, PlanPlace } from "./plan.ts";
 import type { RunKind } from "./run-failure.ts";
 import { REVIEW_REFUSAL_CODES, REVIEW_VERDICTS, type ReviewException, type ReviewRefusalCode, type ReviewVerdict } from "./review.ts";
 import { checkSchema, type JsonSchema, type SchemaError } from "./schema-check.ts";
@@ -68,6 +68,8 @@ export interface TeamFeature {
   readonly id: string;
   readonly person: string;
   readonly state: FeatureStateWord;
+  /** The feature's stage strip (pipeline.ts). */
+  readonly strip: PipelineStrip;
   readonly exceptions: readonly FeatureException[];
   /** The agents whose sessions joined the feature. */
   readonly agents: readonly DashboardAgent[];
@@ -269,10 +271,20 @@ export interface PlanPartView {
   readonly invariants: readonly PlanInvariantFact[];
   readonly note: string | null;
   /**
-   * The fix's changed lines, shown to the feature's person, the part's owner and that owner's
-   * delegate; null for anyone else, who sees the part's place, state and facts only.
+   * The fix's changed files with their hunks, shown to the feature's person, the part's owner and
+   * that owner's delegate; null for anyone else, who sees the part's place, state and facts only.
    */
-  readonly files: readonly PlanPartFile[] | null;
+  readonly files: readonly PartFileView[] | null;
+}
+
+/** One file of a part's fix as the feature page shows it: its scope and its unified diff hunks. */
+export interface PartFileView {
+  readonly path: string;
+  readonly scope: string | null;
+  readonly status: "added" | "deleted" | "modified";
+  readonly hunks: readonly PlanHunk[];
+  /** Why no hunks are shown: a binary file or one over the size cap; null when they are. */
+  readonly omitted: "binary" | "too_large" | null;
 }
 
 export interface FeaturePlanView {
@@ -387,6 +399,8 @@ export interface FeaturePage {
     readonly area: { readonly scopes: readonly DashboardScope[]; readonly paths: readonly string[]; readonly contracts: readonly string[] };
   };
   readonly agents: readonly DashboardAgent[];
+  /** The merge as stages with their jobs, the branches to other people and the agents' checkpoints. */
+  readonly pipeline: FeaturePipeline;
   /** The running features whose person approves this feature's start. */
   readonly waitingOn: readonly FeatureLockView[];
   /** Running features that read what this feature changes. */

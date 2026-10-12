@@ -17,13 +17,14 @@ import { Agent, AgentDirectory } from "./agent-directory.tsx";
 import { fetchBoard, fetchIdentities, fetchTeam } from "./api.ts";
 import { PersonAvatar, PersonHuesProvider, usePersonHue } from "./avatar.tsx";
 import { assignPersonHues } from "./character.ts";
-import { exceptionText, stateClass } from "./feature-view.ts";
+import { exceptionText } from "./feature-view.ts";
 import { Icon } from "./icon.tsx";
 import { useRead, type Read } from "./inbox-page.tsx";
 import { STATE_LABEL } from "./issue-view.ts";
 import { linkHandler } from "./links.ts";
 import { useArrivals } from "./motion.tsx";
 import { featurePath, personPath } from "./routes.ts";
+import { StageStrip } from "./timeline.tsx";
 import { INVOLVEMENT_LABEL, personIssues, teamPeople, type PersonIssue } from "./team-view.ts";
 import type { Live } from "./use-live.ts";
 
@@ -185,7 +186,7 @@ function FeatureRow({ feature, arrival, navigate }: { readonly feature: TeamFeat
         <a className="feature-row-link" href={path} onClick={linkHandler(navigate, path)}>
           {feature.id}
         </a>
-        <span className={stateClass(feature.state)}>{feature.state}</span>
+        <StageStrip strip={feature.strip} />
       </span>
       {feature.exceptions.length === 0 ? null : (
         <ul className="feature-exceptions" aria-label="Exceptions">

@@ -733,6 +733,8 @@ export class PreviewProject {
       // The preview's runner writes no fix into a fork, so no part has a write.
       fixWrite: () => undefined,
       contract: (feature) => contractWork(this.splitDeps(), feature, this.scopeMap),
+      protectedChanges: (featureId) => this.protectedChanges.ofFeature(featureId),
+      split: (featureId) => this.splits.get(featureId),
     };
   }
 

@@ -48,15 +48,15 @@ export function partStateText(state: PlanPartState, approvedBy: string | null): 
   return `Approved by ${approvedBy === PENGUIN_APPROVER ? PENGUIN_NAME : approvedBy}`;
 }
 
-/** A run the check runner claims, as the exception line names it. */
-const RUN_KIND_LABEL: Readonly<Record<Extract<FeatureException, { kind: "run_failed" }>["run"], string>> = {
-  combined: "combined run",
-  review: "review",
-  tool: "tool request",
-  "plan-facts": "plan facts run",
-  "fix-write": "fix write",
-  block: "block run",
-  "part-trial": "part trial",
+/** A run the check runner claims, as its job and its exception line name it. */
+export const RUN_KIND_LABEL: Readonly<Record<Extract<FeatureException, { kind: "run_failed" }>["run"], string>> = {
+  combined: "Combined run",
+  review: "Review run",
+  tool: "Tool request",
+  "plan-facts": "Facts run",
+  "fix-write": "Fix write",
+  block: "Block run",
+  "part-trial": "Part trial",
 };
 
 /** An exception PRD section 7 routes to a person, as one highlighted line on its feature. */
@@ -71,7 +71,7 @@ export function exceptionText(exception: FeatureException): string {
     case "protected_difference":
       return `${exception.differing} inputs differ on protected ${exception.invariant}`;
     case "run_failed":
-      return `The check runner stopped the ${RUN_KIND_LABEL[exception.run]} after ${counted(exception.failures, "failure")}: ${exception.reason}`;
+      return `${RUN_KIND_LABEL[exception.run]} stopped after ${counted(exception.failures, "failure")}`;
   }
 }
 

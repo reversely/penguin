@@ -50,3 +50,4 @@ export * from "./resolution.ts";
 export * from "./tool-result.ts";
 export * from "./block.ts";
 export * from "./run-failure.ts";
+export * from "./pipeline.ts";
