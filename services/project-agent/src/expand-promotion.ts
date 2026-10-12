@@ -28,7 +28,7 @@ import { ownerLockId, PLAN_MAIN_TARGET, placeLabel, withoutWatched, type Author,
 import type { ScopeMap } from "@penguin/scope-map";
 
 import { ancestorsFound, blockTargets, mainState, protectedRefusal, targetFields, type LandDeps, type LandOutcome, type LandRejection, type LandRejectReason } from "./block-land.ts";
-import { parseFeatureId, type Feature } from "./feature-store.ts";
+import { parseFeatureId, readOnlyReason, type Feature } from "./feature-store.ts";
 import type { SqlDatabase } from "./issue-index.ts";
 import { OVERLAP_LIMITS, type FeatureDependent, type OverlapListener, type OverlapStore } from "./overlap-lock.ts";
 import { factsRequest, type PlanFactsStore } from "./plan-facts.ts";
@@ -153,7 +153,8 @@ async function waitOnOwners(deps: ExpandDeps, feature: Feature, impact: ImpactRe
 
 /** The facts an expand needs, or why the checkpoint may not be promoted on its own yet. */
 async function prepareExpand(deps: ExpandDeps, feature: Feature, checkpoint: unknown): Promise<PreparedExpand | LandRejection> {
-  if (feature.state === "landed") return rejected("conflict", `feature ${feature.id} has landed; its fork is read-only`);
+  const readOnly = readOnlyReason(feature);
+  if (readOnly !== undefined) return rejected("conflict", readOnly);
   if (feature.state === "landing") return rejected("busy", `feature ${feature.id} is landing; an expand waits until it builds again`);
   if (feature.repo === null) return rejected("not_found", `feature ${feature.id} has no fork yet`);
   const latest = feature.latestCheckpointSha;

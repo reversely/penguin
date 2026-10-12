@@ -3523,7 +3523,9 @@ label.button:has(input:focus-visible) {
   white-space: nowrap;
 }
 
-.feature-state-promoted {
+/* Settled: main took the feature, or Penguin closed a block with nothing to carry. */
+.feature-state-promoted,
+.feature-state-closed {
   background: transparent;
   box-shadow: inset 0 0 0 1px var(--line);
   color: var(--ink-muted);

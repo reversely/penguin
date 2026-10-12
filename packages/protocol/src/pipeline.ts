@@ -164,7 +164,8 @@ export interface PipelineRecord {
 /** What the pipeline is derived from: facts the ProjectAgent holds, none of them stored for it. */
 export interface PipelineFacts {
   readonly person: string;
-  readonly state: "opening" | "building" | "landing" | "landed";
+  /** `closed`: a block feature Penguin opened that was left with no part; nothing landed. */
+  readonly state: "opening" | "building" | "landing" | "landed" | "closed";
   /** The feature's signed records, oldest first. */
   readonly records: readonly PipelineRecord[];
   /** The plan facts run of the latest checkpoint, or undefined for none. */
@@ -569,8 +570,9 @@ export function featurePipeline(facts: PipelineFacts): FeaturePipeline {
     const final = stages.at(-1) as PipelineStage;
     if (final.jobs.length === 0) stages[stages.length - 1] = { ...final, status: "waiting" };
   }
-  // Main moved to the feature's checkpoint: every stage is behind it, whatever its own jobs recorded.
-  if (facts.state === "landed") stages = stages.map((stage) => ({ ...stage, status: "passed" }));
+  // Main moved to the feature's checkpoint, or Penguin closed a block left with nothing to carry:
+  // every stage is settled, whatever its own jobs recorded.
+  if (facts.state === "landed" || facts.state === "closed") stages = stages.map((stage) => ({ ...stage, status: "passed" }));
   const index = stages.findIndex((stage) => stage.status !== "passed");
   return { path, current: index === -1 ? stages.length - 1 : index, stages, branches: branches(facts, stages, path), activity: activity(facts) };
 }

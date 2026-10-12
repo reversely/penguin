@@ -63,7 +63,7 @@ import {
   type FeatureOutcome,
   type TokenGrant,
 } from "./feature-open.ts";
-import { FeatureStore, signFeatureRecord, type Feature } from "./feature-store.ts";
+import { FeatureStore, readOnlyReason, signFeatureRecord, type Feature } from "./feature-store.ts";
 import {
   approveOverlap,
   checkOverlap,
@@ -2321,6 +2321,16 @@ export class ProjectAgent extends Agent {
       checkOverlap: (feature) => this.#lockStep(() => checkOverlap(this.#overlapDeps(repos), this.#featureStore().get(feature.id) ?? feature)),
       adminMode: this.#adminMode(),
       fork: (featureId) => this.#forkFromMain(repos, featureId),
+      // A closed block asks no one to approve its start, leaves the promotion queue and frees each start it held.
+      released: async (featureId) => {
+        this.#overlapStore().withdrawAll(featureId);
+        this.#blockQueueStore().remove(featureId);
+        for (const blocked of this.#overlapStore().heldBy(featureId)) {
+          const feature = this.#featureStore().get(blocked);
+          if (feature !== undefined) await this.#lockStep(() => checkOverlap(this.#overlapDeps(repos), feature));
+        }
+        this.#liveFeed().featuresChanged();
+      },
       notify: (person) => sendToOwner(this.getConnections<{ owner?: string }>(), person, inboxChangedMessage()),
     };
   }
@@ -2501,7 +2511,7 @@ export class ProjectAgent extends Agent {
         landed: (featureId) => this.#featureStore().get(featureId)?.state === "landed",
         trial: (featureId, part) => trialStanding(this.#partTrialStore(), this.#reviewStore(), featureId, part),
         records: (featureId) => this.#featureStore().records(featureId),
-        ownFeatures: (person) => this.#featureStore().list().filter((feature) => feature.personId === person && feature.state !== "landed").map((feature) => feature.id),
+        ownFeatures: (person) => this.#featureStore().list().filter((feature) => feature.personId === person && readOnlyReason(feature) === undefined).map((feature) => feature.id),
         protectedChanges: (owners, items, delegates, scopeMap) =>
           protectedChangeRequests(this.#protectedChangeStore(), this.#featureStore(), items, owners, caller, delegates, scopeMap),
       },

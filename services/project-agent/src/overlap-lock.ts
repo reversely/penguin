@@ -413,6 +413,20 @@ export class OverlapStore {
     return lock(row);
   }
 
+  /**
+   * Withdraws every open lock on `blockedFeatureId`, a feature that will not start (a block Penguin
+   * closed with nothing to carry), so no person is asked to approve it. Answers the features whose
+   * locks were withdrawn.
+   */
+  withdrawAll(blockedFeatureId: string): string[] {
+    const now = this.#now();
+    const removed = this.#db
+      .exec(`DELETE FROM OverlapLock WHERE blocked_feature_id = ? AND state = 'open' RETURNING feature_id`, blockedFeatureId)
+      .map((row) => row["feature_id"] as string);
+    for (const featureId of removed) this.#settle(featureId, blockedFeatureId, "withdrawn", now);
+    return removed;
+  }
+
   #settle(featureId: string, blockedFeatureId: string, outcome: SettledLock["outcome"], at: number): void {
     this.#db.exec(
       `INSERT INTO OverlapSettled (feature_id, blocked_feature_id, outcome, settled_at) VALUES (?, ?, ?, ?)`,

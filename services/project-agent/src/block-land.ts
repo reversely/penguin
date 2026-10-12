@@ -44,7 +44,7 @@ import {
 
 import type { BlockOpenOutcome, BlockRun, BlockRunInput, BlockRunState, BlockStore } from "./block-store.ts";
 import type { FeatureRejectReason } from "./feature-open.ts";
-import { parseFeatureId, type Feature, type FeatureRecord, type FeatureRecordType, type FeatureStore, type UnsignedFeatureRecord } from "./feature-store.ts";
+import { parseFeatureId, readOnlyReason, type Feature, type FeatureRecord, type FeatureRecordType, type FeatureStore, type UnsignedFeatureRecord } from "./feature-store.ts";
 import type { ForkReader, ForkReading } from "./fix-write.ts";
 import type { BridgeCaller, SqlDatabase } from "./issue-index.ts";
 import type { FastForwardOutcome } from "./main-push.ts";
@@ -275,7 +275,8 @@ interface Prepared {
  * contain; the plan, every part approved and every fix in place; and the targets.
  */
 async function prepareLand(deps: LandDeps, feature: Feature, checkpoint: unknown): Promise<Prepared | LandRejection> {
-  if (feature.state === "landed") return rejected("conflict", `feature ${feature.id} has landed; its fork is read-only`);
+  const readOnly = readOnlyReason(feature);
+  if (readOnly !== undefined) return rejected("conflict", readOnly);
   if (feature.repo === null) return rejected("not_found", `feature ${feature.id} has no fork yet`);
   const latest = feature.latestCheckpointSha;
   if (latest === null) return rejected("not_ready", `feature ${feature.id} has no checkpoint; report one with report_checkpoint first`);

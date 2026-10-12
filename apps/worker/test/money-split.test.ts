@@ -138,3 +138,22 @@ test("every block lands, the contract follows when no caller is left, and the fl
   const counts = preview.counts.map((count) => (count.outcome.counts ?? []).reduce((sum, each) => sum + each.callers, 0));
   t.diagnostic(`callers left after each count: ${counts.join(", ")}`);
 });
+
+test("after the last wave no dropped part keeps an open task, no block Penguin opened runs with nothing to carry, and each owner has one plan", (t: TestContext) => {
+  const plans = preview.migrations.plans(ORIGIN.id);
+  t.diagnostic(`plans: ${plans.map((plan) => `${plan.planId} ${plan.state}`).join(", ")}`);
+  for (const owner of new Set(plans.map((plan) => plan.owner))) assert.equal(plans.filter((plan) => plan.owner === owner).length, 1, `${owner} has one plan`);
+  assert.ok(plans.every((plan) => plan.state === "landed" || plan.state === "closed"), JSON.stringify(plans.map((plan) => [plan.planId, plan.state])));
+  const parts = plans.flatMap((plan) => plan.parts);
+  for (const part of parts.filter((each) => each.state === "dropped")) {
+    assert.deepEqual(preview.editTasks.forSource(`migrate:${part.partId}`).filter((task) => task.state !== "done" && task.state !== "dropped"), [], part.partId);
+  }
+  const open = preview.features.list().flatMap((feature) => preview.editTasks.forFeature(feature.id)).filter((task) => task.state !== "done" && task.state !== "dropped");
+  t.diagnostic(`open edit tasks: ${[...new Set(open.map((task) => `${task.sourceKey} ${task.state}`))].join(", ") || "none"}`);
+  const penguin = preview.migrations.penguinFeatures().map((each) => ({ ...each, state: preview.features.get(each.featureId)?.state }));
+  for (const each of penguin.filter((feature) => feature.kind === "block" && feature.state === "building")) {
+    const plan = preview.migrations.planOfBlock(each.featureId);
+    assert.ok(plan?.parts.some((part) => part.place.kind === "scope" && part.state !== "dropped"), `${each.featureId} runs with no part`);
+  }
+  t.diagnostic(`features Penguin opened: ${penguin.map((each) => `${each.featureId} (${each.kind}) ${each.state}`).join(", ")}`);
+});

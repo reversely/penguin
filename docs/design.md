@@ -442,6 +442,12 @@ Penguin sorts each feature checkpoint's contract diff and decides between a spli
     In any other running feature's own changes such a use is a caller, since the removal does not
     edit that fork. The scope map is the project's on main; the analysis is the same one, so no
     analysis is added per count.
+  - **Batches per defining package.** The contract step removes a package's retiring symbols
+    together. The package is the directory that holds the symbol's module (`definingPackage`):
+    `shared/money` holds both `shared/money/__init__.py` and `shared/money/discounts.py`. A symbol
+    with no caller waits while another retiring symbol of its originating feature in the same
+    package has a caller or no count. Once every one has none, they are proposed together, in one
+    `contract_proposed` record and, for a carrier, one task. Load: one set lookup per symbol.
   - **Proposal.** A symbol with no caller in a complete report is proposed for removal on its
     originating feature while that feature is running. A complete report has no unreadable file on
     main or in a running feature and no list cut at its limit. Penguin signs a `contract_proposed`
@@ -517,7 +523,9 @@ Penguin proposes the migrate step's plans itself (`services/project-agent/src/mi
   check Penguin requested before that plan's landing promotion reports main or a fork from before
   the landed fix: its run id is lower than the id of the count Penguin requested at the landing. It
   neither opens nor joins a plan for a place of the landed plan. Load: one comparison per place. A
-  complete count that finds no caller left in a place drops its part.
+  complete count that finds no caller left in a place drops its part. Dropping a part, there or
+  because its running feature stopped, closes each of its edit tasks still open as `dropped`, with
+  the reason as the outcome, so no bridge claims it.
 - **Who writes a part.** A part whose contracts have declared rules waits for one rewrite request
   of Penguin's own per count (`impact` with `search: "rewrite"`). The check runner applies the rules
   to the place's files at its target, main at the count or the feature's fork head, in a throwaway
@@ -567,7 +575,13 @@ Penguin proposes the migrate step's plans itself (`services/project-agent/src/mi
   widens the block's area under a signed `declare_area` record. Penguin asks for the block's land
   itself once every live part on main is written
   ([Block promotion in the build](#block-promotion-in-the-build), Penguin's own features). When the
-  block feature reaches main, the plan is `landed` under a signed `migration_landed` record.
+  block feature reaches main, the plan is `landed` under a signed `migration_landed` record. A block
+  feature left with no live part on main, each of them dropped, is `closed` under a signed
+  `feature_closed` record on the block: every open edit task into its fork is dropped, the overlap
+  locks on its start are withdrawn and each start it held is checked again, and it leaves the
+  promotion queue. Its fork keeps every commit and takes no more writes: a checkpoint, a fix write,
+  a land or an expand on it is refused as read-only, as on a landed fork. The feature state word is
+  `closed`, and its pipeline shows every stage settled.
 - **Features Penguin opens.** A block feature or a contract carrier is an `open_feature` record
   authored by Penguin, owned by the DRI it works for, forked from main through the Artifacts binding
   with the same name and `PENGUIN_FEATURE_FORK_DEFAULT_BRANCH_ONLY` setting as the Worker's forks.

@@ -59,7 +59,7 @@ import {
 import { scopeForPath, type ScopeMap } from "@penguin/scope-map";
 
 import type { FeatureRejectReason } from "./feature-open.ts";
-import { parseFeatureId, type Feature, type FeatureRecord, type FeatureStore, type UnsignedFeatureRecord } from "./feature-store.ts";
+import { parseFeatureId, readOnlyReason, type Feature, type FeatureRecord, type FeatureStore, type UnsignedFeatureRecord } from "./feature-store.ts";
 import type { BridgeCaller, SqlDatabase, SqlValue } from "./issue-index.ts";
 import type { PlanRouteStore } from "./plan-approval.ts";
 import type { FixWrite, PlanKeeper } from "./plan-store.ts";
@@ -482,7 +482,8 @@ export async function approvedPart(deps: FixWriteDeps, input: FixPartInput): Pro
   if (target?.repo == null) return rejected("not_found", `feature ${part.place.feature} has no fork`);
   // A landed fork is read-only (PRD 4.5 step 5): no fix goes into it, and a landed plan writes none.
   for (const feature of [target, deps.features.get(featureId)]) {
-    if (feature?.state === "landed") return rejected("conflict", `feature ${feature.id} has landed; its fork is read-only`);
+    const readOnly = feature === undefined ? undefined : readOnlyReason(feature);
+    if (readOnly !== undefined) return rejected("conflict", readOnly);
   }
   return {
     featureId,

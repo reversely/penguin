@@ -84,6 +84,7 @@ the latest step first:
 | planning | Its agent proposed a plan and the check runner's facts run waits, or Penguin answered with what the plan lacks and no plan is stored, or the plan was returned over the break limit, or a part waits on the agent's revision |
 | building | Anything else |
 | promoted | Main moved to the feature's checkpoint; its fork is read-only |
+| closed | A block feature Penguin opened was left with no part to carry and closed; nothing landed and its fork is read-only ([design.md](design.md#migration-plans-in-the-build)) |
 
 Only exceptions are highlighted: a feature carries each exception PRD
 section 7 routes to a person as a line in the attention colour, with an attention edge on its row.

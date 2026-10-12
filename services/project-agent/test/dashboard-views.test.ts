@@ -41,6 +41,8 @@ test("a feature's state is the latest step its facts show", () => {
   // Its block run is checked or moving main, then main holds it.
   assert.equal(featureState(facts({ feature: { state: "landing" }, locks: [{ state: "open" }] })), "promoting");
   assert.equal(featureState(facts({ feature: { state: "landed" }, parts: [{ state: "approved" }] })), "promoted");
+  // A block Penguin closed with no part left to carry.
+  assert.equal(featureState(facts({ feature: { state: "closed" } })), "closed");
 });
 
 test("a feature highlights a part past the round limit, a returned plan and its newest reviews' exceptions", () => {

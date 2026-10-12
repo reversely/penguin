@@ -15,7 +15,8 @@
 //    plan. A count or check Penguin requested before that plan's landing promotion (its run id is
 //    lower than the landing's count) saw main or a fork from before the landed fix, so it neither opens
 //    nor joins a plan for the landed place. A place whose callers are all gone at a complete count is
-//    dropped, and a plan left with no live part closes.
+//    dropped, and a plan left with no live part closes. Dropping a part closes its open edit tasks
+//    as `dropped` with the reason, so no bridge claims them.
 // 3. **Who writes a part.** A part whose contracts have declared rules waits for one rewrite request
 //    of Penguin's own per proposal round (`search: "rewrite"`): the check runner applies the rules to
 //    each such place's files in a throwaway worktree, keeps the patch and counts the uses the patched
@@ -45,7 +46,10 @@
 //    later opens the owner's next plan. Each plan with code on main names its own block feature,
 //    `migrate-<owner>-<feature>`, which Penguin opens from main as the fork that part's fix is written
 //    into. Once every live part on main is written, Penguin lands that feature itself (penguin-land.ts).
-//    When its block reaches main, the plan is `landed` (`migrationBlockLanded`).
+//    When its block reaches main, the plan is `landed` (`migrationBlockLanded`). A block left with no
+//    live part on main, its parts there dropped, is `closed` under a signed `feature_closed` record:
+//    its open edit tasks close, its fork turns read-only with every commit kept, and the overlap
+//    locks it held are released (`released`).
 // 7. **Contract after the originating feature landed.** A landed fork is read-only, so when no caller
 //    of a retiring symbol is left and its originating feature no longer runs, `carryContract` opens a
 //    short-lived feature from main for the DRI of each scope that defines the symbols,
@@ -355,7 +359,7 @@ export interface MigrationDeps {
   /** Opens one edit task (edit-work.ts `openEditTask`) with the routing narrowed by `adjust`. */
   readonly openTask: (source: EditSource, adjust: (routing: EditRoutingContext) => EditRoutingContext) => Promise<readonly EditTask[]>;
   /** The edit tasks, read to see whether a migration part's task was done or failed. */
-  readonly tasks: Pick<EditTaskStore, "forSource">;
+  readonly tasks: Pick<EditTaskStore, "forSource" | "forFeature" | "close">;
   /** The writes the check runner makes (fix-write.ts): an approved part's patch into its target fork. */
   readonly grants: Pick<FixGrantStore, "open">;
   /** The project's invariants on main, every scope's: which ones are protected. */
@@ -366,6 +370,11 @@ export interface MigrationDeps {
   readonly adminMode: boolean;
   /** Forks main into the feature's repo and answers its name, or null when no fork can be made here. */
   readonly fork?: (featureId: string) => Promise<string | null>;
+  /**
+   * A feature Penguin opened left the running features without landing (a closed block): the
+   * overlap locks it held are checked again and it leaves the promotion queue. Absent, nothing more.
+   */
+  readonly released?: (featureId: string) => Promise<void>;
   readonly notify?: (person: string) => void;
 }
 
@@ -553,6 +562,12 @@ function landingCounts(deps: MigrationDeps, origin: string, owner: string): Map<
   return counts;
 }
 
+/** Drops a part with `fields.reason`; each of its edit tasks still open closes as `dropped` with that reason. */
+function dropPart(deps: MigrationDeps, partId: string, fields: { readonly reason: string; readonly uses?: number; readonly writer?: MigrationWriter }): void {
+  deps.store.updatePart(partId, { ...fields, state: "dropped" });
+  deps.tasks.close(`migrate:${partId}`, "dropped", `Penguin dropped migration part ${partId}: ${fields.reason}`);
+}
+
 /** At a complete count, each live part whose place has no caller left is dropped. */
 async function dropGone(deps: MigrationDeps, origin: string, groups: readonly MigrationGroup[], context: SyncContext): Promise<string[]> {
   const present = new Set(groups.flatMap((group) => group.places.map((each) => `${group.owner}\0${migrationPlaceKey(each.place)}`)));
@@ -561,7 +576,7 @@ async function dropGone(deps: MigrationDeps, origin: string, groups: readonly Mi
     if (plan.state === "landed" || plan.state === "closed") continue;
     for (const part of plan.parts) {
       if (part.state === "dropped" || part.state === "landed" || present.has(`${plan.owner}\0${migrationPlaceKey(part.place)}`)) continue;
-      deps.store.updatePart(part.partId, { state: "dropped", uses: 0, reason: `no caller is left in ${placeWords(part.place)} at promotion ${short(context.promotion)}` });
+      dropPart(deps, part.partId, { uses: 0, reason: `no caller is left in ${placeWords(part.place)} at promotion ${short(context.promotion)}` });
       changed.push(plan.planId);
     }
     await settlePlan(deps, plan.planId);
@@ -709,7 +724,7 @@ export async function routeToTask(
 ): Promise<void> {
   const target = await writeTarget(deps, plan, part);
   if (target === undefined) {
-    if (part.place.kind === "feature") deps.store.updatePart(part.partId, { writer: "task", reason: `feature ${part.place.feature} no longer runs`, state: "dropped" });
+    if (part.place.kind === "feature") dropPart(deps, part.partId, { writer: "task", reason: `feature ${part.place.feature} no longer runs` });
     return;
   }
   const targetPerson = part.place.kind === "feature" ? target.personId : plan.owner;
@@ -1019,7 +1034,9 @@ export function migrationWrites(deps: MigrationDeps): MigrationWrites {
  */
 export async function settlePlan(deps: MigrationDeps, planId: string): Promise<void> {
   const plan = deps.store.plan(planId);
-  if (plan === undefined || plan.state === "landed" || plan.state === "closed") return;
+  if (plan === undefined || plan.state === "landed") return;
+  await closeEmptyBlock(deps, plan);
+  if (plan.state === "closed") return;
   const live = plan.parts.filter((part) => LIVE.includes(part.state));
   if (live.length === 0 && plan.parts.length > 0 && plan.parts.every((part) => part.state === "dropped")) {
     const record = await deps.sign(
@@ -1049,6 +1066,34 @@ export async function settlePlan(deps: MigrationDeps, planId: string): Promise<v
   }
   const state: MigrationPlanState = live.length > 0 && live.every((part) => part.state === "approved" || part.state === "written") ? "approved" : "open";
   if (state !== plan.state) deps.store.setPlan(planId, state);
+}
+
+/**
+ * Closes the plan's block feature when Penguin opened it and no live part on main is left for it to
+ * carry: a signed `feature_closed` record, the feature `closed`, every open edit task into its fork
+ * dropped, and the overlap locks it held released. Its fork keeps every commit; it only takes no more
+ * writes. A block being landed, or one that is not running, is left alone.
+ */
+async function closeEmptyBlock(deps: MigrationDeps, plan: MigrationPlanView): Promise<void> {
+  const block = deps.features.get(plan.block);
+  if (block === undefined || (block.state !== "opening" && block.state !== "building") || !deps.store.openedByPenguin(block.id)) return;
+  if (plan.parts.some((part) => part.place.kind === "scope" && LIVE.includes(part.state))) return;
+  const reason = `every part of migration plan ${plan.planId} on main was dropped, so the block has nothing to carry`;
+  const record = await deps.sign(
+    deps.features.draftRecord(block.id, "feature_closed", { penguin: true }, {
+      plan: plan.planId,
+      origin: plan.feature,
+      parts: plan.parts.filter((part) => part.place.kind === "scope").map((part) => ({ part: part.partId, place: part.place, state: part.state })),
+      reason,
+    }),
+  );
+  if (!deps.features.setState(block.id, ["opening", "building"], "closed")) return;
+  deps.features.addRecord(record);
+  for (const task of deps.tasks.forFeature(block.id)) {
+    if (task.target === block.id) deps.tasks.close(task.sourceKey, "dropped", `feature ${block.id} was closed: ${reason}`);
+  }
+  await deps.released?.(block.id);
+  deps.notify?.(block.personId);
 }
 
 /**

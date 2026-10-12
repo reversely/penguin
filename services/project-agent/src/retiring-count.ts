@@ -11,8 +11,12 @@
 //    (retiring-store.ts). The defining scope's own uses, in the module that defines the symbol and in
 //    that scope's test files (protocol `inDefiningFiles`), are no callers: they are kept apart as the
 //    symbol's own files, which the contract step edits when it removes the symbol and its tests
-//    together. A use in any other file of that scope is a caller. A symbol with no caller in a complete report is proposed for removal on its
-//    originating feature while that feature is running. The proposal is a signed `contract_proposed`
+//    together. A use in any other file of that scope is a caller. The contract step batches per
+//    defining package, the directory that holds the symbol's module (`definingPackage`): a symbol
+//    with no caller in a complete report is proposed once every retiring symbol of its originating
+//    feature in that package has none, so the package's symbols are removed together, in one
+//    proposal and one task. It is proposed for removal on its originating feature while that feature
+//    is running. The proposal is a signed `contract_proposed`
 //    record: the plan has no places, so no part needs a person (section 4.3) and Penguin approves it.
 //    The feature's next step names the symbols to remove (contract-split.ts). When the originating
 //    feature is no longer running, its landed fork is read-only, so `carry` (migration-plans.ts)
@@ -28,6 +32,7 @@
 // oversized report keeps every symbol's callers unknown. Nothing is then proposed or withdrawn.
 
 import {
+  contractPath,
   contractRemoved,
   countIsComplete,
   retiringCallerCounts,
@@ -118,6 +123,17 @@ function byFeature<T extends { readonly feature: string }>(items: readonly T[]):
   return [...groups.entries()].sort(([a], [b]) => (a < b ? -1 : 1));
 }
 
+/**
+ * The package that holds a contract's defining module: its directory, as `shared/money` holds both
+ * `shared/money/__init__.py` and `shared/money/discounts.py`. Real code removes a package's retired
+ * functions together, so the contract step waits for all of them.
+ */
+export function definingPackage(contract: string): string {
+  const path = contractPath(contract);
+  const slash = path.lastIndexOf("/");
+  return slash === -1 ? "" : path.slice(0, slash);
+}
+
 const symbolsOf = (items: readonly RetiringSymbol[]) => items.map(({ contract, replacement }) => ({ contract, replacement }));
 
 /**
@@ -164,7 +180,10 @@ export async function countReported(deps: RetiringCountDeps, run: AgentToolRun):
   }
 
   const proposed: { feature: string; contracts: string[]; recordId: string }[] = [];
-  const free = declared.filter((each) => callers.get(each.contract) === 0 && !held.has(each.contract));
+  // A package waits while any retiring symbol of its originating feature there has a caller or no count.
+  const batch = (each: { readonly feature: string; readonly contract: string }) => `${each.feature}\0${definingPackage(each.contract)}`;
+  const waiting = new Set(deps.retiring.list().filter((each) => callers.get(each.contract) !== 0).map(batch));
+  const free = declared.filter((each) => callers.get(each.contract) === 0 && !held.has(each.contract) && !waiting.has(batch(each)));
   const own = new Map(counts.map((each) => [each.contract, each.ownFiles]));
   for (const [featureId, symbols] of byFeature(free)) {
     const feature = deps.features.get(featureId);

@@ -321,10 +321,13 @@ the check runner's programs. `apps/worker/test/money-split.test.ts`, `money-reti
    counts again: 36, 33, 25, 23, 15, 11, 5, 2 and 0 callers left. Rahul's agent reviews the tax block
    at each step. The whole-order step raises the broken `tax-per-line` invariant for Rahul. The
    per-line revision holds.
-8. **Contract.** Each retiring contract with no caller left gets Penguin's contract step on Ines's
-   feature, approved with no place: `price()` after Kofi's block, `total()` after Jun's,
-   `line_total()` after Sam's, `order_total()` and `display()` after Noor's and `percent_off()` after
-   Lena's. Ines's contract checkpoint removes all six with their own tests. Its facts run shows each
+8. **Contract.** The contract step batches per defining package: a package's retiring contracts get
+   Penguin's contract step on Ines's feature together, approved with no place, once none of them
+   has a caller left. `line_total()` and `order_total()`, the `orders` package, are proposed after
+   Noor's block. `price()`, `total()`, `display()` and `percent_off()`, the `shared/money` package,
+   are proposed after Lena's. Each package is one
+   `contract_proposed` record. No migration part's edit task is open after the last block, and
+   every block Penguin opened landed. Ines's contract checkpoint removes all six with their own tests. Its facts run shows each
    removed, then the feature lands. Penguin closes the six retiring records under one
    `symbols_removed` record.
 

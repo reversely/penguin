@@ -25,6 +25,7 @@ import {
   parseArea,
   parseAreaPath,
   parseFeatureId,
+  readOnlyReason,
   type Feature,
   type FeatureArea,
   type FeatureRecord,
@@ -187,7 +188,8 @@ export function featureTokenGrant(deps: FeatureDeps, caller: string, sessionId: 
     return rejected("forbidden", `session ${sessionId} is not an agent of feature ${id}`);
   }
   if (feature.repo === null) return rejected("not_found", `feature ${id} has no fork yet; open it again to make one`);
-  if (feature.state === "landed") return rejected("forbidden", `feature ${id} has landed; its fork is read-only`);
+  const readOnly = readOnlyReason(feature);
+  if (readOnly !== undefined) return rejected("forbidden", readOnly);
   const { waitingOn } = deps.overlapStatus(id);
   if (waitingOn.length > 0) return rejected("locked", lockedMessage(id, waitingOn));
   return { status: "ok", featureId: id, repo: feature.repo };
@@ -355,7 +357,8 @@ export async function reportFeatureCheckpoint(
   if (!CHECKPOINT_SHA_PATTERN.test(sha)) {
     return rejected("invalid", "the checkpoint must be a full 40-character lowercase SHA");
   }
-  if (feature.state === "landed") return rejected("conflict", `feature ${id} has landed; its fork is read-only`);
+  const closed = readOnlyReason(feature);
+  if (closed !== undefined) return rejected("conflict", closed);
   if (feature.repo === null || !(await deps.commitExists(feature.repo, sha))) {
     return rejected("not_found", `commit ${sha} is not in feature ${id}'s fork`);
   }
@@ -396,7 +399,8 @@ export async function recordPenguinCheckpoint(
   feature: Feature,
   sha: string,
 ): Promise<CheckpointAreaOutcome> {
-  if (feature.state === "landed") return rejected("conflict", `feature ${feature.id} has landed; its fork is read-only`);
+  const closed = readOnlyReason(feature);
+  if (closed !== undefined) return rejected("conflict", closed);
   await deps.protectedChanges?.(feature, sha);
   const outcome = await recordCheckpointArea(deps, feature, sha, { penguin: true }, deps.readChange);
   if (outcome.status === "rejected") return outcome;

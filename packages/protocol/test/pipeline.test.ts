@@ -326,6 +326,9 @@ test("a split Penguin recorded waits at Expand for its expand checkpoint, and a 
   const landed = featurePipeline(facts({ person: "ines", split, state: "landed" }));
   assert.ok(landed.stages.every((stage) => stage.status === "passed"));
   assert.equal(landed.current, 4);
+  // A block Penguin closed with nothing to carry is settled the same way, though nothing landed.
+  const closed = featurePipeline(facts({ person: "ines", state: "closed" }));
+  assert.ok(closed.stages.every((stage) => stage.status === "passed"));
 });
 
 test("a stage's status: failed over a person over running, passed only when every job passed", () => {

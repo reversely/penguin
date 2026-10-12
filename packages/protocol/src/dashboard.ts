@@ -25,7 +25,7 @@ import { checkSchema, type JsonSchema, type SchemaError } from "./schema-check.t
  * overlap approval, or a plan part waits for its author. `promoting`: every part of its plan is
  * approved, so the block goes to its checks. `promoted`: the block reached main.
  */
-export const FEATURE_STATES = ["building", "planning", "waiting on approvals", "promoting", "promoted"] as const;
+export const FEATURE_STATES = ["building", "planning", "waiting on approvals", "promoting", "promoted", "closed"] as const;
 export type FeatureStateWord = (typeof FEATURE_STATES)[number];
 
 /** An exception PRD section 7 routes to a person, which the team view highlights on its feature. */

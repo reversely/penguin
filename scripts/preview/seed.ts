@@ -414,6 +414,15 @@ export class PreviewProject {
         this.git("update-ref", `refs/heads/feature-${featureId}`, this.git("rev-parse", "main"));
         return `feature-${featureId}`;
       },
+      // As the ProjectAgent wires it: a closed block asks no one, leaves the queue and frees each start it held.
+      released: async (featureId) => {
+        this.overlaps.withdrawAll(featureId);
+        this.blockQueue.remove(featureId);
+        for (const blocked of this.overlaps.heldBy(featureId)) {
+          const feature = this.features.get(blocked);
+          if (feature !== undefined) await checkOverlap(this.overlapDeps(), feature);
+        }
+      },
       notify: this.#notify,
     };
   }

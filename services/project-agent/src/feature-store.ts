@@ -41,9 +41,17 @@ const PATH_SEGMENT = /^[A-Za-z0-9_.][A-Za-z0-9_.-]*$/u;
 /**
  * `opening` while the record exists and the fork does not yet; `building` once the fork exists;
  * `landing` while its block is checked and promoted (block-land.ts); `landed` once main moved to its
- * checkpoint, after which its fork is read-only.
+ * checkpoint, after which its fork is read-only. `closed` for a block feature Penguin opened that was
+ * left with no part to carry (migration-plans.ts): nothing landed, and its fork is read-only too.
  */
-export type FeatureState = "opening" | "building" | "landing" | "landed";
+export type FeatureState = "opening" | "building" | "landing" | "landed" | "closed";
+
+/** Why a feature's fork takes no more writes, or undefined while it runs: it landed or was closed. */
+export function readOnlyReason(feature: { readonly id: string; readonly state: FeatureState }): string | undefined {
+  if (feature.state === "landed") return `feature ${feature.id} has landed; its fork is read-only`;
+  if (feature.state === "closed") return `feature ${feature.id} was closed with nothing to land; its fork is read-only`;
+  return undefined;
+}
 
 export interface FeatureArea {
   readonly scopes: readonly string[];
@@ -121,6 +129,7 @@ export type FeatureRecordType =
   | "migration_part_written"
   | "migration_closed"
   | "migration_landed"
+  | "feature_closed"
   | "block_rebuilt";
 
 export interface FeatureRecord {
@@ -330,7 +339,7 @@ export class FeatureStore {
     return this.get(id);
   }
 
-  /** Moves a feature between `building`, `landing` and `landed`; false when it stood elsewhere. */
+  /** Moves a feature between `building`, `landing`, `landed` and `closed`; false when it stood elsewhere. */
   setState(id: string, from: readonly FeatureState[], to: FeatureState): boolean {
     const placeholders = from.map(() => "?").join(", ");
     const changed = this.#db.exec(

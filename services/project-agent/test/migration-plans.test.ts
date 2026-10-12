@@ -38,6 +38,7 @@ import { EditTaskStore } from "../src/edit-tasks.ts";
 import { claimEditTasks, editRouting, reportEditTask, writeWaitsFor, type EditWorkDeps } from "../src/edit-work.ts";
 import { retrialReported, retryWaitingWrites } from "../src/fix-retrial.ts";
 import { claimRunnerWrites, FixGrantStore, runnerFixReport, taskWriteKey, type FixWriteDeps } from "../src/fix-write.ts";
+import { readOnlyReason } from "../src/feature-store.ts";
 import { IdentityStore } from "../src/identity-store.ts";
 import {
   carryContract,
@@ -650,6 +651,51 @@ describe("migration plans of a split, one per owner group", () => {
     // An incomplete count drops nothing.
     await counted(sha(3), { complete: false });
     assert.deepEqual(store.plans("money-minor").find((plan) => plan.owner === "bea")?.parts.map((part) => part.state), ["rewriting"]);
+  });
+
+  test("a dropped part closes its open edit task with the reason, and a block left with no part is closed and its fork released", async () => {
+    const released: string[] = [];
+    deps = { ...deps, released: async (featureId) => void released.push(featureId) };
+    await counted(sha(1), { headUses: [lineUse("orders/report.py")] });
+    const block = "migrate-tomas-money-minor";
+    const [part] = store.plans("money-minor")[0]?.parts ?? [];
+    assert.ok(part);
+    assert.deepEqual(tasks.forSource(`migrate:${part.partId}`).map((task) => [task.state, task.target]), [["queued", block]]);
+    // The next complete count finds no caller left in orders: the part drops, and so does its task.
+    await counted(sha(2), {});
+    const reason = `no caller is left in scope orders on main at promotion ${sha(2).slice(0, 12)}`;
+    assert.deepEqual([store.part(part.partId)?.state, store.part(part.partId)?.reason], ["dropped", reason]);
+    assert.deepEqual(tasks.forSource(`migrate:${part.partId}`).map((task) => [task.state, task.outcome]), [["dropped", `Penguin dropped migration part ${part.partId}: ${reason}`]]);
+    // The block carries nothing: Penguin closes it, keeps its fork and releases what it held.
+    assert.equal(project.features.get(block)?.state, "closed");
+    assert.equal(project.features.get(block)?.repo, `feature-${block}`);
+    assert.deepEqual(records(block, "feature_closed").map((each) => [each.author, each.payload["plan"], each.payload["reason"]]), [
+      [{ penguin: true }, "migrate:money-minor:tomas:1", "every part of migration plan migrate:money-minor:tomas:1 on main was dropped, so the block has nothing to carry"],
+    ]);
+    assert.deepEqual(released, [block]);
+    assert.equal(store.plan("migrate:money-minor:tomas:1")?.state, "closed");
+    // A closed fork takes no checkpoint and no write.
+    assert.equal(readOnlyReason(project.features.get(block)!), `feature ${block} was closed with nothing to land; its fork is read-only`);
+  });
+
+  test("the contract step batches per defining package: a symbol waits until every retiring symbol of its package has no caller", async () => {
+    const TOTAL = { contract: "shared/money/api.py::total", replacement: "shared/money/api.py::Money.sum" };
+    project.retiring.declare({ featureId: "money-minor", planId: "money-minor/v2", person: "ines", rules: [PRICE_RULE] } as unknown as Plan, [PRICE, TOTAL, LINE], "record-money-2");
+    const countOnce = async (main: string, headUses: ImpactUse[]) => {
+      const runId = requestRetiringCount(count, "money-minor", main);
+      assert.ok(runId !== undefined);
+      const recorded = recordToolResult(runs, RUNNER, runId, result(main, { impact: impact(main, { headUses }) }));
+      assert.ok(recorded.status === "recorded");
+      return countReported(count, recorded.run);
+    };
+    // price has no caller left, but total, in the same package, still has one: only orders' line_total is proposed.
+    const first = await countOnce(sha(1), [use("billing/fees.py", "shared.money.api.total", "billing")]);
+    const ines = (outcome: typeof first) => outcome?.proposed.filter((each) => each.feature === "money-minor").map((each) => each.contracts);
+    assert.deepEqual(ines(first), [[LINE.contract]]);
+    // Once total has none either, price and total are proposed together, in one record.
+    const second = await countOnce(sha(2), []);
+    assert.deepEqual(ines(second), [[PRICE.contract, TOTAL.contract]]);
+    assert.equal(records("money-minor", "contract_proposed").length, 2);
   });
 
   test("when the originating feature no longer runs, a feature Penguin opens from main for the defining scope's DRI carries the contract step", async () => {
