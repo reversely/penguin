@@ -137,11 +137,13 @@ async function spawnWorker(
   const worker = spawn(
     "npx",
     [
-      "wrangler", "dev", "-c", "apps/worker/wrangler.jsonc", "--ip", "127.0.0.1", "--port", String(port),
+      "wrangler", "dev", "-c", "wrangler.jsonc", "--ip", "127.0.0.1", "--port", String(port),
       "--env-file", envFile, "--persist-to", join(tempDir, "state"), "--show-interactive-dev-session=false",
       "--assets", assets,
     ],
-    { cwd: options.repoRoot, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, CI: "1" }, detached: true },
+    // From apps/worker, the build's `cwd: "../.."` is the repository root whichever directory Wrangler
+    // resolves it against (gn100's Wrangler resolves it against the process's working directory).
+    { cwd: join(options.repoRoot, "apps", "worker"), stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, CI: "1" }, detached: true },
   );
   worker.stdout?.on("data", (chunk: Buffer) => log.write(redact(chunk)));
   worker.stderr?.on("data", (chunk: Buffer) => log.write(redact(chunk)));

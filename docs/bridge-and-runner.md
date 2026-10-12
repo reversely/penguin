@@ -344,8 +344,9 @@ asked and the repos deleted at the end. Nothing prints a token.
 PENGUIN_REVIEW_E2E=1 node --test tests/e2e/review-task-run.test.ts
 ```
 
-It needs what the edit task live check needs, plus Google Chrome. `PENGUIN_REVIEW_E2E_MODEL` picks
-the model (default `haiku`). `PENGUIN_REVIEW_E2E_OUT` names the output folder.
+It needs what the edit task live check needs, plus Playwright's Chromium
+(`npx playwright install chromium`). `PENGUIN_REVIEW_E2E_MODEL` picks the model (default `haiku`).
+`PENGUIN_REVIEW_E2E_OUT` names the output folder.
 
 ## Runner mode
 

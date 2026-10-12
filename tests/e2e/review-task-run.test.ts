@@ -51,7 +51,8 @@ test("each author's review form is submitted headless by claude -p through Pengu
   const origin = fixture.origin;
   const run = new CaseRun({ repoRoot: REPO_ROOT, python: PYTHON, fixture, prefix: PREFIX, outDir: OUT });
   const evidence: Record<string, unknown> = { prefix: PREFIX, model: MODEL, runs: [] };
-  const browser = await chromium.launch({ channel: "chrome", headless: true });
+  // Playwright's own Chromium (`npx playwright install chromium`), so the test machine needs no Chrome.
+  const browser = await chromium.launch({ headless: true });
   try {
     await run.setUp(browser);
     // 1. The case up to the plan, as the walkthrough runs it.

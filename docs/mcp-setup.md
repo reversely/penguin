@@ -9,7 +9,7 @@ An owner's Claude Code or Codex session reads the issues assigned to one of the 
 writes comments, linked commits and state changes back to them. The session reaches Penguin's MCP
 endpoint, `<worker-url>/mcp`, with the owner's MCP token. The token decides whose identities the
 session may use. This page covers issuing a token, connecting each agent product, registering a
-session and running the agent-session exit check by hand and as a script.
+session and the errors each tool returns.
 
 For how the three connection paths fit together (MCP tools, the hook, the inbox), read
 [how-agents-connect.md](how-agents-connect.md) first.
@@ -470,98 +470,3 @@ tool's answer gives the recorded operation as `recordedAs`:
 | `not_assignee` | The sending identity is not assigned to the issue |
 | `not_a_fix` | The issue is not a Huddle's fix sub-issue |
 | `inside_charter` | Every scope the trigger changed lies inside the sender's charter, so the sender fixes it |
-
-## Manual exit check with live sessions
-
-These steps run the agent-session exit check with a live Claude Code session and a live Codex session. They
-need Priya and Jun signed in to the dashboard in two browsers, plus an integration runner.
-
-1. The deployer issues MCP tokens for Jun and for Sam, then a runner registration code with
-   `POST /bridges/codes` and the body `{"owner":"runner","role":"runner"}`.
-2. The runner's operator registers the runner bridge with
-   `penguin-bridge register --server https://<worker-url> --owner runner --code <code>`
-   and starts `penguin-bridge runner`, which pushes pending operations every 10 seconds.
-3. Jun signs in to the dashboard. On the Identities page, Jun creates `@jun/reports` with
-   "Auto-accept assignments" checked.
-4. Jun connects a Claude Code session with Jun's token (Claude Code section) and registers it as
-   `@jun/reports` with vendor `claude-code`. Jun connects a Codex session with Jun's token (Codex
-   section) and registers it as `@jun/reports` with vendor `codex`. On Priya's team map, the
-   `reports` box in Jun's square changes from "No session" to "Working" without a reload. The
-   identity's agent card lists both sessions.
-5. Security: a Codex session started with Sam's token in `PENGUIN_TOKEN` asks to register as
-   `@jun/reports`. The tool answers `forbidden`. The agent card of `@jun/reports` lists no new session.
-6. Priya opens an issue and assigns `@jun/reports`. On the team map, Priya selects New issue, enters
-   the title "Retention dashboard counts merged users twice", checks `@jun/reports` under Assignees and
-   selects Create. The dashboard opens the new issue's page with `@jun/reports` under Assignees.
-   On Priya's team map, the `reports` box in Jun's square shows the issue's number without a reload.
-   Jun's inbox lists the issue under
-   Assignments without a reload. The issue page's Assignees panel also assigns an identity to an
-   existing issue with Assign and removes an assignee with Unassign.
-7. Jun asks either session to call `get_work`. The issue is in the result.
-8. Jun asks the session to comment on the issue with `post_update` and to link a commit, such as
-   `owner-jun@0df91904e50f51cdb08e5fda28ab62d9121746c0` with kind `fix`. The issue page shows the
-   comment and the commit without a reload.
-9. On its next pass the runner prints `N pending: N pushed in commit <sha>`. The four operation files
-   appear under `issues/<number>/ops/` in the issues repo. Once the push event reaches Penguin,
-   `get_issue` reports `waitingForGitLog: false` for each. The issue page header shows no
-   "waiting for the Git log" line ([issues.md](issues.md#pending-push)).
-
-## Scripted exit check
-
-`tests/e2e/exit-check.test.ts` runs the same steps with JSON-RPC calls to `/mcp` in place of a live
-agent. In place of the New issue form, it sends the create and assign operations the form sends to
-`/api/operations`. It signs in as Priya and Jun, listens on both people's `/api/live` sockets, registers the runner
-bridge with an in-memory key store and runs `penguin-bridge runner --once` passes until the operations
-appear on a fresh fetch of the issues repo. It closes the issue at the end and revokes the MCP tokens
-and the runner bridge it made. `npm test` skips it unless `PENGUIN_E2E_URL` is set.
-
-| Variable | Meaning | Default |
-|---|---|---|
-| `PENGUIN_E2E_URL` | The Worker's origin | none; the test is skipped |
-| `PENGUIN_E2E_DEPLOYER_TOKEN_FILE` | A file holding the deployer token | `~/.config/penguin/deployer-token` |
-| `PENGUIN_E2E_SIGN_IN` | `github-double` for a loopback Worker, `cookies` for a deployed one | chosen from the URL |
-| `PENGUIN_E2E_PRIYA_COOKIE_FILE`, `PENGUIN_E2E_JUN_COOKIE_FILE` | Files holding each person's `__Host-penguin_session` cookie value, copied from a signed-in browser | none |
-| `PENGUIN_E2E_PRIYA_LOGIN`, `PENGUIN_E2E_JUN_LOGIN` | GitHub logins the test double signs in as | `priya-gh`, `jun-gh` |
-| `PENGUIN_E2E_RUNNER_OWNER` | The owner id the runner bridge registers as | `runner` |
-| `PENGUIN_E2E_TIMEOUT_MS` | The wait for a live message or a push | `60000` |
-
-The test prints its timings as test diagnostics, each in milliseconds from the assign operation: to
-the live messages, to `get_work` returning the issue, to the assign operation appearing in the issues
-repo and to all four operations appearing there.
-
-### Against a local Worker
-
-The local Worker runs the real Worker and agents in `wrangler dev`, with the Artifacts binding pointed
-at the real namespace. A repo prefix keeps the run's repos apart from production's. The secrets go in
-an env file with mode 0600: `PENGUIN_DEPLOYER_TOKEN` (any random value), `PENGUIN_OP_SIGNING_KEY` (an
-Ed25519 private JWK), `PENGUIN_REPO_PREFIX`, `PENGUIN_GITHUB_BASE_URL=http://127.0.0.1:8788`,
-`GITHUB_OAUTH_CLIENT_ID=double-client`, `GITHUB_OAUTH_CLIENT_SECRET=double-secret` and
-`PENGUIN_DASHBOARD_OWNERS=priya-gh:priya,jun-gh:jun,sam-gh:sam`.
-
-```sh
-node tests/walkthrough/support/github-double.ts --port 8788
-npx wrangler dev -c apps/worker/wrangler.jsonc --ip 127.0.0.1 --port 8787 --env-file <env file>
-PENGUIN_E2E_URL=http://127.0.0.1:8787 PENGUIN_E2E_DEPLOYER_TOKEN_FILE=<file with the same deployer token> \
-  node --test tests/e2e/exit-check.test.ts
-```
-
-The run's `/setup` call creates `<prefix>base` and `<prefix>issues`. Delete them afterwards with
-`npx wrangler artifacts repos delete <name> --namespace penguin -y`. The local Worker receives no
-Artifacts push events, so its operations stay marked as waiting for the Git log after the runner
-pushes them.
-
-### Against the deployed Worker
-
-The deployed Worker needs Priya and Jun to sign in through GitHub. Each person signs in to the
-dashboard in a browser, copies the `__Host-penguin_session` cookie value from the browser's developer
-tools into a file with mode 0600 and passes the two files:
-
-```sh
-PENGUIN_E2E_URL=https://<worker-url> \
-PENGUIN_E2E_PRIYA_COOKIE_FILE=<file> PENGUIN_E2E_JUN_COOKIE_FILE=<file> \
-  node --test tests/e2e/exit-check.test.ts
-```
-
-The run writes to the production project: it creates `@jun/reports` when the identity is missing,
-leaves one closed issue in the issues log and registers then revokes two MCP tokens and one runner
-bridge.

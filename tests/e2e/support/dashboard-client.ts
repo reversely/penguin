@@ -5,7 +5,6 @@
 
 import { parseIndexChanged, type IndexChangedMessage } from "@penguin/protocol";
 
-import type { SignIn } from "./config.ts";
 
 export const SESSION_COOKIE = "__Host-penguin_session";
 
@@ -95,15 +94,6 @@ export class DashboardClient {
     this.#origin = origin;
     this.person = person;
     this.#cookie = `${SESSION_COOKIE}=${sessionValue}`;
-  }
-
-  static async signIn(origin: string, person: "priya" | "jun", signIn: SignIn): Promise<DashboardClient> {
-    const value =
-      signIn.kind === "cookies" ? signIn.cookies[person] : await signInThroughDouble(origin, signIn.logins[person]);
-    const client = new DashboardClient(origin, person, value);
-    const session = await client.get("/api/session");
-    if (session.owner !== person) throw new Error(`the ${person} session signs in as ${session.owner}`);
-    return client;
   }
 
   async get(path: string): Promise<any> {

@@ -27,6 +27,9 @@ one Cloudflare primitive. A test whose subject leaves the product is deleted wit
 | `migration.test.ts` | 4.2 step 2: callers grouped by owner; the defining scope's own uses are not callers |
 | `fixes.test.ts` | 4.2 and 4.4: patches apply exactly; rewrite rules are well formed |
 | `security.test.ts` | Section 8: signed records, token scopes, line visibility, dashboard sessions |
+| `fork-writes.test.ts` | 4.4: writes into one fork take turns in approval order, each tried again on the head the last one moved |
+| `run-failures.test.ts` | Section 7: a failed run is freed at once and stops at the project's failure limit |
+| `tool-runs.test.ts` | 5.2: only the check runner reports a tool result, once, for the request's own checkpoint |
 
 ## Running
 
@@ -41,18 +44,24 @@ one Cloudflare primitive. A test whose subject leaves the product is deleted wit
 `scripts/remote-test.sh` runs any of them on the test machine (gn100). The tiers are listed in
 `scripts/test.mjs`.
 
-## Not yet covered
+## Live tests
 
-These behaviours have no test since the suite was rebuilt:
+Each live test starts the Worker under `wrangler dev`, uses real Artifacts under a prefix unique to the
+run and deletes its repositories at the end.
 
-- the order of writes into one fork (one write at a time, re-trial after each);
-- releasing a claimed run when the check runner reports a failure, and stopping it at the limit;
-- the combined-run scheduler;
-- the block landing path and the record repo, until the live tests are rewritten on gn100;
-- the tool-runner's claims.
+| File | Flag | What it proves |
+|---|---|---|
+| `runner-fetch.test.ts` | `PENGUIN_FETCH_E2E` | The check runner fetches 20 forks into one repository over Git protocol v2 |
+| `block-landing.test.ts` | `PENGUIN_BLOCK_E2E` | A block's merge commit is pushed to main and the base repository moves |
+| `expand-promotion.test.ts` | `PENGUIN_EXPAND_E2E` | An expand checkpoint is promoted to main on its own |
+| `record-repo.test.ts` | `PENGUIN_RECORD_E2E` | Signed records are committed to the record repository |
+| `edit-task-run.test.ts` | `PENGUIN_EDIT_E2E` | A person's bridge runs an edit task with `claude -p` and publishes the result after consent |
+| `review-task-run.test.ts` | `PENGUIN_REVIEW_E2E` | Each author's bridge fills in a review form with `claude -p` through Penguin's MCP server |
 
-The live tests in `tests/e2e/` predate the rebuild and still use the walkthrough harness. They are to
-be rewritten as one test per primitive once gn100 is logged in to Cloudflare.
+The last two need Claude Code logged in on the machine that runs them.
+
+Combined runs and Huddles predate PRD 0.5. Their code is still wired into the ProjectAgent until its
+removal and has no tests.
 
 ## Rules for adding tests
 
