@@ -1,0 +1,53 @@
+{
+  "contract": "messaging/digest_schedule.py::send_times",
+  "cases": [
+    {
+      "name": "a shopper in London asks for 09:00",
+      "args": {
+        "recipients": [
+          {
+            "shopper_id": "s1",
+            "email": "s1@example.invalid",
+            "utc_offset": {
+              "$call": "shared/platform/dates.py::parse_utc_offset",
+              "args": {
+                "text": "+00:00"
+              }
+            }
+          }
+        ],
+        "now": {
+          "$call": "shared/platform/dates.py::parse_instant",
+          "args": {
+            "text": "2026-02-09T08:00:00+00:00"
+          }
+        },
+        "local_hour": 9
+      }
+    },
+    {
+      "name": "a shopper at UTC-08:00 asks for 09:00",
+      "args": {
+        "recipients": [
+          {
+            "shopper_id": "s2",
+            "email": "s2@example.invalid",
+            "utc_offset": {
+              "$call": "shared/platform/dates.py::parse_utc_offset",
+              "args": {
+                "text": "-08:00"
+              }
+            }
+          }
+        ],
+        "now": {
+          "$call": "shared/platform/dates.py::parse_instant",
+          "args": {
+            "text": "2026-02-09T16:00:00+00:00"
+          }
+        },
+        "local_hour": 9
+      }
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "rows": [
+    {"invariant": "payout-plus-fee-is-total", "verdict": "holds", "evidence": ["payouts/fees.py::payout"], "storedData": ""},
+    {"invariant": "fee-rounds-half-up", "verdict": "holds", "evidence": ["payouts/fees.py::store_fee"], "storedData": ""},
+    {"invariant": "paid-out-at-most-once", "verdict": "holds", "evidence": ["payouts/tests/test_send.py::test_timed_out_payout_is_paid_once"], "storedData": ""}
+  ],
+  "riskyInputs": [],
+  "storedDataMarker": null
+}

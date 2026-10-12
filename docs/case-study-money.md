@@ -10,7 +10,7 @@ counts, its migration plans and the review harness.
 ## Team
 
 Larder is a grocery delivery marketplace with one repository. Fourteen engineers work in four teams.
-Each is DRI for two or three of the repository's 29 scopes. Each runs one steward plus one builder
+Each is DRI for two or three of the repository's 30 scopes. Each runs one steward plus one builder
 per open feature. At any moment about forty features are open.
 
 | Team | Person | DRI for | Reads money? |
@@ -20,7 +20,7 @@ per open feature. At any moment about forty features are open.
 | | Ade | `refunds`, `disputes` | Yes |
 | | Rahul | `tax`, `tax-filing` | Yes |
 | | Mei | `invoicing`, `dunning` | Yes |
-| Shopping (lead Tomas) | Priya | `checkout`, `payment-methods` | Yes |
+| Shopping (lead Tomas) | Priya | `checkout`, `payment-methods`, `accounts` (shopper accounts) | Yes |
 | | Tomas | `orders`, `fulfilment` | Yes |
 | | Lena | `promotions`, `loyalty` | Yes |
 | | Sun | `catalog` and search pricing, `inventory` | Yes |
@@ -40,8 +40,10 @@ unit: `1000` charges 10 USD. `10` charges 10 JPY, because JPY is a zero-decimal 
 
 ## Open
 
-Every feature is its own fork of main in Artifacts. Lena's promotion stacking reached main before
-Ines starts. Ines's agent opens the feature "Money in minor units" and declares its area: the money
+Every feature is its own fork of main in Artifacts. PRD cases 1 to 3 run on the same main first:
+Priya's shopper accounts, Hugo's structured logs and Hugo's HTTP client upgrade each reach main as
+a block ([fixture-money.md](fixture-money.md#cases-1-to-3)). Lena's promotion stacking reaches main
+after them, before Ines starts. Ines's agent opens the feature "Money in minor units" and declares its area: the money
 and orders scopes. Four running features already work there, so Penguin holds the start until each
 of their people approves. Hugo approves beside the rounding-mode bump, which touches another money
 function. Tomas approves beside the three orders features Tomas runs.

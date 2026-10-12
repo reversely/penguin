@@ -1,0 +1,125 @@
+{
+  "contract": "messaging/audience.py::digest_audience",
+  "cases": [
+    {
+      "name": "an unsubscribe on mobile then a web signup that subscribes the address by default",
+      "args": {
+        "events": [
+          {
+            "source": "mobile",
+            "type": "unsubscribe",
+            "day": "2025-11-03",
+            "ts": 1,
+            "device_id": "d1",
+            "email": "a@example.com",
+            "email_verified": true,
+            "traits": {
+              "email_subscribed": false
+            }
+          },
+          {
+            "source": "web",
+            "type": "signup",
+            "day": "2025-11-10",
+            "ts": 2,
+            "user_id": "u1",
+            "email": "a@example.com",
+            "email_verified": true,
+            "traits": {
+              "email_subscribed": true
+            }
+          }
+        ],
+        "shopper_map": {
+          "$call": "accounts/shoppers.py::ShopperMap.from_events",
+          "args": {
+            "events": [
+              {
+                "source": "mobile",
+                "type": "unsubscribe",
+                "day": "2025-11-03",
+                "ts": 1,
+                "device_id": "d1",
+                "email": "a@example.com",
+                "email_verified": true,
+                "traits": {
+                  "email_subscribed": false
+                }
+              },
+              {
+                "source": "web",
+                "type": "signup",
+                "day": "2025-11-10",
+                "ts": 2,
+                "user_id": "u1",
+                "email": "a@example.com",
+                "email_verified": true,
+                "traits": {
+                  "email_subscribed": true
+                }
+              }
+            ]
+          }
+        },
+        "inactive_since": "2026-01-01"
+      }
+    },
+    {
+      "name": "a later subscribe on the same identity replaces its unsubscribe",
+      "args": {
+        "events": [
+          {
+            "source": "web",
+            "type": "unsubscribe",
+            "day": "2025-11-03",
+            "ts": 1,
+            "user_id": "u1",
+            "email": "a@example.com",
+            "traits": {
+              "email_subscribed": false
+            }
+          },
+          {
+            "source": "web",
+            "type": "subscribe",
+            "day": "2025-11-10",
+            "ts": 2,
+            "user_id": "u1",
+            "traits": {
+              "email_subscribed": true
+            }
+          }
+        ],
+        "shopper_map": {
+          "$call": "accounts/shoppers.py::ShopperMap.from_events",
+          "args": {
+            "events": [
+              {
+                "source": "web",
+                "type": "unsubscribe",
+                "day": "2025-11-03",
+                "ts": 1,
+                "user_id": "u1",
+                "email": "a@example.com",
+                "traits": {
+                  "email_subscribed": false
+                }
+              },
+              {
+                "source": "web",
+                "type": "subscribe",
+                "day": "2025-11-10",
+                "ts": 2,
+                "user_id": "u1",
+                "traits": {
+                  "email_subscribed": true
+                }
+              }
+            ]
+          }
+        },
+        "inactive_since": "2026-01-01"
+      }
+    }
+  ]
+}

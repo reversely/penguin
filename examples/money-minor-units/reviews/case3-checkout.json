@@ -1,0 +1,8 @@
+{
+  "rows": [
+    {"invariant": "charge-equals-cart-total", "verdict": "holds", "evidence": ["checkout/cart.py::charge_amount"], "storedData": ""},
+    {"invariant": "tip-charged-at-most-once", "verdict": "holds", "evidence": ["checkout/tests/test_tip_charge.py::test_timed_out_tip_is_charged_once"], "storedData": ""}
+  ],
+  "riskyInputs": [],
+  "storedDataMarker": null
+}

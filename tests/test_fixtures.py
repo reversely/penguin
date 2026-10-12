@@ -75,3 +75,125 @@ def test_each_scope_dri_is_on_its_team_and_each_agent_changes_only_its_persons_s
         owner = identity["owner"]
         for scope in identity["charter_scopes"]:
             assert dri_of[scope] == owner, f"{identity['handle']} names {scope}"
+
+
+# Larder runs PRD cases 1 to 3 before case 4. Each row merges a case's originating commit onto an
+# affected feature, as Penguin's block check does, and names the tests the merged tree fails.
+LARDER_CASES = [
+    (
+        "accounts-merge-checkpoint",
+        "cohort-ltv-checkpoint",
+        {
+            "analytics/tests/test_kiosk.py::test_shared_device_split",
+            "analytics/tests/test_retention.py::test_dau_stable",
+        },
+    ),
+    (
+        "accounts-merge-checkpoint",
+        "weekly-digest-checkpoint",
+        {"messaging/tests/test_consent.py::test_unsubscribe_survives"},
+    ),
+    (
+        "accounts-merge-limit-five",
+        "cohort-ltv-cutover",
+        {"analytics/tests/test_kiosk.py::test_shared_device_split"},
+    ),
+    ("accounts-merge-limit-one", "cohort-ltv-cutover", set()),
+    ("accounts-merge-limit-one", "weekly-digest-consent", set()),
+    (
+        "structured-logs-checkpoint",
+        "holiday-closures-checkpoint",
+        {
+            "store_dashboard/tests/test_holidays.py::test_a_closure_covers_the_stores_whole_local_day"
+        },
+    ),
+    (
+        "structured-logs-checkpoint",
+        "weekly-digest-consent",
+        {
+            "messaging/tests/test_digest_schedule.py::test_goes_out_at_the_local_hour_west_of_utc"
+        },
+    ),
+    ("structured-logs-local-day", "holiday-closures-local-day", set()),
+    ("structured-logs-local-day", "weekly-digest-local-day", set()),
+    (
+        "dependency-audit-checkpoint",
+        "instant-payouts-checkpoint",
+        {"payouts/tests/test_send.py::test_timed_out_payout_is_paid_once"},
+    ),
+    (
+        "dependency-audit-checkpoint",
+        "tip-jar-checkpoint",
+        {"checkout/tests/test_tip_charge.py::test_timed_out_tip_is_charged_once"},
+    ),
+    ("dependency-audit-checkpoint", "instant-payouts-keys", set()),
+    ("dependency-audit-checkpoint", "tip-jar-keys", set()),
+]
+
+
+@pytest.fixture(scope="module")
+def larder(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    target = tmp_path_factory.mktemp("larder") / "repo"
+    subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            str(EXAMPLES / "money-minor-units" / "build.py"),
+            str(target),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    return target
+
+
+def failing_tests(repo: Path, tree: str, into: Path) -> set[str]:
+    into.mkdir()
+    archive = subprocess.run(
+        ["git", "-C", str(repo), "archive", tree], check=True, capture_output=True
+    )
+    subprocess.run(["tar", "-x", "-C", str(into)], input=archive.stdout, check=True)
+    run = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-rf",
+            "--no-header",
+            "-p",
+            "no:cacheprovider",
+        ],
+        cwd=into,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert run.returncode in (0, 1), run.stdout[-2000:]
+    return {
+        line.split(" ")[1]
+        for line in run.stdout.splitlines()
+        if line.startswith("FAILED")
+    }
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize(("change", "affected", "fails"), LARDER_CASES)
+def test_each_larder_case_fails_on_its_merged_checkpoints_and_passes_with_its_fixes(
+    larder: Path, tmp_path: Path, change: str, affected: str, fails: set[str]
+) -> None:
+    merged = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(larder),
+            "merge-tree",
+            "--write-tree",
+            f"feature-{change}",
+            f"feature-{affected}",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.split()[0]
+    assert failing_tests(larder, merged, tmp_path / "tree") == fails

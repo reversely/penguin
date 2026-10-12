@@ -66,7 +66,11 @@ ROLES = frozenset(
         "late-starter",
     }
 )
-FIX_KINDS = frozenset({"migration", "revision"})
+# A fix commit names its kind: a migration of Ines's split, a revision a person asked for, a fix an
+# originating agent writes for one affected scope, or a backfill of a store whose shape changed.
+FIX_KINDS = frozenset({"migration", "revision", "fix", "backfill"})
+# The four use cases of PRD section 1; each names one originating feature.
+CASES = frozenset({1, 2, 3, 4})
 MAX_ID = 64
 MAX_TEXT = 2000
 MAX_PATH = 512
@@ -99,6 +103,23 @@ class CommitSpec:
     fails_alone: list[str]
     onto: str | None = None
     merge: str | None = None
+    # The commit at which the feature's agent proposes its merge plan.
+    plan: bool = False
+    declares: "Declares | None" = None
+
+
+@dataclass(frozen=True)
+class Declares:
+    """Contracts and examples files a commit adds to the penguin files, beside larder.json's own."""
+
+    contracts: tuple[tuple[str, str], ...] = ()
+    examples: tuple[tuple[str, str, tuple[str, ...]], ...] = ()
+
+    def __or__(self, other: "Declares") -> "Declares":
+        return Declares(
+            tuple(dict.fromkeys(self.contracts + other.contracts)),
+            tuple(dict.fromkeys(self.examples + other.examples)),
+        )
 
 
 @dataclass(frozen=True)
@@ -275,7 +296,7 @@ def check_scopes(
     return scopes, scope_paths
 
 
-def check_invariants(raw: dict, scope_paths: dict, check: Checker) -> None:
+def check_invariants(raw: dict, scope_paths: dict, check: Checker) -> dict[str, str]:
     declared = {}
     for i, invariant in enumerate(raw.get("invariants", [])):
         if check.id(invariant.get("id"), f"invariants[{i}].id"):
@@ -295,10 +316,51 @@ def check_invariants(raw: dict, scope_paths: dict, check: Checker) -> None:
         for name in example.get("invariants", []):
             if declared.get(name) != scope_id:
                 check.fail(f"{at}.invariants", f"{name!r} is not the scope's")
+    return declared
+
+
+def check_declares(
+    value: object, at: str, scope_paths: dict, invariants: dict, check: Checker
+) -> Declares | None:
+    """A commit's additions to the penguin files: ``{"contracts": {scope: [path::symbol]},
+    "examples": [{"scope", "file", "invariants"}]}``, each inside its scope."""
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) - {"contracts", "examples"}:
+        check.fail(at, "must hold only 'contracts' and 'examples'")
+        return None
+    contracts, examples = [], []
+    for scope_id, names in (value.get("contracts") or {}).items():
+        if scope_id not in scope_paths or not isinstance(names, list):
+            check.fail(f"{at}.contracts", f"{scope_id!r} is not a scope with a list")
+            continue
+        for name in names:
+            check.contract(name, scope_paths[scope_id], f"{at}.contracts.{scope_id}")
+            contracts.append((scope_id, name))
+    for i, example in enumerate(value.get("examples") or []):
+        where, scope_id = f"{at}.examples[{i}]", example.get("scope")
+        path = check.path(example.get("file"), f"{where}.file")
+        if scope_id not in scope_paths:
+            check.fail(f"{where}.scope", f"{scope_id!r} is not a scope")
+            continue
+        if path and not inside(path, scope_paths[scope_id]):
+            check.fail(f"{where}.file", f"{path!r} is outside scope {scope_id}")
+        names = example.get("invariants", [])
+        for name in names:
+            if invariants.get(name) != scope_id:
+                check.fail(f"{where}.invariants", f"{name!r} is not the scope's")
+        examples.append((scope_id, path or "", tuple(names)))
+    return Declares(tuple(contracts), tuple(examples))
 
 
 def check_commit(
-    commit: dict, feature: dict, at: str, people: dict, scopes: dict, check: Checker
+    commit: dict,
+    feature: dict,
+    at: str,
+    people: dict,
+    scopes: dict,
+    known: tuple[dict, dict],
+    check: Checker,
 ) -> CommitSpec | None:
     before = len(check.problems)
     source = commit.get("source")
@@ -324,6 +386,9 @@ def check_commit(
             check.fail(f"{at}.{key}", "can only be 'main'")
     if onto is not None and merge is not None:
         check.fail(f"{at}.merge", "a commit names either onto or merge")
+    if commit.get("plan", False) not in (True, False):
+        check.fail(f"{at}.plan", "must be true or false")
+    declares = check_declares(commit.get("declares"), f"{at}.declares", *known, check)
     if len(check.problems) > before:
         return None
     return CommitSpec(
@@ -337,13 +402,15 @@ def check_commit(
         fails_alone=fails_alone,
         onto=onto,
         merge=merge,
+        plan=commit.get("plan", False),
+        declares=declares,
     )
 
 
 def check_features(
-    raw: dict, people: dict, scopes: dict, check: Checker
+    raw: dict, people: dict, scopes: dict, known: tuple[dict, dict], check: Checker
 ) -> tuple[dict[str, dict], list[CommitSpec]]:
-    features, commits = {}, []
+    features, commits, cases = {}, [], {}
     for i, feature in enumerate(raw.get("features", [])):
         at = f"features[{i}]"
         if not check.id(feature.get("id"), f"{at}.id"):
@@ -357,6 +424,19 @@ def check_features(
         for key, allowed in (("vendor", VENDORS), ("role", ROLES), ("start", STARTS)):
             if feature.get(key) not in allowed:
                 check.fail(f"{at}.{key}", f"must be one of {sorted(allowed)}")
+        if "case" in feature:
+            case = feature["case"]
+            if case not in CASES or feature.get("role") != "originating":
+                check.fail(
+                    f"{at}.case",
+                    f"must be one of {sorted(CASES)} on an originating feature",
+                )
+            elif case in cases:
+                check.fail(
+                    f"{at}.case", f"case {case} already originates in {cases[case]!r}"
+                )
+            else:
+                cases[case] = feature["id"]
         if not feature.get("area"):
             check.fail(f"{at}.area", "must list the scopes the feature declares")
         for scope_id in feature.get("area", []):
@@ -368,7 +448,7 @@ def check_features(
         tags: set[str] = set()
         for j, commit in enumerate(feature.get("commits", [])):
             spec = check_commit(
-                commit, feature, f"{at}.commits[{j}]", people, scopes, check
+                commit, feature, f"{at}.commits[{j}]", people, scopes, known, check
             )
             if spec is None:
                 continue
@@ -416,8 +496,10 @@ def load_larder(raw: object) -> Larder:
     people = check_people(raw, check)
     teams = check_teams(raw, people, check)
     scopes, scope_paths = check_scopes(raw, teams, check)
-    check_invariants(raw, scope_paths, check)
-    features, commits = check_features(raw, people, scopes, check)
+    invariants = check_invariants(raw, scope_paths, check)
+    features, commits = check_features(
+        raw, people, scopes, (scope_paths, invariants), check
+    )
     check_split(raw, features, check)
     if check.problems:
         raise LarderError(check.problems)
@@ -461,9 +543,13 @@ def teams_file(larder: Larder) -> dict:
     }
 
 
-def scopes_file(larder: Larder) -> dict:
+NOTHING_DECLARED = Declares()
+
+
+def scopes_file(larder: Larder, declared: Declares = NOTHING_DECLARED) -> dict:
     scopes = []
     for scope in larder.scopes.values():
+        added = [name for owner, name in declared.contracts if owner == scope["id"]]
         entry = {
             "id": scope["id"],
             "name": scope["name"],
@@ -471,7 +557,7 @@ def scopes_file(larder: Larder) -> dict:
             "dri": scope["dri"],
             "fallback": scope.get("fallback", []),
             "paths": scope["paths"],
-            "contracts": scope.get("contracts", []),
+            "contracts": [*scope.get("contracts", []), *added],
             "test_command": f"python -m pytest {larder.scope_paths[scope['id']][0]}",
             "depends_on": [
                 {"scope": provider, "kind": "imports"}
@@ -540,14 +626,19 @@ def identities_file(larder: Larder) -> dict:
     }
 
 
-def invariants_file(larder: Larder) -> dict:
+def invariants_file(larder: Larder, declared: Declares = NOTHING_DECLARED) -> dict:
+    base = [
+        {"scope": e["scope"], "file": e["file"], "invariants": e["invariants"]}
+        for e in larder.raw.get("examples", [])
+    ]
+    added = [
+        {"scope": scope, "file": file, "invariants": list(names)}
+        for scope, file, names in declared.examples
+    ]
     return {
         "$comment": "Each scope's declared invariants and recorded examples, generated from larder.json by build.py. Format in docs/design.md, Invariants and examples.",
         "invariants": larder.raw.get("invariants", []),
-        "examples": [
-            {"scope": e["scope"], "file": e["file"], "invariants": e["invariants"]}
-            for e in larder.raw.get("examples", [])
-        ],
+        "examples": base + added,
     }
 
 
@@ -791,6 +882,18 @@ def timeline(larder: Larder) -> list[CommitSpec | dict]:
     return [event for _, _, event in events]
 
 
+def declared_files(larder: Larder, declared: Declares) -> dict[str, bytes]:
+    """The penguin files a commit with declarations carries: larder.json's plus the declared."""
+    files = {
+        "scopes.json": scopes_file(larder, declared),
+        "invariants.json": invariants_file(larder, declared),
+    }
+    return {
+        f"penguin/{name}": json_text(content).encode()
+        for name, content in files.items()
+    }
+
+
 def penguin_files(larder: Larder) -> dict[str, bytes]:
     files = {
         "owners.json": owners_file(larder),
@@ -822,7 +925,12 @@ def build(target: Path, larder: Larder | None = None) -> Built:
     base = larder.raw["base"]
     files = {**source_files(HERE / base["source"]), **penguin_files(larder)}
     for example in larder.raw.get("examples", []):
-        files[example["file"]] = examples_file_text(example).encode()
+        if "sample" in example:
+            files[example["file"]] = examples_file_text(example).encode()
+        elif example["file"] not in files:
+            raise SystemExit(
+                f"examples file {example['file']} is not in the base source"
+            )
     fixture = larder.raw["authors"]["fixture"]
     base_mark = stream.commit(
         None, (fixture["name"], fixture["email"]), base["date"], base["message"], files
@@ -833,6 +941,8 @@ def build(target: Path, larder: Larder | None = None) -> Built:
     commits = []
     # Every file each branch's own commits laid, for a commit that merges main into the branch.
     laid: dict[str, dict[str, bytes]] = {}
+    # The declarations each commit's tree carries, from its own history.
+    declared: dict[int, Declares] = {base_mark: Declares()}
     for event in timeline(larder):
         if isinstance(event, dict):
             name = branch(event["feature"])
@@ -857,10 +967,18 @@ def build(target: Path, larder: Larder | None = None) -> Built:
             parent = heads["main"]
         if event.merge == "main":
             parent, merged, files = heads["main"], heads[name], laid[name]
+        carried = declared[parent] | (event.declares or Declares())
+        if merged is not None:
+            carried |= declared[merged]
+        if carried != declared[parent] or (
+            merged is not None and carried != Declares()
+        ):
+            files = {**files, **declared_files(larder, carried)}
         mark = stream.commit(
             parent, author_of(larder, event), event.date, event.message, files, merged
         )
         heads[name] = mark
+        declared[mark] = carried
         commits.append((event, mark))
         if event.tag is not None:
             tags[f"{name}-{event.tag}"] = mark
@@ -886,7 +1004,7 @@ def pins_of(larder: Larder, built: Built) -> dict:
     }
 
     return {
-        "$comment": "Commit SHAs a build of this fixture produces; `python build.py TARGET --pins` prints them. 'branches' maps main and each feature-<id> branch to its head. 'tags' maps base and each feature-<id>-<tag> tag to its commit. 'fixes' maps the pytest node ID of each test a migration commit makes pass to that commit. tests/test_money_fixture_builder.py checks a fresh build against this file.",
+        "$comment": "Commit SHAs a build of this fixture produces; `python build.py TARGET --pins` prints them. 'branches' maps main and each feature-<id> branch to its head. 'tags' maps base and each feature-<id>-<tag> tag to its commit. 'fixes' maps the pytest node ID of each test a fix, revision or migration commit makes pass to that commit. tests/test_fixtures.py checks a fresh build against this file.",
         "branches": {ref: built.refs[ref] for ref in sorted(branches)},
         "tags": {
             ref: sha for ref, sha in sorted(built.refs.items()) if ref not in branches

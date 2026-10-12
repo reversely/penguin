@@ -1,0 +1,8 @@
+{
+  "rows": [
+    {"invariant": "hours-in-store-time", "verdict": "holds", "evidence": ["store_dashboard/hours.py::is_open"], "storedData": ""},
+    {"invariant": "closure-local-day", "verdict": "holds", "evidence": ["shared/platform/dates.py::start_of_local_day"], "storedData": ""}
+  ],
+  "riskyInputs": [],
+  "storedDataMarker": null
+}

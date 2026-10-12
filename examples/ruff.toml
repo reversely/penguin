@@ -10,5 +10,5 @@ known-first-party = [
     "catalog", "checkout", "invoicing", "mobile_api", "orders", "payouts", "promotions",
     "refunds", "store_dashboard", "tax", "app_config", "billing", "dashboards", "disputes",
     "dunning", "experiments", "fulfilment", "inventory", "loyalty", "notifications",
-    "payment_methods", "store_onboarding", "tax_filing",
+    "payment_methods", "store_onboarding", "tax_filing", "accounts",
 ]

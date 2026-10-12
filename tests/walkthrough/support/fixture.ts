@@ -76,6 +76,8 @@ export type FeatureRole = "originating" | "running" | "reader" | "same-area" | "
 
 /** A split's rewrite rules and retiring symbols, as the originating agent declares them with the expand. */
 export interface SplitData {
+  /** The feature whose expand declares the split. */
+  readonly feature: string;
   readonly rules: readonly Record<string, unknown>[];
   readonly retiring: readonly { readonly contract: string; readonly replacement: string }[];
 }
@@ -328,7 +330,7 @@ export class CaseFixture implements CaseData {
       features,
       // The promotions before the originating feature's own: those main holds when it opens.
       promotions: larder.promotions.map((promotion) => promotion.feature).slice(0, Math.max(0, larder.promotions.findIndex((promotion) => promotion.feature === larder.split.feature))),
-      split: { rules: larder.split.rules, retiring: larder.split.retiring },
+      split: { feature: larder.split.feature, rules: larder.split.rules, retiring: larder.split.retiring },
       reviewForms,
       baseSha: pins.tags["base"] as string,
       baseDate: larder.base.date,
@@ -341,7 +343,9 @@ export class CaseFixture implements CaseData {
   }
 
   get origin(): CaseFeature {
-    const [origin, ...rest] = this.features.filter((feature) => feature.role === "originating");
+    // Larder carries all four cases; its split's feature is the one this case view follows.
+    const originating = this.features.filter((feature) => feature.role === "originating");
+    const [origin, ...rest] = this.split === null ? originating : originating.filter((feature) => feature.id === this.split?.feature);
     if (origin === undefined || rest.length > 0) throw new Error(`${this.name}: expected exactly one originating feature`);
     return origin;
   }

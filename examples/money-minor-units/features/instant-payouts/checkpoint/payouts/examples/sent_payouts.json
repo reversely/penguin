@@ -1,0 +1,7 @@
+{
+  "contract": "payouts/tests/payout_replay.py::payouts_sent",
+  "cases": [
+    {"name": "a payout the processor answers at once", "args": {"payout_id": "po-1001", "store_id": "s-1", "cents": 480}},
+    {"name": "a payout whose response times out", "args": {"payout_id": "po-1002", "store_id": "s-2", "cents": 1250, "lost_responses": 1}}
+  ]
+}

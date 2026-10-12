@@ -1,0 +1,105 @@
+{
+  "contract": "analytics/activity.py::daily_active_users",
+  "cases": [
+    {
+      "name": "a new visitor on a later day",
+      "args": {
+        "events": [
+          {
+            "source": "web",
+            "type": "page_view",
+            "day": "2026-01-05",
+            "ts": 1,
+            "user_id": "u1"
+          },
+          {
+            "source": "web",
+            "type": "page_view",
+            "day": "2026-01-06",
+            "ts": 2,
+            "user_id": "u2"
+          }
+        ],
+        "shopper_map": {
+          "$call": "accounts/shoppers.py::ShopperMap.from_events",
+          "args": {
+            "events": [
+              {
+                "source": "web",
+                "type": "page_view",
+                "day": "2026-01-05",
+                "ts": 1,
+                "user_id": "u1"
+              },
+              {
+                "source": "web",
+                "type": "page_view",
+                "day": "2026-01-06",
+                "ts": 2,
+                "user_id": "u2"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "a later login links two identities active on a published day",
+      "args": {
+        "events": [
+          {
+            "source": "web",
+            "type": "page_view",
+            "day": "2026-01-05",
+            "ts": 1,
+            "user_id": "u1"
+          },
+          {
+            "source": "mobile",
+            "type": "app_open",
+            "day": "2026-01-05",
+            "ts": 2,
+            "device_id": "d1"
+          },
+          {
+            "source": "mobile",
+            "type": "login",
+            "day": "2026-01-06",
+            "ts": 3,
+            "user_id": "u1",
+            "device_id": "d1"
+          }
+        ],
+        "shopper_map": {
+          "$call": "accounts/shoppers.py::ShopperMap.from_events",
+          "args": {
+            "events": [
+              {
+                "source": "web",
+                "type": "page_view",
+                "day": "2026-01-05",
+                "ts": 1,
+                "user_id": "u1"
+              },
+              {
+                "source": "mobile",
+                "type": "app_open",
+                "day": "2026-01-05",
+                "ts": 2,
+                "device_id": "d1"
+              },
+              {
+                "source": "mobile",
+                "type": "login",
+                "day": "2026-01-06",
+                "ts": 3,
+                "user_id": "u1",
+                "device_id": "d1"
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

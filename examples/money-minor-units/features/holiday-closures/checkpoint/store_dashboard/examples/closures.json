@@ -1,0 +1,21 @@
+{
+  "contract": "store_dashboard/holidays.py::closed_at",
+  "cases": [
+    {
+      "name": "a store at UTC-08:00 on Christmas afternoon and evening",
+      "args": {
+        "moments": ["2026-12-25T22:00:00+00:00", "2026-12-26T04:00:00+00:00"],
+        "utc_offset": "-08:00",
+        "closures": ["2026-12-25"]
+      }
+    },
+    {
+      "name": "a store in UTC on Christmas evening",
+      "args": {
+        "moments": ["2026-12-25T20:00:00+00:00"],
+        "utc_offset": "+00:00",
+        "closures": ["2026-12-25"]
+      }
+    }
+  ]
+}

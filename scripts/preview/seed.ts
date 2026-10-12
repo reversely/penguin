@@ -1483,12 +1483,10 @@ async function moneyMinorUnits(preview: PreviewProject): Promise<void> {
   const sha = (ref: string) => preview.git("rev-parse", `${ref}^{commit}`);
   const byId = new Map(larder.features.map((feature) => [feature.id, feature]));
   const origin = byId.get(larder.split.feature) as LarderFeature;
-  const [stacking] = larder.promotions;
-  // Main as Ines found it: Lena's stacking promoted.
-  preview.moveMain(sha(`feature-${stacking?.feature}`));
-  const early = larder.features.filter(
-    (feature) => feature.start === "base" && feature.id !== stacking?.feature,
-  );
+  // Main as Ines found it: cases 1 to 3 and Lena's stacking promoted, the last of them holding the rest.
+  const before = larder.promotions.slice(0, larder.promotions.findIndex((promotion) => promotion.feature === origin.id)).map((promotion) => promotion.feature);
+  preview.moveMain(sha(`feature-${before.at(-1)}`));
+  const early = larder.features.filter((feature) => feature.start === "base" && !before.includes(feature.id));
   for (const feature of early) {
     await preview.step(`open ${feature.id}`, () => preview.open(builder(feature), feature.id, { scopes: feature.area }));
     await preview.step(`checkpoint ${feature.id}`, () => preview.checkpoint(feature.id, tagOf(feature, feature.commits[0]?.tag as string)));

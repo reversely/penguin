@@ -1,0 +1,9 @@
+{
+  "rows": [
+    {"invariant": "receipt-shows-amount-paid", "verdict": "holds", "evidence": ["messaging/receipts.py::receipt_text"], "storedData": ""},
+    {"invariant": "unsubscribe-holds", "verdict": "holds", "evidence": ["messaging/subscriptions.py::subscription_status"], "storedData": ""},
+    {"invariant": "digest-local-hour", "verdict": "holds", "evidence": ["shared/platform/dates.py::start_of_local_day"], "storedData": ""}
+  ],
+  "riskyInputs": [],
+  "storedDataMarker": null
+}

@@ -1,0 +1,8 @@
+{
+  "contract": "checkout/tests/tip_replay.py::tip_charges",
+  "cases": [
+    {"name": "a tip the processor answers at once", "args": {"order_id": "o-1001", "customer_id": "cus_7", "cents": 62}},
+    {"name": "a declined card", "args": {"order_id": "o-1002", "customer_id": "cus_declined", "cents": 62}},
+    {"name": "a tip whose response times out", "args": {"order_id": "o-1003", "customer_id": "cus_7", "cents": 62, "lost_responses": 1}}
+  ]
+}
