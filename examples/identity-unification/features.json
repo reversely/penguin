@@ -1,5 +1,5 @@
 {
-  "$comment": "The commits build.py makes, as a base and the features forked from it. Format: a JSON object with 'base' and 'features'. 'base' is the root commit: 'branch' (the base branch, main), 'source' (the directory next to build.py whose files form the commit's tree), 'author' ('name' and 'email', also the committer), 'date' (ISO 8601 with offset) and 'message'. Each entry of 'features' is one feature: 'id', 'title', 'owner' (an id from penguin/owners.json), 'role' ('originating' for the feature whose change the others must absorb, 'running' for a feature already under way), 'fork' (the branch that holds the feature, forked from the base branch), 'area' (the 'scopes', 'paths' and 'contracts' the feature declares it touches), 'author' and 'commits'. Each commit lays the files of its 'source' directory over the fork's tree; 'tag' names a lightweight tag on the commit. The first commit of a feature starts from the base branch, each later one from the fork's previous commit.",
+  "$comment": "The commits build.py makes, as a base and the features forked from it. Format: a JSON object with 'base' and 'features'. 'base' is the root commit: 'branch' (the base branch, main), 'source' (the directory next to build.py whose files form the commit's tree), 'author' ('name' and 'email', also the committer), 'date' (ISO 8601 with offset) and 'message'. Each entry of 'features' is one feature: 'id', 'title', 'owner' (an id from penguin/owners.json), 'role' ('originating' for the feature whose change the others must absorb, 'running' for a feature already under way), 'fork' (the branch that holds the feature, forked from the base branch), 'area' (the 'scopes', 'paths' and 'contracts' the feature declares when it opens; a contract is one main's penguin/scopes.json declares, so a contract the feature adds is declared in its fork's penguin/scopes.json, not here), 'author' and 'commits'. Each commit lays the files of its 'source' directory over the fork's tree; 'tag' names a lightweight tag on the commit. 'fix' marks a commit of the originating feature that fixes code on main in another scope: its 'scope' is the scope the commit changes, which the merge plan's part for that scope names. The first commit of a feature starts from the base branch, each later one from the fork's previous commit.",
   "base": {
     "branch": "main",
     "source": "base",
@@ -28,6 +28,20 @@
           "message": "Add person_id with merge rules\n\nLink identities on login events and on a shared verified email. A merged profile\nkeeps the latest value of each attribute.\n"
         },
         {
+          "source": "owner-priya-fix-analytics",
+          "tag": "owner-priya-fix-analytics",
+          "fix": { "scope": "analytics" },
+          "date": "2026-01-13T10:00:00+00:00",
+          "message": "Keep published days' active users on main\n\ndaily_active_users counts people by person_id from the first day the identity map\nlinks an event to another identity. Earlier days count identities, so a later\nlogin never changes a published day.\n"
+        },
+        {
+          "source": "owner-priya-fix-messaging",
+          "tag": "owner-priya-fix-messaging",
+          "fix": { "scope": "messaging" },
+          "date": "2026-01-13T10:30:00+00:00",
+          "message": "Honour an unsubscribe on any linked identity on main\n\nis_subscribed reads each linked identity's latest consent, so an unsubscribe holds\nafter a later signup on another identity subscribes the address by default.\n"
+        },
+        {
           "source": "owner-priya-limit-five",
           "tag": "owner-priya-limit-five",
           "date": "2026-01-19T10:00:00+00:00",
@@ -49,7 +63,7 @@
       "area": {
         "scopes": ["analytics"],
         "paths": ["analytics/retention.py"],
-        "contracts": ["analytics/retention.py::retention_dashboard"]
+        "contracts": []
       },
       "author": { "name": "Jun", "email": "jun@penguin.invalid" },
       "commits": [
@@ -75,7 +89,7 @@
       "area": {
         "scopes": ["messaging"],
         "paths": ["messaging/audience.py"],
-        "contracts": ["messaging/audience.py::reengagement_audience"]
+        "contracts": []
       },
       "author": { "name": "Sam", "email": "sam@penguin.invalid" },
       "commits": [

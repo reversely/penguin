@@ -18,11 +18,14 @@ import pytest
 pytestmark = pytest.mark.slow
 
 FIXTURE = Path(__file__).resolve().parents[1] / "examples" / "identity-unification"
-# Each owner's checkpoint, Priya's intermediate limit of five, and each owner's fixed branch head.
+# Each owner's checkpoint, Priya's fixes for code on main, Priya's intermediate limit of five, and
+# each owner's fixed branch head.
 COMMITS = (
     "owner-priya-checkpoint",
     "owner-jun-checkpoint",
     "owner-sam-checkpoint",
+    "owner-priya-fix-analytics",
+    "owner-priya-fix-messaging",
     "owner-priya-limit-five",
     "owner-priya",
     "owner-jun",
@@ -59,6 +62,13 @@ FIXES = {
     UNSUBSCRIBE_SURVIVES: ("owner-sam", "messaging"),
 }
 PINS = json.loads((FIXTURE / "pins.json").read_text())
+# Each commit of the originating feature that fixes code on main, as (its tag, the scope it fixes).
+MAIN_FIXES = tuple(
+    (commit["tag"], commit["fix"]["scope"])
+    for feature in json.loads((FIXTURE / "features.json").read_text())["features"]
+    for commit in feature["commits"]
+    if "fix" in commit
+)
 # The throwaway merge commit needs an identity; fixed values keep the run independent of the
 # caller's Git configuration.
 MERGE_ENV = {
@@ -189,12 +199,46 @@ def test_pins_map_each_test_to_its_fix_commit(built_repo: Path, test_id: str):
 
 @pytest.mark.parametrize(
     ("commit", "scope"),
-    [*FIXES.values(), ("owner-priya-limit-five", "identity-map")],
+    [*FIXES.values(), *MAIN_FIXES, ("owner-priya-limit-five", "identity-map")],
 )
-def test_each_fix_commit_changes_only_its_owner_scope(
+def test_each_fix_commit_changes_only_the_scope_it_fixes(
     built_repo: Path, scopes: dict[str, dict], commit: str, scope: str
 ):
     changed = git(built_repo, "diff", "--name-only", f"{commit}^", commit).split()
     paths = tuple(scopes[scope]["paths"])
     assert changed
     assert all(path.startswith(paths) for path in changed)
+
+
+def test_features_file_names_a_fix_on_main_for_analytics_and_messaging():
+    assert sorted(MAIN_FIXES) == [
+        ("owner-priya-fix-analytics", "analytics"),
+        ("owner-priya-fix-messaging", "messaging"),
+    ]
+
+
+@pytest.mark.parametrize(("commit", "scope"), MAIN_FIXES)
+def test_main_needs_each_fix_on_main(
+    built_repo: Path,
+    test_commands: dict[str, str],
+    tmp_path: Path,
+    commit: str,
+    scope: str,
+):
+    """The test a fix on main adds fails on Priya's checkpoint and passes on the fix.
+
+    Main's own code in the scope reads the identity map, so the checkpoint's merge rules change what
+    it returns. The test states the scope's invariant, and only the fix keeps it.
+    """
+    tests = f"{scope}/tests"
+    changed = git(built_repo, "diff", "--name-only", f"{commit}^", commit, "--", tests)
+    assert changed
+    checkpoint = extract(built_repo, "owner-priya-checkpoint", tmp_path / "checkpoint")
+    for path in changed.split():
+        (checkpoint / path).write_text(
+            git(built_repo, "show", f"{commit}:{path}") + "\n"
+        )
+    status, failed = failed_tests(checkpoint, test_commands[scope])
+    assert status == 1 and failed
+    fixed = extract(built_repo, commit, tmp_path / "fixed")
+    assert failed_tests(fixed, test_commands[scope]) == (0, set())

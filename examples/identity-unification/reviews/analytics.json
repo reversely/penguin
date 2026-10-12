@@ -1,0 +1,18 @@
+{
+  "rows": [
+    {
+      "invariant": "tablet-patrons-separate",
+      "verdict": "breaks",
+      "evidence": ["analytics/models.py::daily_active_users"],
+      "storedData": ""
+    },
+    {
+      "invariant": "published-day-counts-stable",
+      "verdict": "holds",
+      "evidence": ["analytics/models.py::daily_active_users"],
+      "storedData": ""
+    }
+  ],
+  "riskyInputs": [],
+  "storedDataMarker": null
+}

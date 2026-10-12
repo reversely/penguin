@@ -295,7 +295,7 @@
       "overlap": "approved",
       "agent": "rounding",
       "vendor": "codex",
-      "charter": ["platform", "money"],
+      "area": ["platform", "money"],
       "start": "base",
       "commits": [
         { "source": "checkpoint", "tag": "checkpoint", "date": "2026-03-03T08:00:00+00:00", "message": "Round money ties to the even cent\n" }
@@ -309,7 +309,7 @@
       "overlap": "declined",
       "agent": "stacking",
       "vendor": "claude-code",
-      "charter": ["promotions", "money"],
+      "area": ["promotions", "money"],
       "start": "base",
       "commits": [
         { "source": "checkpoint", "tag": "checkpoint", "date": "2026-03-03T08:30:00+00:00", "message": "Stack several coupons on one cart\n\npercent_off() takes several percentages and applies each to what the one before left.\n" }
@@ -430,7 +430,7 @@
         { "source": "checkpoint", "tag": "checkpoint", "date": "2026-03-03T09:22:00+00:00", "message": "Sync the cart between phone and web\n" },
         { "source": "fix", "author": "codemod", "date": "2026-03-07T09:22:00+00:00", "message": "cart sync: send Money.display() and amount_minor\n\nCodemod from Ines's merge plan: the * 100 conversion is removed.\n", "fix": { "scope": "mobile-api", "kind": "mechanical", "tests": ["mobile_api/tests/test_cart_sync.py::test_payload_carries_items_and_total"] } }
       ] },
-    { "id": "pagination", "owner": "noor", "title": "Paginated order lines", "role": "midway", "agent": "pagination", "vendor": "codex", "charter": ["mobile-api", "platform"], "start": "base",
+    { "id": "pagination", "owner": "noor", "title": "Paginated order lines", "role": "midway", "agent": "pagination", "vendor": "codex", "area": ["mobile-api", "platform"], "start": "base",
       "commits": [
         { "source": "checkpoint-1", "tag": "checkpoint-1", "date": "2026-03-03T09:23:00+00:00", "message": "Add cursor pagination to the shared libraries\n" },
         { "source": "checkpoint-2", "tag": "checkpoint", "date": "2026-03-08T10:00:00+00:00", "message": "Page through an order's lines with their prices\n" },

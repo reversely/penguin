@@ -14,15 +14,20 @@ id, owner, role, fork branch, declared area and commits. Every build produces th
 | `owner-priya-checkpoint` (tag) | Priya | `person_id` with merge rules in `ingestion/identity_map.py`: a `login` event links its device to its user. A shared verified email links identities. A merged profile keeps the latest value of each attribute. |
 | `owner-jun-checkpoint` (tag) | Jun | The retention dashboard in `analytics/retention.py` with `test_retention.py` and `test_identity.py`. `penguin/scopes.json` adds the contract `analytics/retention.py::retention_dashboard` |
 | `owner-sam-checkpoint` (tag) | Sam | The re-engagement email audience in `messaging/audience.py` with `test_audience.py` and `test_consent.py`. `penguin/scopes.json` adds the contract `messaging/audience.py::reengagement_audience`. `penguin/invariants.json` adds its examples file `messaging/examples/reengagement_audience.json` |
-| `owner-priya-limit-five` (tag) | Priya | On `owner-priya-checkpoint`: a login links a device to at most five user identities (`MAX_IDENTITIES_PER_DEVICE`) |
+| `owner-priya-fix-analytics` (tag) | Priya | On `owner-priya-checkpoint`: the fix for analytics' code on main. `daily_active_users` in `analytics/models.py` counts people by `person_id` from a cutover day on, with `test_published_day_keeps_its_count_after_a_later_login` |
+| `owner-priya-fix-messaging` (tag) | Priya | On `owner-priya-fix-analytics`: the fix for messaging's code on main. `is_subscribed` in `messaging/subscriptions.py` leaves out a person when any linked identity's latest consent is an unsubscribe, with `test_unsubscribe_on_a_linked_identity_holds_after_a_signup` |
+| `owner-priya-limit-five` (tag) | Priya | On `owner-priya-fix-messaging`: a login links a device to at most five user identities (`MAX_IDENTITIES_PER_DEVICE`) |
 | `owner-priya` | Priya | On `owner-priya-limit-five`: the limit lowered to one, so each device links only its first user |
 | `owner-jun` | Jun | On `owner-jun-checkpoint`: a cutover marker for past metrics in `analytics/retention.py` |
 | `owner-sam` | Sam | On `owner-sam-checkpoint`: the audience leaves out a person when any identity linked to the person has unsubscribed |
 
 Each feature is a fork of `main`: its first commit starts from `main` and each later commit from the
-fork's previous commit. Each fix commit changes only paths in its owner's scope. A running feature's
-checkpoint also declares its new contract in its own scope's entry of the penguin files. Every scope's tests pass on each commit alone. `pins.json` records the
-SHA of every branch head and tag. It also maps each failing test to the commit that fixes it.
+fork's previous commit. Each fix commit for a feature changes only paths in its owner's scope. Each
+of Priya's fixes for code on main changes only the scope it fixes. `features.json` marks such a
+commit with `fix` and the scope's id. A running feature's checkpoint also declares its new contract
+in its own scope's entry of the penguin files. Every scope's tests pass on each commit alone.
+`pins.json` records the SHA of every branch head and tag. It also maps each failing test to the
+commit that fixes it.
 
 ## Expected failures
 
@@ -46,6 +51,25 @@ checkpoint, each fix makes its own test pass without help from another fix.
 | `analytics/tests/test_identity.py::test_shared_device_split` | `owner-priya` | A login links a device to at most one user identity. The tablet's later patrons stay separate people. |
 | `messaging/tests/test_consent.py::test_unsubscribe_survives` | `owner-sam` | The audience reads each identity's latest consent event. A person with any unsubscribed identity is left out. |
 
+### Fixes for code on main
+
+Main's own analytics and messaging code reads the identity map, so Priya's merge rules change what
+it returns. On `owner-priya-checkpoint`, `daily_active_users` on `main` drops a published day's count
+when a later login links two of that day's identities. `subscription_status` on `main` reports a
+person subscribed after an unsubscribe on mobile and a later web signup. Each break goes against an
+invariant of the scope on `main`, so the merge plan needs a part for each scope's code on main. The
+part names Priya's fix commit for that scope:
+
+| Scope | Fix commit | Fix | Test the fix adds |
+|---|---|---|---|
+| analytics | `owner-priya-fix-analytics` | `daily_active_users` counts identities before the cutover day and people from it on, the rule Jun's retention dashboard follows | `analytics/tests/test_dau.py::test_published_day_keeps_its_count_after_a_later_login` |
+| messaging | `owner-priya-fix-messaging` | `is_subscribed` reads each linked identity's latest consent, so the CRM rows and the subscription status leave out a person with an unsubscribed identity | `messaging/tests/test_subscriptions.py::test_unsubscribe_on_a_linked_identity_holds_after_a_signup` |
+
+Each added test states its scope's invariant in its docstring. It fails on `owner-priya-checkpoint`
+and passes on its fix commit.
+
+### The limit of five
+
 `owner-priya-limit-five` is the commit that Jun's review answers in case 1: "a limit of five
 still joins the tablet's users." Merged with `owner-jun`, it still fails `test_shared_device_split`,
 because the tablet's three patrons are under the limit.
@@ -59,11 +83,13 @@ In the approved design ([design.md](design.md#procedure)) this case runs as foll
    Penguin lists the two running features that read the identity map: Jun's retention dashboard and
    Sam's re-engagement audience.
 2. **Plan.** Penguin supplies the contract diff with the invariants of analytics and messaging.
-   Priya's agent proposes two fixes. Jun's dashboard gets a cutover marker, so past days keep the
-   counts they were published with. Sam's audience honours an unsubscribe from any identity linked
-   to the person.
+   The facts list four affected places: analytics' and messaging's code on main, Jun's dashboard
+   and Sam's audience. Priya's agent proposes a part for each. The parts for code on main name
+   `owner-priya-fix-analytics` and `owner-priya-fix-messaging` in Priya's fork. Jun's dashboard gets a
+   cutover marker, so past days keep the counts they were published with. Sam's audience honours an
+   unsubscribe from any identity linked to the person. Jun owns two parts and Sam owns two.
 3. **Advance notice.** Sam's agent fills in the review form. The side-by-side run shows no consent
-   changes once the fix is in, so Sam approves. Jun's agent reviews analytics' invariant "patrons who
+   changes once the fix is in, so Sam approves both of Sam's parts. Jun's agent reviews analytics' invariant "patrons who
    log in on one library tablet stay separate people". The side-by-side run shows strangers on one
    tablet merged into one person. The break sits in Priya's merge rules. Jun asks for a limit on
    identities per device in Priya's own feature. Priya's agent sets a limit of five
@@ -94,9 +120,16 @@ declares `crm_rows`, `is_subscribed` and `subscription_status`.
 
 `features.json` lists Priya's feature "Add person_id with merge rules" as the originating feature on
 the fork `owner-priya`. Jun's retention dashboard (`owner-jun`) and Sam's re-engagement audience
-(`owner-sam`) are the running features. Each running feature declares its new contract in its own
-scope's entry of `penguin/scopes.json`. The two forks change separate entries, so they merge without
-a conflict.
+(`owner-sam`) are the running features. A feature's `area` is the declaration its agent sends when
+the feature opens. Penguin checks its contracts against `penguin/scopes.json` on `main`, so a running
+feature's area names no contract. Each running feature declares its new contract in its own scope's
+entry of `penguin/scopes.json` on its fork. The two forks change separate entries, so they merge
+without a conflict.
+
+`reviews/analytics.json` and `reviews/messaging.json` hold the review forms Jun's and Sam's agents
+submit on Priya's feature. Jun's form reports `tablet-patrons-separate` as broken. Sam's form reports
+`unsubscribe-holds` as holding. Each row's evidence is the contract the invariant's recorded examples
+run. The builder does not commit the forms.
 
 ## Impact and review on this fixture
 
@@ -112,10 +145,10 @@ use the changed symbols, so both forks run tests.
 | Review | Base | Fork | Side-by-side differences | Verdict and exceptions |
 |---|---|---|---|---|
 | Analytics | `main` | `owner-priya-checkpoint` | Three patrons on one tablet: 3 people on main, 1 on the fork. Six patrons: 6 and 1. A later login on a published day: that day's count drops from 2 to 1 | Refused with `stored_data_without_marker`. The tablet difference goes to Jun as a `protected_difference` |
-| Analytics | `main` | `owner-priya-limit-five` | Three patrons: 3 and 1. Six patrons: 6 and 2. The risky input of ten patrons: 10 and 6. The published-day example differs as above | Refused with `stored_data_without_marker`. A `protected_difference` goes to Jun |
-| Analytics | `main` | `owner-priya` merged onto `owner-jun` | Only the published-day example differs on `daily_active_users`. The tablet examples and the risky input match main | Accepted with the cutover marker `analytics/retention.py::person_id_cutover`. No exception |
+| Analytics | `main` | `owner-priya-limit-five` | Three patrons: 3 and 1. Six patrons: 6 and 2. The risky input of ten patrons: 10 and 6. The published-day example matches main, because `owner-priya-fix-analytics` comes before the limit | Refused with `stored_data_without_marker`. A `protected_difference` goes to Jun |
+| Analytics | `main` | `owner-priya` merged onto `owner-jun` | No example differs on `daily_active_users`. The tablet examples, the published-day example and the risky input match main | Accepted with the cutover marker `analytics/retention.py::person_id_cutover`. No exception |
 | Messaging, without the contract diff | `owner-sam-checkpoint` | `owner-priya-checkpoint` merged onto it | After an unsubscribe on mobile and a web signup, `subscription_status` gives `device:d1` false and `user:u1` true on the base. The fork gives one subscribed person. `reengagement_audience` returns no address on the base and `a@example.com` on the fork | Accepted. The reported break goes to Sam as a `broken_invariant` |
-| Messaging, without the contract diff | `owner-sam` | `owner-priya` merged onto it | `reengagement_audience` matches on both examples. `subscription_status` still differs, because Sam's fix lives in the audience | Accepted. No exception |
+| Messaging, without the contract diff | `owner-sam` | `owner-priya` merged onto it | `reengagement_audience` matches on both examples. `subscription_status` gives `device:d1` false and `user:u1` true on the base. The fork gives one person, `device:d1`, not subscribed, through `owner-priya-fix-messaging` | Accepted. No exception |
 
 The messaging reviews run with `--no-diff`. The cutover marker in Jun's review answers the `Profile`
 shape change for the block. `penguin-bridge check` on the three checkpoints passes overlap, merge,
@@ -222,8 +255,9 @@ the tree under test.
 every scope passes on each commit alone and that the merged checkpoints fail exactly the three tests
 above. It asserts that each fix makes its own test pass, that `owner-priya-limit-five` still fails
 `test_shared_device_split`, and that the combined run on the fixed branches passes. It also asserts
-that `pins.json` maps each test to its fix commit and that each fix commit changes only its owner's
-scope paths.
+that `pins.json` maps each test to its fix commit and that each fix commit changes only the paths of
+the scope it fixes. For each fix for code on main, it asserts that the test the fix adds fails on
+`owner-priya-checkpoint` and passes on the fix commit.
 
 ## Changing the fixture
 

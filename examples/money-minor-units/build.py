@@ -292,9 +292,9 @@ def check_features(
         for key, allowed in (("vendor", VENDORS), ("role", ROLES), ("start", STARTS)):
             if feature.get(key) not in allowed:
                 check.fail(f"{at}.{key}", f"must be one of {sorted(allowed)}")
-        for scope_id in feature.get("charter", []):
+        for scope_id in feature.get("area", []):
             if scope_id not in scopes:
-                check.fail(f"{at}.charter", f"{scope_id!r} is not a scope")
+                check.fail(f"{at}.area", f"{scope_id!r} is not a scope")
         if not feature.get("commits"):
             check.fail(f"{at}.commits", "must list at least one commit")
         previous = None
@@ -410,11 +410,11 @@ def identities_file(larder: Larder) -> dict:
                 "owner": owner,
                 "vendor": feature["vendor"],
                 "job": feature["title"],
-                "charter_scopes": feature.get("charter", owned),
+                "charter_scopes": owned,
             }
         )
     return {
-        "$comment": "Agent identities, one per feature, generated from larder.json by build.py. Format as in the other fixtures.",
+        "$comment": "Agent identities, one per feature, generated from larder.json by build.py. Format as in the other fixtures. Each identity's charter_scopes lists its owner's own scopes; a feature that declares a scope another person owns names it in its area in larder.json.",
         "identities": identities,
     }
 

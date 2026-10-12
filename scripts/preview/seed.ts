@@ -6,8 +6,8 @@
 // and each person's decision. The check runner's programs run for real on the fixture's built
 // repository: the impact analysis, the block checks, pytest and the review harness.
 //
-// Every person, scope, identity, feature, commit, test and invariant comes from the fixture's files
-// and the runs. A review form is derived from the fixture too (`reviewForm`).
+// Every person, scope, identity, feature, area, commit, fix, review form, test and invariant comes
+// from the fixture's files and the runs.
 
 import { execFile, execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -32,7 +32,7 @@ import {
   TestRunner,
   toolPass,
 } from "@penguin/local-bridge";
-import { boundReviewRecord, type Plan, type PlanBreakFact, type ReviewForm } from "@penguin/protocol";
+import { boundReviewRecord, type Plan, type ReviewForm } from "@penguin/protocol";
 import { parseScopeMap, type ScopeMap } from "@penguin/scope-map";
 
 import type { DashboardBackend } from "../../apps/worker/src/dashboard.ts";
@@ -247,9 +247,11 @@ export class PreviewProject {
   seedIdentities(identities: readonly SeedIdentity[]): void {
     for (const identity of identities) {
       const name = identity.handle.split("/")[1] ?? identity.handle;
-      // A charter names only its owner's scopes; a scope another person owns stays in the feature's area.
-      const charterScopes = identity.charter_scopes.filter((scope) => this.scopeMap.scopes.get(scope)?.ownerId === identity.owner);
-      const created = this.identities.create(identity.owner, { handle: identity.handle, name, job: identity.job, charterScopes, autoAccept: true }, this.scopeMap);
+      const created = this.identities.create(
+        identity.owner,
+        { handle: identity.handle, name, job: identity.job, charterScopes: identity.charter_scopes, autoAccept: true },
+        this.scopeMap,
+      );
       if (created.status !== "ok") throw new Error(`${identity.handle}: ${JSON.stringify(created)}`);
     }
   }
@@ -663,62 +665,32 @@ function invariantsOf(preview: PreviewProject) {
   }));
 }
 
-/**
- * A review form for `scope`, from the fixture's facts: one row per invariant of the scope. A row
- * breaks when the facts run states a break of the test that protects the invariant (the test whose
- * docstring is its statement) on the reviewer's feature, and the fixture's `pins.json` names a commit
- * other than that feature's own fix as the one that makes the test pass, so the fix leaves it broken.
- * The evidence is the contract the invariant's recorded examples run, which the reviewed fork holds.
- */
-function reviewForm(
-  preview: PreviewProject,
-  breaks: readonly PlanBreakFact[],
-  scope: string,
-  fixedBy: Readonly<Record<string, string>>,
-  fix: string,
-): ReviewForm {
-  const rows = invariantsOf(preview)
-    .filter((invariant) => invariant.scope === scope && invariant.contract !== undefined)
-    .map((invariant) => {
-      const broken = breaks.some(
-        (each) => each.statement.replace(/\.$/u, "") === invariant.statement && fixedBy[each.nodeId] !== undefined && fixedBy[each.nodeId] !== fix,
-      );
-      return { invariant: invariant.id, verdict: broken ? ("breaks" as const) : ("holds" as const), evidence: [invariant.contract as string], storedData: "" };
-    });
-  return { rows, riskyInputs: [], storedDataMarker: null };
-}
-
 interface IdentityFeature {
   readonly id: string;
   readonly owner: string;
   readonly role: "originating" | "running";
   readonly fork: string;
-  readonly area: unknown;
-  readonly commits: readonly { readonly tag?: string }[];
+  readonly area: { readonly scopes: readonly string[] };
+  readonly commits: readonly { readonly tag?: string; readonly fix?: { readonly scope: string } }[];
 }
 
 /**
  * Use cases 1 to 3 from the fixture's `features.json`, up to frame 5 of docs/demo-story.md: every
  * feature open at its checkpoint, the originating agent's whats_near, impact and check, its merge plan
- * with one part per running feature, each running feature's agent reviewing its scope, and each author
- * whose review raised nothing approving. When the facts name a place the fixture holds no fix for, the
- * plan stays unstored with Penguin's list of what it lacks, and the reviews go ahead on the feature.
+ * with one part per affected place, each running feature's agent reviewing its scope with the
+ * fixture's form, and each author whose review raised nothing approving.
  */
 async function featuresFixture(preview: PreviewProject): Promise<void> {
   const fixtureDir = join(ROOT, "examples", preview.fixture);
   const { features } = JSON.parse(await readFile(join(fixtureDir, "features.json"), "utf8")) as { features: IdentityFeature[] };
-  const pins = JSON.parse(await readFile(join(fixtureDir, "pins.json"), "utf8")) as { branches: Record<string, string>; fixes: Record<string, string> };
+  const pins = JSON.parse(await readFile(join(fixtureDir, "pins.json"), "utf8")) as { branches: Record<string, string>; tags: Record<string, string> };
   const identities = identitiesOf(preview);
   preview.seedIdentities(identities);
   const agentOf = (feature: IdentityFeature) => identities.find((identity) => identity.owner === feature.owner) as SeedIdentity;
   // Running features open first, so the originating feature's overlap check lists them as dependents.
   const ordered = [...features.filter((feature) => feature.role === "running"), ...features.filter((feature) => feature.role === "originating")];
-  // A contract the feature itself adds is not on main's scope map yet, so the declaration leaves it out.
-  const onMain = new Set([...preview.scopeMap.scopes.values()].flatMap((scope) => scope.contracts));
   for (const feature of ordered) {
-    const area = feature.area as { scopes: string[]; paths: string[]; contracts: string[] };
-    const declared = { ...area, contracts: area.contracts.filter((contract) => onMain.has(contract)) };
-    await preview.step(`open ${feature.id}`, () => preview.open(agentOf(feature), feature.id, declared));
+    await preview.step(`open ${feature.id}`, () => preview.open(agentOf(feature), feature.id, feature.area));
     await preview.step(`checkpoint ${feature.id}`, () => preview.checkpoint(feature.id, feature.commits[0]?.tag as string));
   }
   const origin = features.find((feature) => feature.role === "originating") as IdentityFeature;
@@ -728,27 +700,28 @@ async function featuresFixture(preview: PreviewProject): Promise<void> {
     await preview.step("check", () => preview.runnerTool(origin.id, "check"));
   }
 
-  // Each running feature's fix is the fixture's own later commit on its fork, sent as a patch against
-  // the feature's checkpoint, as `git diff` prints it for the feature's scopes.
+  // A part for code on main names the originating fork's commit that fixes that scope. Each running
+  // feature's fix is the fixture's own later commit on its fork, sent as a patch against the feature's
+  // checkpoint, as `git diff` prints it for the feature's scopes.
   const running = features.filter((feature) => feature.role === "running");
-  const fixOf = (feature: IdentityFeature) => pins.branches[feature.fork] as string;
-  const parts = running.map((feature) => {
+  const scopeParts = origin.commits.flatMap((commit) =>
+    commit.fix === undefined ? [] : [{ place: { scope: commit.fix.scope }, diff: { commit: pins.tags[commit.tag as string] as string } }],
+  );
+  const featureParts = running.map((feature) => {
     const head = preview.git("rev-parse", `${feature.commits[0]?.tag}^{commit}`);
-    const paths = ((feature.area as { scopes: string[] }).scopes ?? []).flatMap((scope) => preview.scopeMap.scopes.get(scope)?.paths ?? []);
-    const diff = preview.diff(head, fixOf(feature), paths);
+    const paths = feature.area.scopes.flatMap((scope) => preview.scopeMap.scopes.get(scope)?.paths ?? []);
+    const diff = preview.diff(head, pins.branches[feature.fork] as string, paths);
     return { place: { feature: feature.id }, patch: { base: head, diff } };
   });
-  const proposed = await preview.step("propose_plan", () => preview.propose(origin.id, parts));
-  if (proposed.status !== "stored" && proposed.status !== "missing") throw new Error(`plan: ${JSON.stringify(proposed).slice(0, 2_000)}`);
+  const proposed = await preview.step("propose_plan", () => preview.propose(origin.id, [...scopeParts, ...featureParts]));
+  if (proposed.status !== "stored") throw new Error(`plan: ${JSON.stringify(proposed).slice(0, 2_000)}`);
   preview.planOutcome = proposed;
+  // Each running feature's agent reviews its scope with the fixture's form, `reviews/<scope>.json`.
   for (const feature of running) {
-    const scope = (feature.area as { scopes: string[] }).scopes[0] as string;
-    const facts = proposed.status === "stored" ? proposed.plan.facts : proposed.facts;
-    const breaks = facts.breaks.filter((each) => each.target === feature.id && each.scopeId === scope);
-    const form = reviewForm(preview, breaks, scope, pins.fixes, fixOf(feature));
+    const scope = feature.area.scopes[0] as string;
+    const form = JSON.parse(await readFile(join(fixtureDir, "reviews", `${scope}.json`), "utf8")) as ReviewForm;
     await preview.step(`submit_review ${scope}`, () => preview.review(feature.id, origin.id, scope, form));
   }
-  if (proposed.status !== "stored") return;
   // An author whose review stands with no exception approves; one with an exception decides in person.
   for (const part of proposed.plan.parts) {
     const exceptions = preview.reviews.list(origin.id).filter((review) => part.scopes.includes(review.scopeId)).flatMap((review) => review.exceptions);
@@ -766,6 +739,8 @@ interface LarderFeature {
   readonly owner: string;
   readonly role: string;
   readonly agent: string;
+  /** The scopes the feature declares when it opens, when they reach past its owner's own scopes. */
+  readonly area?: readonly string[];
   readonly commits: readonly LarderCommit[];
 }
 
@@ -785,13 +760,14 @@ async function moneyMinorUnits(preview: PreviewProject): Promise<void> {
   preview.seedIdentities(identities);
   const handleOf = (feature: LarderFeature) => `@${feature.owner}/${feature.agent}`;
   const agentOf = (feature: LarderFeature) => identities.find((identity) => identity.handle === handleOf(feature)) as SeedIdentity;
+  // A feature declares the scopes larder.json names for it, or else the scopes its agent's charter holds.
+  const areaOf = (feature: LarderFeature) => feature.area ?? agentOf(feature).charter_scopes;
   const promoted = new Set(larder.promotions.map((promotion) => promotion.feature));
   const origin = larder.features.find((feature) => feature.id === larder.plan.feature) as LarderFeature;
   // Every feature that started before the plan, the originating one last, so its overlap check finds the rest.
   const early = larder.features.filter((feature) => feature !== origin && !promoted.has(feature.id) && feature.role !== "late-starter");
   for (const feature of [...early, origin]) {
-    const area = { scopes: agentOf(feature).charter_scopes };
-    await preview.step(`open ${feature.id}`, () => preview.open(agentOf(feature), feature.id, area));
+    await preview.step(`open ${feature.id}`, () => preview.open(agentOf(feature), feature.id, { scopes: areaOf(feature) }));
     const first = feature.commits[0]?.tag as string;
     await preview.step(`checkpoint ${feature.id}`, () => preview.checkpoint(feature.id, `feature-${feature.id}-${first}`));
   }
@@ -814,18 +790,12 @@ async function moneyMinorUnits(preview: PreviewProject): Promise<void> {
   const readers = early.filter((feature) => feature.commits.some((commit) => commit.fix !== undefined) && feature.role !== "same-area");
   const readerParts = readers.map((feature) => {
     const head = preview.git("rev-parse", `feature-${feature.id}-${feature.commits[0]?.tag}^{commit}`);
-    const paths = agentOf(feature).charter_scopes.flatMap((scope) => preview.scopeMap.scopes.get(scope)?.paths ?? []);
+    const paths = areaOf(feature).flatMap((scope) => preview.scopeMap.scopes.get(scope)?.paths ?? []);
     const diff = preview.diff(head, `feature-${feature.id}`, paths);
     return { place: { feature: feature.id }, patch: { base: head, diff } };
   });
-  let parts: unknown[] = [...scopeParts, ...readerParts];
+  const parts = [...scopeParts, ...readerParts];
   let proposed = await preview.step("propose_plan", () => preview.propose(origin.id, parts));
-  // The facts decide the places: a part for a place they leave out is dropped, as the agent would.
-  if (proposed.status === "missing") {
-    const unaffected = new Set(proposed.missing.filter((item) => item.code === "not_affected").map((item) => JSON.stringify(item.place)));
-    parts = parts.filter((part) => !unaffected.has(JSON.stringify((part as { place: unknown }).place)));
-    proposed = await preview.step("propose_plan again", () => preview.propose(origin.id, parts));
-  }
   // Over the break limit Penguin returns the plan to Ines. The fixture holds no smaller plan, so the
   // project raises its limit (PRD 13, decision 1) to the behavioural parts the returned plan counted,
   // and Ines's agent proposes the same parts again. The returned plan stays in Ines's inbox.
@@ -852,7 +822,7 @@ async function moneyMinorUnits(preview: PreviewProject): Promise<void> {
   }
   // The late starter opens after the plan was announced, at its first checkpoint.
   for (const feature of larder.features.filter((each) => each.role === "late-starter")) {
-    await preview.step(`open ${feature.id}`, () => preview.open(agentOf(feature), feature.id, { scopes: agentOf(feature).charter_scopes }));
+    await preview.step(`open ${feature.id}`, () => preview.open(agentOf(feature), feature.id, { scopes: areaOf(feature) }));
     await preview.step(`checkpoint ${feature.id}`, () => preview.checkpoint(feature.id, `feature-${feature.id}-${feature.commits[0]?.tag}`));
   }
 }

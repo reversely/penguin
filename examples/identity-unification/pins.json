@@ -1,8 +1,8 @@
 {
-  "$comment": "Commit SHAs a build of this fixture produces. Format: a JSON object with three objects. 'branches' maps each branch build.py creates to its head commit SHA: 'main' holds the base commit, and 'owner-priya', 'owner-jun' and 'owner-sam' each hold one owner's fixed checkpoint. 'tags' maps each tag build.py creates to its commit SHA: '<branch>-checkpoint' is the owner's checkpoint before the fix, and 'owner-priya-limit-five' is Priya's intermediate fix with a limit of five, under which the shared-device test still fails. 'fixes' maps the pytest node ID of each test that fails on the merged checkpoints to the SHA of the commit that makes it pass. tests/test_fixture_builder.py checks that a fresh build reproduces every branch and tag SHA; tests/test_fixture_reproduction.py checks the 'fixes' entries.",
+  "$comment": "Commit SHAs a build of this fixture produces. Format: a JSON object with three objects. 'branches' maps each branch build.py creates to its head commit SHA: 'main' holds the base commit, and 'owner-priya', 'owner-jun' and 'owner-sam' each hold one owner's fixed checkpoint. 'tags' maps each tag build.py creates to its commit SHA: '<branch>-checkpoint' is the owner's checkpoint before the fix, 'owner-priya-fix-analytics' and 'owner-priya-fix-messaging' are Priya's fixes for analytics' and messaging's code on main, which the merge plan's parts for those scopes name, and 'owner-priya-limit-five' is Priya's intermediate fix with a limit of five, under which the shared-device test still fails. 'fixes' maps the pytest node ID of each test that fails on the merged checkpoints to the SHA of the commit that makes it pass. tests/test_fixture_builder.py checks that a fresh build reproduces every branch and tag SHA; tests/test_fixture_reproduction.py checks the 'fixes' entries.",
   "branches": {
     "main": "43dd33a8e8f46dde412fd86ba9642d2163a17b87",
-    "owner-priya": "0bc5f00e963d243da9bede3f17fdda28bd0a7e39",
+    "owner-priya": "4c8a38d54f2938873db849dad0e4e9b0136a9726",
     "owner-jun": "0df91904e50f51cdb08e5fda28ab62d9121746c0",
     "owner-sam": "4bfca84bc97d66dbd11de2dbec83303a91af38c8"
   },
@@ -10,11 +10,13 @@
     "owner-priya-checkpoint": "200ac3a67960eeaa7429833979621722c7d37341",
     "owner-jun-checkpoint": "bc39cf1d61ba78b324678cf5b863255b464c6bd6",
     "owner-sam-checkpoint": "8d8bb955ee2b948316279b369f9198fe9e34f334",
-    "owner-priya-limit-five": "bc4daba0c30a31bbe676a6b11a1d22973fcce465"
+    "owner-priya-fix-analytics": "c71a4e252dc6abfff9eed56cc15a7170d9e637ae",
+    "owner-priya-fix-messaging": "9a84aad7f59ac72e4f5651dfe3be02891f15c398",
+    "owner-priya-limit-five": "9ed910472de99b9c3a515be12fd5c794018553d1"
   },
   "fixes": {
     "analytics/tests/test_retention.py::test_dau_stable": "0df91904e50f51cdb08e5fda28ab62d9121746c0",
-    "analytics/tests/test_identity.py::test_shared_device_split": "0bc5f00e963d243da9bede3f17fdda28bd0a7e39",
+    "analytics/tests/test_identity.py::test_shared_device_split": "4c8a38d54f2938873db849dad0e4e9b0136a9726",
     "messaging/tests/test_consent.py::test_unsubscribe_survives": "4bfca84bc97d66dbd11de2dbec83303a91af38c8"
   }
 }

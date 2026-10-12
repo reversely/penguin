@@ -277,9 +277,10 @@ programs, the merge plan with a real facts run, each review with the review harn
 person's decision. A request signs in as the owner its `X-Preview-Owner` header names, or as the
 `--as` owner, or as the originating person; `/preview/as/<owner>` switches a browser's seat.
 
-On identity unification the plan stays unstored. Penguin's facts list analytics and messaging as
-places with callers on main. The fixture holds no fix for them, so Priya's feature reads planning
-and Jun's review exception carries the case. On money in minor units the plan is returned
+On identity unification the plan is stored with four parts: Priya's fix commits for analytics' and
+messaging's code on main, and the patches for Jun's and Sam's forks. Jun's and Sam's agents submit
+the fixture's review forms from `examples/identity-unification/reviews/`. Sam approves both of Sam's
+parts. Jun's review raises the tablet invariant, so Jun's two parts wait on Jun. On money in minor units the plan is returned
 over the default break limit of 10; the preview then raises the project's
 limit to the plan's behavioural count and Ines's agent proposes it again, so the plan is stored and the return stays in
 Ines's inbox.

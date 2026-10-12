@@ -75,15 +75,21 @@ for (const [name, expected] of Object.entries(CASES)) {
       }
     });
 
-    test("each running feature's fork declares the contracts of its area", () => {
+    // An area is declared when the feature opens, against main's scope map, so it names only contracts
+    // main declares. A contract the feature adds is declared in its fork's scopes file, in its own scopes.
+    test("each area names contracts main declares, and each fork declares the contracts it adds in its scopes", () => {
       const features = JSON.parse(readFileSync(join(REPO_ROOT, "examples", name, "features.json"), "utf8")) as {
-        features: { fork: string; area: { scopes: string[]; contracts: string[] } }[];
+        features: { fork: string; role: string; area: { scopes: string[]; contracts: string[] } }[];
       };
+      const main = filesAt(repo, "main").scopes;
       for (const feature of features.features) {
-        const { scopes } = filesAt(repo, feature.fork);
         for (const contract of feature.area.contracts) {
-          assert.ok(feature.area.scopes.includes(scopes.contracts.get(contract) ?? ""), `${feature.fork}: ${contract}`);
+          assert.ok(feature.area.scopes.includes(main.contracts.get(contract) ?? ""), `${feature.fork}: ${contract}`);
         }
+        if (feature.role !== "running") continue;
+        const added = [...filesAt(repo, feature.fork).scopes.contracts].filter(([contract]) => !main.contracts.has(contract));
+        assert.ok(added.length > 0, `${feature.fork} adds a contract`);
+        for (const [contract, scope] of added) assert.ok(feature.area.scopes.includes(scope), `${feature.fork}: ${contract}`);
       }
     });
 

@@ -1,0 +1,12 @@
+{
+  "rows": [
+    {
+      "invariant": "unsubscribe-holds",
+      "verdict": "holds",
+      "evidence": ["messaging/subscriptions.py::subscription_status"],
+      "storedData": ""
+    }
+  ],
+  "riskyInputs": [],
+  "storedDataMarker": null
+}
