@@ -166,6 +166,12 @@ export interface PlanFactsResult {
   readonly merged: string | null;
   readonly fingerprint: PlanFactsFingerprint | null;
   readonly breaks: readonly PlanBreak[];
+  /**
+   * On a running feature: failing tests left out of `breaks` because they sit in files the feature
+   * carries unchanged from main and their tracebacks pass through none of its own callers. They are
+   * main's breaks, listed on main's part. Absent on main and when the feature's merge base is unknown.
+   */
+  readonly carried?: number;
   /** Why nothing ran, for `conflict` and `not-run`. */
   readonly reason: string | null;
   readonly durationMs: number;
@@ -190,6 +196,11 @@ const record = (properties: Record<string, JsonSchema>): JsonSchema => ({
   additionalProperties: false,
   required: Object.keys(properties),
   properties,
+});
+/** A record whose `keys` may be left out. */
+const optional = (keys: readonly string[], properties: Record<string, JsonSchema>): JsonSchema => ({
+  ...record(properties),
+  required: Object.keys(properties).filter((key) => !keys.includes(key)),
 });
 const RULE_ID = { type: "string", pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$", maxLength: 64 };
 const REWRITE_REPORT_SCHEMA: JsonSchema = record({
@@ -221,7 +232,7 @@ export const PLAN_FACTS_REPORT_SCHEMA: JsonSchema = {
     results: {
       type: "array",
       maxItems: PLAN_LIMITS.targets * PLAN_LIMITS.commandsPerTarget,
-      items: record({
+      items: optional(["carried"], {
         target: { type: "string", pattern: "^[a-z0-9]+(?:[.-][a-z0-9]+)*$", maxLength: 63 },
         scopeId: SHORT,
         commandId: { type: "string", pattern: "^test:[A-Za-z0-9][A-Za-z0-9._-]*$", maxLength: 64 },
@@ -248,6 +259,7 @@ export const PLAN_FACTS_REPORT_SCHEMA: JsonSchema = {
             error: LINE(PLAN_LIMITS.failureLineLength),
           }),
         },
+        carried: { type: "integer", minimum: 0 },
         reason: LINE(PLAN_LIMITS.failureLineLength),
         durationMs: { type: "integer", minimum: 0 },
       }),

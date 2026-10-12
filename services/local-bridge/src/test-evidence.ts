@@ -11,6 +11,8 @@ export interface FailureLines {
   readonly assertion?: string;
   /** The first `E` line: what went wrong. */
   readonly error?: string;
+  /** The repository files the traceback passes through, from its `path.py:line:` location lines, in order. */
+  readonly files: readonly string[];
 }
 
 // A section header: `____ test_name ____`, or `____ TestClass.test_name[param] ____`.
@@ -19,9 +21,13 @@ const SECTION_HEADER = /^_{3,} (.+?) _{3,}$/u;
 const BANNER = /^={3,} .* ={3,}$/u;
 const FAILURES_BANNER = /^={3,} FAILURES ={3,}$/u;
 const ANSI_ESCAPE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
+// A traceback frame's location line, such as `checkout/cart.py:12: in total` or `a/b.py:4: ValueError`.
+// An absolute path names a file outside the repository, such as the standard library.
+const LOCATION = /^([^\s/][^\s:]*\.py):\d+:/u;
 
 /**
- * The assertion and error line of each failing test in a pytest log, by node ID. A node ID with no
+ * The assertion line, error line and traceback files of each failing test in a pytest log, by node
+ * ID. A node ID with no
  * block in the log, as with `--tb=no`, is absent. ANSI escapes are ignored.
  */
 export function failureLines(log: string, nodeIds: readonly string[]): Map<string, FailureLines> {
@@ -40,7 +46,9 @@ export function failureLines(log: string, nodeIds: readonly string[]): Map<strin
     if (block === undefined) continue;
     const assertion = block.lines.find((line) => line.startsWith(">"));
     const error = block.lines.find((line) => line.startsWith("E "));
+    const files = new Set(block.lines.flatMap((line) => LOCATION.exec(line)?.[1] ?? []));
     found.set(nodeId, {
+      files: [...files],
       ...(assertion === undefined ? {} : { assertion: clip(assertion.slice(1).trim(), PLAN_LIMITS.failureLineLength) }),
       ...(error === undefined ? {} : { error: clip(error.slice(1).trim(), PLAN_LIMITS.failureLineLength) }),
     });

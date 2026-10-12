@@ -69,6 +69,7 @@ const LOG = [
   "E       ValueError: no day",
   "",
   "analytics/helpers.py:2: ValueError",
+  "/usr/lib/python3.13/json/__init__.py:346: in loads",
   "=========================== short test summary info ============================",
   "FAILED analytics/tests/test_identity.py::test_shared_device_split - AssertionError",
 ].join("\n");
@@ -83,9 +84,15 @@ test("failureLines finds each failing test's assertion line and first error line
     "analytics/tests/test_identity.py::test_shared_device_split": {
       assertion: 'assert _dau(events) == {"2026-01-05": 3}',
       error: "AssertionError: assert {'2026-01-05': 1} == {'2026-01-05': 3}",
+      files: ["analytics/tests/test_identity.py"],
     },
-    // The test's own line, where it called the code that failed, and the error from deeper down.
-    "analytics/tests/test_group.py::TestGroup::test_method": { assertion: "helper()", error: "ValueError: no day" },
+    // The test's own line, where it called the code that failed, the error from deeper down, and
+    // each file the traceback passes through.
+    "analytics/tests/test_group.py::TestGroup::test_method": {
+      assertion: "helper()",
+      error: "ValueError: no day",
+      files: ["analytics/tests/test_group.py", "analytics/helpers.py"],
+    },
   });
 });
 

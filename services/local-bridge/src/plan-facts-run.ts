@@ -10,7 +10,10 @@
 // 3. runs each listed `test:<scope>` command on the merged commit in a throwaway worktree, except on
 //    a feature the impact graph shows does not use the change;
 // 4. states each failing test as a break: its docstring at the merged commit and the assertion and
-//    error lines pytest printed;
+//    error lines pytest printed. On a running feature a break is a failing test in a file the feature
+//    changed since its merge base with the baseline, or one whose traceback passes through a file
+//    holding the feature's own callers. Any other failing test sits in a file the feature carries
+//    unchanged from main: it is main's break, counted as `carried`;
 // 5. when the plan declares rewrite rules, applies them in each listed place with Penguin's codemod,
 //    lint autofix and formatter (FixApplier.rewrite), and reports each file they change by its blob
 //    before and after, so the Worker can compare the rules' output with each part's proposed fix.
@@ -52,6 +55,12 @@ export interface PlanFactsRunnerOptions {
   readonly impact: ImpactAnalyzer;
   /** Applies a plan's rewrite rules; without it, a request with rules reports each place as not run. */
   readonly fixes?: Pick<FixApplier, "rewrite">;
+}
+
+/** A running feature's merge base with the baseline and the files holding its own callers. */
+interface OwnChanges {
+  readonly mergeBase: string;
+  readonly callers: ReadonlySet<string>;
 }
 
 /** The repo a facts run fetches: the originating fork and each running feature's fork. */
@@ -123,7 +132,9 @@ export class PlanFactsRunner {
     const results: PlanFactsResult[] = [];
     for (const target of request.targets) {
       const affected = target.id === PLAN_MAIN_TARGET || selected === undefined || selected.has(target.id);
-      results.push(...(await this.#target(request.checkpoint, target, affected)));
+      const fork = impact?.forks.find((each) => each.id === target.id);
+      const own = fork?.mergeBase == null ? null : { mergeBase: fork.mergeBase, callers: new Set(fork.uses.map((use) => use.path)) };
+      results.push(...(await this.#target(request.checkpoint, target, affected, own)));
     }
     const rewrites = request.rewrites == null || request.rewrites.rules.length === 0 ? undefined : await this.#rewrites(request.checkpoint, request.rewrites);
     return { impact, impactError, results, durationMs: Math.round(performance.now() - started), ...(rewrites === undefined ? {} : { rewrites }) };
@@ -161,7 +172,12 @@ export class PlanFactsRunner {
     return { refused: refused ?? [], places };
   }
 
-  async #target(checkpoint: string, target: PlanFactsTarget, affected: boolean): Promise<PlanFactsResult[]> {
+  /**
+   * Tests one target. `own` is a running feature's merge base with the baseline and the files holding
+   * its own callers, from the impact report; null on main or when the merge base is unknown, so every
+   * failing test is a break.
+   */
+  async #target(checkpoint: string, target: PlanFactsTarget, affected: boolean, own: OwnChanges | null): Promise<PlanFactsResult[]> {
     const { repoPath } = this.#options;
     const base = (commandId: string) => ({
       target: target.id,
@@ -180,6 +196,11 @@ export class PlanFactsRunner {
     if (!affected) {
       return target.commandIds.map((id) => ({ ...base(id), status: "not-affected", merged, reason: null }));
     }
+    // The files the feature added or changed since its merge base: a local diff of two commits the
+    // runner already holds, read once per target and only when a test fails.
+    let changed: Promise<Set<string>> | undefined;
+    const ownTests =
+      own === null ? null : { callers: own.callers, changed: () => (changed ??= changedSince(repoPath, own.mergeBase, target.sha)) };
     const results: PlanFactsResult[] = [];
     for (const commandId of target.commandIds) {
       try {
@@ -189,21 +210,33 @@ export class PlanFactsRunner {
         results.push({ ...base(commandId), status: "not-run", merged, reason });
         continue;
       }
-      results.push(await this.#test(target.id, commandId, merged));
+      results.push(await this.#test(target.id, commandId, merged, ownTests));
     }
     return results;
   }
 
-  async #test(target: string, commandId: string, merged: string): Promise<PlanFactsResult> {
+  async #test(
+    target: string,
+    commandId: string,
+    merged: string,
+    own: { readonly callers: ReadonlySet<string>; readonly changed: () => Promise<ReadonlySet<string>> } | null,
+  ): Promise<PlanFactsResult> {
     const { repoPath, runner } = this.#options;
     const started = performance.now();
     const outcome = await runner.run({ commandId, sha: merged });
     const passed = outcome.exitCode === 0 && outcome.signal === null;
-    const failing = passed ? [] : parseFailingTests(outcome.log).slice(0, PLAN_LIMITS.breaksPerResult);
+    let failing = passed ? [] : parseFailingTests(outcome.log);
     const lines = failureLines(outcome.log, failing.map((test) => test.nodeId));
+    let carried: number | undefined;
+    if (own !== null) {
+      const changed = failing.length === 0 ? new Set<string>() : await own.changed();
+      const owned = failing.filter(({ nodeId }) => changed.has(testFile(nodeId)) || (lines.get(nodeId)?.files ?? []).some((file) => own.callers.has(file)));
+      carried = failing.length - owned.length;
+      failing = owned;
+    }
     const breaks: PlanBreak[] = [];
-    for (const { nodeId } of failing) {
-      const file = nodeId.slice(0, nodeId.indexOf("::"));
+    for (const { nodeId } of failing.slice(0, PLAN_LIMITS.breaksPerResult)) {
+      const file = testFile(nodeId);
       const source = file === "" ? null : await readCommittedFile(repoPath, merged, file).catch(() => null);
       const found = lines.get(nodeId);
       breaks.push({
@@ -221,6 +254,7 @@ export class PlanFactsRunner {
       merged,
       fingerprint: { ...(await fingerprint(repoPath, merged, commandId)) },
       breaks,
+      ...(carried === undefined ? {} : { carried }),
       reason: null,
       durationMs: Math.round(performance.now() - started),
     };
@@ -290,6 +324,18 @@ async function rewritablePaths(repoPath: string, sha: string, prefixes: readonly
     listed = await runGit(repoPath, ["diff", "--name-only", "--no-renames", "--diff-filter=AM", "-z", base, sha, "--", ...prefixes]);
   }
   return listed.split("\0").filter((path) => path.endsWith(".py"));
+}
+
+/** The paths `sha` added or changed since `base`. */
+async function changedSince(repoPath: string, base: string, sha: string): Promise<Set<string>> {
+  const listed = await runGit(repoPath, ["diff", "--name-only", "--no-renames", "--diff-filter=AM", "-z", base, sha]);
+  return new Set(listed.split("\0").filter((path) => path !== ""));
+}
+
+/** The test file of a pytest node ID; empty when the ID names no file. */
+function testFile(nodeId: string): string {
+  const separator = nodeId.indexOf("::");
+  return separator < 0 ? "" : nodeId.slice(0, separator);
 }
 
 function clip(text: string, max: number): string {

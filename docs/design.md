@@ -171,7 +171,7 @@ The procedure moves conflict handling to the start of the work. Each step below 
   | Callers | The same impact report: uses already on main plus uses in each running feature's own changes, the files it added or changed since its merge base with the baseline |
   | Affected running features | Running features whose own changes use a changed symbol or whose tests break on the merged tree |
   | Invariants | Each affected scope's entries in `penguin/invariants.json` on main |
-  | Breaks | Each `test:<scope>` command the runner ran on the checkpoint merged onto main and onto each running feature. A break states the test's docstring, or the test's name in words when it has none, with the assertion line and the error line from the run |
+  | Breaks | Each `test:<scope>` command the runner ran on the checkpoint merged onto main and onto each running feature. A break states the test's docstring, or the test's name in words when it has none, with the assertion line and the error line from the run. On a running feature, only tests in its own changes or whose traceback passes through its own callers |
   | Changed lines | For code on main, the part's commit against its base, read with `readCommit`, `readTree` and `readBlob`. For a running feature, the part's patch, checked against that feature's files at its fork head read the same way. Only files inside the part's affected scopes are read |
 
 - **Facts runs.** The impact report and the breaks need the code parsed and run, so the check runner
@@ -184,7 +184,11 @@ The procedure moves conflict handling to the start of the work. Each step below 
   are the files it added or changed since its merge base with the baseline. A fork also carries
   main's files as they were when it started. A caller in a file the feature carries unchanged belongs
   to main's part. The feature gets that fix when it takes main, which the block check requires
-  before the feature lands. A feature whose own changes call nothing in the contract diff is no place.
+  before the feature lands. A feature's breaks follow the same rule. A failing test in a file the
+  feature changed is its break, and so is one whose traceback passes through a file holding the
+  feature's own callers. A failing test in a file it carries unchanged is main's break, listed on
+  main's part and not repeated on the feature's. The `breaks` source counts those carried tests. A
+  feature whose own changes call nothing in the contract diff is no place.
   Its tests do not run. The `affected_features` source names each such feature with the reason. A
   part proposed for it is `not_affected` with the same reason. The scope's owner or the feature's
   person approves the part.

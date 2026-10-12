@@ -12,7 +12,9 @@
 //   in a file a feature carries unchanged from main is main's; the feature takes that fix with main.
 // - Each affected scope's invariants: `penguin/invariants.json` on main.
 // - Each break: the failing test's docstring (or its name in words) and the assertion and error
-//   lines from the runner's run.
+//   lines from the runner's run. On a running feature the runner lists only tests in files it
+//   changed since its merge base, or whose traceback passes through its own callers; a failing test
+//   in a file it carries unchanged from main is main's break, on main's part.
 // - Each part's changed lines. A part for code on main names a commit in the originating fork, whose
 //   change against its base Penguin reads through the Artifacts binding, only for files inside the
 //   part's scopes. A part for a running feature carries a patch against that feature's fork head;
@@ -882,6 +884,17 @@ interface FactsBase {
   readonly run: PlanFactsRun;
 }
 
+/**
+ * The breaks source in words: the failing tests the plan lists, and the ones running features carry
+ * unchanged from main, which are main's breaks and not repeated on a feature's part.
+ */
+function breaksDetail(breaks: number, trees: number, report: PlanFactsReport): string {
+  const listed = `${breaks} failing tests on ${trees} merged trees`;
+  const carried = report.results.reduce((sum, result) => sum + (result.carried ?? 0), 0);
+  if (carried === 0) return listed;
+  return `${listed}; ${carried} more fail on running features in files they carry unchanged from main, which are main's breaks`;
+}
+
 /** The plan's facts, with the tool or read each came from. */
 function planFacts(
   base: FactsBase,
@@ -942,7 +955,7 @@ function planFacts(
     {
       fact: "breaks",
       tool: commands.length === 0 ? "no test command" : commands.join(", "),
-      detail: report === null ? "waiting" : `${base.breaks.length} failing tests on ${request.targets.length} merged trees`,
+      detail: report === null ? "waiting" : breaksDetail(base.breaks.length, request.targets.length, report),
     },
     { fact: "changed_lines", tool: "Artifacts readCommit, readTree, readBlob", detail: reads === "" ? "no reads" : reads },
   ];

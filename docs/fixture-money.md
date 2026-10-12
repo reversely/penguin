@@ -251,7 +251,12 @@ own rounding mode (`ROUND_HALF_UP`) states. The revision's tax equals exact deci
 - **Places in running features.** Every reader's fork starts at `base`, so it also carries main's
   callers in its scope, such as `checkout/cart.py` in the `japan-launch` fork. Those callers belong to
   main's part. Each reader's part lists only the callers in the module its own checkpoint adds, two
-  or three per reader. Noor's first `pagination` checkpoint changes only `shared/platform`. The facts
+  or three per reader. Its breaks are the failing tests in its own test file, one or two per
+  reader, such as `checkout/tests/test_japan.py` for `japan-launch`. The scope's tests the reader
+  carries from main, such as `checkout/tests/test_cart.py`, fail on its merged tree too, but they
+  belong to main's part. The plan lists 42 breaks: 18 on the nine parts for code on main and 24 on
+  the 23 readers' parts. Another 46 failing tests on the readers' merged trees sit in carried files.
+  The plan's `breaks` source counts them. Noor's first `pagination` checkpoint changes only `shared/platform`. The facts
   run reports its 2 callers in `mobile_api/orders.py` as carried from main, so Penguin states
   `pagination` as not affected and the plan holds no part for it. The preview seed proposes a part
   for every reader and the midway feature, then drops the part Penguin answers `not_affected`.

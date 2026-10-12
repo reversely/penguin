@@ -333,7 +333,13 @@ its latest checkpoint, keyed by its feature id and naming its person. Every targ
    whose own changes the impact graph shows make no use of the change gets `not-affected` without a
    run;
 5. states each failing test as a break: its docstring at the merged commit (`test-evidence.ts`)
-   with the assertion line and first error line pytest printed for it;
+   with the assertion line and first error line pytest printed for it. On a running feature a
+   failing test is a break when its file is one the feature added or changed since its merge base,
+   the one the impact report gives, or when its traceback passes through a file holding one of the
+   feature's own callers. Any other failing test sits in a file the feature carries unchanged from
+   main. It is main's break, listed on main's part. The result counts those as `carried`. The
+   changed files come from one local `git diff` of the merge base and the feature's commit, with no
+   fetch;
 6. applies the plan's rewrite rules when the listing carries them
    ([design.md](design.md#steps-1-to-5-in-the-build)). In each listed place the runner runs the
    codemod with the rules in a throwaway worktree, then `ruff check --fix` and `ruff format` on the
