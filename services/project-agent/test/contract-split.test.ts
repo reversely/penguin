@@ -15,11 +15,23 @@ import {
   type ImpactReport,
   type ImpactUse,
   type PlanFactsReport,
+  type RewriteRule,
+  withoutWatched,
 } from "@penguin/protocol";
 import { parseScopeMap } from "@penguin/scope-map";
 
 import { AgentToolStore, requestTool, type AgentToolDeps } from "../src/agent-tools.ts";
-import { contractWork, ContractSplitStore, recordSplit, retireSplit, scheduleSort, splitReplacements, type ContractSplitDeps } from "../src/contract-split.ts";
+import {
+  contractWork,
+  ContractSplitStore,
+  declaredSplitRefusals,
+  recordDeclaredSplit,
+  recordSplit,
+  retireSplit,
+  scheduleSort,
+  splitReplacements,
+  type ContractSplitDeps,
+} from "../src/contract-split.ts";
 import { splitPlanId } from "../src/retiring-store.ts";
 import type { Session } from "../src/session-store.ts";
 import { GitRepo } from "./issues-repo.ts";
@@ -266,6 +278,74 @@ describe("sorting each checkpoint's contract diff and splitting the feature", ()
     // A second promotion report retires nothing more.
     await retireSplit(deps, "money-minor", MAIN_AFTER);
     assert.equal(project.records("money-minor", "retire_symbols").length, 1);
+  });
+
+  test("an expand written first: each declared contract is checked, the split is recorded from them and they retire with the plan's rules", async () => {
+    const PRICE = { contract: "shared/money/api.py::price", replacement: "shared/money/api.py::Money" };
+    const TOTAL = { contract: "shared/money/api.py::total", replacement: "shared/money/api.py::Money.sum" };
+    const RULE: RewriteRule = { id: "price-money", contract: PRICE.contract, kind: "expression", pattern: "api.price($a)", replacement: "api.Money.of($a)", imports: [] };
+    const files: Record<string, string> = {
+      [`${BASE}:shared/money/api.py`]: "def price(amount):\n    return amount\n\n\ndef total(prices):\n    return sum(prices)\n",
+      [`${CHECKPOINT}:shared/money/api.py`]: "def price(amount):\n    return amount\n\n\nclass Money:\n    amount_minor: int\n\n    def sum(self, other):\n        return self\n",
+    };
+    const read = async (commit: string, path: string) => files[`${commit}:${path}`] ?? null;
+    const at = { baseline: BASE, checkpoint: CHECKPOINT };
+    const own = new Set(["money"]);
+    const added: ImpactChange = { ...RENAMED, symbol: "shared.money.api.Money", change: "added", contract: null, line: 5 };
+    delete (added as { to?: unknown }).to;
+    // The facts run searched for both: price has a caller in billing, total only in Ines's own money scope.
+    const searched = impact({ changes: [added], headUses: [use("shared.money.api.price", "billing"), use("shared.money.api.total", "money", "shared/money/report.py")] });
+    const first = await declaredSplitRefusals([PRICE, TOTAL], searched, own, read, at);
+    assert.deepEqual(first.refusals, [
+      "shared/money/api.py::total has no caller outside your scopes on main or in a running feature's own changes, so it needs no split; change it in place",
+    ]);
+    // A contract main does not hold and a replacement the checkpoint lacks are refused too.
+    const missing = await declaredSplitRefusals(
+      [{ contract: "shared/money/api.py::fee", replacement: "shared/money/api.py::Money" }, { contract: PRICE.contract, replacement: "shared/money/api.py::Money.times" }],
+      searched,
+      own,
+      read,
+      at,
+    );
+    assert.deepEqual(missing.refusals, [
+      `shared/money/api.py::fee does not exist on main at ${BASE.slice(0, 12)}, so there is nothing to retire`,
+      `the replacement shared/money/api.py::Money.times of shared/money/api.py::price is not in checkpoint ${CHECKPOINT.slice(0, 12)}; write it there first`,
+    ]);
+    // The declared contracts' uses are no places of the change; a changed symbol's uses stay.
+    const stripped = withoutWatched(impact({ changes: [added], headUses: [use("shared.money.api.price", "billing"), use("shared.money.api.Money", "billing")] }), [PRICE.contract]);
+    assert.deepEqual(stripped.headUses.map((each) => each.symbol), ["shared.money.api.Money"]);
+
+    // Both pass once billing calls total too: the split is recorded from the declaration.
+    const passing = impact({ changes: [added], headUses: [use("shared.money.api.price", "billing"), use("shared.money.api.total", "billing")] });
+    const checked = await declaredSplitRefusals([PRICE, TOTAL], passing, own, read, at);
+    assert.deepEqual(checked.refusals, []);
+    await project.checkpoint("money-minor", CHECKPOINT, BASE, "@ines/money");
+    const split = await recordDeclaredSplit(deps, feature(), CHECKPOINT, checked.checked, [RULE], scopeMap);
+    assert.deepEqual(
+      split?.entries.map((entry) => [entry.symbol, entry.line, entry.kind, entry.sort, entry.breaks, entry.callers, entry.to?.symbol]),
+      [
+        ["shared.money.api.price", 1, "function", "incompatible", "removed", 1, "shared.money.api.Money"],
+        ["shared.money.api.total", 5, "function", "incompatible", "removed", 1, "shared.money.api.Money.sum"],
+      ],
+    );
+    const [record] = project.records("money-minor", "contract_split");
+    assert.deepEqual([record?.payload["declared"], record?.payload["checkpoint"]], [true, CHECKPOINT]);
+    // Nothing retires before the expand reaches main; then both do, price with the plan's rule.
+    assert.deepEqual(project.retiring.list(), []);
+    assert.equal(await recordDeclaredSplit(deps, feature(), CHECKPOINT, checked.checked, [RULE], scopeMap), undefined);
+    const retired = await retireSplit(deps, "money-minor", "c".repeat(40));
+    assert.deepEqual(retired?.retiring, [PRICE, TOTAL]);
+    assert.deepEqual(
+      project.retiring.list().map((each) => [each.contract, each.replacement, each.planId, each.rules.map((rule) => rule.id)]),
+      [
+        [PRICE.contract, PRICE.replacement, splitPlanId("money-minor"), ["price-money"]],
+        [TOTAL.contract, TOTAL.replacement, splitPlanId("money-minor"), []],
+      ],
+    );
+    assert.deepEqual(
+      (project.records("money-minor", "retire_symbols")[0]?.payload["symbols"] as { rules: string[] }[]).map((each) => each.rules),
+      [["price-money"], []],
+    );
   });
 
   test("an old name with no replacement is promoted unretired, with the reason", async () => {

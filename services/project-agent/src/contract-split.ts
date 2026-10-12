@@ -13,6 +13,16 @@
 //    "expand first": `apply_fix` with `expand: true` has Penguin's codemod write the alias or
 //    forwarding function for each rename, move and keyword rename; for a changed type, a breaking
 //    signature or a removed symbol the agent writes the parallel function.
+// 3a. **Expand written first.** An agent may write the expand before any incompatible change, so the
+//    sort finds only additive entries. It then declares the old contracts it replaces with
+//    `propose_plan`'s `retiring`, each with its replacement. The plan's facts run searches for those
+//    contracts beside the change (plan-facts.ts), and `declaredSplitRefusals` checks each one: it
+//    exists on main at the checkpoint's baseline, it has a caller outside the author's scopes on main
+//    or in a running feature's own changes, and its replacement is in the checkpoint. When every one
+//    passes, `recordDeclaredSplit` records the split from the declaration with a signed
+//    `contract_split` record (`declared: true`), one `removed` entry per contract with its callers and
+//    the plan's rules kept for the retire. A later incompatible change to those symbols is caught by
+//    the sort as usual. Load: the checks read the plan's own facts run and two files per contract.
 // 4. **Retiring.** Once the expand checkpoint is promoted (expand-promotion.ts), `retireSplit` marks
 //    each old name retiring with its replacement (retiring-store.ts) under a signed `retire_symbols`
 //    record, and migration begins. A rename or move names its own replacement; for any other entry
@@ -23,24 +33,30 @@
 
 import {
   CONTRACT_WORK_ENTRIES,
+  contractDottedName,
+  contractPath,
   expandPlan,
   parseRetiring,
   pythonModuleOf,
   sortContractDiff,
+  withoutWatched,
   type ContractSortEntry,
   type ContractSortResult,
   type ContractSplitState,
   type ContractSplitView,
   type ContractStepEntry,
   type ContractWorkView,
+  type ImpactReport,
   type MigrationPlanView,
   type RetiringSymbol,
+  type RewriteRule,
 } from "@penguin/protocol";
-import type { ScopeMap } from "@penguin/scope-map";
+import { scopeForPath, type ScopeMap } from "@penguin/scope-map";
 
 import type { Feature, FeatureRecord, FeatureStore, UnsignedFeatureRecord } from "./feature-store.ts";
 import type { SqlDatabase, SqlValue } from "./issue-index.ts";
 import type { FeatureDependent } from "./overlap-lock.ts";
+import { bindsName } from "./patch-symbols.ts";
 import { factsRequest, type PlanFactsRun, type PlanFactsStore } from "./plan-facts.ts";
 
 export const CONTRACT_SPLIT_SCHEMA: readonly string[] = [
@@ -74,6 +90,15 @@ export class ContractSplitStore {
     this.#db = db;
     this.#now = now;
     for (const statement of CONTRACT_SPLIT_SCHEMA) db.exec(statement);
+    // The rewrite rules a split declared from a plan's `retiring` keeps for the retire; added after the first release.
+    const present = new Set(db.exec(`PRAGMA table_info(ContractSplit)`).map((row) => row["name"]));
+    if (!present.has("rules")) db.exec(`ALTER TABLE ContractSplit ADD COLUMN rules TEXT NOT NULL DEFAULT '[]'`);
+  }
+
+  /** The rewrite rules kept with the split's replacements, which the retire attaches to each contract. */
+  rules(featureId: string): RewriteRule[] {
+    const [row] = this.#db.exec(`SELECT rules FROM ContractSplit WHERE feature_id = ?`, featureId);
+    return row === undefined ? [] : (JSON.parse(String(row["rules"])) as RewriteRule[]);
   }
 
   get(featureId: string): ContractSplitView | undefined {
@@ -96,9 +121,15 @@ export class ContractSplitStore {
     );
   }
 
-  /** The replacements the agent named when it asked for the expand. */
-  name(featureId: string, replacements: readonly RetiringSymbol[]): void {
-    this.#db.exec(`UPDATE ContractSplit SET replacements = ?, updated_at = ? WHERE feature_id = ?`, JSON.stringify(replacements), this.#now(), featureId);
+  /** The replacements the agent named when it asked for the expand, with the plan's rules when it declared them. */
+  name(featureId: string, replacements: readonly RetiringSymbol[], rules?: readonly RewriteRule[]): void {
+    this.#db.exec(
+      `UPDATE ContractSplit SET replacements = ?, rules = COALESCE(?, rules), updated_at = ? WHERE feature_id = ?`,
+      JSON.stringify(replacements),
+      rules === undefined ? null : JSON.stringify(rules),
+      this.#now(),
+      featureId,
+    );
   }
 
   /** The expand reached main at `promotion`: what retired, what did not, and the signed record. */
@@ -125,7 +156,7 @@ export interface ContractSplitDeps {
   /** The project's retiring symbols (retiring-store.ts); absent, nothing retires. */
   readonly retiring?: {
     heldElsewhere(featureId: string, symbols: readonly RetiringSymbol[]): string[];
-    declareSplit(featureId: string, person: string, symbols: readonly RetiringSymbol[], recordId: string): unknown;
+    declareSplit(featureId: string, person: string, symbols: readonly RetiringSymbol[], recordId: string, rules?: readonly RewriteRule[]): unknown;
   };
   readonly notify?: (personId: string) => void;
   /** Each symbol the feature retires with its count and contract step (retiring-count.ts); absent is none. */
@@ -160,7 +191,131 @@ function sortLatest(deps: Pick<ContractSplitDeps, "facts">, feature: Feature, sc
   if (feature.latestCheckpointSha === null) return { run: undefined, sort: null };
   const run = deps.facts.forCheckpoint(feature.id, feature.latestCheckpointSha);
   const impact = run?.state === "reported" ? run.report?.impact : null;
-  return { run, sort: impact == null ? null : sortContractDiff(impact, ownScopes(feature.personId, scopeMap)) };
+  // A declared retiring contract's callers are no uses of the change the sort reads.
+  return { run, sort: impact == null ? null : sortContractDiff(withoutWatched(impact, run?.request.retiring), ownScopes(feature.personId, scopeMap)) };
+}
+
+/** Reads a repository path at a commit of the feature's fork; null when it is absent. */
+export type ReadAt = (commit: string, path: string) => Promise<string | null>;
+
+/** The unindented line that defines `name` in Python source, with what it defines; null when none does. */
+export function definitionOf(text: string, name: string): { readonly line: number; readonly kind: "function" | "class" | "variable" } | null {
+  const word = name.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const lines = text.split(/\r?\n/u);
+  for (const [index, line] of lines.entries()) {
+    if (new RegExp(`^(?:async\\s+def|def)\\s+${word}\\b`, "u").test(line)) return { line: index + 1, kind: "function" };
+    if (new RegExp(`^class\\s+${word}\\b`, "u").test(line)) return { line: index + 1, kind: "class" };
+    if (new RegExp(`^${word}\\s*(?::|=(?!=))`, "u").test(line)) return { line: index + 1, kind: "variable" };
+  }
+  return null;
+}
+
+/** Whether the class `owner` in Python source defines `member` in its body: a def or an assignment. */
+export function definesMember(text: string, owner: string, member: string): boolean {
+  const lines = text.split(/\r?\n/u);
+  const start = lines.findIndex((line) => new RegExp(`^class\\s+${owner}\\b`, "u").test(line));
+  if (start === -1) return false;
+  const defined = new RegExp(`^\\s+(?:(?:async\\s+)?def\\s+${member}\\b|${member}\\s*(?::|=(?!=)))`, "u");
+  for (const line of lines.slice(start + 1)) {
+    if (/^\S/u.test(line)) return false;
+    if (defined.test(line)) return true;
+  }
+  return false;
+}
+
+/** One declared contract as checked at the expand: its definition on main and its callers outside the author's scopes. */
+export interface DeclaredRetiring extends RetiringSymbol {
+  readonly line: number;
+  readonly kind: "function" | "class" | "variable" | "alias";
+  readonly callers: number;
+}
+
+/**
+ * Checks each contract an expand written first declares retiring (PRD 0.5 section 4.2 step 2, "Expand
+ * written first"): it exists on main at `baseline`, the facts run's report `impact` (which searched
+ * for the declared contracts) shows a caller outside the scopes the feature's person owns, and its
+ * replacement is in `checkpoint`. Answers each contract with its facts, or one message per failure.
+ */
+export async function declaredSplitRefusals(
+  retiring: readonly RetiringSymbol[],
+  impact: ImpactReport,
+  own: ReadonlySet<string>,
+  read: ReadAt,
+  at: { readonly baseline: string; readonly checkpoint: string },
+): Promise<{ readonly checked: DeclaredRetiring[]; readonly refusals: string[] }> {
+  const checked: DeclaredRetiring[] = [];
+  const refusals: string[] = [];
+  const outside = [...impact.headUses, ...impact.forks.flatMap((fork) => fork.uses)].filter((use) => use.scope === null || !own.has(use.scope));
+  for (const each of retiring) {
+    const name = each.contract.slice(each.contract.indexOf("::") + 2);
+    const main = await read(at.baseline, contractPath(each.contract));
+    const defined = main === null ? null : definitionOf(main, name);
+    if (main === null || (defined === null && !bindsName(main, name))) {
+      refusals.push(`${each.contract} does not exist on main at ${short(at.baseline)}, so there is nothing to retire`);
+      continue;
+    }
+    const dotted = contractDottedName(each.contract);
+    const callers = outside.filter((use) => use.symbol === dotted).length;
+    if (callers === 0) refusals.push(`${each.contract} has no caller outside your scopes on main or in a running feature's own changes, so it needs no split; change it in place`);
+    const [owner = "", member] = each.replacement.slice(each.replacement.indexOf("::") + 2).split(".");
+    const head = await read(at.checkpoint, contractPath(each.replacement));
+    const replaced = head !== null && (definitionOf(head, owner) !== null || bindsName(head, owner)) && (member === undefined || definesMember(head, owner, member));
+    if (!replaced) refusals.push(`the replacement ${each.replacement} of ${each.contract} is not in checkpoint ${short(at.checkpoint)}; write it there first`);
+    checked.push({ ...each, line: defined?.line ?? 1, kind: defined?.kind ?? "alias", callers });
+  }
+  return { checked, refusals };
+}
+
+/**
+ * Records the split of an expand written first from the contracts its plan declared retiring, once
+ * `declaredSplitRefusals` passed: one `removed` entry per contract under a signed `contract_split`
+ * record, the replacements named and the plan's rules kept for the retire. Undefined when the feature
+ * already has a split, which the sort recorded.
+ */
+export async function recordDeclaredSplit(
+  deps: Pick<ContractSplitDeps, "features" | "sign" | "notify"> & { readonly splits: Pick<ContractSplitStore, "get" | "keep" | "name"> },
+  feature: Feature,
+  checkpoint: string,
+  declared: readonly DeclaredRetiring[],
+  rules: readonly RewriteRule[],
+  scopeMap: ScopeMap,
+): Promise<ContractSplitView | undefined> {
+  if (deps.splits.get(feature.id) !== undefined || declared.length === 0) return undefined;
+  const entries: ContractSortEntry[] = declared.map((each) => {
+    const replacementPath = contractPath(each.replacement);
+    const reason = `declared retiring at the expand, replaced by ${each.replacement}, with ${plural(each.callers, "caller")} outside the author's scopes`;
+    return {
+      symbol: contractDottedName(each.contract),
+      path: contractPath(each.contract),
+      line: each.line,
+      kind: each.kind,
+      change: "removed",
+      sort: "incompatible",
+      breaks: "removed",
+      scope: scopeForPath(scopeMap, contractPath(each.contract)) ?? null,
+      contract: each.contract,
+      to: { symbol: `${pythonModuleOf(replacementPath)}.${each.replacement.slice(each.replacement.indexOf("::") + 2)}`, path: replacementPath, line: 0 },
+      keyword: null,
+      callers: each.callers,
+      reason,
+    };
+  });
+  const record = await deps.sign(
+    deps.features.draftRecord(feature.id, "contract_split", { penguin: true }, {
+      checkpoint,
+      declared: true,
+      entries: entries.map(({ symbol, breaks, callers, to }) => ({ symbol, breaks, callers, ...(to === null ? {} : { to: to.symbol }) })),
+    }),
+  );
+  deps.features.addRecord(record);
+  deps.splits.keep(feature.id, checkpoint, entries, record.record_id);
+  deps.splits.name(
+    feature.id,
+    declared.map(({ contract, replacement }) => ({ contract, replacement })),
+    rules.filter((rule) => declared.some((each) => each.contract === rule.contract)),
+  );
+  deps.notify?.(feature.personId);
+  return deps.splits.get(feature.id);
 }
 
 /**
@@ -244,16 +399,18 @@ export async function retireSplit(deps: ContractSplitDeps, featureId: string, pr
   for (const contract of elsewhere) unretired.push({ symbol: contract, reason: "another feature already retires it" });
   const retiring = deps.retiring === undefined ? [] : symbols.filter((each) => !elsewhere.has(each.contract));
   if (deps.retiring === undefined) for (const each of symbols) unretired.push({ symbol: each.contract, reason: "this project keeps no retiring symbols" });
+  // A split declared from a plan's `retiring` keeps that plan's rules; a sorted split has none.
+  const rules = deps.splits.rules(featureId);
   const record = await deps.sign(
     deps.features.draftRecord(featureId, "retire_symbols", { penguin: true }, {
       split: true,
       promotion,
-      symbols: retiring.map((each) => ({ ...each, rules: [] })),
+      symbols: retiring.map((each) => ({ ...each, rules: rules.filter((rule) => rule.contract === each.contract).map((rule) => rule.id) })),
       unretired,
     }),
   );
   deps.features.addRecord(record);
-  if (retiring.length > 0) deps.retiring?.declareSplit(featureId, feature.personId, retiring, record.record_id);
+  if (retiring.length > 0) deps.retiring?.declareSplit(featureId, feature.personId, retiring, record.record_id, rules);
   deps.splits.retired(featureId, promotion, retiring, unretired, record.record_id);
   deps.notify?.(feature.personId);
   return deps.splits.get(featureId);

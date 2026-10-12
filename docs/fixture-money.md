@@ -264,9 +264,11 @@ the check runner's programs. `apps/worker/test/money-split.test.ts`, `money-reti
    start waits on Hugo (`rounding-mode`) and on Tomas (`reorder`, `split-shipments`,
    `substitutions`). Each approves.
 2. **Expand.** Penguin sorts the first checkpoint's contract diff: 25 additive entries and nothing
-   else, so it records no split and asks for no merge plan. The plan Ines's agent proposes there
-   names no part. It declares the seven rules and marks six contracts retiring, under one signed
-   `retire_symbols` record. Main moves to the expand.
+   else, so the sort records no split and asks for no merge plan. The plan Ines's agent proposes
+   there names no part. It declares the seven rules and the six contracts the expand replaces.
+   Penguin checks each against main, the facts run's callers and the checkpoint, and records the
+   split from the declaration under one signed `contract_split` record. Main moves to the expand,
+   and the six contracts retire with their rules under one signed `retire_symbols` record.
 3. **Count.** Penguin's count after the expand finds 84 callers of the float API: 39 on main and 45
    in the readers' own changes. A use in a retiring function's own module or its scope's tests is
    no caller, so the tests in `shared/money/tests` and `orders/tests/test_model.py` are counted as
@@ -326,11 +328,8 @@ the check runner's programs. `apps/worker/test/money-split.test.ts`, `money-reti
    removed, then the feature lands. Penguin closes the six retiring records under one
    `symbols_removed` record.
 
-The run shows two limits of today's rules:
+The run shows one limit of today's rules:
 
-- **No split record.** Ines's agent writes the expand as the first checkpoint, as PRD section 4.2
-  step 2 orders. Penguin's sort then sees only added symbols, so the retiring contracts come from the
-  agent's plan, not from a split Penguin recorded (#149).
 - **No protected-path confirmation.** Jun's own steward writes the analytics block, so the change to
   `analytics/revenue_report.py` is Jun's own and Jun is not asked to confirm it.
 

@@ -13,6 +13,10 @@
 // id and carrying its person, so a person with two such features gets two targets. Each target runs the tests of those dependent
 // scopes, by command ID only; the runner resolves each ID from `penguin/scopes.json` itself.
 //
+// When the plan declares retiring contracts at an expand written first (PRD 0.5 section 4.2 step 2),
+// the run carries them too: the analysis searches for them as if they had changed, so the report lists
+// their callers outside the change (contract-split.ts `splitFromRetiring`).
+//
 // When the plan declares rewrite rules, the run also carries them with the places to apply them: main
 // at the baseline, inside the dependent scopes' paths, and each running feature at its checkpoint,
 // on the files it changed itself inside its scopes. The runner reports each file the rules change.
@@ -90,9 +94,10 @@ export class PlanFactsStore {
 
   /**
    * The feature's newest run for `checkpoint` that no newer run superseded, or undefined. With
-   * `rules`, only a run that carries exactly those rewrite rules.
+   * `rules`, only a run that carries exactly those rewrite rules; with `retiring`, only one that
+   * searched for exactly those contracts.
    */
-  forCheckpoint(featureId: string, checkpoint: string, rules?: readonly RewriteRule[]): PlanFactsRun | undefined {
+  forCheckpoint(featureId: string, checkpoint: string, rules?: readonly RewriteRule[], retiring?: readonly string[]): PlanFactsRun | undefined {
     const [row] = this.#db.exec(
       `SELECT * FROM PlanFactsRun WHERE feature_id = ? AND checkpoint = ? AND state != 'superseded' ORDER BY id DESC LIMIT 1`,
       featureId,
@@ -101,6 +106,7 @@ export class PlanFactsStore {
     if (row === undefined) return undefined;
     const found = run(row);
     if (rules !== undefined && rewriteRulesKey(found.request.rewrites?.rules ?? []) !== rewriteRulesKey(rules)) return undefined;
+    if (retiring !== undefined && retiringKey(found.request.retiring ?? []) !== retiringKey(retiring)) return undefined;
     return found;
   }
 
@@ -190,11 +196,13 @@ export function dependentScopes(scopes: ReadonlySet<string>, scopeMap: ScopeMap)
 }
 
 const testCommand = (scopeId: string): string => `test:${scopeId}`;
+const retiringKey = (contracts: readonly string[]): string => [...new Set(contracts)].sort().join("\n");
 
 /**
  * The facts run for feature `feature` at its latest checkpoint, built on `baseline`: main and each
  * running feature with a checkpoint that may read what it changes. `features` is every feature and
  * `dependents` the feature's stored dependents. `rules`, the plan's rewrite rules, run in each target.
+ * `retiring`, contracts declared retiring at an expand written first, are searched for with the change.
  */
 export function factsRequest(
   feature: Feature,
@@ -203,6 +211,7 @@ export function factsRequest(
   features: readonly Feature[],
   dependents: readonly FeatureDependent[],
   rules: readonly RewriteRule[] = [],
+  retiring: readonly string[] = [],
 ): Omit<PlanFactsRequest, "runId"> {
   const consumers = dependentScopes(touchedScopes(feature, scopeMap), scopeMap);
   const fork = `feature-${feature.id}`;
@@ -237,7 +246,8 @@ export function factsRequest(
     });
     if (targets.length >= PLAN_LIMITS.targets) break;
   }
-  const request = { feature: feature.id, fork, checkpoint: feature.latestCheckpointSha as string, baseline, targets };
+  const searched = [...new Set(retiring)].sort();
+  const request = { feature: feature.id, fork, checkpoint: feature.latestCheckpointSha as string, baseline, targets, ...(searched.length === 0 ? {} : { retiring: searched }) };
   if (rules.length === 0) return request;
   const pathsOf = (scopes: Iterable<string>) => [...new Set([...scopes].flatMap((scope) => scopeMap.scopes.get(scope)?.paths ?? []))].sort();
   const places = targets.map((target) =>

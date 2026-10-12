@@ -62,6 +62,7 @@ import {
   PLAN_SCHEMA_VERSION,
   parseRetiring,
   placeLabel,
+  withoutWatched,
   planId as makePlanId,
   testNameWords,
   type Author,
@@ -85,6 +86,7 @@ import {
 } from "@penguin/protocol";
 import { InvariantsFileError, parseInvariantsBytes, routeScope, scopeForPath, type ScopeMap } from "@penguin/scope-map";
 
+import { declaredSplitRefusals, ownScopes, recordDeclaredSplit, type ContractSplitStore } from "./contract-split.ts";
 import type { FeatureRejection, FeatureRejectReason } from "./feature-open.ts";
 import { parseFeatureId, type Feature, type FeatureRecord, type FeatureStore, type UnsignedFeatureRecord } from "./feature-store.ts";
 import type { FeatureDependent } from "./overlap-lock.ts";
@@ -136,6 +138,14 @@ export interface ProposePlanDeps {
     heldElsewhere(featureId: string, symbols: readonly RetiringSymbol[]): string[];
     declare(plan: Plan, symbols: readonly RetiringSymbol[], recordId: string): RetiringDeclaration[];
   };
+  /**
+   * The project's splits (contract-split.ts). With them, a plan of no part that declares `retiring` on
+   * a feature with no split is an expand written first: Penguin checks the declaration and records the
+   * split from it, and the contracts retire when the expand is promoted. Absent, the plan's `retiring`
+   * is declared at once, as before splits.
+   */
+  readonly splits?: Pick<ContractSplitStore, "get" | "keep" | "name">;
+  readonly notify?: (personId: string) => void;
   readonly now?: () => number;
 }
 
@@ -171,7 +181,8 @@ export interface MissingItem {
     | "patch_missing_symbol"
     | "store_marker_not_found"
     | "rule_refused"
-    | "rules_not_run";
+    | "rules_not_run"
+    | "retiring_refused";
   readonly message: string;
   readonly place?: PlanPlace;
   /** The index of the part in the submitted plan. */
@@ -704,11 +715,18 @@ export async function proposePlan(deps: ProposePlanDeps, caller: string, session
   const subject = await deps.readRepo(repo, async (reader) => (await counted(reader, calls).readCommit(checkpoint))?.message);
   if (subject === undefined) return rejected("not_found", `commit ${checkpoint} is not in feature ${featureId}'s fork`);
 
+  // An expand written first (PRD 0.5 section 4.2 step 2): the run also searches for the declared contracts.
+  const declaresSplit = retiring.length > 0 && parts.length === 0 && deps.splits !== undefined && deps.splits.get(featureId) === undefined;
+  const searched = declaresSplit ? retiring.map((each) => each.contract) : [];
   // The run carries the plan's rules: other rules than the last run's need a run of their own.
   const run =
-    deps.facts.forCheckpoint(featureId, checkpoint, rules) ??
-    deps.facts.schedule(factsRequest(feature, recorded.baseline, scopeMap, deps.features.list(), deps.dependents(featureId), rules));
-  const report = run.state === "reported" ? run.report : null;
+    deps.facts.forCheckpoint(featureId, checkpoint, rules, searched) ??
+    deps.facts.schedule(factsRequest(feature, recorded.baseline, scopeMap, deps.features.list(), deps.dependents(featureId), rules, searched));
+  // The declared contracts' callers are no places of the change: only the split's checks read them.
+  const report =
+    run.state === "reported" && run.report !== null
+      ? { ...run.report, impact: run.report.impact === null ? null : withoutWatched(run.report.impact, run.request.retiring) }
+      : null;
   const breaks = report === null ? [] : breakFacts(report);
   const heads = new Map(run.request.targets.filter((target) => target.id !== PLAN_MAIN_TARGET).map((target) => [target.id, target.sha]));
   const places = report?.impact == null ? [] : affectedPlaces(report.impact, breaks, scopeMap, deps.features, heads, deps.available?.());
@@ -739,6 +757,19 @@ export async function proposePlan(deps: ProposePlanDeps, caller: string, session
   const impact = report.impact;
 
   const missing: MissingItem[] = ruleProblems(rules, impact, report, new Set(retiring.map((each) => each.contract)));
+  const declared = declaresSplit
+    ? await declaredSplitRefusals(
+        retiring,
+        run.report?.impact ?? impact,
+        ownScopes(feature.personId, scopeMap),
+        (commit, path) => deps.readRepo(repo, async (reader) => {
+          const tree = (await counted(reader, calls).readCommit(commit))?.treeHash;
+          return tree === undefined ? null : ((await fileEntry(counted(reader, calls), tree, path))?.text ?? null);
+        }),
+        { baseline: recorded.baseline, checkpoint },
+      )
+    : undefined;
+  for (const message of declared?.refusals ?? []) missing.push({ code: "retiring_refused", message });
   const markerProblem = storeMarker === null ? null : await storeMarkerProblem(deps, repo, checkpoint, storeMarker, calls);
   if (markerProblem !== null) missing.push({ code: "store_marker_not_found", message: markerProblem });
   const byPlace = new Map(places.map((place) => [placeKey(place.place), place]));
@@ -852,7 +883,10 @@ export async function proposePlan(deps: ProposePlanDeps, caller: string, session
     return rejected("conflict", `plan version ${version} of feature ${featureId} was kept by another proposal; propose again`);
   }
   deps.features.addRecord(record);
-  if (retiring.length > 0 && deps.retiring !== undefined) {
+  if (declared !== undefined && deps.splits !== undefined) {
+    // The split is recorded from the declaration; its contracts retire when the expand is promoted.
+    await recordDeclaredSplit({ features: deps.features, splits: deps.splits, sign: deps.sign, ...(deps.notify === undefined ? {} : { notify: deps.notify }) }, feature, checkpoint, declared.checked, rules, scopeMap);
+  } else if (retiring.length > 0 && deps.retiring !== undefined) {
     const retire = await deps.sign(
       deps.features.draftRecord(featureId, "retire_symbols", { identity: live.session.handle }, {
         plan_id: id,

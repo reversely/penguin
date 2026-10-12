@@ -396,8 +396,17 @@ A plan may also declare `retiring`: up to 64 `{ "contract": "<path::symbol>", "r
 "<path::name>" }` pairs, for contracts the change leaves in place beside their replacement. Each
 contract must be one `penguin/scopes.json` declares for a scope the feature's area names. A rule
 may name a retiring contract the contract diff does not touch. Once the plan is stored, every
-checkpoint whose own changes call a retiring symbol gets a next step naming the replacement. A
-complete
+checkpoint whose own changes call a retiring symbol gets a next step naming the replacement.
+
+When you wrote the expand first, before any incompatible change, propose a plan with no part at the
+expand checkpoint and declare in `retiring` each old contract it replaces. While your feature has
+no split, Penguin records the split from that declaration
+([design.md](design.md#sorting-and-splitting-in-the-build), Expand written first). Each contract
+must exist on main, have a caller outside your scopes, and have its replacement in the checkpoint;
+one that fails comes back in `missing` as `retiring_refused` with the reason. The contracts retire
+when the expand reaches main, each with the plan's rules for it.
+
+A complete
 plan answers `stored` with its id, facts and parts. Every `missing` or `returned` answer is marked as
 a tool error. Text from the repository and the run, such as the commit subject, docstrings, assertion
 lines, diff lines and the agent's own note, arrives only inside `personWritten`

@@ -34,7 +34,11 @@ test("a listed run names only feature forks and full SHAs, or nothing runs", () 
     { ...REQUEST, checkpoint: "HEAD" },
     { ...REQUEST, targets: [{ ...(REQUEST.targets[0] as PlanFactsRequest["targets"][number]), repo: "--upload-pack=x" }] },
     { ...REQUEST, targets: [{ ...(REQUEST.targets[0] as PlanFactsRequest["targets"][number]), sha: "main" }] },
+    // Contracts declared retiring at an expand written first are path::name in a Python file.
+    { ...REQUEST, retiring: ["shared/money.py::price; rm -rf /"] },
+    { ...REQUEST, retiring: ["../outside.py::price"] },
   ];
+  checkFactsRequest({ ...REQUEST, retiring: ["shared/money/__init__.py::price"] });
   for (const request of bad) assert.throws(() => checkFactsRequest(request), JSON.stringify(request));
 });
 

@@ -16,7 +16,10 @@
 //    unchanged from main: it is main's break, counted as `carried`;
 // 5. when the plan declares rewrite rules, applies them in each listed place with Penguin's codemod,
 //    lint autofix and formatter (FixApplier.rewrite), and reports each file they change by its blob
-//    before and after, so the Worker can compare the rules' output with each part's proposed fix.
+//    before and after, so the Worker can compare the rules' output with each part's proposed fix;
+// 6. when the plan declares retiring contracts at an expand written first (`retiring`), searches for
+//    them in the same analysis (`symbols`), so the report lists their callers. Those uses choose no
+//    target's tests: they are callers of the old shape, which the expand leaves working.
 //
 // The report carries no log. Every step is a local Git, analysis or test command; nothing calls a model.
 
@@ -24,8 +27,11 @@ import { commitMergedTree, isObjectId, runGit, simulateMerge } from "@penguin/gi
 import {
   PLAN_LIMITS,
   PLAN_MAIN_TARGET,
+  isContractName,
+  RETIRING_LIMITS,
   rewriteRuleContractPath,
   selectAffectedForks,
+  withoutWatched,
   type ImpactReport,
   type PlanBreak,
   type PlanFactsReport,
@@ -78,6 +84,9 @@ export function checkFactsRequest(request: PlanFactsRequest): void {
   for (const target of request.targets) {
     if (target.commandIds.length > PLAN_LIMITS.commandsPerTarget) throw new Error(`target ${target.id} lists too many commands`);
   }
+  const retiring = request.retiring ?? [];
+  if (retiring.length > RETIRING_LIMITS.symbols) throw new Error(`a facts run searches at most ${RETIRING_LIMITS.symbols} retiring contracts`);
+  for (const contract of retiring) if (!isContractName(contract)) throw new Error(`${JSON.stringify(contract)} is not a path::name contract`);
   for (const place of request.rewrites?.places ?? []) {
     if (!request.targets.some((target) => target.id === place.target && target.sha === place.sha)) {
       throw new Error(`rewrite place ${JSON.stringify(place.target)} is not a target at its commit`);
@@ -125,15 +134,18 @@ export class PlanFactsRunner {
         // A feature's places are its own changes: a caller in a file it carries unchanged from main
         // is main's, and the feature takes main's fix with main before its block lands.
         forks: features.map(({ id, sha, scopes }) => ({ id, sha, scopes, since: request.baseline })),
+        ...((request.retiring ?? []).length === 0 ? {} : { symbols: request.retiring as readonly string[] }),
       });
     } catch (error) {
       impactError = clip((error as Error).message, 4_096);
     }
-    const selected = impact === null ? undefined : new Set(selectAffectedForks(impact));
+    // The change's own uses choose the targets; a declared retiring contract's callers do not.
+    const change = impact === null ? null : withoutWatched(impact, request.retiring);
+    const selected = change === null ? undefined : new Set(selectAffectedForks(change));
     const results: PlanFactsResult[] = [];
     for (const target of request.targets) {
       const affected = target.id === PLAN_MAIN_TARGET || selected === undefined || selected.has(target.id);
-      const fork = impact?.forks.find((each) => each.id === target.id);
+      const fork = change?.forks.find((each) => each.id === target.id);
       const own = fork?.mergeBase == null ? null : { mergeBase: fork.mergeBase, callers: new Set(fork.uses.map((use) => use.path)) };
       results.push(...(await this.#target(request.checkpoint, target, affected, own)));
     }

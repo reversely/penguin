@@ -7,8 +7,9 @@
 // already retires keeps its first declaration.
 //
 // A split feature's expand promotion declares its old names too (contract-split.ts), under the plan id
-// `split:<feature>` and with no rules. A later plan of the feature keeps them, except each contract
-// it declares itself, which then carries the plan's rules.
+// `split:<feature>`, with the rules of the plan that declared them when the expand was written first.
+// A later plan of the feature keeps them, except each contract it declares itself, which then carries
+// the plan's rules.
 //
 // Readers: the retiring-calls check at each checkpoint (agent-tools.ts `requestRetiringCheck`), the
 // `impact` tool's migration groups and `apply_fix` by a retiring symbol's rewrite rule.
@@ -154,22 +155,24 @@ export class RetiringStore {
   }
 
   /**
-   * Keeps the old names a split feature's expand promotion retires (contract-split.ts), with no rules,
-   * under the signed record `recordId`. A contract another feature already retires keeps its first
-   * declaration.
+   * Keeps the old names a split feature's expand promotion retires (contract-split.ts), each with the
+   * `rules` for its contract (a split declared from a plan's `retiring` keeps that plan's; a sorted
+   * split has none), under the signed record `recordId`. A contract another feature already retires
+   * keeps its first declaration.
    */
-  declareSplit(featureId: string, person: string, symbols: readonly RetiringSymbol[], recordId: string): RetiringDeclaration[] {
+  declareSplit(featureId: string, person: string, symbols: readonly RetiringSymbol[], recordId: string, rules: readonly RewriteRule[] = []): RetiringDeclaration[] {
     const now = this.#now();
     this.#db.transaction(() => {
       for (const symbol of symbols) {
         this.#db.exec(
           `INSERT OR IGNORE INTO RetiringSymbol (contract, replacement, feature_id, plan_id, person_id, rules, record_id, declared_at)
-           VALUES (?, ?, ?, ?, ?, '[]', ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
           symbol.contract,
           symbol.replacement,
           featureId,
           splitPlanId(featureId),
           person,
+          JSON.stringify(rules.filter((rule) => rule.contract === symbol.contract)),
           recordId,
           now,
         );

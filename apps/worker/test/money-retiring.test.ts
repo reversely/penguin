@@ -1,8 +1,9 @@
 // Retiring symbols (#113, PRD 0.5 section 4.2 step 2) on the money-minor-units fixture's own data,
 // through the ProjectAgent's modules and the check runner's programs as the preview seed wires them
 // (scripts/preview/seed.ts). Ines's first checkpoint is the expand: Penguin sorts its contract diff
-// as additive only, and the plan Ines's agent proposes there names no place and marks the float API
-// retiring with the split's rewrite rules. Main moves to the expand and Penguin counts the callers
+// as additive only, and the plan Ines's agent proposes there names no place and declares the float API
+// it replaces with the split's rewrite rules. Penguin checks the declaration and records the split from
+// it (#149); the float API retires when main moves to the expand. Penguin then counts the callers
 // left (#117), too many for the contract step, grouped by owner. Noor's pagination then reports its
 // second checkpoint, which calls two retiring functions, and gets one next step per call; the
 // `display` rule rewrites one of them. Expected features and owners are read from larder.json; the
@@ -18,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import { contractPath, isTestFile, type AgentToolResult, type RetiringSymbol, type RewriteRule } from "@penguin/protocol";
 import { scopeForPath } from "@penguin/scope-map";
 
+import { retireSplit } from "../../../services/project-agent/src/contract-split.ts";
 import { buildFixture, builderOf, fixtureScopeMap, PreviewProject, type SeedIdentity } from "../../../scripts/preview/seed.ts";
 
 const ROOT = fileURLToPath(new URL("../../../", import.meta.url));
@@ -63,7 +65,13 @@ before(async () => {
   await preview.checkpoint(ORIGIN.id, `feature-${ORIGIN.id}-${ORIGIN.commits[0]?.tag}`);
 });
 
-test("the expand only adds, and its plan marks the float API retiring, signed, with the rules for each contract", async (t: TestContext) => {
+const records = (type: string) =>
+  preview.features
+    .records(ORIGIN.id)
+    .map((stored) => JSON.parse(stored.file) as { type: string; record_id: string; payload: Record<string, unknown> })
+    .filter((each) => each.type === type);
+
+test("the expand only adds; Penguin records the split from the float API its plan declares, checked against main and the checkpoint", async (t: TestContext) => {
   await preview.factsPass();
   const work = await preview.contract(ORIGIN.id);
   assert.deepEqual([work.state, work.decision, work.split], ["sorted", "none", null]);
@@ -75,22 +83,32 @@ test("the expand only adds, and its plan marks the float API retiring, signed, w
   if (outcome.status !== "stored") return;
   assert.deepEqual(outcome.plan.parts, []);
   assert.deepEqual(outcome.plan.retiring, LARDER.split.retiring);
+  // Each declared contract exists on main, has callers outside Ines's scopes and its replacement in the checkpoint.
+  const split = preview.splits.get(ORIGIN.id);
+  assert.equal(split?.state, "expand_first");
+  assert.deepEqual(split?.replacements, LARDER.split.retiring);
+  assert.deepEqual(split?.entries.map((entry) => entry.contract).sort(), LARDER.split.retiring.map((each) => each.contract).sort());
+  assert.ok(split?.entries.every((entry) => entry.sort === "incompatible" && entry.callers > 0), JSON.stringify(split?.entries.map((entry) => [entry.contract, entry.callers])));
+  const [record] = records("contract_split");
+  assert.deepEqual([record?.payload["declared"], record?.payload["checkpoint"]], [true, split?.checkpoint]);
+  t.diagnostic(`split at the expand: ${split?.entries.map((entry) => `${entry.contract} (${entry.callers} callers outside ines's scopes)`).join(", ")}`);
+  // Nothing retires before the expand reaches main.
+  assert.deepEqual(preview.retiring.list(), []);
+  assert.deepEqual(records("retire_symbols"), []);
+});
+
+test("after the expand reaches main, callers of the float API are left, grouped by owner, and no contract step is proposed", async (t: TestContext) => {
+  // The expand reaches main on its own: the split's old names retire with the plan's rules, and Ines's feature keeps building on its fork.
+  const expand = preview.git("rev-parse", `feature-${ORIGIN.id}-${ORIGIN.commits[0]?.tag}`);
+  await retireSplit(preview.splitDeps(), ORIGIN.id, expand);
   const declared = preview.retiring.list();
   assert.deepEqual(declared.map((each) => each.contract), LARDER.split.retiring.map((each) => each.contract).sort());
   const rulesOf = (contract: string) => LARDER.split.rules.filter((rule) => rule.contract === contract).map((rule) => rule.id);
   for (const each of declared) assert.deepEqual(each.rules.map((rule) => rule.id), rulesOf(each.contract), each.contract);
-  const [record] = preview.features
-    .records(ORIGIN.id)
-    .map((stored) => JSON.parse(stored.file) as { type: string; record_id: string; payload: { symbols: unknown[] } })
-    .filter((each) => each.type === "retire_symbols");
-  assert.equal(record?.record_id, declared[0]?.recordId);
-  assert.equal(record?.payload.symbols.length, LARDER.split.retiring.length);
+  const [retired] = records("retire_symbols");
+  assert.deepEqual([retired?.record_id, retired?.payload["split"], (retired?.payload["symbols"] as unknown[]).length], [declared[0]?.recordId, true, LARDER.split.retiring.length]);
   t.diagnostic(`retiring: ${declared.map((each) => `${each.contract} (${each.rules.length} rules)`).join(", ")}`);
-});
-
-test("after the expand reaches main, callers of the float API are left, grouped by owner, and no contract step is proposed", async (t: TestContext) => {
-  // The expand reaches main on its own; Ines's feature keeps building on its fork.
-  const runId = await preview.promoted(ORIGIN.id, preview.git("rev-parse", `feature-${ORIGIN.id}-${ORIGIN.commits[0]?.tag}`), false);
+  const runId = await preview.promoted(ORIGIN.id, expand, false);
   assert.ok(runId !== undefined, "the promotion asked for a count");
   countRun = runId;
   const counted = preview.counts.find((each) => each.runId === runId)?.outcome;

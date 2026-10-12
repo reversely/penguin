@@ -562,7 +562,11 @@ its latest checkpoint, keyed by its feature id and naming its person. Every targ
    feature. Each fork names the baseline as `since`, so the analysis lists only the uses in files the
    feature added or changed since its merge base with the baseline. A use in a file the feature
    carries unchanged from main is main's caller. The report counts those as `carried` and leaves
-   them out of the fork's uses;
+   them out of the fork's uses. When the listing carries `retiring`, the contracts an expand written
+   first declares, the same analysis searches for them as if they had changed (`symbols`), so the
+   report lists their callers too. The runner refuses a listing whose `retiring` names anything but
+   `path::name` contracts in Python files, or more than 64. Those uses choose no target in step 4:
+   they are callers of the old shape, which the expand leaves working;
 3. merges the checkpoint onto each target with `git merge-tree --write-tree`;
 4. runs each listed test command on the merged commit in a throwaway worktree. A running feature
    whose own changes the impact graph shows make no use of the change gets `not-affected` without a

@@ -2449,6 +2449,9 @@ export class ProjectAgent extends Agent {
           sign: async (record) => signFeatureRecord(record, (await this.#loadServiceKey()).privateKey),
           breakLimit: parseBreakLimit((this.env as unknown as ProjectAgentEnv).PENGUIN_PLAN_BREAK_LIMIT),
           retiring: this.#retiringStore(),
+          // An expand written first records its split from the plan's `retiring` (contract-split.ts).
+          splits: this.#splitStore(),
+          notify: (personId) => sendToOwner(this.getConnections<{ owner?: string }>(), personId, inboxChangedMessage()),
           evidence: (featureId) => ({ reviews: this.#reviewStore().list(featureId).map(reviewResult), adminMode: this.#adminMode() }),
           exception: (personId, featureId) => {
             this.#inboxStore().planReturned(personId, featureId);

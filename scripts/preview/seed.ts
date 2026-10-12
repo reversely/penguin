@@ -57,7 +57,7 @@ import { claimToolRuns, recordToolResult } from "../../services/project-agent/sr
 import { AgentToolStore, requestRetiringCheck, requestTool, whatsNear, type AgentToolDeps } from "../../services/project-agent/src/agent-tools.ts";
 import { buildBoard } from "../../services/project-agent/src/board.ts";
 import { checkpointBaseline, checkpointChange, type RepoHistoryReader } from "../../services/project-agent/src/combined-run-schedule.ts";
-import { contractWork, ContractSplitStore, recordSplit, scheduleSort, type ContractSplitDeps } from "../../services/project-agent/src/contract-split.ts";
+import { contractWork, ContractSplitStore, recordSplit, retireSplit, scheduleSort, type ContractSplitDeps } from "../../services/project-agent/src/contract-split.ts";
 import { buildFeaturePage, buildFeaturePlan, buildPersonScopes, buildTeamView, type DashboardViewDeps } from "../../services/project-agent/src/dashboard-views.ts";
 import { openFeature, recordFeatureRepo, recordPenguinCheckpoint, reportFeatureCheckpoint, type FeatureDeps } from "../../services/project-agent/src/feature-open.ts";
 import { FeatureStore, signFeatureRecord } from "../../services/project-agent/src/feature-store.ts";
@@ -716,6 +716,8 @@ export class PreviewProject {
             queueTrials({ trials: this.trials, reviews: this.reviews }, plan);
           },
           retiring: this.retiring,
+          splits: this.splits,
+          notify: this.#notify,
         },
         feature.personId,
         this.sessionOf.get(featureId) as string,
@@ -1449,11 +1451,13 @@ async function moneyMinorUnits(preview: PreviewProject): Promise<void> {
     await preview.step("impact", () => preview.runnerTool(origin.id, "impact"));
     await preview.step("check", () => preview.runnerTool(origin.id, "check"));
   }
-  // The expand only adds, so the plan has no place; it declares the rules and marks the float API retiring.
+  // The expand only adds, so the plan has no place. It declares the rules and the float API it
+  // replaces; Penguin checks the declaration and records the split from it (PRD 0.5 section 4.2 step 2).
   preview.splitOutcome = await preview.step("propose_plan at the expand", () => preview.propose(origin.id, [], larder.split.rules, larder.split.retiring));
   if (preview.splitOutcome.status !== "stored") throw new Error(`expand plan: ${JSON.stringify(preview.splitOutcome).slice(0, 2_000)}`);
-  // Penguin promotes the expand on its own; the feature keeps building on its fork.
+  // Penguin promotes the expand on its own; the split's old names retire and the feature keeps building on its fork.
   await preview.step(`promote ${origin.id}'s expand`, async () => {
+    await retireSplit(preview.splitDeps(), origin.id, sha(tagOf(origin, expand)));
     await preview.promoted(origin.id, sha(tagOf(origin, expand)), false);
     await preview.runnerPass();
     await preview.trialPass();

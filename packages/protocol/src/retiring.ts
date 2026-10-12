@@ -82,6 +82,25 @@ export function parseRetiring(value: unknown): RetiringSymbol[] | string {
   return symbols;
 }
 
+/** Whether `value` names a module-level contract the way `retiring` does: `path::name` in a Python file. */
+export function isContractName(value: unknown): value is string {
+  return typeof value === "string" && CONTRACT.test(value) && safePath(contractPath(value));
+}
+
+/**
+ * The report without the uses of `watched` contracts the change itself does not touch: the uses a
+ * facts run found because it searched for retiring symbols an agent declared
+ * (`PlanFactsRequest.retiring`). Those are callers of the old shape, not places of the change.
+ */
+export function withoutWatched(impact: ImpactReport, watched: readonly string[] | null | undefined): ImpactReport {
+  if (watched == null || watched.length === 0) return impact;
+  const changed = new Set(impact.changes.map((change) => change.symbol));
+  const hidden = new Set(watched.map(contractDottedName).filter((name) => !changed.has(name)));
+  if (hidden.size === 0) return impact;
+  const kept = (use: ImpactUse) => !hidden.has(use.symbol);
+  return { ...impact, headUses: impact.headUses.filter(kept), forks: impact.forks.map((fork) => ({ ...fork, uses: fork.uses.filter(kept) })) };
+}
+
 /** The repository path of a `path::symbol` contract. */
 export function contractPath(contract: string): string {
   return contract.slice(0, contract.indexOf("::"));

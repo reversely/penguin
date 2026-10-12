@@ -100,6 +100,12 @@ export interface PlanFactsRequest {
   readonly targets: readonly PlanFactsTarget[];
   /** The plan's rewrite rules and where to apply them; absent or null when the plan declares none. */
   readonly rewrites?: PlanRewriteRequest | null;
+  /**
+   * Contracts (`path::name`) the plan declares retiring at an expand written first, searched for as if
+   * they had changed (`ImpactRequest.symbols`), so the report lists their callers beside the change's
+   * uses. Absent or empty is none.
+   */
+  readonly retiring?: readonly string[] | null;
 }
 
 /** One tree the runner applies a plan's rewrite rules to. */

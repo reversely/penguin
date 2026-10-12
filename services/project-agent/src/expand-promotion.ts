@@ -24,7 +24,7 @@
 //    push with Penguin's own short-lived token on main. The feature stays `building`, its fork keeps
 //    its write tokens, and the promotion is a signed `expand_promotion` record.
 
-import { ownerLockId, PLAN_MAIN_TARGET, placeLabel, type Author, type CharterView, type ImpactReport } from "@penguin/protocol";
+import { ownerLockId, PLAN_MAIN_TARGET, placeLabel, withoutWatched, type Author, type CharterView, type ImpactReport } from "@penguin/protocol";
 import type { ScopeMap } from "@penguin/scope-map";
 
 import { ancestorsFound, blockTargets, mainState, protectedRefusal, targetFields, type LandDeps, type LandOutcome, type LandRejection, type LandRejectReason } from "./block-land.ts";
@@ -186,7 +186,7 @@ async function prepareExpand(deps: ExpandDeps, feature: Feature, checkpoint: unk
   const impact = run.report.impact;
   if (impact === null) return rejected("impact_failed", `the impact analysis of facts run ${run.runId} failed on the check runner, so the Only adds check cannot run`);
   const heads = new Map(run.request.targets.filter((target) => target.id !== PLAN_MAIN_TARGET).map((target) => [target.id, target.sha]));
-  const places = affectedPlaces(withoutKeptCallers(impact), breakFacts(run.report), scopeMap, deps.features, heads);
+  const places = affectedPlaces(withoutKeptCallers(withoutWatched(impact, run.request.retiring)), breakFacts(run.report), scopeMap, deps.features, heads);
   const failures = onlyAddsFailures(impact, places);
   if (failures.length > 0) {
     return rejected("not_only_adds", `checkpoint ${short(latest)} does not only add, so it cannot reach main on its own: ${failures.join("; ")}`);

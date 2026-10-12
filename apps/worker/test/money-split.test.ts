@@ -56,6 +56,14 @@ test("the expand reaches main with a plan of no place, and the float API retires
   assert.deepEqual(outcome.plan.parts, []);
   const records = preview.features.records(ORIGIN.id).map((kept) => JSON.parse(kept.file) as { type: string; payload: { symbols?: unknown[] } });
   assert.equal(records.filter((record) => record.type === "retire_symbols")[0]?.payload.symbols?.length, LARDER.split.retiring.length);
+  // The expand was written first, so Penguin recorded the split from the declared float API at that
+  // checkpoint (#149), and the retiring contracts are that split's.
+  const split = preview.splits.get(ORIGIN.id);
+  const expand = preview.git("rev-parse", `feature-${ORIGIN.id}-${ORIGIN.commits[0]?.tag}^{commit}`);
+  assert.deepEqual([split?.state, split?.checkpoint], ["retiring", expand]);
+  assert.deepEqual(split?.retiring.map((each) => each.contract).sort(), LARDER.split.retiring.map((each) => each.contract).sort());
+  assert.ok(records.findIndex((record) => record.type === "contract_split") < records.findIndex((record) => record.type === "retire_symbols"));
+  t.diagnostic(`split at ${expand.slice(0, 12)}: ${split?.entries.map((entry) => `${entry.contract} ${entry.callers}`).join(", ")}`);
 });
 
 test("Penguin proposes one migration plan per owner group, with each reader in its own person's plan", (t: TestContext) => {

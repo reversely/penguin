@@ -394,10 +394,33 @@ Penguin sorts each feature checkpoint's contract diff and decides between a spli
   breaking signature or a removed symbol the agent writes the parallel function. The analysis then
   reports each aliased rename or move as `kept`. The expand's Only adds check counts it as an
   addition ([Expand in the build](#expand-in-the-build)).
+- **Expand written first.** An agent may write the expand before any incompatible change, so the
+  sort of that checkpoint finds only additive entries. Its `propose_plan` with no part then declares
+  in `retiring` each old contract the expand replaces, with its replacement. When the feature has no
+  split yet, the plan's facts run also searches for those contracts (`retiring` in the facts
+  request, the analysis's `symbols`), so it lists their callers beside the change. Their uses are no
+  places of the change: `propose_plan`, the sort and the Only adds check read the report without
+  them (`withoutWatched`), and they choose no target's tests on the runner. Penguin checks each
+  contract (`declaredSplitRefusals`):
+
+  | Check | Read from |
+  |---|---|
+  | It exists on main | The contract's module at the checkpoint's baseline binds the name at module level |
+  | It has a caller outside the author's scopes | The facts run's uses of it on main or in a running feature's own changes, in a scope the person does not own or in no scope |
+  | Its replacement is in the checkpoint | The replacement's module at the checkpoint binds the name; for `Class.member`, the class body defines the member |
+
+  A contract that fails a check is a `retiring_refused` item in the `missing` answer, and no plan is
+  stored. When every one passes, Penguin stores the plan and records the split from the declaration
+  with a signed `contract_split` record with `declared: true`: one entry per contract, sorted
+  incompatible with `breaks: "removed"`, its callers and its replacement as `to`. The split keeps
+  the replacements and the plan's rewrite rules for those contracts. Nothing retires until the
+  expand reaches main. A later incompatible change to those symbols is sorted as usual. Load: the
+  plan's own facts run, which a plan with rules schedules anyway, and two file reads per contract.
 - **Retiring.** `land_feature` with `expand: true` may name in `retiring` the parallel function of
   each old name the codemod does not expand. Once the expand checkpoint reaches main, Penguin marks
   each old name of the split retiring with its replacement. One signed `retire_symbols` record holds
-  them under the plan id `split:<feature>`. A rename or move names its own replacement. A method has
+  them under the plan id `split:<feature>`, each with the ids of the rewrite rules the split kept
+  for it (none for a sorted split). A rename or move names its own replacement. A method has
   no module-level contract to retire. An old name with no replacement stays unretired. The record
   lists each unretired name with the reason. The next step then lists the retiring names and asks
   for the migration plan ([Steps 1 to 5 in the build](#steps-1-to-5-in-the-build), Retiring
@@ -469,9 +492,10 @@ Penguin sorts each feature checkpoint's contract diff and decides between a spli
   `profile()` in place with the same signatures. Both sort as behaviour changes to the declared
   `IdentityMap` contract, so the feature keeps its merge plan and no old lookup retires from this
   checkpoint. On the helpful fix, `start_of_day()` keeps its signature and sorts as a behaviour
-  change. On money in minor units, Ines's checkpoint removes `display()`, changes the parameters of
-  `price()` and changes the types of `total()`. All three have callers in other scopes and sort
-  incompatible, so Penguin splits the feature.
+  change. On money in minor units, Ines's first checkpoint is the expand: its sort finds only
+  additive entries. The plan Ines's agent proposes there declares the six float functions retiring,
+  each passes the three checks, and Penguin records the split from the declaration
+  (`apps/worker/test/money-retiring.test.ts`).
 
 #### Migration plans in the build
 
