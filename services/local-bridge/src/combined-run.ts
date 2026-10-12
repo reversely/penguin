@@ -87,8 +87,9 @@ export interface CombinedRunRequest {
   readonly mainTests?: boolean;
   /**
    * The person whose checkpoint this is. A dependent scope whose DRI is this person, and that no
-   * target covers, runs its tests on the checkpoint itself: the checkpoint already holds that scope's
-   * code, so nothing is merged and no checkpoint is missing.
+   * fork of this person covers, runs its tests on the checkpoint itself: the checkpoint already holds
+   * that scope's code, so nothing is merged and no checkpoint is missing. Another person's fork that
+   * covers the scope is tested as well.
    */
   readonly changer?: string;
 }
@@ -337,8 +338,10 @@ export class CombinedRunner {
       const commandId = testCommandId(scopeId);
       if (wanted !== undefined && !wanted.has(commandId)) continue;
       const covering = forks.filter((fork) => (fork.scopes === undefined ? fork.person === owner : fork.scopes.includes(scopeId)));
-      if (covering.length === 0) {
-        const own = owner === request.changer;
+      // The changer's own scope runs on the checkpoint even when another person's fork covers it,
+      // unless one of the changer's own forks does.
+      const own = owner === request.changer && !covering.some((fork) => fork.person === owner);
+      if (covering.length === 0 || own) {
         targets.push({ target: owner, ownerId: owner, scopeId, commandId, ownerCheckpoint: own ? checkpointSha : undefined, own });
       }
       for (const fork of covering) {

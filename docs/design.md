@@ -1306,7 +1306,7 @@ resolved failure is the agent calls metric of PRD section 11.
 
 Runner mode claims waiting requests with `POST /tool-runs/claim`, as it claims reviews. A claim hands
 out up to 8 requests and holds them for 30 minutes. An unreported request is handed out again after
-that. A runner that fails a request reports it, which frees it at once ([Exceptions](#exceptions)). Each claimed request names the feature's fork `feature-<id>`, the checkpoint, its baseline, the
+that. A runner that fails a request reports it, which frees it at once ([Exceptions](#exceptions)). Each claimed request names the feature's person and fork `feature-<id>`, the checkpoint, its baseline, the
 caller's charter and the other running features' forks. Each of those forks comes with its person
 and its head: the commit at the top of its `main` branch, with every fix written into it, or its
 latest checkpoint while the fork has no head. A land merges onto the same heads
@@ -1318,7 +1318,7 @@ The runner fetches every fork with a read token and runs the tool (`tool-run.ts`
 | Tool | What the runner does | Result |
 |---|---|---|
 | `impact` | `analysis:python-impact` on the baseline and the checkpoint, searching each other fork in its person's scopes | The impact report and the features whose forks use the change |
-| `check` | A combined run with the [checks](#checks): the checkpoint merged onto its baseline (`main`) and onto each other fork | Every block check, plus one ladder decision per failed or erred check |
+| `check` | A combined run with the [checks](#checks): the checkpoint merged onto its baseline (`main`) and onto each other fork. The feature's person's own dependent scopes run their tests on the checkpoint itself | Every block check, plus one ladder decision per failed or erred check |
 | `apply_fix` | The requested fix on the checkpoint, allowed only inside the caller's charter | The fix's tool run with the files it changed |
 
 `check` applies no fix. A step 1 to 3 decision names the fix the agent requests with `apply_fix`.

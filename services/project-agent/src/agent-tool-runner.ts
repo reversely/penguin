@@ -51,6 +51,8 @@ export interface ClaimedToolRun {
   readonly runId: number;
   readonly tool: RunnerToolName;
   readonly feature: string;
+  /** The feature's person, whose checkpoint it is: a check tests their own dependent scopes on it. */
+  readonly person: string;
   readonly fork: string;
   /** The checkpoint's baseline on main. */
   readonly base: string;
@@ -105,6 +107,7 @@ function countClaim(run: AgentToolRun, feature: Feature, forks: readonly Claimed
     runId: run.id,
     tool: "impact",
     feature: feature.id,
+    person: feature.personId,
     fork: `feature-${feature.id}`,
     base: run.baseSha as string,
     checkpoint: run.checkpointSha as string,
@@ -152,6 +155,7 @@ export async function claimToolRuns(deps: ToolRunnerDeps, caller: BridgeCaller):
       runId: run.id,
       tool: run.tool,
       feature: feature.id,
+      person: feature.personId,
       fork: `feature-${feature.id}`,
       base: run.baseSha as string,
       checkpoint: run.checkpointSha as string,

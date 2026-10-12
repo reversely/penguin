@@ -436,6 +436,8 @@ async function runCheck(options: ToolPassOptions, claim: ClaimedToolRun): Promis
     baselineSha: claim.base,
     targets: claim.forks.map((other) => ({ id: other.feature, person: other.person, checkpoint: other.checkpoint })),
     mainSha: claim.base,
+    // The feature's person's own dependent scopes run on the checkpoint, never as no-checkpoint.
+    changer: claim.person,
   });
   const checks = report.checks ?? [];
   const failing = checks.filter((check) => check.result === "failed" || check.result === "error");

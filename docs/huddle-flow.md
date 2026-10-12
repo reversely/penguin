@@ -92,7 +92,7 @@ For each recorded checkpoint, `scheduleCombinedRuns` (`services/project-agent/sr
 1. Finds the checkpoint's baseline: the newest commit on its first-parent chain that is also on the
    base repo's `main`.
 2. Diffs the baseline against the checkpoint and maps the changed paths to scopes.
-3. Collects every scope that depends on a changed scope, leaving out the checkpoint owner's scopes.
+3. Collects every scope that depends on a changed scope.
 4. Schedules one run per target. Each running feature with a checkpoint is a target of its own,
    keyed by its feature id, when its person owns a dependent scope or its area touches one. A person
    with two such features gets two runs. The checkpoint owner's own features are left out. The run
@@ -100,6 +100,9 @@ For each recorded checkpoint, `scheduleCombinedRuns` (`services/project-agent/sr
    command id `test:<scope id>` per dependent scope.
 5. Schedules one run on the owner fork `owner-<id>`, at its latest checkpoint, for each owner of a
    dependent scope who runs no such feature. An owner with neither gets no run.
+6. Schedules one run for the checkpoint owner's own dependent scopes, when there are any, keyed by
+   their owner fork with the trigger checkpoint itself as the target's checkpoint. The runner tests
+   those scopes on the checkpoint with no merge, since it already holds their code.
 
 A run is keyed by the trigger, the target and the target's checkpoint, so reporting the same
 checkpoint twice schedules nothing new. A project with no `depends_on` entry reads no Git at all.
@@ -123,6 +126,8 @@ is handed out again after that. For each trigger the runner:
    conflicting merge runs no tests and reports `conflict`. Each result names its target and its
    person.
 4. Runs each scope's `test_command` on the merged commit in a throwaway worktree, then removes it.
+   The run of the trigger owner's own scopes merges nothing: the runner names the trigger's person
+   as the combined run's `changer`, and their scopes' tests run on the trigger itself.
 5. Reads the failing tests from pytest's `FAILED <node id>` lines and fingerprints each result.
 6. Reports every result for the trigger in one `POST /combined-runs`.
 
@@ -133,7 +138,9 @@ the pinned commit.
 
 `openHuddle` (`services/project-agent/src/huddle-open.ts`) opens a Huddle only for a failed result
 whose trigger commit is in its owner's fork. Only owner forks' results count: a failed result of a
-run on a feature's fork stays with that run and its block checks. A passing report opens nothing. A conflict also opens
+run on a feature's fork stays with that run and its block checks. The run of the trigger owner's
+own scopes is keyed by their owner fork, so a failure there opens a Huddle whose fix goes to that
+owner. A passing report opens nothing. A conflict also opens
 nothing: only failing tests make fix sub-issues. A second report of the same trigger finds the Huddle
 already open and writes nothing.
 

@@ -57,8 +57,9 @@
  *   against the part revision; a trial a newer one replaced answers 200 with `superseded`, and one
  *   already recorded answers 409.
  * - POST /tool-runs/claim, bridge token of a runner bridge: claims the waiting `impact`, `check` and
- *   `apply_fix` requests. Each names its feature's fork, the checkpoint, its baseline on main, the
- *   caller's charter and the other running features' forks at their heads, as a land merges onto them.
+ *   `apply_fix` requests. Each names its feature, the feature's person and fork, the checkpoint, its
+ *   baseline on main, the caller's charter and the other running features' forks at their heads, as a
+ *   land merges onto them.
  * - POST /tool-runs/<run id>, bridge token of a runner bridge: reports a claimed request's result. The
  *   requesting session hears of it at its next safe checkpoint. A request already completed answers 409.
  * - POST /fix-writes/claim, bridge token of a runner bridge: claims the writes of approved mechanical
@@ -775,10 +776,11 @@ async function claimToolRuns(request: Request, handlers: BridgeHandlers): Promis
   // The role comes from the registry record the token authenticated, never from the request.
   const listing = await (await handlers.bridges()).claimToolRuns({ bridgeId: bridge.bridgeId, role: bridge.role });
   if (listing.status === "forbidden") return json({ error: "forbidden", message: listing.message }, 403);
-  const runs = listing.runs.map(({ runId, tool, feature, fork, base, checkpoint, input, charter, forks }) => ({
+  const runs = listing.runs.map(({ runId, tool, feature, person, fork, base, checkpoint, input, charter, forks }) => ({
     runId,
     tool,
     feature,
+    person,
     fork,
     base,
     checkpoint,

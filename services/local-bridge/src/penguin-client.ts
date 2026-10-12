@@ -715,6 +715,8 @@ export interface ClaimedToolRun {
   readonly runId: number;
   readonly tool: RunnerToolName;
   readonly feature: string;
+  /** The feature's person, whose checkpoint it is: a check tests their own dependent scopes on it. */
+  readonly person: string;
   /** The feature's fork, `feature-<id>`. */
   readonly fork: string;
   /** The checkpoint's baseline on main. */
@@ -761,13 +763,14 @@ export async function claimToolRuns(server: string, bridgeToken: string, fetchIm
     throw new RemoteUnavailableError(`Penguin could not hand out tool requests (HTTP ${status})`);
   }
   return body["runs"].map((entry: unknown): ClaimedToolRun => {
-    const { runId, tool, feature, fork, base, checkpoint, input, charter, forks } = (entry ?? {}) as Record<string, unknown>;
+    const { runId, tool, feature, person: featurePerson, fork, base, checkpoint, input, charter, forks } = (entry ?? {}) as Record<string, unknown>;
     const { handle, person, scopes, paths } = (charter ?? {}) as Record<string, unknown>;
     const others = Array.isArray(forks) ? forks.map(claimedFork) : [undefined];
     if (
       !Number.isSafeInteger(runId) ||
       !(RUNNER_TOOLS as readonly unknown[]).includes(tool) ||
       typeof feature !== "string" ||
+      typeof featurePerson !== "string" ||
       fork !== `feature-${feature}` ||
       !FEATURE_FORK.test(fork) ||
       typeof base !== "string" ||
@@ -788,6 +791,7 @@ export async function claimToolRuns(server: string, bridgeToken: string, fetchIm
       runId: runId as number,
       tool: tool as RunnerToolName,
       feature,
+      person: featurePerson,
       fork,
       base,
       checkpoint,

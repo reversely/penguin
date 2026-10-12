@@ -281,9 +281,12 @@ describe("the check runner's agent tools", () => {
     const outcome = recorded?.outcome;
     assert.equal(recorded?.result, "found");
     const checks = outcome?.checks ?? [];
-    // Each running feature is a target of its own, keyed by its id.
-    assert.deepEqual([...new Set(checks.map((check) => check.target))].sort(), ["main", "reminder-scheduling", "weekly-report"]);
+    // Each running feature is a target of its own, keyed by its id. Priya's own ingestion reads the
+    // changed shared-dates: its tests run on her checkpoint itself, keyed by her id.
+    assert.deepEqual([...new Set(checks.map((check) => check.target))].sort(), ["main", "priya", "reminder-scheduling", "weekly-report"]);
     assert.ok(checks.every((check) => check.input.origin === checkpoints[PRIYA.id]));
+    const own = checks.find((check) => check.target === "priya");
+    assert.deepEqual([own?.check, own?.tool.commandId, own?.result, own?.input.merged], ["tests", "test:ingestion", "passed", checkpoints[PRIYA.id]]);
     const failing = checks.filter((check) => check.result === "failed").map((check) => `${check.target} ${check.check}`);
     assert.deepEqual(failing.sort(), ["reminder-scheduling tests", "weekly-report tests"]);
     // The failing tests lie outside @priya/batches's charter: step 5, to the scope owners' stewards.

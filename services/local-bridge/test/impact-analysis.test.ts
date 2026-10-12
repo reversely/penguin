@@ -8,8 +8,9 @@ import { after, before, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { checkImpactReport, IMPACT_COMMAND_ID, parseToolResult, selectAffectedForks, type AgentToolResult } from "@penguin/protocol";
+import { checkImpactReport, IMPACT_COMMAND_ID, parseToolResult, selectAffectedForks, type AgentToolResult, type CombinedRunEvent } from "@penguin/protocol";
 import {
+  combinedRunPass,
   CombinedRunner,
   formatImpactReport,
   ImpactAnalysisError,
@@ -175,6 +176,38 @@ describe("on the helpful-fix fixture", () => {
     assert.ok(own?.status === "failed", JSON.stringify(own?.status));
     assert.deepEqual([own.ownerId, own.scopeId, own.mergedCommit], ["priya", "ingestion", reverted]);
     assert.ok(own.failingTests.length > 0);
+  });
+
+  test("a scheduled run of the changer's own scope tests it on the checkpoint and reports it", async () => {
+    // The scheduler gives Priya's change to shared-dates a run of her own ingestion tests on her
+    // checkpoint, beside Jun's run on his owner fork.
+    const trigger = { ownerId: "priya", sha: checkpoint("priya"), baselineSha: pins.branches.main as string };
+    const run = (ownerId: string, ownerCheckpoint: string, scope: string) => ({
+      runId: `run-${ownerId}`,
+      trigger,
+      target: ownerId,
+      fork: `owner-${ownerId}`,
+      ownerId,
+      ownerCheckpoint,
+      commandIds: [`test:${scope}`],
+    });
+    const reported: CombinedRunEvent[] = [];
+    const pass = await combinedRunPass({
+      claim: async () => [run("priya", checkpoint("priya"), "ingestion"), run("jun", checkpoint("jun"), "analytics")],
+      report: async (event) => {
+        reported.push(event);
+        return { status: "no_failures" };
+      },
+      fetchForks: async () => undefined,
+      repoPath: repo,
+      runner: new TestRunner({ repoPath: repo, env: TEST_ENV, scratchDir: join(root, "bridge"), consent: () => true }),
+    });
+    assert.equal(pass.batches[0]?.error, null, pass.batches[0]?.error ?? "");
+    const results = reported[0]?.results ?? [];
+    assert.ok(results.every((result) => result.status !== "no-checkpoint"));
+    const own = results.find((result) => result.ownerId === "priya");
+    assert.deepEqual([own?.target, own?.scopeId, own?.status, own?.ownerCheckpoint], ["priya", "ingestion", "passed", checkpoint("priya")]);
+    assert.deepEqual(results.map((result) => [result.ownerId, result.scopeId]).sort(), [["jun", "analytics"], ["priya", "ingestion"]]);
   });
 
   test("a failed analysis runs every dependent scope's tests and says why", async () => {

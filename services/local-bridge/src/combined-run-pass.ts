@@ -114,24 +114,32 @@ async function runBatch(options: CombinedPassOptions, runs: readonly ClaimedComb
   try {
     await options.fetchForks([...new Set([`owner-${trigger.ownerId}`, ...runs.map((run) => run.fork)])]);
     // Each run is one target; its scopes are those of its allowlisted commands, so two targets of
-    // one person can run different scopes.
+    // one person can run different scopes. The changer's own run is no fork target: the combined run
+    // tests the changer's own dependent scopes on the trigger itself.
     const targets: ForkTarget[] = [];
+    let own: string | undefined;
     for (const run of runs) {
       const allowed = await allowlisted(options.repoPath, trigger.sha, run, refused);
       if (allowed.length === 0) continue;
+      if (isOwnRun(run)) {
+        own = run.target;
+        continue;
+      }
       const scopes = allowed.map((commandId) => commandId.slice("test:".length));
       targets.push({ id: run.target, person: run.ownerId, checkpoint: run.ownerCheckpoint, scopes });
     }
-    if (targets.length === 0) return { ...base, refused, results: [], failedChecks: [], reply: null, error: null };
+    if (targets.length === 0 && own === undefined) return { ...base, refused, results: [], failedChecks: [], reply: null, error: null };
 
     const { repoPath, runner, impact, checks: checker } = options;
     const report = await new CombinedRunner({ repoPath, runner, impact, checks: checker }).run({
       checkpointSha: trigger.sha,
       baselineSha: trigger.baselineSha,
       targets,
+      ...(own === undefined ? {} : { changer: trigger.ownerId }),
     });
     // Only the claimed targets' results: another target has a run of its own, or none.
     const ids = new Set(targets.map((target) => target.id));
+    if (own !== undefined) ids.add(own);
     const results = report.results.filter((result: CombinedResult) => result.status !== "no-checkpoint" && ids.has(result.target));
     const checks = report.checks?.filter((check) => check.target === MAIN_TARGET || ids.has(check.target));
     const reply = await options.report(combinedRunEvent({ ...report, results, checks }, trigger.ownerId));
@@ -143,6 +151,11 @@ async function runBatch(options: CombinedPassOptions, runs: readonly ClaimedComb
   } catch (error) {
     return { ...base, refused, results: [], failedChecks: [], reply: null, error: (error as Error).message };
   }
+}
+
+/** True for the run of the trigger's person on the trigger itself: their own dependent scopes. */
+function isOwnRun(run: ClaimedCombinedRun): boolean {
+  return run.ownerId === run.trigger.ownerId && run.ownerCheckpoint === run.trigger.sha;
 }
 
 /** The run's command IDs that resolve in the config at the trigger; the rest are recorded as refused. */

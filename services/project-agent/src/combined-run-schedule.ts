@@ -408,7 +408,9 @@ const NOTHING: ScheduleOutcome = {
  * - each running feature with a checkpoint whose person owns, or whose area touches, a scope that
  *   depends on a scope the checkpoint changes, tested in those scopes;
  * - for a person who owns such a scope and runs no such feature, their owner fork's latest
- *   checkpoint, tested in the scopes they own.
+ *   checkpoint, tested in the scopes they own;
+ * - for the checkpoint's owner, when they own such a scope, the checkpoint itself, keyed by their
+ *   owner fork and tested in the scopes they own with no merge.
  *
  * The checkpoint owner's own forks are never merged with the checkpoint. Runs already scheduled for
  * the same trigger, target and target checkpoint are kept, not repeated.
@@ -452,6 +454,15 @@ export async function scheduleCombinedRuns(deps: ScheduleDeps, owner: string, sh
     const ownerCheckpoint = feature.latestCheckpointSha as string;
     const target = { target: feature.id, fork: `feature-${feature.id}`, ownerId: feature.personId };
     const run = deps.runs.schedule({ trigger, ...target, ownerCheckpoint, commandIds });
+    if (run !== undefined) scheduled.push(run);
+  }
+  // The checkpoint's own person: their dependent scopes run on the checkpoint itself, which holds
+  // their code, so nothing is merged and no other checkpoint is needed.
+  const own = affected.dependentScopes.filter((scopeId) => scopeOwner(scopeId) === owner);
+  const ownCommands = own.map(testCommandId).filter((id): id is string => id !== undefined);
+  if (ownCommands.length > 0) {
+    for (const scopeId of own) tested.add(scopeId);
+    const run = deps.runs.schedule({ trigger, ownerId: owner, ownerCheckpoint: sha, commandIds: ownCommands });
     if (run !== undefined) scheduled.push(run);
   }
   for (const [ownerId, scopes] of [...byOwner].sort(([a], [b]) => a.localeCompare(b))) {

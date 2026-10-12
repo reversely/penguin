@@ -10,8 +10,9 @@ import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 
 import type { BlockCheck, CombinedRunEvent } from "@penguin/protocol";
+import { parseScopeMap } from "@penguin/scope-map";
 
-import { changedPaths, CombinedRunStore } from "../src/combined-run-schedule.ts";
+import { changedPaths, CombinedRunStore, scheduleCombinedRuns } from "../src/combined-run-schedule.ts";
 import { gitHistory, HuddleProject } from "./huddle-project.ts";
 import { GitRepo, sqlite } from "./issues-repo.ts";
 
@@ -322,5 +323,39 @@ describe("claiming and completing runs", () => {
       globalThis.fetch = originalFetch;
     }
     assert.deepEqual(attempts, []);
+  });
+});
+
+describe("on the helpful-fix fixture", () => {
+  test("the changer's own dependent scope is scheduled on the checkpoint itself, with no merge", async () => {
+    // Priya is DRI for both shared-dates and ingestion, and ingestion reads shared-dates, so her
+    // change to shared-dates schedules a run of her own ingestion tests on her checkpoint.
+    const fixture = join(REPO_ROOT, "examples", "helpful-fix");
+    const dir = join(root, "helpful-fix");
+    execFileSync(PYTHON, [join(fixture, "build.py"), dir]);
+    const pins = JSON.parse(readFileSync(join(fixture, "pins.json"), "utf8")) as { tags: Record<string, string> };
+    const at = (owner: string) => pins.tags[`owner-${owner}-checkpoint`] as string;
+    const history = gitHistory(dir);
+    const outcome = await scheduleCombinedRuns(
+      {
+        scopeMap: parseScopeMap(JSON.parse(readFileSync(join(dir, "penguin", "scopes.json"), "utf8"))),
+        fork: history,
+        base: history,
+        latestCheckpoint: (ownerId) => (ownerId === "priya" ? undefined : at(ownerId)),
+        runs: new CombinedRunStore(sqlite().sql),
+      },
+      "priya",
+      at("priya"),
+    );
+    assert.deepEqual(
+      outcome.scheduled.map((run) => [run.target, run.fork, run.ownerId, run.ownerCheckpoint, run.commandIds]),
+      [
+        ["priya", "owner-priya", "priya", at("priya"), ["test:ingestion"]],
+        ["jun", "owner-jun", "jun", at("jun"), ["test:analytics"]],
+        ["sam", "owner-sam", "sam", at("sam"), ["test:messaging"]],
+      ],
+    );
+    assert.deepEqual(outcome.dependentScopes, ["analytics", "ingestion", "messaging"]);
+    assert.deepEqual(outcome.withoutCheckpoint, []);
   });
 });

@@ -682,8 +682,12 @@ the dependent scopes it names, or in its person's dependent scopes when it names
 scope that no target covers gets a `no-checkpoint` result, unless its DRI is the person who made
 the checkpoint, named as the request's `changer`. The checkpoint already holds that scope's code,
 so its tests run on the checkpoint itself, with no merge, and report `passed` or `failed` with the
-checkpoint as both `ownerCheckpoint` and `mergedCommit`. That checkpoint is no fork target of the
-block checks. On the helpful-fix fixture Priya is DRI for both `ingestion` and `shared-dates`, and
+checkpoint as both `ownerCheckpoint` and `mergedCommit`. The result's target is the changer's id.
+Another person's fork that covers the scope is tested as well; only a fork of the changer's own
+replaces the run on the checkpoint. That checkpoint is no fork target of the block checks. The
+scheduled combined runs and the agent `check` tool both name the changer: a scheduled run names
+the trigger's person, and `check` names the feature's person, which the tool claim carries as
+`person`. On the helpful-fix fixture Priya is DRI for both `ingestion` and `shared-dates`, and
 `ingestion` reads `shared-dates`, so a change of hers to `shared-dates` runs the `ingestion` tests
 on her checkpoint. Given an
 analyzer, the run analyses first, with one fork per target that covers a dependent scope. It merges
@@ -991,7 +995,9 @@ and every other running feature's fork with read tokens into the runner's reposi
   each other running feature's fork at its head, with every fix written into it, as a land merges
   onto it. Each merged tree is named by its feature id, so a person with
   several running features has each one checked. The feature's person decides which scopes' tests
-  run and receives the routed failures. Each failed or erred check gets
+  run and receives the routed failures. The checking feature's person is the run's `changer`, so
+  their own dependent scopes run their tests on the checkpoint itself, as a `tests` check named
+  by their id. Each failed or erred check gets
   one decision from the [resolution ladder](#resolution-ladder). No fix runs.
 - `apply_fix` runs the [fix](#resolution-ladder) the agent asked for on the checkpoint. The fix may
   change only the named files inside the caller identity's charter. A codemod by `rules` runs the
