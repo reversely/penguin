@@ -102,7 +102,7 @@ describe("POST /edit-tasks/<id>", () => {
 describe("POST /edit-tasks/claim for a review", () => {
   test("a review reads its fork and carries its task token for /mcp", async () => {
     const { mints, handlers } = bridgeHandlers();
-    const review: EditTaskSpec = { ...SPEC, taskId: 9, kind: "review", fork: "feature-utc-day", review: { feature: "utc-day", scope: "analytics", part: "utc-day/v1#1", revision: 1 } };
+    const review: EditTaskSpec = { ...SPEC, taskId: 9, kind: "review", fork: "feature-utc-day", review: { feature: "utc-day", scope: "analytics", part: "utc-day/v1#1", revision: 1, trial: null } };
     const directory = (handlers as unknown as { bridges: () => Record<string, unknown> }).bridges();
     directory["claimEditTasks"] = async () => ({
       status: "ok",

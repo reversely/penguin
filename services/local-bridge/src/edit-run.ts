@@ -22,8 +22,10 @@
 //
 // A review form changes no file (#138). Its claim carries a read token on the reviewed fork and a task
 // token for Penguin's MCP server, which allows `submit_review` for the task's one part revision and
-// scope plus `whats_near` and `impact`, until the task ends. The bridge checks the fork out the same
-// way and starts the CLI with Penguin's MCP server as its only one: `claude -p` reads the server and
+// scope plus `whats_near` and `impact`, until the task ends. The claim also names the part revision's
+// trial: the bridge fetches the target's and the fix's repos with read tokens, builds the trial tree
+// as the part's trial does (trial-tree.ts) and checks that tree out, so the agent reads the fix it
+// reviews (#140); the prompt names the fix and the files it changes. It starts the CLI with Penguin's MCP server as its only one: `claude -p` reads the server and
 // the token from an MCP config file the bridge writes outside the worktree, readable by the person
 // alone and removed after the run; `codex exec` takes the server through `-c mcp_servers.penguin.*`
 // settings and reads the token from the variable they name, which no shell command it runs inherits.
@@ -37,11 +39,23 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { runGit } from "@penguin/git-analysis";
-import { checkEditTaskSpec, REVIEW_TASK_TOOLS, type EditQueue, type EditTaskReport, type EditTaskSpec, type FixWriteSpec } from "@penguin/protocol";
+import {
+  checkEditTaskSpec,
+  parsePatch,
+  REVIEW_TASK_TOOLS,
+  type EditQueue,
+  type EditReviewTrial,
+  type EditTaskReport,
+  type EditTaskSpec,
+  type FixWriteSpec,
+} from "@penguin/protocol";
 
 import type { ConsentStore, ConsentTarget } from "./consent-store.ts";
 import { writeFix } from "./fix-write.ts";
-import { penguinRemote, tokenRemote, type GitRemote } from "./git-remote.ts";
+import { penguinRemote, tokenRemote, type GitRemote, type RemoteResolver } from "./git-remote.ts";
+import { trialCommits, trialRepos } from "./part-trial-run.ts";
+import { fetchRepoBranches, hasCommit } from "./runner-repo.ts";
+import { buildTrialTree } from "./trial-tree.ts";
 
 export const EDIT_VENDORS = ["claude", "codex"] as const;
 export type EditVendor = (typeof EDIT_VENDORS)[number];
@@ -117,13 +131,37 @@ export function claudeMcpConfig(url: string, token: string): string {
   return `${JSON.stringify({ mcpServers: { [PENGUIN_MCP_SERVER]: { type: "http", url, headers: { Authorization: `Bearer ${token}` } } } }, null, 2)}\n`;
 }
 
-/** The prompt for a review task: Penguin's instructions and the one form to send, with no file to change. */
-export function reviewPrompt(spec: EditTaskSpec): string {
+/** At most this many of the fix's files are named in a review prompt; the rest are counted. */
+const PROMPT_FILES = 60;
+
+/**
+ * The prompt for a review task: Penguin's instructions and the one form to send, with no file to
+ * change. With a trial, it says the checkout is the part's trial tree and names the fix and `files`,
+ * the files the fix changes.
+ */
+export function reviewPrompt(spec: EditTaskSpec, files: readonly string[] = []): string {
   const review = spec.review;
-  const lines = [
-    `You are ${spec.handle}, working for ${spec.person} in a read-only checkout of ${spec.fork}, the fork of feature ${spec.feature}.`,
-    `Penguin routed you edit task ${spec.taskId}: a review form.`,
-    "",
+  const trial = review?.trial ?? null;
+  const checkout =
+    trial === null
+      ? `a read-only checkout of ${spec.fork}, the fork of feature ${spec.feature}`
+      : `a read-only checkout of the trial tree of part ${review?.part} revision ${review?.revision}: the tree the part would land as`;
+  const lines = [`You are ${spec.handle}, working for ${spec.person} in ${checkout}.`, `Penguin routed you edit task ${spec.taskId}: a review form.`, ""];
+  if (trial !== null) {
+    const start = trial.target.id === "main" ? `main at ${trial.target.sha.slice(0, 12)}` : `feature ${trial.target.id}'s fork head ${trial.target.sha.slice(0, 12)} (${trial.target.repo})`;
+    const fix =
+      trial.fix.kind === "patch"
+        ? `the part's patch, applied to ${trial.target.repo} at ${trial.target.sha.slice(0, 12)}`
+        : `the part's fix commit ${trial.fix.commit.slice(0, 12)} from ${trial.fix.repo}, applied as its change against ${trial.fix.base.slice(0, 12)}`;
+    const named = files.slice(0, PROMPT_FILES).join(", ");
+    const more = files.length > PROMPT_FILES ? ` and ${files.length - PROMPT_FILES} more` : "";
+    lines.push(
+      `The checkout is ${start}, with feature ${spec.feature}'s checkpoint ${trial.checkpoint.slice(0, 12)} merged in and ${fix}.`,
+      files.length > 0 ? `The fix changes: ${named}${more}. Read those files here: the fix is in place.` : "The fix is in place in this checkout.",
+      "",
+    );
+  }
+  lines.push(
     "Instructions from Penguin:",
     spec.instructions,
     "",
@@ -134,7 +172,7 @@ export function reviewPrompt(spec: EditTaskSpec): string {
     "If Penguin refuses the form, read every reason, fix the form and submit it again.",
     "Change no file and run no command. The penguin server's whats_near and impact tools give facts about the change.",
     `Afterwards: ${spec.verifier}`,
-  ];
+  );
   return `${lines.join("\n")}\n`;
 }
 
@@ -265,6 +303,11 @@ export interface EditRunnerOptions {
   readonly writeFix?: (remote: GitRemote, spec: FixWriteSpec) => ReturnType<typeof writeFix>;
   /** Penguin's MCP endpoint, `<server>/mcp`, which a review run's CLI calls with the task token. */
   readonly mcpUrl?: string;
+  /**
+   * Turns `penguin:<repo>` into a remote read with a bridge read token: the target's and the fix's
+   * repos a review's trial tree is built from. Absent, a review with a trial fails before its CLI starts.
+   */
+  readonly readRemote?: RemoteResolver;
 }
 
 /** What one run comes to: the report for Penguin, and the commit to report as a checkpoint. */
@@ -330,13 +373,52 @@ export async function runEditTask(options: EditRunnerOptions, claimed: ClaimedEd
 
 /** Fetches the task's fork branch and adds a fresh detached worktree of its head. */
 async function checkOut(options: EditRunnerOptions, spec: EditTaskSpec, remote: GitRemote): Promise<{ ref: string; worktree: string; head: string }> {
+  const { ref, head } = await fetchFork(options, spec, remote);
+  return { ref, worktree: await addWorktree(options, spec, head), head };
+}
+
+/** Fetches the task's fork branch into a ref of the task's own. */
+async function fetchFork(options: EditRunnerOptions, spec: EditTaskSpec, remote: GitRemote): Promise<{ ref: string; head: string }> {
   const ref = `refs/penguin/edit-tasks/${spec.taskId}`;
+  await remote.git(options.repoPath, (url) => ["fetch", "--quiet", "--no-tags", "--end-of-options", url, `+refs/heads/${spec.branch}:${ref}`]);
+  return { ref, head: (await runGit(options.repoPath, ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`])).trim() };
+}
+
+/** Adds a fresh detached worktree of `commit` under the worktree root. */
+async function addWorktree(options: EditRunnerOptions, spec: EditTaskSpec, commit: string): Promise<string> {
   const worktree = join(options.worktreeRoot, `task-${spec.taskId}-${process.pid}-${Date.now()}`);
   await mkdir(options.worktreeRoot, { recursive: true, mode: 0o700 });
-  await remote.git(options.repoPath, (url) => ["fetch", "--quiet", "--no-tags", "--end-of-options", url, `+refs/heads/${spec.branch}:${ref}`]);
-  const head = (await runGit(options.repoPath, ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`])).trim();
-  await runGit(options.repoPath, ["worktree", "add", "--quiet", "--detach", worktree, head]);
-  return { ref, worktree, head };
+  await runGit(options.repoPath, ["worktree", "add", "--quiet", "--detach", worktree, commit]);
+  return worktree;
+}
+
+/** A review's trial tree commit and the files the part's fix changes, or why the tree does not build. */
+export type ReviewTree = { readonly status: "built"; readonly commit: string; readonly files: readonly string[] } | { readonly status: "conflict"; readonly reason: string };
+
+/**
+ * Builds the trial tree a review run reads (#140): fetches the target's repo and the fix's repo with
+ * read tokens, then builds the tree as the part's trial does (trial-tree.ts), with one merge.
+ *
+ * Raises:
+ *   Error: when a repo cannot be fetched or a commit the trial names is not in it.
+ */
+export async function reviewTree(repoPath: string, readRemote: RemoteResolver, fork: string, trial: EditReviewTrial, scratchDir?: string): Promise<ReviewTree> {
+  const place = { fork, ...trial };
+  // The fork itself came with the task's token; the target's and the fix's repos need read tokens.
+  for (const repo of trialRepos(place)) if (repo !== fork) await fetchRepoBranches(repoPath, readRemote, repo);
+  for (const sha of trialCommits(place)) if (!(await hasCommit(repoPath, sha))) throw new Error(`commit ${sha} of the part's trial is not in the bridge's repository`);
+  const built = await buildTrialTree(repoPath, trial, scratchDir);
+  if (built.status === "conflict") return built;
+  return { status: "built", commit: built.tree, files: await fixFiles(repoPath, trial.fix) };
+}
+
+/** The files the part's fix changes: the patch's files, or the fix commit's against its base. */
+async function fixFiles(repoPath: string, fix: EditReviewTrial["fix"]): Promise<string[]> {
+  if (fix.kind === "patch") {
+    const parsed = parsePatch(fix.patch);
+    return parsed.ok ? parsed.files.map((file) => file.path).sort() : [];
+  }
+  return (await runGit(repoPath, ["diff", "--name-only", "-z", "--no-renames", fix.base, fix.commit])).split("\0").filter(Boolean).sort();
 }
 
 /**
@@ -348,10 +430,22 @@ async function checkOut(options: EditRunnerOptions, spec: EditTaskSpec, remote: 
 async function runReviewTask(options: EditRunnerOptions, claimed: ClaimedEditTask, remote: GitRemote, signal?: AbortSignal): Promise<EditRunResult> {
   const { spec } = claimed;
   if (claimed.mcp == null || options.mcpUrl === undefined) return failed("the claim carried no task token for Penguin's MCP server", null);
-  const { ref, worktree } = await checkOut(options, spec, remote);
+  const { ref, head } = await fetchFork(options, spec, remote);
+  let worktree: string | null = null;
   let configDir: string | null = null;
   try {
     const label = VENDOR_LABEL[options.vendor.vendor];
+    const trial = spec.review?.trial ?? null;
+    let files: readonly string[] = [];
+    let at = head;
+    if (trial !== null) {
+      if (options.readRemote === undefined) return failed("the bridge has no read access to build the part's trial tree", null);
+      const built = await reviewTree(options.repoPath, options.readRemote, spec.fork, trial);
+      if (built.status === "conflict") return failed(`the part's trial tree does not build: ${built.reason}`, null);
+      at = built.commit;
+      files = built.files;
+    }
+    worktree = await addWorktree(options, spec, at);
     let review: ReviewRun;
     if (options.vendor.vendor === "claude") {
       configDir = await mkdtemp(join(options.worktreeRoot, `mcp-${spec.taskId}-`));
@@ -361,17 +455,19 @@ async function runReviewTask(options: EditRunnerOptions, claimed: ClaimedEditTas
     } else {
       review = { mcp: { url: options.mcpUrl }, codexToken: claimed.mcp.token };
     }
-    const run = await runVendor({ ...options.vendor, ...(signal === undefined ? {} : { signal }) }, reviewPrompt(spec), worktree, review);
+    const run = await runVendor({ ...options.vendor, ...(signal === undefined ? {} : { signal }) }, reviewPrompt(spec, files), worktree, review);
     const seconds = Math.round(run.durationMs / 1000);
     if (run.status === "timeout") return { report: { status: "timeout", outcome: `${label} ran past ${Math.round(options.vendor.timeoutMs / 60_000)} minutes and was stopped` }, worktree };
     if (run.status === "stopped") return failed(`the bridge stopped during ${label}`, worktree);
     if (run.exitCode !== 0 || run.agentError) return failed(`${label} ended with exit ${run.exitCode}${run.agentError ? " and an error result" : ""} after ${seconds} s`, worktree);
-    return { report: { status: "done", outcome: `${label} finished the review of part ${spec.review?.part ?? "?"} in ${seconds} s` }, worktree };
+    const where = trial === null ? "" : ` on its trial tree ${at.slice(0, 12)}`;
+    return { report: { status: "done", outcome: `${label} finished the review of part ${spec.review?.part ?? "?"}${where} in ${seconds} s` }, worktree };
   } catch (error) {
     return failed(`the run stopped: ${firstLine((error as Error).message)}`, worktree);
   } finally {
     if (configDir !== null) await rm(configDir, { recursive: true, force: true });
-    await runGit(options.repoPath, ["worktree", "remove", "--force", worktree]).catch(() => rm(worktree, { recursive: true, force: true }));
+    const added = worktree;
+    if (added !== null) await runGit(options.repoPath, ["worktree", "remove", "--force", added]).catch(() => rm(added, { recursive: true, force: true }));
     await runGit(options.repoPath, ["update-ref", "-d", ref]).catch(() => undefined);
   }
 }

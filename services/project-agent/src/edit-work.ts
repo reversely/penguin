@@ -26,8 +26,9 @@
 //
 // A bridge's claim gets each task's spec: the fork, files, allowed paths, instructions and the checks
 // that verify it, plus, for a fix, the approved write. A review also gets its part revision and scope,
-// and a task token for Penguin's MCP server that allows that form alone (review-task.ts, #138). Its
-// report of a done run names one commit, which Penguin reads from the fork before keeping it: one
+// the revision's trial tree for the bridge to check out (the target, the checkpoint and the fix, as
+// the part's trial builds it, #140), and a task token for Penguin's MCP server that allows that form
+// alone (review-task.ts, #138). Its report of a done run names one commit, which Penguin reads from the fork before keeping it: one
 // parent, on the fork's branch, changing only the task's allowed paths. A fix's commit goes through
 // the fix-write checks instead. A review's done report names no commit: Penguin keeps it only when
 // the run submitted a form Penguin did not refuse. Every report revokes the task's token.
@@ -43,6 +44,7 @@ import {
   type EditTaskSpec,
   type EditTaskView,
   type LadderDecision,
+  type Plan,
 } from "@penguin/protocol";
 import { answerers, routeScope, scopeForPath, type ScopeMap } from "@penguin/scope-map";
 
@@ -53,6 +55,7 @@ import { taskFixGrant, taskFixReport, type FixGrantStore, type FixWriteDeps } fr
 import type { IssuedTaskToken } from "./mcp-tokens.ts";
 import { RUNNING_STATES } from "./overlap-lock.ts";
 import type { PartRoute, PlanRouteStore } from "./plan-approval.ts";
+import { trialSpec } from "./part-trial.ts";
 import { changedFiles } from "./repo-diff.ts";
 import { taskSessionId } from "./review-task.ts";
 import type { Session } from "./session-store.ts";
@@ -78,6 +81,8 @@ export interface EditWorkDeps {
   readonly scopeMap: () => Promise<ScopeMap>;
   /** Every running session. */
   readonly running: () => readonly Session[];
+  /** A feature's newest plan, which holds a review's part revision and so its trial tree; absent, a review carries none. */
+  readonly plan?: (featureId: string) => Plan | undefined | Promise<Plan | undefined>;
   /** The fix-write checks, for a fix task's write. */
   readonly fix: FixWriteDeps;
   /** Background runs one person holds at once (PENGUIN_BACKGROUND_RUN_CAP). */
@@ -371,8 +376,12 @@ export async function claimEditTasks(deps: EditWorkDeps, person: string, bridgeI
       }
       fixWrite = granted.spec;
     }
-    if (task.kind === "review" && deps.taskTokens !== undefined) mcp[task.id] = await deps.taskTokens.issueTask(person, task.id, task.leaseUntil as number);
-    specs.push(taskSpec(task, scopeMap, fixWrite));
+    let review: EditTaskSpec["review"] = null;
+    if (task.kind === "review") {
+      if (deps.taskTokens !== undefined) mcp[task.id] = await deps.taskTokens.issueTask(person, task.id, task.leaseUntil as number);
+      review = reviewTarget(task, await deps.plan?.(task.target));
+    }
+    specs.push(taskSpec(task, scopeMap, fixWrite, review));
   }
   if (claimed.length > 0) deps.notify(person);
   return { status: "ok", tasks: specs, mcp, queue: deps.tasks.queue(person, deps.cap) };
@@ -385,7 +394,7 @@ export function allowedPaths(task: Pick<EditTask, "files" | "scopes">, scopeMap:
   return [...new Set([...task.files, ...task.scopes.flatMap((scope) => [...(scopeMap.scopes.get(scope)?.paths ?? [])])])].sort();
 }
 
-function taskSpec(task: EditTask, scopeMap: ScopeMap, fixWrite: EditTaskSpec["fixWrite"]): EditTaskSpec {
+function taskSpec(task: EditTask, scopeMap: ScopeMap, fixWrite: EditTaskSpec["fixWrite"], review: EditTaskSpec["review"]): EditTaskSpec {
   return {
     taskId: task.id,
     kind: task.kind,
@@ -402,14 +411,26 @@ function taskSpec(task: EditTask, scopeMap: ScopeMap, fixWrite: EditTaskSpec["fi
     evidence: task.evidence,
     leaseUntil: new Date(task.leaseUntil as number).toISOString(),
     fixWrite,
-    review: task.kind === "review" ? reviewTarget(task) : null,
+    review,
   };
 }
 
-/** The part revision and scope a review task's form covers. */
-function reviewTarget(task: EditTask): EditTaskSpec["review"] {
+/**
+ * The part revision and scope a review task's form covers, with the revision's trial tree as the
+ * part's trial builds it (part-trial.ts), so the run reads the fix it reviews (#140). The trial is null
+ * when the newest plan no longer holds that revision or its fix has no base.
+ */
+export function reviewTarget(task: Pick<EditTask, "target" | "ref" | "scopes">, plan: Plan | undefined): EditTaskSpec["review"] {
   const { part, revision, scope } = task.ref;
-  return { feature: task.target, scope: typeof scope === "string" ? scope : (task.scopes[0] ?? ""), part: String(part), revision: Number(revision) };
+  const planned = plan?.parts.find((each) => each.partId === part && each.revision === revision);
+  const spec = plan === undefined || planned === undefined ? undefined : trialSpec(plan, planned, []);
+  return {
+    feature: task.target,
+    scope: typeof scope === "string" ? scope : (task.scopes[0] ?? ""),
+    part: String(part),
+    revision: Number(revision),
+    trial: spec === undefined ? null : { checkpoint: spec.checkpoint, target: spec.target, fix: spec.fix },
+  };
 }
 
 /**

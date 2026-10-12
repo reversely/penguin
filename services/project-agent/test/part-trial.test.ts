@@ -23,6 +23,7 @@ import { parseScopeMap } from "@penguin/scope-map";
 import { AgentToolStore } from "../src/agent-tools.ts";
 import { claimToolRuns } from "../src/agent-tool-runner.ts";
 import { blockTargets, type LandDeps } from "../src/block-land.ts";
+import { reviewTarget } from "../src/edit-work.ts";
 import {
   claimPartTrials,
   PartTrialStore,
@@ -211,6 +212,26 @@ describe("part trials", () => {
     assert.deepEqual([onFork?.checkpoint, onFork?.commandIds], [CHECKPOINT, ["test:analytics"]]);
     // The newest form of the part's scope on the plan's checkpoint comes with the trial.
     assert.deepEqual(onFork?.reviews.map((each) => [each.reviewId, each.scope]), [[form.id, "analytics"]]);
+  });
+
+  test("a review task carries its part revision's trial tree, as the part's trial builds it (#140)", () => {
+    const task = (partId: string, revision = 1) => ({ target: "utc-day", ref: { part: partId, revision, scope: "analytics" }, scopes: ["analytics"] });
+    const onFork = reviewTarget(task(FEATURE_PART.partId), plan(1));
+    assert.deepEqual(onFork, {
+      feature: "utc-day",
+      scope: "analytics",
+      part: FEATURE_PART.partId,
+      revision: 1,
+      trial: { checkpoint: CHECKPOINT, target: { id: "weekly-report", repo: "feature-weekly-report", sha: JUN_HEAD }, fix: { kind: "patch", patch: PATCH } },
+    });
+    assert.deepEqual(reviewTarget(task(SCOPE_PART.partId), plan(1))?.trial, {
+      checkpoint: CHECKPOINT,
+      target: { id: "main", repo: "base", sha: BASELINE },
+      fix: { kind: "commit", repo: "feature-utc-day", commit: FIX, base: FIX_BASE },
+    });
+    // A revision the newest plan no longer holds, or no plan, carries no trial.
+    assert.equal(reviewTarget(task(FEATURE_PART.partId, 2), plan(1))?.trial, null);
+    assert.equal(reviewTarget(task(FEATURE_PART.partId), undefined)?.trial, null);
   });
 
   test("a form on another checkpoint or refused at submission is not tried; the newest one is", () => {

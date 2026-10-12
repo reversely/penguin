@@ -43,13 +43,16 @@ export function checkTrialRequest(request: PartTrialRequest): void {
   for (const id of request.commandIds) if (!TEST_COMMAND.test(id)) throw new Error(`${JSON.stringify(id)} is not a test command ID`);
 }
 
+/** What a trial tree is built from: the originating fork and checkpoint, the target and the fix. */
+type TrialPlace = Pick<PartTrialRequest, "fork" | "checkpoint" | "target" | "fix">;
+
 /** The commits a trial reads: the checkpoint, the target and a fix commit with its base. */
-function trialCommits(request: PartTrialRequest): string[] {
+export function trialCommits(request: TrialPlace): string[] {
   return [request.checkpoint, request.target.sha, ...(request.fix.kind === "commit" ? [request.fix.commit, request.fix.base] : [])];
 }
 
 /** The repos a trial reads: the originating fork, the target's repo and the fix's repo. */
-export function trialRepos(request: PartTrialRequest): string[] {
+export function trialRepos(request: TrialPlace): string[] {
   return [...new Set([request.fork, request.target.repo, ...(request.fix.kind === "commit" ? [request.fix.repo] : [])])];
 }
 

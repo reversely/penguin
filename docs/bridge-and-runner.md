@@ -213,7 +213,8 @@ Each pass:
    a read token instead, plus a task token for Penguin's MCP server ([Review forms](#review-forms)).
    The claim also holds the owner's queue.
 2. **Worktree.** The bridge fetches the fork's `main` with the task's token into `<state>/edits/repo`
-   and adds a fresh detached worktree of its head under `<state>/edits/worktrees`.
+   and adds a fresh detached worktree of its head under `<state>/edits/worktrees`. A review form's
+   worktree is the part revision's trial tree instead ([Review forms](#review-forms)).
 3. **Run.** The bridge starts one CLI process per task in that worktree, with a prompt built from the
    task. The token reaches Git only through the fetch and push environment, never the CLI's.
 
@@ -255,8 +256,23 @@ itself with `submit_review` on Penguin's MCP server (`edit-run.ts`).
 1. **Claim.** The task names its part, revision and scope under `review`. It comes with a read
    token on the reviewed feature's fork and `mcp`, a task token (`pgt_...`). The task token allows
    `submit_review` for that part revision and scope, plus `whats_near` and `impact` on that feature.
-   It stops working when the claim ends or the bridge reports the task.
-2. **MCP config.** The bridge hands the CLI Penguin's MCP server, `<server>/mcp`, as its only server:
+   It stops working when the claim ends or the bridge reports the task. `review.trial` names what
+   the part revision's trial tree is built from, read from the feature's newest plan: the target
+   (main at the plan's baseline, or the affected feature's fork head), the plan's checkpoint and the
+   fix (the part's patch, or its fix commit with that commit's base). It is null when the newest plan
+   no longer holds the revision or the fix has no base.
+2. **Trial tree.** The bridge fetches the reviewed fork's `main` with the task's read token. It
+   fetches the target's repo and the fix commit's repo with read tokens from `POST /tokens`, which
+   every bridge may hold on `base` and on any feature fork. It then builds the trial tree as the
+   part's trial does (`trial-tree.ts`, [Part trials](#part-trials)): the patch applied to the fork
+   head, the checkpoint merged in, the fix commit applied on top. That is one extra merge per review
+   run. The worktree is a detached checkout of that tree, so the agent reads the code with the fix in
+   place. A trial tree that does not build fails the run before the CLI starts, with the conflict
+   as the outcome. Penguin then asks the owner. A task with no trial checks out the fork's `main`.
+3. **Prompt.** The prompt says the checkout is the trial tree of the part revision. It names the
+   target, the checkpoint and the fix: the patch with the fork head it applies to, or the fix commit
+   with its repo and base. It lists the files the fix changes, at most 60, with a count of the rest.
+4. **MCP config.** The bridge hands the CLI Penguin's MCP server, `<server>/mcp`, as its only server:
 
    | `--vendor` | Command | Where the token goes |
    |---|---|---|
@@ -267,11 +283,11 @@ itself with `submit_review` on Penguin's MCP server (`edit-run.ts`).
    `--strict-mcp-config` and `--ignore-user-config` keep the owner's other MCP servers out of the
    run, so each review run holds one MCP connection. The flags come from `claude --help`,
    `codex exec --help` and the Codex configuration reference.
-3. **Form.** Penguin checks each call against the task before it runs. The form then goes through
+5. **Form.** Penguin checks each call against the task before it runs. The form then goes through
    the same validation, part trial and routing as a form from a running session. A refused form
    answers every reason. The agent then submits again. A form for another scope or feature, any other
    tool and any call after the task ends are refused.
-4. **Report.** The bridge reports `done` with no commit. Penguin keeps the report only when the run
+6. **Report.** The bridge reports `done` with no commit. Penguin keeps the report only when the run
    submitted a form it did not refuse. Otherwise the task goes back to the owner as `run_failed`. A
    form that arrived closes the task as done even before the report.
 

@@ -2677,6 +2677,7 @@ export class ProjectAgent extends Agent {
       reviews: (featureId) => this.#reviewStore().list(featureId),
       scopeMap: () => this.#scopeMap(repos),
       running: () => this.#sessionStore().running(),
+      plan: (featureId) => this.#planKeeper(featureId).latestPlan(featureId),
       fix: this.#fixWriteDeps(repos),
       cap: this.#backgroundRunCap(),
       leaseMs: minutes ?? EDIT_RUN_MINUTES_DEFAULT * 60_000,

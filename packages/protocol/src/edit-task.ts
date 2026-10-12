@@ -16,7 +16,9 @@
 // each task once when it opens it, and the check runner's resolution ladder, which names the actor.
 
 import { FIX_WRITE_SPEC_SCHEMA, type FixWriteSpec } from "./fix-write.ts";
-import { IDENTITY_HANDLE_MAX_LENGTH } from "./operation-schema.ts";
+import { IDENTITY_HANDLE_MAX_LENGTH, SEGMENT_PATTERN } from "./operation-schema.ts";
+import type { PartTrialFix, PartTrialTarget } from "./part-trial.ts";
+import { PATCH_LIMITS } from "./patch.ts";
 import { checkSchema, type JsonSchema, type SchemaError } from "./schema-check.ts";
 
 export const EDIT_TASK_KINDS = ["migration", "contract", "fix", "next_step", "review"] as const;
@@ -210,12 +212,25 @@ export function routeEdit(target: EditTarget, places: readonly EditPlace[], cont
 export const REVIEW_TASK_TOOLS = ["submit_review", "whats_near", "impact"] as const;
 export type ReviewTaskTool = (typeof REVIEW_TASK_TOOLS)[number];
 
+/**
+ * The trial tree of the part revision a review covers, as the part's trial builds it (part-trial.ts):
+ * the target, with the originating checkpoint merged in and the part's fix applied. The review run
+ * reads this tree, so the agent sees the fix it reviews (#140).
+ */
+export interface EditReviewTrial {
+  readonly checkpoint: string;
+  readonly target: PartTrialTarget;
+  readonly fix: PartTrialFix;
+}
+
 /** The one part revision and scope a review task's form covers, on the feature that proposed the plan. */
 export interface EditReviewTarget {
   readonly feature: string;
   readonly scope: string;
   readonly part: string;
   readonly revision: number;
+  /** Null when the part's fix has no base to apply against; the run then reads the fork alone. */
+  readonly trial: EditReviewTrial | null;
 }
 
 export const EDIT_TASK_LIMITS = {
@@ -261,6 +276,21 @@ export interface EditTaskSpec {
 
 const text = (maxLength: number): JsonSchema => ({ type: "string", maxLength });
 const strings = (maxItems: number, maxLength: number): JsonSchema => ({ type: "array", maxItems, items: text(maxLength) });
+const objectId: JsonSchema = { type: "string", pattern: "^[0-9a-f]{40}$" };
+const projectRepo: JsonSchema = { type: "string", pattern: `^(?:base|feature-${SEGMENT_PATTERN})$`, maxLength: 71 };
+const closed = (properties: Record<string, JsonSchema>): JsonSchema => ({ type: "object", additionalProperties: false, required: Object.keys(properties), properties });
+
+/** JSON Schema of EditReviewTrial: full commit IDs, the base repo or a feature fork, and a bounded patch. */
+const REVIEW_TRIAL_SCHEMA: JsonSchema = closed({
+  checkpoint: objectId,
+  target: closed({ id: text(63), repo: projectRepo, sha: objectId }),
+  fix: {
+    oneOf: [
+      closed({ kind: { const: "commit" }, repo: projectRepo, commit: objectId, base: objectId }),
+      closed({ kind: { const: "patch" }, patch: { type: "string", minLength: 1, maxLength: PATCH_LIMITS.bytes } }),
+    ],
+  },
+});
 
 /** JSON Schema of EditTaskSpec; the bridge refuses a claim whose task does not match it. */
 export const EDIT_TASK_SPEC_SCHEMA: JsonSchema = {
@@ -289,8 +319,8 @@ export const EDIT_TASK_SPEC_SCHEMA: JsonSchema = {
         {
           type: "object",
           additionalProperties: false,
-          required: ["feature", "scope", "part", "revision"],
-          properties: { feature: text(63), scope: text(128), part: text(200), revision: { type: "integer", minimum: 1 } },
+          required: ["feature", "scope", "part", "revision", "trial"],
+          properties: { feature: text(63), scope: text(128), part: text(200), revision: { type: "integer", minimum: 1 }, trial: { oneOf: [{ type: "null" }, REVIEW_TRIAL_SCHEMA] } },
         },
       ],
     },

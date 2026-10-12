@@ -7,10 +7,12 @@
 // claude's --mcp-config file or codex's `-c mcp_servers.penguin.*` settings and the variable they
 // name, then over plain JSON-RPC lists the tools, calls a tool the token does not allow, submits the
 // form for the task's feature and scope from the prompt, and submits one for another scope. Each
-// answer goes into the record. `review-none` reaches the server but submits nothing.
+// answer goes into the record. `review-none` reaches the server but submits nothing. `review-read`
+// records its prompt, every file in its checkout and the text of each file the prompt names as the
+// fix's (#140), and reaches no server.
 
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { appendFileSync, readdirSync, readFileSync, writeFileSync, type Dirent } from "node:fs";
+import { join, relative } from "node:path";
 
 const args = process.argv.slice(2);
 const codex = args[0] === "exec";
@@ -81,7 +83,25 @@ const finish = (isError: boolean) => {
   }
 };
 
+/** What a review run reads: every file in its checkout and the text of each file the prompt names as the fix's. */
+function readCheckout(): void {
+  const prompt = codex ? (args.at(-1) as string) : (args[args.indexOf("-p") + 1] as string);
+  seen["prompt"] = prompt;
+  seen["files"] = (readdirSync(process.cwd(), { recursive: true, withFileTypes: true }) as Dirent[])
+    .filter((entry) => entry.isFile())
+    .map((entry) => relative(process.cwd(), join(entry.parentPath, entry.name)))
+    .filter((path) => path !== ".git")
+    .sort();
+  const named = /The fix changes: ([^\n]+?)\. Read those files/u.exec(prompt)?.[1]?.split(", ") ?? [];
+  seen["read"] = Object.fromEntries(named.map((path) => [path, readFileSync(join(process.cwd(), path), "utf8")]));
+  keep();
+}
+
 if (mode === "hang") setTimeout(() => undefined, 600_000);
+else if (mode === "review-read") {
+  readCheckout();
+  finish(false);
+}
 else if (mode === "fail") process.exit(1);
 else if (mode === "review" || mode === "review-none") {
   await review(mode === "review");

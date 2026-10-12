@@ -14,7 +14,7 @@ import { fixCommitMessage, type EditTaskReport, type EditTaskSpec } from "@pengu
 
 import { MemoryConsentStore } from "../src/consent-store.ts";
 import { editPass, editPrompt, formatEditPass, runEditTask, vendorArgs, type ClaimedEditTask, type EditRunnerOptions, type EditVendor } from "../src/edit-run.ts";
-import { localRemote } from "../src/git-remote.ts";
+import { localRemote, penguinRepoOf } from "../src/git-remote.ts";
 import { claimEditTasks } from "../src/penguin-client.ts";
 
 const FAKE = fileURLToPath(new URL("./fake-agent.ts", import.meta.url));
@@ -254,7 +254,7 @@ describe("claiming from Penguin", () => {
   });
 
   test("a review carries its task token for /mcp; without one it reports at once and runs nothing", async () => {
-    const review = { ...SPEC, kind: "review", review: { feature: "utc-day", scope: "analytics", part: "utc-day/v1#1", revision: 1 } };
+    const review = { ...SPEC, kind: "review", review: { feature: "utc-day", scope: "analytics", part: "utc-day/v1#1", revision: 1, trial: null } };
     const mcp = { token: "pgt_1", expiresAt: "2026-10-12T10:20:00Z" };
     const claim = await claimEditTasks("https://penguin.test", "bridge", answer({ ...review, token, mcp }) as typeof fetch);
     assert.deepEqual(claim.tasks[0]?.mcp, mcp);
@@ -263,5 +263,123 @@ describe("claiming from Penguin", () => {
     const result = await runEditTask({ ...options, mcpUrl: "https://penguin.test/mcp" }, { ...claim.tasks[0]!, mcp: null });
     assert.deepEqual(result.report, { status: "failed", outcome: "the claim carried no task token for Penguin's MCP server" });
     assert.equal(existsSync(join(setup.root, "worktrees")), false);
+  });
+});
+
+describe("a review run reads the part's trial tree (#140)", () => {
+  /**
+   * The helpful fix in small: main holds the weekly report; Jun's fork changed the README; Priya's fork
+   * adds the local-day helper, then a fix to the report on top, which is her checkpoint. Each repo is
+   * a local bare repository the read resolver hands out by name.
+   */
+  function project() {
+    const setup = setUp("review-read");
+    const seed = join(setup.root, "seed");
+    const bare = (name: string) => {
+      const path = join(setup.root, `${name}.git`);
+      git(setup.root, "clone", "--quiet", "--bare", seed, path);
+      return path;
+    };
+    const commit = (file: string, text: string, message: string) => {
+      execFileSync("mkdir", ["-p", join(seed, file, "..")]);
+      writeFileSync(join(seed, file), text);
+      git(seed, "add", ".");
+      git(seed, "commit", "--quiet", "-m", message);
+      return git(seed, "rev-parse", "HEAD");
+    };
+    const base = bare("base");
+    const baseline = git(seed, "rev-parse", "HEAD");
+    commit("README.md", "jun's readme\n", "jun");
+    const jun = bare("feature-weekly-report");
+    git(seed, "reset", "--quiet", "--hard", baseline);
+    const fixBase = commit("ingestion/day.py", "def start_of_local_day(ts, tz):\n    return ts\n", "priya: helper");
+    const fix = commit("analytics/weekly.py", "from ingestion.day import start_of_local_day\n\ndef weekly():\n    return []\n", "priya: fix");
+    const utc = bare("feature-utc-day");
+    const repos: Record<string, string> = { base, "feature-weekly-report": jun, "feature-utc-day": utc };
+    const fetched: string[] = [];
+    const readRemote = (name: string) => {
+      const repo = penguinRepoOf(name) as string;
+      fetched.push(repo);
+      return localRemote(repos[repo] as string);
+    };
+    const { options } = runner(setup, "claude");
+    const reviewOptions: EditRunnerOptions = { ...options, remote: () => localRemote(utc), readRemote, mcpUrl: "http://127.0.0.1:9/mcp" };
+    return { setup, reviewOptions, fetched, baseline, checkpoint: fix, fixBase, fix, jun, utc, junHead: git(jun, "rev-parse", "main") };
+  }
+
+  const PATCH = "--- a/analytics/weekly.py\n+++ b/analytics/weekly.py\n@@ -1,2 +1,3 @@\n def weekly():\n-    return []\n+    # bucketed by start_of_local_day\n+    return []\n";
+
+  const reviewTask = (trial: NonNullable<EditTaskSpec["review"]>["trial"]): ClaimedEditTask => ({
+    ...claimed({ kind: "review", fork: "feature-utc-day", feature: "utc-day", review: { feature: "utc-day", scope: "analytics", part: "utc-day/v1#1", revision: 1, trial } }),
+    mcp: { token: "pgt_task", expiresAt: "2026-10-12T10:20:00Z" },
+  });
+
+  interface Seen {
+    readonly prompt: string;
+    readonly files: string[];
+    readonly read: Record<string, string>;
+    readonly args: string[];
+  }
+
+  test("a part on a running feature: Jun's fork head, Priya's checkpoint merged in and the part's patch applied", async () => {
+    const run = project();
+    process.env["FAKE_AGENT_RECORD"] = run.setup.record;
+    const task = reviewTask({ checkpoint: run.checkpoint, target: { id: "weekly-report", repo: "feature-weekly-report", sha: run.junHead }, fix: { kind: "patch", patch: PATCH } });
+    const result = await runEditTask(run.reviewOptions, task);
+    assert.equal(result.report.status, "done", JSON.stringify(result.report));
+    assert.match(result.report.outcome, /^claude -p finished the review of part utc-day\/v1#1 on its trial tree [0-9a-f]{12} in \d+ s$/u);
+    const seen = JSON.parse(readFileSync(run.setup.record, "utf8")) as Seen;
+    // The patch is in the worktree, on Jun's fork head with Priya's checkpoint merged in.
+    assert.equal(seen.read["analytics/weekly.py"], "from ingestion.day import start_of_local_day\n\ndef weekly():\n    # bucketed by start_of_local_day\n    return []\n");
+    assert.ok(seen.files.includes("ingestion/day.py"), "the checkpoint is merged in");
+    // The prompt names the trial tree, the patch and the files it changes.
+    assert.match(seen.prompt, /read-only checkout of the trial tree of part utc-day\/v1#1 revision 1/u);
+    assert.ok(
+      seen.prompt.includes(
+        `feature weekly-report's fork head ${run.junHead.slice(0, 12)} (feature-weekly-report), with feature utc-day's checkpoint ${run.checkpoint.slice(0, 12)} merged in and the part's patch, applied to feature-weekly-report at ${run.junHead.slice(0, 12)}.`,
+      ),
+      seen.prompt,
+    );
+    assert.match(seen.prompt, /The fix changes: analytics\/weekly\.py\. Read those files here: the fix is in place\./u);
+    // Read-only as before: the review tools and no write tool; no fork moved.
+    assert.equal(seen.args[seen.args.indexOf("--allowedTools") + 1], "Read,Glob,Grep,mcp__penguin__submit_review,mcp__penguin__whats_near,mcp__penguin__impact");
+    assert.deepEqual([git(run.jun, "rev-parse", "main"), git(run.utc, "rev-parse", "main")], [run.junHead, run.checkpoint]);
+    // Jun's fork is read with a read token; Priya's fork came with the task's own.
+    assert.deepEqual(run.fetched, ["feature-weekly-report"]);
+    assert.deepEqual(readdirSync(join(run.setup.root, "worktrees")), []);
+  });
+
+  test("a part on main: main at the baseline, the checkpoint merged in and the fix commit applied", async () => {
+    const run = project();
+    process.env["FAKE_AGENT_RECORD"] = run.setup.record;
+    const task = reviewTask({ checkpoint: run.checkpoint, target: { id: "main", repo: "base", sha: run.baseline }, fix: { kind: "commit", repo: "feature-utc-day", commit: run.fix, base: run.fixBase } });
+    const result = await runEditTask(run.reviewOptions, task);
+    assert.equal(result.report.status, "done", JSON.stringify(result.report));
+    const seen = JSON.parse(readFileSync(run.setup.record, "utf8")) as Seen;
+    assert.match(seen.read["analytics/weekly.py"] ?? "", /^from ingestion\.day import start_of_local_day\n/u);
+    assert.ok(seen.prompt.includes(`main at ${run.baseline.slice(0, 12)}, with feature utc-day's checkpoint`), seen.prompt);
+    assert.ok(seen.prompt.includes(`the part's fix commit ${run.fix.slice(0, 12)} from feature-utc-day, applied as its change against ${run.fixBase.slice(0, 12)}.`), seen.prompt);
+    assert.deepEqual(run.fetched, ["base"]);
+  });
+
+  test("a trial tree that does not build fails the run before the CLI starts", async () => {
+    const run = project();
+    process.env["FAKE_AGENT_RECORD"] = run.setup.record;
+    rmSync(run.setup.record, { force: true });
+    const task = reviewTask({ checkpoint: run.checkpoint, target: { id: "weekly-report", repo: "feature-weekly-report", sha: run.junHead }, fix: { kind: "patch", patch: PATCH.replace("-    return []", "-    return None") } });
+    const result = await runEditTask(run.reviewOptions, task);
+    assert.equal(result.report.status, "failed");
+    assert.match(result.report.outcome, /^the part's trial tree does not build: the patch does not apply/u);
+    assert.equal(existsSync(run.setup.record), false, "no CLI ran");
+  });
+
+  test("a review with no trial reads the reviewed fork, as before", async () => {
+    const run = project();
+    process.env["FAKE_AGENT_RECORD"] = run.setup.record;
+    const result = await runEditTask(run.reviewOptions, reviewTask(null));
+    assert.equal(result.report.status, "done", JSON.stringify(result.report));
+    const seen = JSON.parse(readFileSync(run.setup.record, "utf8")) as Seen;
+    assert.match(seen.prompt, /read-only checkout of feature-utc-day, the fork of feature utc-day\./u);
+    assert.deepEqual([seen.read, run.fetched], [{}, []]);
   });
 });

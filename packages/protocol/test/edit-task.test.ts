@@ -114,8 +114,17 @@ test("a claimed task's spec is checked field by field", () => {
   assert.notDeepEqual(checkEditTaskSpec({ ...spec, fork: "owner-jun" }), []);
   assert.notDeepEqual(checkEditTaskSpec({ ...spec, extra: 1 }), []);
   // A review names the one part revision and scope its form covers.
-  const review = { ...spec, kind: "review", review: { feature: "utc-day", scope: "analytics", part: "utc-day/v1#1", revision: 1 } };
+  const review = { ...spec, kind: "review", review: { feature: "utc-day", scope: "analytics", part: "utc-day/v1#1", revision: 1, trial: null } };
   assert.deepEqual(checkEditTaskSpec(review), []);
   assert.notDeepEqual(checkEditTaskSpec({ ...review, review: { ...review.review, revision: 0 } }), []);
   assert.notDeepEqual(checkEditTaskSpec({ ...review, review: { ...review.review, token: "x" } }), []);
+  // Its trial names full commits, the base repo or a feature fork, and a patch or a fix commit.
+  const trial = { checkpoint: "c".repeat(40), target: { id: "weekly-report", repo: "feature-weekly-report", sha: "e".repeat(40) }, fix: { kind: "patch", patch: "--- a/x\n" } };
+  const withTrial = (value: unknown) => checkEditTaskSpec({ ...review, review: { ...review.review, trial: value } });
+  assert.deepEqual(withTrial(trial), []);
+  assert.deepEqual(withTrial({ ...trial, target: { id: "main", repo: "base", sha: "a".repeat(40) }, fix: { kind: "commit", repo: "feature-utc-day", commit: "f".repeat(40), base: "d".repeat(40) } }), []);
+  assert.notDeepEqual(withTrial({ ...trial, checkpoint: "main" }), []);
+  assert.notDeepEqual(withTrial({ ...trial, target: { ...trial.target, repo: "owner-jun" } }), []);
+  assert.notDeepEqual(withTrial({ ...trial, fix: { kind: "patch", patch: "" } }), []);
+  assert.notDeepEqual(checkEditTaskSpec({ ...review, review: { feature: "utc-day", scope: "analytics", part: "utc-day/v1#1", revision: 1 } }), []);
 });

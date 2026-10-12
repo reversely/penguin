@@ -737,7 +737,8 @@ agent becomes an edit task for one of them.
    steward.
 6. The person is asked to start a session only when no identity can take the task: their bridge
    is offline, no charter holds the place, or a background run failed. A review form runs headless
-   too. Its CLI reaches Penguin's MCP server with a token for that one form
+   too. Its CLI reads the part revision's trial tree, the tree the part's trial tests, so the agent
+   sees the fix it reviews. It reaches Penguin's MCP server with a token for that one form
    ([bridge-and-runner.md](bridge-and-runner.md#review-forms)).
 
 #### Edit tasks in the build

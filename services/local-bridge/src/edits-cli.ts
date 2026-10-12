@@ -17,7 +17,7 @@ import { bridgeConsent } from "./consent-store.ts";
 import { EDIT_RUN_TIMEOUT_DEFAULT_MS, EDIT_VENDORS, editPass, formatEditPass, runEditTask, type EditPassResult, type EditVendor } from "./edit-run.ts";
 import { penguinRemote } from "./git-remote.ts";
 import type { KeyStore } from "./key-store.ts";
-import { claimEditTasks, openBridge, reportEditTask, type Fetch } from "./penguin-client.ts";
+import { bridgeRemotes, claimEditTasks, openBridge, reportEditTask, type Fetch } from "./penguin-client.ts";
 import { RunnerLoop } from "./runner.ts";
 import type { CheckpointReportEntry } from "./spool.ts";
 
@@ -28,8 +28,8 @@ export const EDITS_USAGE = `       penguin-bridge edits [--once] [--interval <ms
          cap at once, and runs each headless in a fresh worktree of its fork: claude -p with file
          tools only, or codex exec in the workspace-write sandbox. Each result is shown before it is
          published, and your yes stands for later results of the same identity on the same fork.
-         A review form runs read-only with Penguin's MCP server and a token for that task alone;
-         the agent submits the form itself.
+         A review form runs read-only on the part's trial tree with Penguin's MCP server and a
+         token for that task alone; the agent submits the form itself.
 `;
 
 /** Runs `edits`. Resolves with the exit code. */
@@ -78,6 +78,8 @@ export async function runEditsCommand(args: readonly string[], io: CliIo, keySto
     projectId: values.project,
     // A review run's CLI reaches Penguin's MCP server on the same origin the bridge registered with.
     mcpUrl: new URL("/mcp", registration.server).toString(),
+    // A review's trial tree reads the target's and the fix's repos with this bridge's read tokens.
+    readRemote: bridgeRemotes(stateDir, keyStore, fetchImpl, "read"),
   };
   const pass = (): Promise<EditPassResult> =>
     editPass({

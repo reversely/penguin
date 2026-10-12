@@ -7,6 +7,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 
+import type { Plan } from "@penguin/protocol";
+
 import { claimEditTasks, reportEditTask, syncEditWork } from "../src/edit-work.ts";
 import { reviewTaskCall, taskSessionId, type ReviewTaskCall } from "../src/review-task.ts";
 import { CHECKPOINT, FEATURE, PART, ReviewProject } from "./review-project.ts";
@@ -30,13 +32,29 @@ test("a bridge claims a review like any task, with a task token that expires wit
   const project = await ReviewProject.load();
   await syncEditWork(project.editDeps());
   const { spec, token } = await claimed(project);
-  assert.deepEqual([spec.handle, spec.fork, spec.scopes, spec.review], ["@jun/steward", `feature-${FEATURE}`, ["analytics"], { feature: FEATURE, scope: "analytics", part: PART, revision: 1 }]);
+  assert.deepEqual([spec.handle, spec.fork, spec.scopes, spec.review], ["@jun/steward", `feature-${FEATURE}`, ["analytics"], { feature: FEATURE, scope: "analytics", part: PART, revision: 1, trial: null }]);
   assert.match(token.token, /^pgt_[A-Za-z0-9_-]{43}$/u);
   assert.equal(token.expiresAt, spec.leaseUntil);
   assert.deepEqual(await project.tokens.authenticate(token.token), { tokenId: (await project.tokens.authenticate(token.token))?.tokenId, ownerId: "jun", task: { taskId: spec.taskId } });
   // The token stops at the end of the claim.
   project.now = Date.parse(spec.leaseUntil);
   assert.equal(await project.tokens.authenticate(token.token), undefined);
+});
+
+test("the claim carries the part revision's trial tree from the feature's newest plan (#140)", async () => {
+  const project = await ReviewProject.load();
+  const [baseline, fixBase, fix] = ["a", "d", "f"].map((char) => char.repeat(40)) as [string, string, string];
+  const plan = {
+    featureId: FEATURE,
+    facts: { change: { checkpoint: CHECKPOINT, baseline } },
+    parts: [{ partId: PART, revision: 1, place: { kind: "scope", scope: "analytics" }, scopes: ["analytics"], diff: { source: "commit", repo: `feature-${FEATURE}`, commit: fix, base: fixBase, patch: null } }],
+  } as unknown as Plan;
+  const asked: string[] = [];
+  const deps = { ...project.editDeps(), plan: (featureId: string) => (asked.push(featureId), plan) };
+  await syncEditWork(deps);
+  const claim = await claimEditTasks(deps, "jun", "bridge-jun");
+  assert.deepEqual(claim.tasks[0]?.review?.trial, { checkpoint: CHECKPOINT, target: { id: "main", repo: "base", sha: baseline }, fix: { kind: "commit", repo: `feature-${FEATURE}`, commit: fix, base: fixBase } });
+  assert.deepEqual(asked, [FEATURE]);
 });
 
 test("without task tokens the bridge leaves a review to a session", async () => {
