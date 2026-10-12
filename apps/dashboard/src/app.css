@@ -3577,6 +3577,33 @@ label.button:has(input:focus-visible) {
   color: var(--ink-muted);
 }
 
+/* The steward row: the steward's label, then its queue counts on the line under it. The term takes the
+   agent link's 44px height so it sits level with the label's text. */
+.steward-row dt {
+  display: flex;
+  align-self: start;
+  align-items: center;
+  min-height: 2.75rem;
+}
+
+.role dd.steward {
+  display: grid;
+  justify-items: start;
+}
+
+.steward-queue {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--space-2);
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.steward-count[data-key="asked"] {
+  color: var(--attention);
+  font-weight: 500;
+}
+
 /* A person's features: each a row with its state, any exception and its agents. */
 .feature-rows {
   display: grid;
@@ -4416,6 +4443,11 @@ label.button:has(input:focus-visible) {
     gap: 2px;
   }
 
+  /* Stacked over the steward, the term needs no height of its own. */
+  .steward-row dt {
+    min-height: 0;
+  }
+
   .fact dt {
     line-height: 1.4;
   }
@@ -4809,6 +4841,43 @@ details[open] > summary .disclosure-mark {
   margin: 0 0 var(--space-2);
   font: var(--text-meta);
   overflow-wrap: anywhere;
+}
+
+.branch-count {
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.branch-task {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0 var(--space-1);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* A branch of several items opens to one line per item, indented under the person. */
+.branch-items {
+  display: grid;
+  margin: 0 0 var(--space-2);
+  padding: 0 0 0 var(--space-3);
+  list-style: none;
+}
+
+.branch-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  min-height: 2rem;
+  min-width: 0;
+  font: var(--text-meta);
+}
+
+@media (pointer: coarse) {
+  .branch-item {
+    min-height: 2.75rem;
+  }
 }
 
 .col-1 {

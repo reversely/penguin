@@ -199,3 +199,26 @@ test("the team map's squares and a person's badge on any page show the shell's o
   }
   assert.equal(badges.get("outsider"), hashed("outsider"));
 });
+
+test("a person's steward shows once, on the Steward row with its queue, and not among the agents on no feature", async () => {
+  const { render } = await load<{ render: (steward: unknown) => string }>(`
+    import { renderToStaticMarkup } from "react-dom/server";
+    import { createElement } from "react";
+    import { TeamMapView } from "./src/team-page.tsx";
+    export function render(steward) {
+      const role = { scopes: [], dependents: [], dependencies: [] };
+      const idleAgents = [{ handle: "@jun/steward", identityId: "i1", person: "jun", online: false }, { handle: "@jun/reports", identityId: "i2", person: "jun", online: false }];
+      const view = { people: [{ id: "jun", role, steward, features: [], idleAgents }] };
+      return renderToStaticMarkup(createElement(TeamMapView, { view, navigate() {} }));
+    }`);
+  const html = render({ handle: "@jun/steward", identityId: "i1", online: false, running: 1, queued: 0, asked: 2, cap: 2 });
+  assert.match(html, /<dt>Steward<\/dt>/u);
+  const text = html.replace(/<[^>]+>/gu, " ").replace(/\s+/gu, " ");
+  assert.match(text, /steward jun 1 of 2 running 2 asked/u);
+  assert.doesNotMatch(text, /queued/u);
+  assert.equal(text.match(/steward jun/gu)?.length, 1, "the steward shows once");
+  assert.match(text, /reports jun/u);
+  // A person with no steward, or a view from an older Worker, has no Steward row.
+  assert.doesNotMatch(render(null), /Steward/u);
+  assert.doesNotMatch(render(undefined), /Steward/u);
+});

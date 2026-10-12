@@ -160,7 +160,7 @@ export function FeatureView({ page, viewer, team, navigate, open = [], view: fir
             </ul>
           )}
         </header>
-        <Timeline pipeline={page.pipeline} reveal={reveal} />
+        <Timeline pipeline={page.pipeline} feature={feature.id} tasks={page.editTasks ?? []} reveal={reveal} />
         {todos.length === 0 ? null : <ToDos todos={todos} reveal={reveal} navigate={navigate} />}
         {lines.length === 0 ? null : <Summary lines={lines} reveal={reveal} />}
         <div className="tabs" role="tablist" aria-label="Views">

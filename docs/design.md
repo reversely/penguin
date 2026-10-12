@@ -787,11 +787,13 @@ agent becomes an edit task for one of them.
 - **Reads bring tasks up to date.** Before `get_work`, the team view and the feature page answer,
   Penguin syncs the roster and the review and fix sources and settles every task's state.
 
-The API the dashboard reads (#124, #125 and #127 render it):
+The API the dashboard reads. The feature page hangs each open task the feature raised as a branch
+on its timeline. The team view shows each person's steward with its queue
+([dashboard.md](dashboard.md#feature-page)):
 
 | Field | Where | Holds |
 |---|---|---|
-| `editTasks` | `GET /api/features/<id>/page` (`FeaturePage`) | Every task the feature raised or that edits its fork, oldest first. Each `EditTaskView` has `id`, `kind`, `feature`, `target`, `block` (tasks of one source share it), `handle` (null while the person is asked), `person`, `via` (`builder`, `steward` or `person`), `state`, `askReason`, `files`, `scopes`, `instructions`, `verifier`, `outcome`, `commit`, `createdAt`, `updatedAt`. A queued task is a waiting branch on the feature's timeline |
+| `editTasks` | `GET /api/features/<id>/page` (`FeaturePage`) | Every task the feature raised or that edits its fork, oldest first. Each `EditTaskView` has `id`, `kind`, `feature`, `target`, `block` (tasks of one source share it), `handle` (null while the person is asked), `person`, `via` (`builder`, `steward` or `person`), `state`, `askReason`, `files`, `scopes`, `instructions`, `verifier`, `outcome`, `commit`, `createdAt`, `updatedAt`. Each open task the feature raised joins its person's branch on the feature's timeline at the stage it serves, tagged running (`delivered` or `running`), queued or asked |
 | `steward` | `GET /api/team` (`TeamPerson`) | The person's steward: `handle`, `identityId`, `online` (the bridge polled lately) and the queue `running`, `queued`, `asked`, `cap`. Null when the person has no steward |
 
 No view carries an agent's transcript. A task's `outcome` is one line the bridge builds from facts.
@@ -1469,6 +1471,8 @@ A branch is the feature's work reaching another person or their agent: an overla
 them, a part sent to them, a fix written into their fork, a migration group of theirs or a confirmation
 of their protected path. Its label is one of sent, reviewing, fix written, approved or needs a person.
 It names the reviewing agent once a review is in. A branch settles once approved, written or confirmed.
+The dashboard draws one branch per person per stage, with the person's open edit tasks at the stage
+each serves, most urgent first.
 
 Each checkpoint an agent reported shows in the current stage with the newest `check` run on that
 checkpoint.

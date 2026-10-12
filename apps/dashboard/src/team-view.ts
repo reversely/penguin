@@ -4,9 +4,9 @@
 //
 // The board's people are every owner it lists (identity holders and the owners of assigned issues),
 // every owner the identities page lists (the scope map's owners) and every person an inbox item asks
-// to act.
+// to act. A person's steward shows on its own row, not among their agents on no feature.
 
-import type { Board, BoardIssue, BoardWaiting, IdentitiesPage, IssuePageAssignee } from "@penguin/protocol";
+import type { Board, BoardIssue, BoardWaiting, DashboardAgent, IdentitiesPage, IssuePageAssignee, TeamPerson } from "@penguin/protocol";
 
 import { sessionStatus, STATUS_ATTENTION, waitsOn } from "./board-view.ts";
 
@@ -16,6 +16,12 @@ function isOpen(issue: BoardIssue): boolean {
 
 function assignment(issue: BoardIssue, handle: string): IssuePageAssignee | undefined {
   return issue.issue.assignees.find((assignee) => assignee.kind === "identity" && assignee.id === handle);
+}
+
+/** The person's agents on no feature, without the steward, which the person's Steward row shows. */
+export function idleAgents(person: Pick<TeamPerson, "idleAgents" | "steward">): readonly DashboardAgent[] {
+  const steward = person.steward?.handle;
+  return steward === undefined ? person.idleAgents : person.idleAgents.filter((agent) => agent.handle !== steward);
 }
 
 /** A number orders issues; a temporary ID belongs to an issue created offline and goes last. */

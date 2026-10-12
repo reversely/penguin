@@ -61,7 +61,10 @@ Each square holds:
 - the person's role in `penguin/scopes.json`, by scope name: Owns lists their scopes, Read by lists
   other people's scopes that depend on theirs and Reads lists the scopes theirs depend on. Each scope
   another person owns carries that person's id. A row with no scope is left out, except Owns, which
-  says None;
+  says None. A last Steward row shows the person's steward, which opens its agent card. Beside it
+  sits the steward's queue of edit tasks from `steward` in `GET /api/team`: `1 of 2 running` against the person's cap,
+  then `3 queued` and `1 asked` (in the attention colour) when any. A person with no steward has no
+  Steward row;
 - each of the person's features, newest first, linking to its page, with its stage strip and the
   agents whose sessions joined it. The strip is a dot per stage of the feature's pipeline
   ([design.md](design.md#the-merge-as-a-pipeline-in-the-build)), the current one ringed, then the
@@ -104,7 +107,7 @@ Assigned, Review, Reply or Session to start.
 | Breadcrumb | Team, the feature's person, the feature |
 | Title | The feature's name, its person as a pill in the person's hue and its scopes as pills in their owners' hues |
 | Timeline bar | One node per stage of the feature's pipeline ([design.md](design.md#the-merge-as-a-pipeline-in-the-build)): split features run Open, Expand, Migrate, Contract and Done; the rest run Open, Plan, Review, Fixes written, Block checks and Promoted. Each node shows its status as a dot and its count of passed jobs, such as `2 of 4`, with Needs a person or Failed when a job is. The current stage is ringed. A node opens its stage in the Pipeline view |
-| Branches | Each piece of work that reached another person and has not settled hangs from its stage as one line: the reviewing agent, or the person before an agent took it; one label (sent, reviewing, fix written, approved or needs a person); and the part's number and place, which opens its diff. Opening the line shows the job's fact. A settled branch has rejoined the bar as the person's avatar under its stage. Six branches show before a button counts the rest |
+| Branches | One line per person per stage holds the work that reached the person and has not settled. That work is their parts, starts and confirmations plus the open edit tasks the feature raised ([design.md](design.md#edit-tasks-in-the-build)). The line shows the person's agent, the count by kind (such as `2 parts 1 task`) and the most urgent tag. It shows the person instead when no agent or several agents took the work. A part, start or confirmation is tagged sent, reviewing, fix written, approved or needs a person; a task is tagged running, queued or asked. Opening the line lists each item with its tag and its part's number and place, which opens its diff, or the task's kind and place, such as `Review form analytics`. An item names its agent when the items' agents differ. A task names `builder` when a builder took it. A line of one item shows the item itself and opens to its fact: the job's fact, why the task's person is asked or how its run ended. Within a stage, lines needing a person (needs a person, asked) come first, then running lines (reviewing, running), then waiting lines (sent, queued); the latest stage's lines come first. On a plan a task hangs from Review (a review form), Fixes written (a fix) or Block checks (a next step); on a split a contract step hangs from Contract and any other task from Migrate. A task another feature raised in this feature's fork hangs from that feature's timeline. A settled branch has rejoined the bar as the person's avatar under its stage. Six lines show before a button counts the rest |
 | Summary | At most three lines: the contract change with its counts of changes, breaking signatures and incompatible entries; how many features and people the feature reaches; the first place needing a person, else the first failed job. Each line opens what it sums up |
 
 **Views.** Four tabs, each with its own anchor, so a link can open one: `#changes`, `#pipeline`,

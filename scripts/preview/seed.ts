@@ -34,7 +34,9 @@ import {
   toolPass,
 } from "@penguin/local-bridge";
 import {
+  BACKGROUND_RUN_CAP_DEFAULT,
   boundReviewRecord,
+  EDIT_RUN_MINUTES_DEFAULT,
   isMigrationPlanId,
   routesToOriginator,
   type ContractWorkView,
@@ -42,6 +44,7 @@ import {
   type RetiringSymbol,
   type ReviewForm,
   type RewriteRule,
+  type StewardView,
 } from "@penguin/protocol";
 import { parseScopeMap, type ScopeMap } from "@penguin/scope-map";
 
@@ -90,7 +93,7 @@ import { fileDiffs } from "../../services/project-agent/src/repo-diff.ts";
 import { closeRemoved, countReported, requestRetiringCount, type CountOutcome, type RetiringCountDeps } from "../../services/project-agent/src/retiring-count.ts";
 import { EditRoster } from "../../services/project-agent/src/edit-roster.ts";
 import { EditTaskStore } from "../../services/project-agent/src/edit-tasks.ts";
-import { editRouting } from "../../services/project-agent/src/edit-work.ts";
+import { editRouting, editTaskView, syncEditWork } from "../../services/project-agent/src/edit-work.ts";
 import {
   carryContract,
   migrationsChecked,
@@ -105,6 +108,7 @@ import { claimReviews, recordReview } from "../../services/project-agent/src/rev
 import { ReviewStore, submitReview } from "../../services/project-agent/src/review-submit.ts";
 import { reviewDifferences } from "../../services/project-agent/src/review-view.ts";
 import { SessionStore } from "../../services/project-agent/src/session-store.ts";
+import { FixGrantStore } from "../../services/project-agent/src/fix-write.ts";
 import { gitReader } from "../../services/project-agent/test/git-reader.ts";
 
 const ROOT = join(import.meta.dirname, "../..");
@@ -159,6 +163,7 @@ export class PreviewProject {
   readonly migrations: MigrationStore;
   readonly editTasks: EditTaskStore;
   readonly roster: EditRoster;
+  readonly fixGrants: FixGrantStore;
   /**
    * True to propose the split's migration plans after each count, as the ProjectAgent does: each plan's
    * rewrites and trials then run on the check runner. Off by default, since a scenario that does not
@@ -215,6 +220,7 @@ export class PreviewProject {
     this.migrations = new MigrationStore(this.sql, now);
     this.editTasks = new EditTaskStore(this.sql, { now });
     this.roster = new EditRoster(this.sql, this.identities);
+    this.fixGrants = new FixGrantStore(this.sql, now);
     let sessions: SessionStore | undefined;
     this.index = new IssueIndex(this.sql, { assignmentsChanged: (issueId, added, removed) => sessions?.assignmentsChanged(issueId, added, removed) });
     sessions = new SessionStore(this.sql, this.identities, {
@@ -813,7 +819,39 @@ export class PreviewProject {
       contract: (feature) => contractWork(this.splitDeps(), feature, this.scopeMap),
       protectedChanges: (featureId) => this.protectedChanges.ofFeature(featureId),
       split: (featureId) => this.splits.get(featureId),
+      editTasks: (featureId) => this.editTasks.forFeature(featureId).map(editTaskView),
+      steward: (person) => this.stewardView(person),
     };
+  }
+
+  /**
+   * Opens and settles the edit tasks, as the ProjectAgent does before the team view and the feature
+   * page answer. No bridge polls in the preview, so a task no session takes asks its person.
+   */
+  async syncEditWork(): Promise<void> {
+    await syncEditWork({
+      tasks: this.editTasks,
+      roster: this.roster,
+      features: this.features,
+      routes: this.routes,
+      grants: this.fixGrants,
+      reviews: (featureId) => this.reviews.list(featureId),
+      scopeMap: async () => this.scopeMap,
+      running: () => this.sessions.running(),
+      // Only a bridge's claim or report checks a fix write, and the preview has no bridge.
+      fix: undefined as never,
+      cap: BACKGROUND_RUN_CAP_DEFAULT,
+      leaseMs: EDIT_RUN_MINUTES_DEFAULT * 60_000,
+      notify: () => undefined,
+    });
+  }
+
+  /** A person's steward with their queue, as the ProjectAgent's team view reads it. */
+  stewardView(person: string): StewardView | null {
+    const charter = this.roster.stewardOf(person);
+    const identity = charter === undefined ? undefined : this.identities.byHandle(charter.handle);
+    if (identity === undefined) return null;
+    return { handle: identity.handle, identityId: identity.id, online: this.editTasks.bridgeOnline(person), ...this.editTasks.queue(person, BACKGROUND_RUN_CAP_DEFAULT) };
   }
 
   /** The Worker's dashboard backend over these stores, as apps/worker/src/index.ts wires the ProjectAgent's. */
@@ -854,8 +892,14 @@ export class PreviewProject {
       openFeature: unsupported as never,
       declareFeatureArea: unsupported as never,
       featurePlan: async (owner, featureId) => buildFeaturePlan(this.viewDeps(), featureId, owner),
-      team: async (owner) => buildTeamView(this.viewDeps(), owner),
-      featurePage: async (owner, featureId) => buildFeaturePage(this.viewDeps(), featureId, owner),
+      team: async (owner) => {
+        await this.syncEditWork();
+        return buildTeamView(this.viewDeps(), owner);
+      },
+      featurePage: async (owner, featureId) => {
+        await this.syncEditWork();
+        return buildFeaturePage(this.viewDeps(), featureId, owner);
+      },
       reviewDifferences: async (reviewId) => {
         const review = this.reviews.get(reviewId);
         return review === undefined ? undefined : reviewDifferences(review);

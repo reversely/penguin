@@ -1,32 +1,54 @@
 // The feature's merge as a timeline bar (#124): one node per stage with its status and count, the
 // current stage marked. Work that reached another person or their agent hangs from the stage where it
-// happened as a one-line branch: the agent, one label and a link to the part's diff. A settled branch
+// happened as one branch per person (#137): the person's agent, the count of their parts and edit
+// tasks and the most urgent tag, opening to one line per item with a link to the part's diff. A
+// branch of one item shows the item on its line. A settled branch
 // has rejoined the bar and shows as the person's avatar beside the stage. A node opens its stage in the
 // page's Pipeline view, where each job shows one line; failed and person-needed jobs show their facts.
 // GitHub Actions draws a run the same way: "An icon to the left of the job name indicates the status
 // of the job" (docs/research/github-actions-visualization-graph.md). Every value renders as text.
 
-import type { FeaturePipeline, PipelineJob, PipelineStage, PipelineStrip } from "@penguin/protocol";
+import type { EditTaskView, FeaturePipeline, PipelineJob, PipelineStage, PipelineStageKey, PipelineStrip } from "@penguin/protocol";
 import { useState } from "react";
 
 import { Agent } from "./agent-directory.tsx";
 import { PersonAvatar } from "./avatar.tsx";
 import { counted, partNumber, shortSha } from "./feature-view.ts";
+import { Icon } from "./icon.tsx";
 import { stageAnchor } from "./page-view.ts";
-import { branchRows, currentStageText, jobText, partAnchor, settledAt, STAGE_LABEL, stageCount, STATUS_LABEL, type BranchRow } from "./pipeline-view.ts";
+import {
+  ASK_REASON_LABEL,
+  branchRows,
+  currentStageText,
+  groupCount,
+  jobText,
+  partAnchor,
+  settledAt,
+  STAGE_LABEL,
+  stageCount,
+  STATUS_LABEL,
+  taskText,
+  taskVia,
+  type BranchItem,
+  type BranchRow,
+} from "./pipeline-view.ts";
 
 /** Branch rows shown before a "more" button. */
 const BRANCH_CAP = 6;
 
 interface TimelineProps {
   readonly pipeline: FeaturePipeline;
+  /** The feature's id, whose own edit tasks hang as branches. */
+  readonly feature: string;
+  /** The page's edit tasks (`editTasks`). */
+  readonly tasks: readonly EditTaskView[];
   /** Opens and scrolls to an element of the page by id, such as a part's node in the change tree. */
   readonly reveal: (id: string) => void;
 }
 
-export function Timeline({ pipeline, reveal }: TimelineProps) {
+export function Timeline({ pipeline, feature, tasks, reveal }: TimelineProps) {
   const [all, setAll] = useState(false);
-  const rows = branchRows(pipeline);
+  const rows = branchRows(pipeline, feature, tasks);
   const shown = all ? rows : rows.slice(0, BRANCH_CAP);
   const columns = `cols-${pipeline.stages.length}`;
   return (
@@ -46,7 +68,7 @@ export function Timeline({ pipeline, reveal }: TimelineProps) {
       {rows.length === 0 ? null : (
         <ol className="branches" aria-label="Other people">
           {shown.map((row) => (
-            <Branch key={row.branch.key} row={row} columns={columns} pipeline={pipeline} reveal={reveal} />
+            <Branch key={row.group.key} row={row} columns={columns} pipeline={pipeline} reveal={reveal} />
           ))}
         </ol>
       )}
@@ -117,48 +139,112 @@ function jobOf(pipeline: FeaturePipeline, key: string): PipelineJob | undefined 
   return undefined;
 }
 
-/** One branch: its rails, then the agent or person, one label and the part's diff; the job's fact opens below. */
+/**
+ * One person's branch at one stage: its rails, then the person's agent, the count of their items and
+ * the most urgent tag. A branch of one item shows the item on its line and opens to its fact; a branch
+ * of several opens to one line per item.
+ */
 function Branch({ row, columns, pipeline, reveal }: { readonly row: BranchRow; readonly columns: string; readonly pipeline: FeaturePipeline; readonly reveal: (id: string) => void }) {
-  const { branch } = row;
-  const job = jobOf(pipeline, branch.key);
-  const anchor = branch.partId === null ? null : partAnchor(branch.partId);
+  const { group } = row;
+  const single = group.items.length === 1 ? (group.items[0] as BranchItem) : null;
+  const count = groupCount(group);
   const [open, setOpen] = useState(false);
   return (
     <li className={`branch-row ${columns}`}>
       {row.cells.slice(0, -1).map((cell, index) => (cell === "rail" ? <span key={index} className={`rail col-${index + 1}`} aria-hidden="true" /> : null))}
-      <details className={`branch col-from-${row.column + 1}`} data-rail={row.cells.at(-1)} data-label={branch.label} onToggle={(event) => setOpen(event.currentTarget.open)}>
+      <details className={`branch col-from-${row.column + 1}`} data-rail={row.cells.at(-1)} data-label={group.label} onToggle={(event) => setOpen(event.currentTarget.open)}>
         <summary>
-          <span className="branch-stage">{STAGE_LABEL[branch.stage]}</span>
-          {branch.agent === null ? (
-            <span className="approval-person">
-              <PersonAvatar id={branch.person} size="card" />
-              {branch.person}
+          <span className="branch-stage">{STAGE_LABEL[group.stage]}</span>
+          <Who agent={group.agent} person={group.person} />
+          {count === null ? null : <span className="branch-count">{count}</span>}
+          <ItemTag label={group.label} urgency={group.urgency} />
+          {single === null ? (
+            <span className="disclosure-mark">
+              <Icon name="chevron" />
             </span>
           ) : (
-            <Agent handle={branch.agent} person={branch.person} variant="compact" />
-          )}
-          <span className={branch.label === "needs a person" ? "tag tag-attention" : "tag"}>{branch.label}</span>
-          {anchor === null ? null : (
-            <a
-              className="branch-diff"
-              href={`#${anchor}`}
-              onClick={(event) => {
-                event.preventDefault();
-                reveal(anchor);
-              }}
-            >
-              {partLabel(branch.partId as string, job)}
-            </a>
+            <ItemPlace item={single} pipeline={pipeline} reveal={reveal} />
           )}
         </summary>
-        {job === undefined || !open ? null : (
-          <p className="branch-fact">
-            <span className="muted">{STAGE_LABEL[branch.stage]}</span> {jobText(job.fact).fact}
-          </p>
+        {!open ? null : single === null ? (
+          <ul className="branch-items" aria-label={`${group.person} at ${STAGE_LABEL[group.stage]}`}>
+            {group.items.map((item) => (
+              <li key={item.key} className="branch-item">
+                {group.agent === null ? <Who agent={item.agent} person={group.person} /> : null}
+                <ItemTag label={item.label} urgency={item.urgency} />
+                <ItemPlace item={item} pipeline={pipeline} reveal={reveal} />
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <ItemFact item={single} stage={group.stage} pipeline={pipeline} />
         )}
       </details>
     </li>
   );
+}
+
+/** The agent that took the work, or the person before one has. */
+function Who({ agent, person }: { readonly agent: string | null; readonly person: string }) {
+  if (agent !== null) return <Agent handle={agent} person={person} variant="compact" />;
+  return (
+    <span className="approval-person">
+      <PersonAvatar id={person} size="card" />
+      {person}
+    </span>
+  );
+}
+
+function ItemTag({ label, urgency }: { readonly label: string; readonly urgency: number }) {
+  return <span className={urgency === 0 ? "tag tag-attention" : "tag"}>{label}</span>;
+}
+
+/**
+ * Where an item points: a part's number and place, which opens its diff, or a task's kind and place
+ * with the kind of identity that took it when the agent's name does not say it.
+ */
+function ItemPlace({ item, pipeline, reveal }: { readonly item: BranchItem; readonly pipeline: FeaturePipeline; readonly reveal: (id: string) => void }) {
+  if (item.task !== null) {
+    const via = taskVia(item.task);
+    return (
+      <span className="branch-task">
+        {via === null ? null : <span className="muted">{via}</span>}
+        {taskText(item.task)}
+      </span>
+    );
+  }
+  if (item.partId === null) return null;
+  const anchor = partAnchor(item.partId);
+  return (
+    <a
+      className="branch-diff"
+      href={`#${anchor}`}
+      onClick={(event) => {
+        event.preventDefault();
+        reveal(anchor);
+      }}
+    >
+      {partLabel(item.partId, jobOf(pipeline, item.key))}
+    </a>
+  );
+}
+
+/** A lone item's fact under its branch: the job's fact, or why a task's person is asked or how its run ended. */
+function ItemFact({ item, stage, pipeline }: { readonly item: BranchItem; readonly stage: PipelineStageKey; readonly pipeline: FeaturePipeline }) {
+  const fact = itemFact(item, pipeline);
+  if (fact === null) return null;
+  return (
+    <p className="branch-fact">
+      <span className="muted">{STAGE_LABEL[stage]}</span> {fact}
+    </p>
+  );
+}
+
+function itemFact(item: BranchItem, pipeline: FeaturePipeline): string | null {
+  const { task } = item;
+  if (task !== null) return task.askReason === null ? task.outcome : ASK_REASON_LABEL[task.askReason];
+  const job = jobOf(pipeline, item.key);
+  return job === undefined ? null : jobText(job.fact).fact;
 }
 
 /** A part as its branch links it: its number and place, `#1 analytics`. */

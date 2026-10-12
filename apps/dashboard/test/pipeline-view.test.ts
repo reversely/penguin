@@ -4,11 +4,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import type { FeaturePipeline, JobFact, PipelineBranch, PipelineStage } from "@penguin/protocol";
+import type { EditTaskView, FeaturePipeline, JobFact, PipelineBranch, PipelineStage } from "@penguin/protocol";
 
 import { hunkHeader, hunkRows, lineCounts } from "../src/diff-view.ts";
 import { foldParents, initialFolds, readByRows, recordKinds, summaryLines, viewOf } from "../src/page-view.ts";
-import { branchRows, currentStageText, jobText, partAnchor, settledAt, stageCount } from "../src/pipeline-view.ts";
+import { branchGroups, branchRows, currentStageText, groupCount, jobText, partAnchor, queueCounts, settledAt, stageCount, taskStage, taskText, taskVia } from "../src/pipeline-view.ts";
 
 const branch = (key: string, stage: PipelineBranch["stage"], settled = false): PipelineBranch => ({
   key,
@@ -77,14 +77,15 @@ test("a stage counts its passed jobs and the strip names the current stage with 
 });
 
 test("branches hang from the latest stage first, so each rail passes only rows that start to its right", () => {
-  const pipeline: Pick<FeaturePipeline, "stages" | "branches"> = {
+  const pipeline: Pick<FeaturePipeline, "path" | "stages" | "branches"> = {
+    path: "plan",
     stages: stages("open", "plan", "review", "fixes", "checks", "promoted"),
     branches: [branch("jun", "review"), branch("sam", "review", true), branch("hugo", "open"), branch("mei", "review"), branch("lena", "fixes")],
   };
   const rows = branchRows(pipeline);
   // The settled branch rejoined the bar and gets no row.
   assert.deepEqual(
-    rows.map((row) => [row.branch.key, row.column, row.cells.join(" ")]),
+    rows.map((row) => [row.group.person, row.column, row.cells.join(" ")]),
     [
       ["lena", 3, "rail none rail elbow"],
       ["jun", 2, "rail none tee"],
@@ -93,6 +94,111 @@ test("branches hang from the latest stage first, so each rail passes only rows t
     ],
   );
   assert.deepEqual(settledAt(pipeline, "review"), ["sam"]);
+});
+
+const partJob = (n: number, owner: string, status: PipelineStage["status"]) => ({
+  key: `part:p/v1#${n}`,
+  status,
+  fact: { kind: "part" as const, partId: `p/v1#${n}`, place: { kind: "scope" as const, scope: `s${n}` }, owner, state: "pending" as const, approvedBy: null, review: "accepted" as const, reviewer: null },
+});
+
+const partBranch = (n: number, person: string, label: PipelineBranch["label"], agent: string | null = null): PipelineBranch => ({
+  key: `part:p/v1#${n}`,
+  stage: "review",
+  person,
+  agent,
+  label,
+  partId: `p/v1#${n}`,
+  settled: false,
+});
+
+const task = (id: number, overrides: Partial<EditTaskView>): EditTaskView => ({
+  id,
+  kind: "review",
+  feature: "merge-rules",
+  target: "merge-rules",
+  block: `b${id}`,
+  handle: "@jun/steward",
+  person: "jun",
+  via: "steward",
+  state: "queued",
+  askReason: null,
+  files: [],
+  scopes: ["analytics"],
+  instructions: "",
+  verifier: "",
+  outcome: null,
+  commit: null,
+  createdAt: "",
+  updatedAt: "",
+  ...overrides,
+});
+
+test("one branch per person per stage counts the person's items and takes the most urgent tag", () => {
+  const pipeline: Pick<FeaturePipeline, "path" | "stages" | "branches"> = {
+    path: "plan",
+    stages: [{ key: "review", status: "person", jobs: [partJob(1, "jun", "person"), partJob(2, "sam", "running"), partJob(3, "jun", "person"), partJob(4, "mei", "waiting")] }],
+    branches: [partBranch(4, "mei", "sent"), partBranch(1, "jun", "needs a person", "@jun/reports"), partBranch(2, "sam", "reviewing", "@sam/inbox"), partBranch(3, "jun", "needs a person", "@jun/reports")],
+  };
+  const groups = branchGroups(pipeline, "merge-rules");
+  // Needs a person, then running, then waiting, whatever order the pipeline listed them in.
+  assert.deepEqual(
+    groups.map((group) => [group.person, group.label, group.agent, groupCount(group), group.items.map((item) => item.partId)]),
+    [
+      ["jun", "needs a person", "@jun/reports", "2 parts", ["p/v1#1", "p/v1#3"]],
+      ["sam", "reviewing", "@sam/inbox", null, ["p/v1#2"]],
+      ["mei", "sent", null, null, ["p/v1#4"]],
+    ],
+  );
+  // The rows keep that order within the stage.
+  assert.deepEqual(
+    branchRows(pipeline, "merge-rules").map((row) => [row.group.person, row.cells.join(" ")]),
+    [
+      ["jun", "tee"],
+      ["sam", "tee"],
+      ["mei", "elbow"],
+    ],
+  );
+});
+
+test("the feature's open edit tasks join their person's branch at the stage they serve", () => {
+  const pipeline: Pick<FeaturePipeline, "path" | "stages" | "branches"> = {
+    path: "plan",
+    stages: stages("open", "plan", "review", "fixes", "checks", "promoted").map((stage) => (stage.key === "review" ? { ...stage, jobs: [partJob(1, "jun", "waiting")] } : stage)),
+    branches: [partBranch(1, "jun", "sent")],
+  };
+  const tasks = [
+    task(1, { state: "asked", askReason: "needs_session" }),
+    task(2, { kind: "fix", target: "retention-dashboard", handle: "@jun/retention-dashboard", via: "builder", state: "running", scopes: [] }),
+    task(3, { kind: "next_step", handle: "@sam/steward", person: "sam", state: "queued", scopes: [], files: ["a.py", "b.py"] }),
+    task(4, { state: "done" }),
+    // Another feature's task in this fork shows on that feature's timeline.
+    task(5, { feature: "other", target: "merge-rules" }),
+  ];
+  const rows = branchRows(pipeline, "merge-rules", tasks);
+  assert.deepEqual(
+    rows.map((row) => [row.group.stage, row.group.person, row.group.label, row.group.agent, groupCount(row.group), row.group.items.map((item) => item.label)]),
+    [
+      ["checks", "sam", "queued", "@sam/steward", null, ["queued"]],
+      ["fixes", "jun", "running", "@jun/retention-dashboard", null, ["running"]],
+      ["review", "jun", "asked", null, "1 part 1 task", ["asked", "sent"]],
+    ],
+  );
+  // A builder's fix into its own fork names no place: the builder's name already names it.
+  assert.deepEqual(tasks.slice(0, 3).map(taskText), ["Review form analytics", "Fix", "Next step 2 files"]);
+  assert.equal(taskText(task(6, { kind: "fix", target: "retention-dashboard", scopes: [] })), "Fix retention-dashboard");
+  // A steward's name says what it is; a builder's is its feature's, so the item adds `builder`.
+  assert.deepEqual(tasks.slice(0, 3).map(taskVia), [null, "builder", null]);
+  assert.equal(taskVia(task(7, { handle: null, via: "person", state: "asked" })), null);
+  // A split's tasks serve Migrate, except a contract step, which serves Contract.
+  assert.equal(taskStage("split", "review"), "migrate");
+  assert.equal(taskStage("split", "contract"), "contract");
+  assert.equal(taskText(task(8, { kind: "contract", scopes: ["money"] })), "Contract step money");
+});
+
+test("a steward's queue reads as bare counts against the cap", () => {
+  assert.deepEqual(queueCounts({ running: 1, queued: 0, asked: 2, cap: 2 }).map((count) => count.text), ["1 of 2 running", "2 asked"]);
+  assert.deepEqual(queueCounts({ running: 0, queued: 3, asked: 0, cap: 2 }).map((count) => count.text), ["0 of 2 running", "3 queued"]);
 });
 
 test("a hunk numbers context and removed lines on the old side and context and added lines on the new", () => {

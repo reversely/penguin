@@ -1,6 +1,7 @@
 // The team view (the dashboard's home, PRD section 10): one square per person, edged in the person's
 // hue (assignPersonHues in character.ts). Each square states the person's role in the scope map (the
-// scopes they own, the scopes that read theirs and the scopes theirs read), then each of their
+// scopes they own, the scopes that read theirs, the scopes theirs read and their steward with its
+// queue of edit tasks), then each of their
 // features with its one-word state and its agents, then their agents on no feature. Only exceptions
 // are highlighted: a feature with an exception PRD section 7 routes to a person carries it in the
 // attention colour. A feature opens its page; a person opens their view, which adds the issues that
@@ -24,8 +25,9 @@ import { STATE_LABEL } from "./issue-view.ts";
 import { linkHandler } from "./links.ts";
 import { useArrivals } from "./motion.tsx";
 import { featurePath, personPath } from "./routes.ts";
+import { queueCounts } from "./pipeline-view.ts";
 import { StageStrip } from "./timeline.tsx";
-import { INVOLVEMENT_LABEL, personIssues, teamPeople, type PersonIssue } from "./team-view.ts";
+import { idleAgents, INVOLVEMENT_LABEL, personIssues, teamPeople, type PersonIssue } from "./team-view.ts";
 import type { Live } from "./use-live.ts";
 
 /** The team view, the board and the identities as the shell reads them. */
@@ -110,6 +112,7 @@ export function TeamMapView({ view, navigate }: { readonly view: TeamView; reado
 function PersonSquare({ person, navigate }: { readonly person: TeamPerson; readonly navigate: (path: string) => void }) {
   const path = personPath(person.id);
   const hue = usePersonHue(person.id);
+  const idle = idleAgents(person);
   return (
     <li className={`person-square person-${hue}`} data-exception={person.features.some((feature) => feature.exceptions.length > 0) ? true : undefined}>
       <h2 className="person-square-head">
@@ -119,11 +122,11 @@ function PersonSquare({ person, navigate }: { readonly person: TeamPerson; reado
           <Icon name="chevron" />
         </a>
       </h2>
-      <Role person={person} />
+      <Role person={person} navigate={navigate} />
       <FeatureList owner={person.id} features={person.features} navigate={navigate} />
-      {person.idleAgents.length === 0 ? null : (
+      {idle.length === 0 ? null : (
         <ul className="agent-list" aria-label={`${person.id}'s agents on no feature`}>
-          {person.idleAgents.map((agent) => (
+          {idle.map((agent) => (
             <li key={agent.handle}>
               <Agent handle={agent.handle} person={agent.person} variant="compact" navigate={navigate} />
             </li>
@@ -134,9 +137,13 @@ function PersonSquare({ person, navigate }: { readonly person: TeamPerson; reado
   );
 }
 
-/** The person's role as rows of scope names; a row with nothing to name is left out, except Owns. */
-function Role({ person }: { readonly person: TeamPerson }) {
+/**
+ * The person's role as rows of scope names; a row with nothing to name is left out, except Owns. The
+ * last row is the person's steward, which takes the edits to the scopes they own, with its queue.
+ */
+function Role({ person, navigate }: { readonly person: TeamPerson; readonly navigate: (path: string) => void }) {
   const { scopes, dependents, dependencies } = person.role;
+  const steward = person.steward ?? null;
   const rows = [
     { label: "Owns", scopes, others: false },
     { label: "Read by", scopes: dependents, others: true },
@@ -161,6 +168,21 @@ function Role({ person }: { readonly person: TeamPerson }) {
           </dd>
         </div>
       ))}
+      {steward === null ? null : (
+        <div className="role-row steward-row">
+          <dt>Steward</dt>
+          <dd className="steward">
+            <Agent handle={steward.handle} person={person.id} variant="compact" navigate={navigate} />
+            <span className="steward-queue">
+              {queueCounts(steward).map((count) => (
+                <span key={count.key} className="steward-count" data-key={count.key}>
+                  {count.text}
+                </span>
+              ))}
+            </span>
+          </dd>
+        </div>
+      )}
     </dl>
   );
 }
@@ -236,6 +258,7 @@ export function PersonView({ view, board, person, navigate }: PersonProps) {
       </div>
     );
   }
+  const idle = idleAgents(found);
   return (
     <article className="team person-view" aria-labelledby="person-heading">
       {back}
@@ -247,7 +270,7 @@ export function PersonView({ view, board, person, navigate }: PersonProps) {
         <h2 id="person-role" className="team-section-heading">
           Role
         </h2>
-        <Role person={found} />
+        <Role person={found} navigate={navigate} />
       </section>
       <section className={`team-section person-${hue}`} aria-labelledby="person-features">
         <h2 id="person-features" className="team-section-heading">
@@ -255,13 +278,13 @@ export function PersonView({ view, board, person, navigate }: PersonProps) {
         </h2>
         <FeatureList owner={person} features={found.features} navigate={navigate} />
       </section>
-      {found.idleAgents.length === 0 ? null : (
+      {idle.length === 0 ? null : (
         <section className="team-section" aria-labelledby="person-agents">
           <h2 id="person-agents" className="team-section-heading">
-            Agents on no feature <span className="tab-count">{found.idleAgents.length}</span>
+            Agents on no feature <span className="tab-count">{idle.length}</span>
           </h2>
           <ul className="agent-list">
-            {found.idleAgents.map((agent) => (
+            {idle.map((agent) => (
               <li key={agent.handle}>
                 <Agent handle={agent.handle} person={agent.person} navigate={navigate} />
               </li>
