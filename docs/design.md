@@ -511,7 +511,8 @@ Penguin proposes the migrate step's plans itself (`services/project-agent/src/mi
   or the plan's block feature for code on main. Its grant names the migration plan; the commit is
   checked exactly as a mechanical fix's is, with a token minted on that one fork, the same scope a
   mechanical fix's write has. A fork whose head no longer takes the patch makes the part an edit
-  task. A `migration` edit task's kept commit writes its part. Either is a signed
+  task. A `migration` edit task's kept commit writes its part. Both writes take turns with every
+  other write into the same fork ([Step 4 in the build](#step-4-in-the-build)). Either is a signed
   `migration_part_written` record. An edit task whose run failed, timed out or stopped reporting
   sends its part to a person under a signed `migration_part_decided` record: the only way a
   rule-written part whose trial failed reaches one.
@@ -776,13 +777,28 @@ that also fails another check stays with its author. Its stored data reason is l
   the fix written there and the failure. The write is withdrawn. Each decision is a signed
   `plan_part_retrial` record with the part, the head, the earlier part written there and the trial.
   A contended part costs one extra trial per write that moved its fork.
+- **Migration writes.** An approved rule-written migration part's write is a runner write in the same
+  order. After another write moves its fork, its part's trial runs again on the new head
+  (`MigrationWrites.retry`, `services/project-agent/src/migration-plans.ts`): the same formless trial
+  with that head as its target. A trial that fails withdraws the write and makes the part a
+  `migration` edit task, as a head that no longer takes the patch does.
+- **Migration edit tasks.** A `migration` edit task's run commits its own change into the fork, so it
+  takes a place in the same order. Its place opens at the first bridge claim that reaches it, keyed
+  `task:<task id>`. The claim takes the task only on its fork's turn and holds the fork for the run's
+  lease (`PENGUIN_EDIT_RUN_MINUTES`). A task waiting for its turn stays queued. Its view names why
+  (`editTasks[].waitsFor`). The run's kept commit is its write: every other write waiting on that
+  fork is tried again on the new head. A run that fails, a task a session takes or a dropped task gives
+  up its place. A task back in the queue keeps it. The run itself is not tried again: it changes the
+  head it checks out once its turn comes.
 - **The block check.** A block run names each target fork's head when it is asked. A fix written into
   a target after that time means the run checked a head without it. A passing run then does not move
   main: Penguin signs `promotion_refused` naming the fixes and checks the block again on the new heads
   (`fixesWrittenSince` on the ProjectAgent, read by the FeatureAgent before the promotion slot).
 - **The timelines.** A write waiting for its turn hangs as a `waiting` branch at Fixes written on the
-  originating feature's timeline. On the target feature's timeline it hangs at the current stage under
-  the originating feature's person. The feature page names why the write waits (`fixes[].write.waitsFor`).
+  originating feature's timeline. A migration edit task waiting for its turn is tagged `waiting` on the
+  timeline of the feature that raised it. On the target feature's timeline every waiting write hangs at
+  the current stage under the originating feature's person. The feature page names why the write waits
+  (`fixes[].write.waitsFor`).
 
 ### Edit tasks and who runs them
 

@@ -844,7 +844,7 @@ export class PreviewProject {
       contract: (feature) => contractWork(this.splitDeps(), feature, this.scopeMap),
       protectedChanges: (featureId) => this.protectedChanges.ofFeature(featureId),
       split: (featureId) => this.splits.get(featureId),
-      editTasks: (featureId) => this.editTasks.forFeature(featureId).map(editTaskView),
+      editTasks: (featureId) => this.editTasks.forFeature(featureId).map((task) => editTaskView(task)),
       steward: (person) => this.stewardView(person),
       scopeEdges: () => this.scopeEdges.snapshot(),
     };

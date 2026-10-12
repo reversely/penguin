@@ -52,7 +52,7 @@ import { answerers, routeScope, scopeForPath, type ScopeMap } from "@penguin/sco
 import type { EditRoster } from "./edit-roster.ts";
 import type { EditReportOutcome, EditSource, EditTask, EditTaskStore, SessionFor } from "./edit-tasks.ts";
 import type { FeatureStore } from "./feature-store.ts";
-import { taskFixGrant, taskFixReport, withdrawMovedOn, type FixGrantStore, type FixWriteDeps } from "./fix-write.ts";
+import { taskFixGrant, taskFixReport, taskWriteKey, withdrawMovedOn, type FixGrant, type FixGrantStore, type FixWriteDeps } from "./fix-write.ts";
 import type { IssuedTaskToken } from "./mcp-tokens.ts";
 import { RUNNING_STATES } from "./overlap-lock.ts";
 import type { PartRoute, PlanRouteStore } from "./plan-approval.ts";
@@ -364,13 +364,15 @@ export async function claimEditTasks(deps: EditWorkDeps, person: string, bridgeI
   const scopeMap = await deps.scopeMap();
   // Without task tokens a review cannot run headless, so the claim leaves reviews to sessions.
   const headless = deps.taskTokens === undefined ? (task: Pick<EditTask, "kind">) => task.kind !== "review" : () => true;
-  // The fork order is read from the table below, so writes whose part moved on leave it first.
+  // The fork order is read from the table below, so writes whose part or task moved on leave it first.
+  settleTaskWrites(deps);
   const open = deps.grants.allOpen();
   if (open.length > 0) await withdrawMovedOn(deps.fix, open);
   // A fork whose start waits on an overlap lock gets no write token yet, so its edits wait in the queue.
-  // A fix whose write waits for its fork's turn (fix-write.ts) stays queued and takes no run.
+  // A fix or migration edit whose write waits for its fork's turn (fix-write.ts) stays queued and takes
+  // no run; a migration edit asking for the first time takes its place in the order here.
   const claimable = (task: EditTask) =>
-    headless(task) && (task.kind === "review" || deps.fix.locked?.(task.target) !== true) && !(task.kind === "fix" && fixWaits(deps, task));
+    headless(task) && (task.kind === "review" || deps.fix.locked?.(task.target) !== true) && writeWaitsFor(deps.grants, task, true) === null;
   const claimed = deps.tasks.claim(person, bridgeId, deps.cap, deps.leaseMs, sessionFor(deps), claimable);
   const specs: EditTaskSpec[] = [];
   const mcp: Record<number, IssuedTaskToken> = {};
@@ -390,6 +392,16 @@ export async function claimEditTasks(deps: EditWorkDeps, person: string, bridgeI
       }
       fixWrite = granted.spec;
     }
+    if (task.kind === "migration") {
+      // The run commits into the fork: it holds the fork's turn for its claim, unless another task of
+      // this same claim took the fork first.
+      const write = taskWrite(deps.grants, task, false) as FixGrant;
+      if (deps.grants.waitsFor(write) !== null) {
+        deps.tasks.unclaim(task.id);
+        continue;
+      }
+      deps.grants.hold(write.id, bridgeId, task.leaseUntil as number);
+    }
     let review: EditTaskSpec["review"] = null;
     if (task.kind === "review") {
       if (deps.taskTokens !== undefined) mcp[task.id] = await deps.taskTokens.issueTask(person, task.id, task.leaseUntil as number);
@@ -403,11 +415,47 @@ export async function claimEditTasks(deps: EditWorkDeps, person: string, bridgeI
 
 const fixPart = (task: EditTask) => ({ feature: task.feature, part: task.ref["part"], revision: task.ref["revision"] });
 
-/** Whether a fix task's write waits for its fork's turn, as the grant table stands. */
-function fixWaits(deps: EditWorkDeps, task: EditTask): boolean {
-  const { part, revision } = task.ref;
-  const grant = typeof part === "string" && typeof revision === "number" ? deps.grants.get(part, revision) : undefined;
-  return grant !== undefined && (grant.state === "queued" || grant.state === "granted") && deps.grants.waitsFor(grant) !== null;
+/**
+ * The write in its fork's order that an edit task makes: a fix task's approved part, or a migration
+ * task's own run (`task:<id>`), which `open` places in the order when it is not there yet. Undefined
+ * for a task that writes no fork through the order.
+ */
+function taskWrite(grants: FixGrantStore, task: EditTask, open: boolean): FixGrant | undefined {
+  if (task.kind === "fix") {
+    const { part, revision } = task.ref;
+    return typeof part === "string" && typeof revision === "number" ? grants.get(part, revision) : undefined;
+  }
+  if (task.kind !== "migration") return undefined;
+  const key = { partId: taskWriteKey(task.id), revision: 1 };
+  return open ? grants.open(task.feature, String(task.ref["plan"] ?? task.feature), key, task.target, "task") : grants.get(key.partId, key.revision);
+}
+
+/** Why an edit task's write waits for its fork's turn, as the grant table stands, or null. */
+export function writeWaitsFor(grants: FixGrantStore, task: EditTask, open = false): string | null {
+  const grant = taskWrite(grants, task, open);
+  if (grant === undefined || (grant.state !== "queued" && grant.state !== "granted")) return null;
+  return grants.waitsFor(grant);
+}
+
+/** Ask reasons under which a task still waits for a run, so its write keeps its place in the order. */
+const STILL_WAITING: ReadonlySet<string> = new Set(["bridge_offline", "needs_session"]);
+
+/**
+ * Keeps each migration task's write in step with its task: a task that is done elsewhere, dropped,
+ * taken by a session or asked after a failed run gives up its place; one back in the queue keeps its
+ * place without a token.
+ */
+function settleTaskWrites(deps: EditWorkDeps): void {
+  for (const grant of deps.grants.allOpen()) {
+    if (grant.writer !== "task") continue;
+    const task = deps.tasks.get(Number(grant.partId.slice("task:".length)));
+    if (task?.state === "running") continue;
+    if (task === undefined || task.state === "done" || task.state === "dropped" || task.state === "delivered" || (task.state === "asked" && !STILL_WAITING.has(task.askReason ?? ""))) {
+      deps.grants.withdraw(grant.id);
+    } else {
+      deps.grants.requeue(grant.id);
+    }
+  }
 }
 
 /** The paths a task's change may touch: its files and the paths of its scopes. */
@@ -475,9 +523,25 @@ export async function reportEditTask(deps: EditWorkDeps, person: string, bridgeI
   const outcome = deps.tasks.report(bridgeId, taskId, report);
   if (outcome.status === "ok") {
     if (outcome.task.state === "done") deps.tasks.close(outcome.task.sourceKey, "done", outcome.task.outcome ?? "done", outcome.task.commit);
+    await taskWriteReported(deps, outcome.task);
     deps.notify(person);
   }
   return outcome;
+}
+
+/**
+ * A migration task's run reported: a kept commit is its write into the fork, so every other write
+ * waiting there is tried again on the new head (fix-retrial.ts); any other end gives up its place.
+ */
+async function taskWriteReported(deps: EditWorkDeps, task: EditTask): Promise<void> {
+  const write = taskWrite(deps.grants, task, false);
+  if (write === undefined || (write.state !== "queued" && write.state !== "granted")) return;
+  if (task.state !== "done" || task.commit === null) {
+    deps.grants.withdraw(write.id);
+    return;
+  }
+  deps.grants.written(write.id, task.commit, `edit-task:${task.id}`);
+  await deps.fix.written?.(write, task.commit);
 }
 
 /**
@@ -531,8 +595,9 @@ async function commitProblem(deps: EditWorkDeps, task: EditTask, commit: unknown
 }
 
 /** One task as the feature view and get_work show it. */
-export function editTaskView(task: EditTask): EditTaskView {
+export function editTaskView(task: EditTask, waitsFor: string | null = null): EditTaskView {
   return {
+    waitsFor,
     id: task.id,
     kind: task.kind,
     feature: task.feature,

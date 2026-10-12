@@ -35,8 +35,9 @@ import { recordToolResult } from "../src/agent-tool-runner.ts";
 import { AgentToolStore } from "../src/agent-tools.ts";
 import { EditRoster } from "../src/edit-roster.ts";
 import { EditTaskStore } from "../src/edit-tasks.ts";
-import { editRouting } from "../src/edit-work.ts";
-import { claimRunnerWrites, FixGrantStore, runnerFixReport, type FixWriteDeps } from "../src/fix-write.ts";
+import { claimEditTasks, editRouting, reportEditTask, writeWaitsFor, type EditWorkDeps } from "../src/edit-work.ts";
+import { retrialReported, retryWaitingWrites } from "../src/fix-retrial.ts";
+import { claimRunnerWrites, FixGrantStore, runnerFixReport, taskWriteKey, type FixWriteDeps } from "../src/fix-write.ts";
 import { IdentityStore } from "../src/identity-store.ts";
 import {
   carryContract,
@@ -413,6 +414,119 @@ describe("migration plans of a split, one per owner group", () => {
     assert.equal(store.plan("migrate:money-minor:tomas:1")?.state, "approved");
     await migrationBlockLanded(deps, "migrate-tomas-money-minor", sha(2));
     assert.deepEqual([store.plan("migrate:money-minor:tomas:1")?.state, store.part(part.partId)?.state], ["landed", "landed"]);
+  });
+
+  // #142: migration writes take turns with every other write into the same fork.
+
+  /** `writeDeps` with the ProjectAgent's hook: a kept write asks each waiting write's trial on the new head. */
+  const turnDeps = (repo: GitRepo): FixWriteDeps => {
+    const wired: FixWriteDeps = {
+      ...writeDeps(repo),
+      written: async (grant, commit) => {
+        await retryWaitingWrites({ ...wired, queueTrial: () => null }, grant, commit);
+      },
+    };
+    return wired;
+  };
+  const editDeps = (repo: GitRepo): EditWorkDeps => ({
+    tasks,
+    roster,
+    features: project.features,
+    routes: new PlanRouteStore(project.sql),
+    grants,
+    reviews: () => [],
+    scopeMap: async () => scopeMapNow,
+    running: () => [],
+    fix: turnDeps(repo),
+    cap: 2,
+    leaseMs: 60_000,
+    notify: () => undefined,
+  });
+  /** A migration edit task in Bea's fees fork from Bea's fee split, routed to the fees builder. */
+  const feeTask = async (key: string) => {
+    const [task] = await deps.openTask(
+      {
+        key,
+        kind: "migration",
+        feature: "fee-minor",
+        target: "fees",
+        targetPerson: "bea",
+        places: [{ path: "billing/fees.py", scope: "billing" }],
+        instructions: "Move fees.py off fee().",
+        verifier: "The retiring-calls check.",
+        ref: { plan: "migrate:fee-minor:bea:1", part: key },
+      },
+      (context) => context,
+    );
+    assert.ok(task);
+    return task;
+  };
+  const claimRunner = async (fix: FixWriteDeps) => {
+    const claim = await claimRunnerWrites(fix, RUNNER);
+    assert.ok(claim.status === "ok");
+    return claim.writes;
+  };
+
+  /** Bea's fee task holds the fork; the approved money part's write waits; the task's commit moves the fork. Answers the re-trial. */
+  async function contended(repo: GitRepo) {
+    const head = repo.commit({ "billing/fees.py": "x = api.price(a * b)\ny = api.fee(c)\n" }, "Bea's fees checkpoint");
+    const trial = await rewritten(head, "--- a/billing/fees.py\n+++ b/billing/fees.py\n@@ -1,2 +1,2 @@\n-x = api.price(a * b)\n+x = a.times(b)\n y = api.fee(c)\n");
+    const task = await feeTask("migrate:fee-part");
+    const claimed = await claimEditTasks(editDeps(repo), "bea", "br_bea");
+    assert.deepEqual(claimed.status === "ok" ? claimed.tasks.map((each) => each.taskId) : null, [task.id]);
+    assert.equal(await decide(trial, "passed"), "approved");
+    // The task's run holds the fork: the runner's migration write waits for its turn.
+    const fix = turnDeps(repo);
+    assert.deepEqual(await claimRunner(fix), []);
+    const write = grants.get(trial.partId, 1);
+    assert.match(grants.waitsFor(write!) ?? "", new RegExp(`the run of edit task ${task.id} holds feature fees's fork`, "u"));
+    // The run commits its change; Penguin keeps it and asks the waiting write's trial on the new head.
+    const moved = repo.commit({ "billing/rates.py": "RATE = 2\n" }, "fee-minor");
+    const reported = await reportEditTask(editDeps(repo), "bea", "br_bea", task.id, { status: "done", outcome: "moved fees.py off fee()", commit: moved });
+    assert.equal(reported.status, "ok", JSON.stringify(reported));
+    assert.equal(grants.get(taskWriteKey(task.id), 1)?.state, "written");
+    const retrial = trials.ofPart("migrate-bea-money-minor", trial.partId);
+    assert.ok(retrial);
+    assert.deepEqual([retrial.state, retrial.request.target], ["pending", { id: "fees", repo: "feature-fees", sha: moved }]);
+    assert.deepEqual(await claimRunner(fix), []);
+    return { trial, retrial, moved, fix };
+  }
+
+  test("a migration write waits while an edit task's run holds the fork, is tried again on the head the run left, then is written on top", async () => {
+    const repo = new GitRepo();
+    const { retrial, moved, fix } = await contended(repo);
+    trials.record(retrial.id, trialReport(retrial, "passed"));
+    assert.equal(await retrialReported(fix, trials.get(retrial.id) as StoredPartTrial), "passed");
+    const [write] = await claimRunner(fix);
+    assert.deepEqual([write?.spec.parent, write?.spec.rebased], [moved, true]);
+    assert.deepEqual(records("money-minor", "plan_part_retrial").map((each) => [each.payload["result"], each.payload["fork_head"]]), [["passed", moved]]);
+  });
+
+  test("a migration write whose trial on the new head fails goes back as an edit task", async () => {
+    const repo = new GitRepo();
+    const { trial, retrial, moved, fix } = await contended(repo);
+    trials.record(retrial.id, trialReport(retrial, "failed"));
+    assert.equal(await retrialReported(fix, trials.get(retrial.id) as StoredPartTrial), "returned");
+    assert.equal(store.part(trial.partId)?.state, "task");
+    assert.match(store.part(trial.partId)?.reason ?? "", /The part.s trial on that head failed: test:billing failed/u);
+    assert.deepEqual(tasks.forSource(`migrate:${trial.partId}`).map((task) => [task.kind, task.target]), [["migration", "fees"]]);
+    assert.equal(grants.get(trial.partId, 1)?.state, "withdrawn");
+    assert.deepEqual(records("money-minor", "plan_part_retrial").map((each) => [each.payload["result"], each.payload["fork_head"]]), [["returned", moved]]);
+    assert.deepEqual(await claimRunner(fix), []);
+  });
+
+  test("a second migration edit task into the same fork waits for the first run's turn to end", async () => {
+    const repo = new GitRepo();
+    repo.commit({ "billing/fees.py": "y = api.fee(c)\n" }, "Bea's fees checkpoint");
+    const first = await feeTask("migrate:fee-a");
+    const second = await feeTask("migrate:fee-b");
+    const claimed = await claimEditTasks(editDeps(repo), "bea", "br_bea");
+    assert.deepEqual(claimed.status === "ok" ? claimed.tasks.map((each) => each.taskId) : null, [first.id]);
+    assert.match(writeWaitsFor(grants, tasks.get(second.id)!) ?? "", new RegExp(`the run of edit task ${first.id} holds feature fees's fork`, "u"));
+    const moved = repo.commit({ "billing/fees.py": "y = api.fee_minor(c)\n" }, "fee-minor");
+    assert.equal((await reportEditTask(editDeps(repo), "bea", "br_bea", first.id, { status: "done", outcome: "moved fees.py", commit: moved })).status, "ok");
+    const next = await claimEditTasks(editDeps(repo), "bea", "br_bea");
+    assert.deepEqual(next.status === "ok" ? next.tasks.map((each) => each.taskId) : null, [second.id]);
   });
 
   test("a feature Penguin opens goes through the overlap lock, and the runner writes nothing into it until the lock is approved", async () => {

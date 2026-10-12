@@ -27,6 +27,8 @@
 //   granted only when no other write into that fork holds a token, no write approved earlier still
 //   waits there, and, after another write landed in the fork, the part's trial on the new head passed
 //   (fix-retrial.ts). Anything else is refused as `waiting` with what it waits for; no token is minted.
+//   A migration edit task's run into a fork takes a place in the same order (`task` writes,
+//   edit-work.ts): its claim waits while another write holds the fork.
 // - The record. The writer reports the commit. Penguin reads it through the Artifacts binding and keeps
 //   it only when its one parent is the granted head, its message is the one built from the part's
 //   validated fields (fixCommitMessage), it changes exactly the patch's files and each file is the
@@ -107,6 +109,15 @@ const GRANT_COLUMNS: readonly (readonly [string, string])[] = [
 const OPEN_STATES = "('queued', 'granted')";
 
 /**
+ * Who makes a write: the originating agent or a fix task's holder (`agent`), the check runner
+ * (`runner`), or a migration edit task's run (`task`, keyed `task:<id>`), which commits its own change.
+ */
+export type GrantWriter = FixWriter | "task";
+
+/** The part id a migration edit task's write is kept under. */
+export const taskWriteKey = (taskId: number): string => `task:${taskId}`;
+
+/**
  * Where one revision's write stands. `queued`: a mechanical part waits for the runner to claim it.
  * `granted`: a writer holds a token and Penguin waits for its commit. `written`: the commit is kept.
  * `withdrawn`: the part moved on before it was written (a new revision, a decision or a moved head).
@@ -120,7 +131,7 @@ export interface FixGrant {
   readonly partId: string;
   readonly revision: number;
   readonly targetFeatureId: string;
-  readonly writer: FixWriter;
+  readonly writer: GrantWriter;
   readonly state: FixGrantState;
   readonly parent: string | null;
   readonly rebased: boolean;
@@ -140,6 +151,11 @@ export interface FixGrant {
   readonly trialledHead: string | null;
 }
 
+/** A write as a waiting message names it. */
+function writeName(grant: FixGrant): string {
+  return grant.writer === "task" ? `the run of edit task ${grant.partId.slice("task:".length)}` : `the write of part ${grant.partId} revision ${grant.revision}`;
+}
+
 function grantOf(row: Row): FixGrant {
   const nullable = (key: string) => (row[key] === null ? null : (row[key] as string));
   const number = (key: string) => (row[key] === null ? null : Number(row[key]));
@@ -150,7 +166,7 @@ function grantOf(row: Row): FixGrant {
     partId: row["part_id"] as string,
     revision: Number(row["revision"]),
     targetFeatureId: row["target_feature_id"] as string,
-    writer: row["writer"] as FixWriter,
+    writer: row["writer"] as GrantWriter,
     state: row["state"] as FixGrantState,
     parent: nullable("parent"),
     rebased: Number(row["rebased"]) === 1,
@@ -183,7 +199,7 @@ export class FixGrantStore {
   }
 
   /** The write of one revision of a part, made `queued` for `writer` when there is none yet. */
-  open(featureId: string, planId: string, part: Pick<PlanPart, "partId" | "revision">, target: string, writer: FixWriter): FixGrant {
+  open(featureId: string, planId: string, part: Pick<PlanPart, "partId" | "revision">, target: string, writer: GrantWriter): FixGrant {
     this.#db.exec(
       `INSERT OR IGNORE INTO FixWriteGrant (feature_id, plan_id, part_id, revision, target_feature_id, writer, state, created_at)
        VALUES (?, ?, ?, ?, ?, ?, 'queued', ?)`,
@@ -214,6 +230,22 @@ export class FixGrantStore {
       `UPDATE FixWriteGrant SET state = 'granted', parent = ?, rebased = ?, claimed_by = ?, lease_until = ?, granted_at = ? WHERE id = ?`,
       parent,
       rebased ? 1 : 0,
+      claimedBy,
+      leaseUntil,
+      this.#now(),
+      id,
+    );
+  }
+
+  /** Puts open write `id` back in its place in the fork's order, holding no token. */
+  requeue(id: number): void {
+    this.#db.exec(`UPDATE FixWriteGrant SET state = 'queued', claimed_by = NULL, lease_until = NULL WHERE id = ? AND state = 'granted'`, id);
+  }
+
+  /** A migration edit task's run holds the fork for its claim, until `leaseUntil`. */
+  hold(id: number, claimedBy: string, leaseUntil: number): void {
+    this.#db.exec(
+      `UPDATE FixWriteGrant SET state = 'granted', claimed_by = ?, lease_until = ?, granted_at = ? WHERE id = ? AND state IN ${OPEN_STATES}`,
       claimedBy,
       leaseUntil,
       this.#now(),
@@ -262,9 +294,9 @@ export class FixGrantStore {
     for (const other of this.openOn(grant.targetFeatureId)) {
       if (other.id === grant.id) continue;
       if (other.state === "granted" && (other.leaseUntil === null || other.leaseUntil > now)) {
-        return `the write of part ${other.partId} revision ${other.revision} holds feature ${grant.targetFeatureId}'s fork`;
+        return `${writeName(other)} holds feature ${grant.targetFeatureId}'s fork`;
       }
-      if (other.id < grant.id) return `part ${other.partId} revision ${other.revision} was approved earlier and is written into feature ${grant.targetFeatureId}'s fork first`;
+      if (other.id < grant.id) return `${writeName(other)} came first and is written into feature ${grant.targetFeatureId}'s fork before it`;
     }
     if (grant.retrialHead !== null && grant.trialledHead !== grant.retrialHead) {
       return `the part is tried again on feature ${grant.targetFeatureId}'s fork head ${grant.retrialHead}, which another plan's fix moved`;
@@ -367,6 +399,8 @@ export interface MigrationWrites {
   headMoved(partId: string, head: string, problem: string): Promise<void>;
   /** The runner's commit was kept: the part is written. */
   written(partId: string, commit: string, recordId: string): Promise<void>;
+  /** Asks the part's trial on `head`, the fork head another write left; answers the trial's id, or null. */
+  retry?(partId: string, head: string): Promise<number | null>;
 }
 
 export type FixRejectReason = FeatureRejectReason | "not_approved" | "head_moved" | "waiting";
@@ -461,7 +495,7 @@ export async function approvedPart(deps: FixWriteDeps, input: FixPartInput): Pro
 }
 
 /** The approved write a grant names: a migration part's, or a plan part's current revision. */
-async function grantedWrite(deps: FixWriteDeps, grant: FixGrant): Promise<ApprovedWrite | FixRejection> {
+export async function grantedWrite(deps: FixWriteDeps, grant: FixGrant): Promise<ApprovedWrite | FixRejection> {
   if (!isMigrationPlanId(grant.planId)) return approvedPart(deps, { feature: grant.featureId, part: grant.partId, revision: grant.revision });
   if (deps.migration === undefined) return rejected("not_found", `part ${grant.partId} of migration plan ${grant.planId} is not known here`);
   return deps.migration.approved(grant.partId);
@@ -584,7 +618,8 @@ async function prepare(
     partId: part.partId,
     revision: part.revision,
     kind: part.kind,
-    writer: grant.writer,
+    // A task write never reaches here: its run commits its own change.
+    writer: grant.writer as FixWriter,
     target: target.id,
     fork: `feature-${target.id}`,
     branch: FIX_WRITE_BRANCH,
@@ -681,6 +716,8 @@ async function forkTurn(deps: FixWriteDeps, grant: FixGrant): Promise<string | n
  */
 export async function withdrawMovedOn(deps: FixWriteDeps, grants: readonly FixGrant[] = deps.grants.allOpen()): Promise<void> {
   for (const other of grants) {
+    // A migration edit task's write follows its task (edit-work.ts), not a plan.
+    if (other.writer === "task") continue;
     if (isRejection(await grantedWrite(deps, other))) deps.grants.withdraw(other.id);
   }
 }

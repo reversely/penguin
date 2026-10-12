@@ -19,6 +19,9 @@ import { fileURLToPath } from "node:url";
 import { migrationPlaceKey, type MigrationPlanView, type RetiringSymbol, type RewriteRule } from "@penguin/protocol";
 import { parseScopeMap } from "@penguin/scope-map";
 
+import { claimEditTasks, type EditWorkDeps } from "../../../services/project-agent/src/edit-work.ts";
+import type { FixWriteDeps } from "../../../services/project-agent/src/fix-write.ts";
+import { migrationWrites } from "../../../services/project-agent/src/migration-plans.ts";
 import { buildFixture, PreviewProject } from "../../../scripts/preview/seed.ts";
 
 const ROOT = fileURLToPath(new URL("../../../", import.meta.url));
@@ -216,4 +219,51 @@ test("Noor's pagination adds callers midway and joins Noor's open plan", async (
   assert.equal(joined.length, 1);
   t.diagnostic(`pagination: ${part.uses} uses of ${part.contracts.join(", ")}; ${part.writer} ${part.state} (${part.reason})`);
   describePlans(t, "after pagination's second checkpoint");
+});
+
+test("each person's bridge claims the migration edits one run per fork, and every other write into that fork waits its turn (#142)", async (t: TestContext) => {
+  const migration = preview.migrationDeps();
+  const fix: FixWriteDeps = {
+    features: preview.features,
+    routes: preview.routes,
+    grants: preview.fixGrants,
+    keeper: () => preview.plans,
+    scopeMap: async () => preview.scopeMap,
+    // No claim here reads a fork: a migration edit commits its own change, and the runner's write is only counted.
+    readFork: () => Promise.reject(new Error("no fork is read")),
+    sign: migration.sign,
+    notify: () => undefined,
+    migration: migrationWrites(migration),
+  };
+  const deps: EditWorkDeps = {
+    tasks: preview.editTasks,
+    roster: preview.roster,
+    features: preview.features,
+    routes: preview.routes,
+    grants: preview.fixGrants,
+    reviews: (featureId) => preview.reviews.list(featureId),
+    scopeMap: async () => preview.scopeMap,
+    running: () => [],
+    fix,
+    cap: 2,
+    leaseMs: 20 * 60_000,
+    notify: () => undefined,
+  };
+  const parts = preview.migrations.plans(EXPAND.id).flatMap(live);
+  const people = [...new Set(parts.flatMap((part) => preview.editTasks.forSource(`migrate:${part.partId}`)).map((task) => task.person))].sort();
+  for (const person of people) await claimEditTasks(deps, person, `br_${person}`);
+
+  // Every write still to be made into a running fork or a block feature, by fork.
+  const open = preview.fixGrants.allOpen();
+  const forks = [...new Set(open.map((grant) => grant.targetFeatureId))].sort();
+  const turn = (grant: (typeof open)[number]) => (grant.state === "granted" ? "holds the fork" : preview.fixGrants.waitsFor(grant) === null ? "its turn" : "waits");
+  let contended = 0;
+  for (const fork of forks) {
+    const writes = open.filter((grant) => grant.targetFeatureId === fork);
+    // One write token per fork at a time.
+    assert.ok(writes.filter((grant) => grant.state === "granted").length <= 1, fork);
+    if (writes.some((grant) => turn(grant) === "waits")) contended += 1;
+    t.diagnostic(`${fork}: ${writes.map((grant) => `${grant.writer === "task" ? `edit ${grant.partId}` : `runner ${grant.partId}`} ${turn(grant)}`).join("; ")}`);
+  }
+  t.diagnostic(`${forks.length} forks take migration writes; ${open.filter((grant) => grant.state === "granted").length} hold a run; ${contended} have a write waiting its turn`);
 });

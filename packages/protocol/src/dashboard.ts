@@ -170,6 +170,8 @@ export interface EditTaskView {
   readonly commit: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
+  /** Why the task's write waits for its fork's turn: another write holds the fork or came first. Null or absent when it does not wait. */
+  readonly waitsFor?: string | null;
 }
 
 export interface TeamPerson {

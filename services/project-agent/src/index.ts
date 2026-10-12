@@ -151,6 +151,7 @@ import {
   claimEditTasks,
   deliverEditTasks,
   editTaskView,
+  writeWaitsFor,
   featureLandedTasks,
   holdsFixTask,
   openEditTask,
@@ -2100,13 +2101,11 @@ export class ProjectAgent extends Agent {
     ));
     if (outcome.status === "recorded") {
       const featureId = outcome.trial.featureId;
+      // A waiting write's trial on the head another write left decides its turn (fix-retrial.ts).
+      await this.#featuresChanging(this.#planStep(() => retrialReported(this.#fixWriteDeps(repos), outcome.trial)));
       // A migration part's trial is decided by its own plan (migration-plans.ts); any other by the feature's plan.
       if (isMigrationPlanId(outcome.trial.planId)) await this.#featuresChanging(this.#planStep(() => migrationTrialReported(this.#migrationDeps(repos), outcome.trial)));
-      else {
-        // A waiting write's trial on the head another fix left decides its turn (fix-retrial.ts).
-        await this.#featuresChanging(this.#planStep(() => retrialReported(this.#fixWriteDeps(repos), outcome.trial)));
-        await this.#featuresChanging(this.#planStep(() => approveCleanParts(this.#planApprovalDeps(repos), featureId)));
-      }
+      else await this.#featuresChanging(this.#planStep(() => approveCleanParts(this.#planApprovalDeps(repos), featureId)));
     }
     return outcome;
   }
@@ -2494,7 +2493,8 @@ export class ProjectAgent extends Agent {
     // Every task's state is brought up to date before a view shows it.
     await this.#syncEditWork(repos);
     return {
-      editTasks: (featureId) => this.#editTaskStore().forFeature(featureId).map(editTaskView),
+      // A task whose write waits for its fork's turn names why, for its waiting branch (fix-write.ts).
+      editTasks: (featureId) => this.#editTaskStore().forFeature(featureId).map((task) => editTaskView(task, writeWaitsFor(this.#fixGrantStore(), task))),
       steward: (person) => this.#stewardView(person),
       features: this.#featureStore(),
       overlaps: this.#overlapStore(),
@@ -2682,7 +2682,7 @@ export class ProjectAgent extends Agent {
   async editTaskWork(caller: string, sessionId: string, repos: ProjectRepos): Promise<{ readonly tasks: EditTaskView[]; readonly queue: EditQueue } | undefined> {
     if (this.sessionHeartbeat(caller, sessionId).status !== "ok") return undefined;
     await this.#syncEditWork(repos);
-    return { tasks: this.#editTaskStore().forSession(sessionId).map(editTaskView), queue: this.#editTaskStore().queue(caller, this.#backgroundRunCap()) };
+    return { tasks: this.#editTaskStore().forSession(sessionId).map((task) => editTaskView(task)), queue: this.#editTaskStore().queue(caller, this.#backgroundRunCap()) };
   }
 
   /**

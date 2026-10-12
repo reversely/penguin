@@ -278,7 +278,9 @@ export function branchGroups(pipeline: Pick<FeaturePipeline, "path" | "stages" |
   }
   for (const task of tasks) {
     if (task.feature !== feature || !isOpen(task.state)) continue;
-    add(taskStage(pipeline.path, task.kind), task.person, { key: `task:${task.id}`, agent: task.handle, label: TASK_LABEL[task.state], urgency: TASK_URGENCY[task.state], partId: null, noun: "task", task });
+    // A queued task whose write waits for its fork's turn is tagged waiting.
+    const waits = task.state === "queued" && task.waitsFor != null;
+    add(taskStage(pipeline.path, task.kind), task.person, { key: `task:${task.id}`, agent: task.handle, label: waits ? "waiting" : TASK_LABEL[task.state], urgency: TASK_URGENCY[task.state], partId: null, noun: "task", task });
   }
   // Array.prototype.sort is stable, so items and groups of one urgency keep the pipeline's order.
   return [...groups.entries()]

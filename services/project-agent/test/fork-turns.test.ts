@@ -102,7 +102,7 @@ describe("two plans writing into one fork", () => {
     await approve(DISPLAY, DISPLAY_TAX);
 
     // Approval order: money-minor's part goes first, and while its write holds the fork the second waits.
-    waits(await token(DISPLAY, DISPLAY_TAX, DISPLAY_SESSION), /money-minor\/v1#2 revision 1 was approved earlier/u);
+    waits(await token(DISPLAY, DISPLAY_TAX, DISPLAY_SESSION), /the write of part money-minor\/v1#2 revision 1 came first/u);
     const first = granted(await token("money-minor", TAX, SESSIONS.ines));
     waits(await token(DISPLAY, DISPLAY_TAX, DISPLAY_SESSION), /holds feature tax-rounding's fork/u);
     const minor = fx.pushToFork(first.parent, { "tax/rounding.py": TAX_FIXED }, first.message);

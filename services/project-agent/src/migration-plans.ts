@@ -78,6 +78,7 @@ import {
   type MigrationRewritePlace,
   type MigrationWriter,
   type PartRoutingReason,
+  type PartTrialTarget,
   type PlanPart,
   type PlanPlace,
   type RetiringDeclaration,
@@ -695,10 +696,11 @@ async function routeToTask(
  * count. It carries no form: a rule-written part needs none, so each of its scopes gets the
  * side-by-side run alone in the same trial.
  */
-function queueMigrationTrial(deps: MigrationDeps, plan: MigrationPlanView, part: MigrationPart): StoredPartTrial | undefined {
+function queueMigrationTrial(deps: MigrationDeps, plan: MigrationPlanView, part: MigrationPart, on?: PartTrialTarget): StoredPartTrial | undefined {
   if (part.patch === null || part.targetSha === null) return undefined;
   const target =
-    part.place.kind === "scope" ? { id: "main", repo: "base", sha: part.targetSha } : { id: part.place.feature, repo: `feature-${part.place.feature}`, sha: part.targetSha };
+    on ??
+    (part.place.kind === "scope" ? { id: "main", repo: "base", sha: part.targetSha } : { id: part.place.feature, repo: `feature-${part.place.feature}`, sha: part.targetSha });
   const scopes = [...part.scopes].sort();
   return deps.trials.queue(
     {
@@ -949,6 +951,14 @@ export function migrationWrites(deps: MigrationDeps): MigrationWrites {
       const plan = part === undefined ? undefined : deps.store.plan(part.planId);
       if (part === undefined || plan === undefined || part.state !== "approved") return;
       await markWritten(deps, plan, part, { by: "penguin", commit, fixWrite: recordId });
+    },
+    // Another write moved the target fork: the part's trial runs again on that head before its write.
+    retry: async (partId, head) => {
+      const part = deps.store.part(partId);
+      const plan = part === undefined ? undefined : deps.store.plan(part.planId);
+      if (part === undefined || plan === undefined || part.state !== "approved") return null;
+      const target = part.place.kind === "feature" ? part.place.feature : plan.block;
+      return queueMigrationTrial(deps, plan, part, { id: target, repo: `feature-${target}`, sha: head })?.id ?? null;
     },
   };
 }
