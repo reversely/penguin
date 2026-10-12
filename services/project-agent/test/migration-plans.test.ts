@@ -609,11 +609,44 @@ describe("migration plans of a split, one per owner group", () => {
     );
   });
 
+  test("a count of an earlier promotion reported after the place's block landed opens no plan for that place", async () => {
+    await counted(sha(1), { headUses: [lineUse("orders/report.py")] });
+    // Another block reaches main at sha(2) before Tomas's; its count waits on the runner.
+    const earlier = requestRetiringCount(count, "money-minor", sha(2));
+    assert.ok(earlier !== undefined);
+    // Tomas's block lands at sha(3) and Penguin asks for the count of that promotion.
+    await migrationBlockLanded(deps, "migrate-tomas-money-minor", sha(3));
+    const landing = requestRetiringCount(count, "migrate-tomas-money-minor", sha(3));
+    assert.ok(landing !== undefined && landing > earlier);
+    const report = async (runId: number, main: string, fields: Partial<ImpactReport>) => {
+      const recorded = recordToolResult(runs, RUNNER, runId, result(main, { impact: impact(main, fields) }));
+      assert.ok(recorded.status === "recorded");
+      await countReported(count, recorded.run);
+      return migrationsCounted(deps, recorded.run);
+    };
+    assert.deepEqual(await report(landing, sha(3), {}), []);
+    // The earlier count still sees orders/report.py as main held it at sha(2): Tomas gets no second plan.
+    assert.deepEqual(await report(earlier, sha(2), { headUses: [lineUse("orders/report.py")] }), []);
+    assert.deepEqual(store.plans("money-minor").map((plan) => [plan.planId, plan.state]), [["migrate:money-minor:tomas:1", "landed"]]);
+    assert.deepEqual(records("money-minor", "migration_proposed").map((each) => each.payload["plan"]), ["migrate:money-minor:tomas:1"]);
+    // A count after the landing that finds a caller there opens Tomas's next plan as before.
+    await counted(sha(4), { headUses: [lineUse("orders/report.py")] });
+    assert.deepEqual(store.plans("money-minor").map((plan) => [plan.planId, plan.state]), [
+      ["migrate:money-minor:tomas:1", "landed"],
+      ["migrate:money-minor:tomas:2", "open"],
+    ]);
+  });
+
   test("a place with no caller left at a complete count is dropped", async () => {
     await counted(sha(1), { headUses: [lineUse("orders/report.py")], forks: [fork("fees", [priceUse("billing/fees.py", "billing")], sha(1))] });
     await counted(sha(2), { forks: [fork("fees", [priceUse("billing/fees.py", "billing")], sha(2))] });
     const tomas = store.plans("money-minor").find((plan) => plan.owner === "tomas");
     assert.deepEqual(tomas?.parts.map((part) => part.state), ["dropped"]);
+    // With no live part left, Tomas's plan closes rather than staying open (#146).
+    assert.equal(tomas?.state, "closed");
+    assert.deepEqual(records("money-minor", "migration_closed").map((each) => [each.payload["plan"], each.payload["reason"]]), [
+      ["migrate:money-minor:tomas:1", "every part was dropped: no caller is left in any of its places, so the plan has nothing to write or promote"],
+    ]);
     // An incomplete count drops nothing.
     await counted(sha(3), { complete: false });
     assert.deepEqual(store.plans("money-minor").find((plan) => plan.owner === "bea")?.parts.map((part) => part.state), ["rewriting"]);

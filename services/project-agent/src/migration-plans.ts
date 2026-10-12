@@ -12,7 +12,10 @@
 // 2. **A later caller.** A place found later, at a later count or at a checkpoint's retiring-calls
 //    check (`migrationsChecked`), joins its owner's plan while that plan has not landed, under a
 //    signed `migration_joined` record. Once the owner's plan landed, the place opens the owner's next
-//    plan. A place whose callers are all gone at a complete count is dropped.
+//    plan. A count or check Penguin requested before that plan's landing promotion (its run id is
+//    lower than the landing's count) saw main or a fork from before the landed fix, so it neither opens
+//    nor joins a plan for the landed place. A place whose callers are all gone at a complete count is
+//    dropped, and a plan left with no live part closes.
 // 3. **Who writes a part.** A part whose contracts have declared rules waits for one rewrite request
 //    of Penguin's own per proposal round (`search: "rewrite"`): the check runner applies the rules to
 //    each such place's files in a throwaway worktree, keeps the patch and counts the uses the patched
@@ -467,9 +470,13 @@ async function syncGroup(
 ): Promise<string | null> {
   let plan = deps.store.openPlan(origin, group.owner);
   const known = new Map((plan?.parts ?? []).map((part) => [migrationPlaceKey(part.place), part]));
+  const landedAt = landingCounts(deps, origin, group.owner);
   const fresh = group.places.filter((each) => {
     const part = known.get(migrationPlaceKey(each.place));
-    return part === undefined || part.state === "dropped";
+    if (part !== undefined && part.state !== "dropped") return false;
+    // A report requested before the place's plan landed sees main from before that landing.
+    const landing = landedAt.get(migrationPlaceKey(each.place));
+    return landing === undefined || context.countRun > landing;
   });
   // A known place keeps its part; its uses follow the count.
   for (const each of group.places) {
@@ -524,6 +531,26 @@ async function syncGroup(
   }
   deps.notify?.(group.owner);
   return plan.planId;
+}
+
+/**
+ * For each place of the owner's landed plans of `origin`: the id of the count Penguin requested at the
+ * plan's landing promotion. A count or retiring-calls check with a lower id was requested before that
+ * landing, so it reports main or a fork from before the landed fix. A place whose landing count is
+ * unknown is left out.
+ */
+function landingCounts(deps: MigrationDeps, origin: string, owner: string): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const plan of deps.store.plans(origin)) {
+    if (plan.owner !== owner || plan.state !== "landed") continue;
+    const run = deps.runs.list(plan.block).find((each) => each.tool === "impact" && each.input["search"] === CALLERS_SEARCH && each.checkpointSha === plan.promotion);
+    if (run === undefined) continue;
+    for (const part of plan.parts) {
+      const key = migrationPlaceKey(part.place);
+      if (part.state !== "dropped") counts.set(key, Math.max(counts.get(key) ?? 0, run.id));
+    }
+  }
+  return counts;
 }
 
 /** At a complete count, each live part whose place has no caller left is dropped. */
@@ -987,12 +1014,26 @@ export function migrationWrites(deps: MigrationDeps): MigrationWrites {
 /**
  * Settles a plan from its live parts: `approved` when every one is approved or written, `open` while
  * one waits. A plan with no code on main whose live parts are all written is `closed` under a signed
- * `migration_closed` record: every fix is in its running feature's fork, and nothing is promoted.
+ * `migration_closed` record: every fix is in its running feature's fork, and nothing is promoted. A
+ * plan whose every part was dropped closes the same way, with nothing left to write.
  */
 export async function settlePlan(deps: MigrationDeps, planId: string): Promise<void> {
   const plan = deps.store.plan(planId);
   if (plan === undefined || plan.state === "landed" || plan.state === "closed") return;
   const live = plan.parts.filter((part) => LIVE.includes(part.state));
+  if (live.length === 0 && plan.parts.length > 0 && plan.parts.every((part) => part.state === "dropped")) {
+    const record = await deps.sign(
+      deps.features.draftRecord(plan.feature, "migration_closed", { penguin: true }, {
+        plan: plan.planId,
+        parts: plan.parts.map((part) => ({ part: part.partId, place: part.place, state: part.state })),
+        reason: "every part was dropped: no caller is left in any of its places, so the plan has nothing to write or promote",
+      }),
+    );
+    deps.features.addRecord(record);
+    deps.store.setPlan(planId, "closed", undefined, record.record_id);
+    deps.notify?.(plan.owner);
+    return;
+  }
   if (live.length > 0 && live.every((part) => part.state === "written") && live.every((part) => part.place.kind === "feature")) {
     const record = await deps.sign(
       deps.features.draftRecord(plan.feature, "migration_closed", { penguin: true }, {

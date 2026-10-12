@@ -326,13 +326,11 @@ the check runner's programs. `apps/worker/test/money-split.test.ts`, `money-reti
    removed, then the feature lands. Penguin closes the six retiring records under one
    `symbols_removed` record.
 
-The run shows three limits of today's rules:
+The run shows two limits of today's rules:
 
 - **No split record.** Ines's agent writes the expand as the first checkpoint, as PRD section 4.2
   step 2 orders. Penguin's sort then sees only added symbols, so the retiring contracts come from the
   agent's plan, not from a split Penguin recorded (#149).
-- **A second plan for a landed block.** After Ade's block lands, Penguin opens Ade's second plan for
-  scope `refunds`. The next count drops its part. The plan stays open with no live part (#146).
 - **No protected-path confirmation.** Jun's own steward writes the analytics block, so the change to
   `analytics/revenue_report.py` is Jun's own and Jun is not asked to confirm it.
 

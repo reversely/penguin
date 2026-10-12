@@ -489,8 +489,11 @@ Penguin proposes the migrate step's plans itself (`services/project-agent/src/mi
   record per plan, never one per part.
 - **A later caller.** A place found at a later count, or at a checkpoint's retiring-calls check,
   joins its owner's plan while that plan has not landed, under a signed `migration_joined` record.
-  Once the owner's plan landed, the place opens the owner's next plan, `<n>` plus one. A complete
-  count that finds no caller left in a place drops its part.
+  Once the owner's plan landed, the place opens the owner's next plan, `<n>` plus one. A count or
+  check Penguin requested before that plan's landing promotion reports main or a fork from before
+  the landed fix: its run id is lower than the id of the count Penguin requested at the landing. It
+  neither opens nor joins a plan for a place of the landed plan. Load: one comparison per place. A
+  complete count that finds no caller left in a place drops its part.
 - **Who writes a part.** A part whose contracts have declared rules waits for one rewrite request
   of Penguin's own per count (`impact` with `search: "rewrite"`). The check runner applies the rules
   to the place's files at its target, main at the count or the feature's fork head, in a throwaway
@@ -531,7 +534,8 @@ Penguin proposes the migrate step's plans itself (`services/project-agent/src/mi
   rule-written part whose trial failed reaches one.
 - **Closing a plan.** A plan whose live parts are all approved or written is `approved`. A plan
   whose places are all running features never opens a block: once every live part is written into
-  its fork it is `closed` under a signed `migration_closed` record, with nothing to promote. A
+  its fork it is `closed` under a signed `migration_closed` record, with nothing to promote. A plan
+  whose every part was dropped closes the same way, so the feature page shows no empty plan. A
   caller found later opens the owner's next plan.
 - **The block.** Each plan names its block feature, `migrate-<owner>-<feature>` (with `-<n>` from
   the owner's second plan). Penguin opens it from main, with a fork, when the plan has code on main,
