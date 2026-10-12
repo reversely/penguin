@@ -13,6 +13,9 @@ creates a Git repository in TARGET:
   the feature's first commit. Each commit lays the files under ``features/<id>/<source>/`` over the
   branch's tree, so a source directory holds only the files the commit adds or changes. A commit with
   a ``tag`` also gets the lightweight tag ``feature-<id>-<tag>``.
+- A commit with ``after`` names the tag of an earlier commit of its feature. It is built on that
+  commit and keeps only its own tag; the branch head stays where it was. A running feature uses it
+  for a second fix of the same checkpoint: one per plan that reaches it.
 - A promotion moves ``main`` to a feature's head, as Penguin promotes a block in one push.
 
 Commits and promotions are applied in date order. Every value Git hashes is fixed (author, committer,
@@ -51,7 +54,15 @@ EMAIL = re.compile(r"^[a-z0-9._-]{1,64}@[a-z0-9-]+(?:\.[a-z0-9-]+)+$")
 VENDORS = frozenset({"claude-code", "codex"})
 STARTS = frozenset({"base", "main"})
 ROLES = frozenset(
-    {"originating", "same-area", "reader", "midway", "unaffected", "late-starter"}
+    {
+        "originating",
+        "wave",
+        "same-area",
+        "reader",
+        "midway",
+        "unaffected",
+        "late-starter",
+    }
 )
 FIX_KINDS = frozenset({"mechanical", "behavioural", "revision"})
 MAX_ID = 64
@@ -84,6 +95,7 @@ class CommitSpec:
     tag: str | None
     fix: dict | None
     fails_alone: list[str]
+    after: str | None = None
 
 
 @dataclass(frozen=True)
@@ -260,6 +272,11 @@ def check_commit(
             check.fail(f"{at}.fix", f"needs a scope and a kind in {sorted(FIX_KINDS)}")
         check.test_ids(fix.get("tests", []), f"{at}.fix.tests")
     fails_alone = check.test_ids(commit.get("fails_alone", []), f"{at}.fails_alone")
+    after = commit.get("after")
+    if after is not None:
+        check.id(after, f"{at}.after")
+        if commit.get("tag") is None:
+            check.fail(f"{at}.tag", "a commit built after another needs its own tag")
     if len(check.problems) > before:
         return None
     return CommitSpec(
@@ -271,6 +288,7 @@ def check_commit(
         tag=commit.get("tag"),
         fix=fix,
         fails_alone=fails_alone,
+        after=after,
     )
 
 
@@ -298,12 +316,20 @@ def check_features(
         if not feature.get("commits"):
             check.fail(f"{at}.commits", "must list at least one commit")
         previous = None
+        tags: set[str] = set()
         for j, commit in enumerate(feature.get("commits", [])):
             spec = check_commit(
                 commit, feature, f"{at}.commits[{j}]", people, scopes, check
             )
             if spec is None:
                 continue
+            if spec.after is not None and spec.after not in tags:
+                check.fail(
+                    f"{at}.commits[{j}].after",
+                    f"{spec.after!r} is not the tag of an earlier commit",
+                )
+            if spec.tag is not None:
+                tags.add(spec.tag)
             date = datetime.fromisoformat(spec.date)
             if previous is not None and date < previous:
                 check.fail(
@@ -714,12 +740,15 @@ def build(target: Path, larder: Larder | None = None) -> Built:
             from_main = larder.features[event.feature]["start"] == "main"
             heads[name] = heads["main"] if from_main else base_mark
         files = source_files(HERE / "features" / event.feature / event.source)
-        heads[name] = stream.commit(
-            heads[name], author_of(larder, event), event.date, event.message, files
+        parent = heads[name] if event.after is None else tags[f"{name}-{event.after}"]
+        mark = stream.commit(
+            parent, author_of(larder, event), event.date, event.message, files
         )
-        commits.append((event, heads[name]))
+        if event.after is None:
+            heads[name] = mark
+        commits.append((event, mark))
         if event.tag is not None:
-            tags[f"{name}-{event.tag}"] = heads[name]
+            tags[f"{name}-{event.tag}"] = mark
 
     for name, mark in heads.items():
         stream.reset(f"refs/heads/{name}", mark)
@@ -734,18 +763,26 @@ def build(target: Path, larder: Larder | None = None) -> Built:
 def pins_of(larder: Larder, built: Built) -> dict:
     """The pins of a build: branch heads, tags and the commit that fixes each test."""
     branches = {"main", *(branch(feature) for feature in larder.features)}
-    fixes = {
-        test: sha
-        for spec, sha in built.commits
-        for test in (spec.fix or {}).get("tests", [])
-    }
+
+    def in_waves(spec: CommitSpec) -> bool:
+        return spec.after is not None or larder.features[spec.feature]["role"] == "wave"
+
+    def fixes_of(waves: bool) -> dict[str, str]:
+        return {
+            test: sha
+            for spec, sha in built.commits
+            if in_waves(spec) == waves
+            for test in (spec.fix or {}).get("tests", [])
+        }
+
     return {
-        "$comment": "Commit SHAs a build of this fixture produces; `python build.py TARGET --pins` prints them. 'branches' maps main and each feature-<id> branch to its head. 'tags' maps base and each feature-<id>-<tag> tag to its commit. 'fixes' maps the pytest node ID of each test a fix commit makes pass to that commit. tests/test_money_fixture_builder.py checks a fresh build against this file.",
+        "$comment": "Commit SHAs a build of this fixture produces; `python build.py TARGET --pins` prints them. 'branches' maps main and each feature-<id> branch to its head. 'tags' maps base and each feature-<id>-<tag> tag to its commit. 'fixes' maps the pytest node ID of each test a fix commit of the one-block attempt makes pass to that commit; 'wave_fixes' does the same for the waves' fix commits. tests/test_money_fixture_builder.py checks a fresh build against this file.",
         "branches": {ref: built.refs[ref] for ref in sorted(branches)},
         "tags": {
             ref: sha for ref, sha in sorted(built.refs.items()) if ref not in branches
         },
-        "fixes": dict(sorted(fixes.items())),
+        "fixes": dict(sorted(fixes_of(waves=False).items())),
+        "wave_fixes": dict(sorted(fixes_of(waves=True).items())),
     }
 
 

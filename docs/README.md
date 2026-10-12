@@ -9,7 +9,7 @@ the design section that replaces it.
 |---|---|
 | [../README.md](../README.md) | What Penguin is, the four use cases and what is built today |
 | [design.md](design.md) | The approved design: model, procedure, checks and routing, review harness, exceptions, interface |
-| [case-study-money.md](case-study-money.md) | One breaking change across fourteen people and forty running features |
+| [case-study-money.md](case-study-money.md) | One breaking change across fourteen people and forty running features, as a one-block attempt and seven waves |
 | [demo-story.md](demo-story.md) | The demo frames from one person's seat |
 | [architecture.md](architecture.md) | The pieces, who owns which state and how data moves between them |
 | [issues.md](issues.md) | Signed operation files, validation and rejection, the index, offline issues, pending push |
@@ -23,4 +23,4 @@ the design section that replaces it.
 | [fixture.md](fixture.md) | The identity-unification fixture |
 | [fixture-helpful-fix.md](fixture-helpful-fix.md) | The helpful-fix fixture |
 | [fixture-dependency-bump.md](fixture-dependency-bump.md) | The dependency-bump fixture |
-| [fixture-money.md](fixture-money.md) | The money-minor-units fixture: the case study's fourteen scopes and forty features |
+| [fixture-money.md](fixture-money.md) | The money-minor-units fixture: the case study's fourteen scopes, forty features and seven waves |

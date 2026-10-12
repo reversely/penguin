@@ -47,9 +47,11 @@ before(() => {
   checkpoint = (id) => pins.tags[`feature-${id}-checkpoint`] as string;
   const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" });
   scopeMap = parseScopeMap(JSON.parse(git("show", `${pins.branches["main"]}:penguin/scopes.json`)));
-  const data = JSON.parse(readFileSync(join(MONEY, "larder.json"), "utf8")) as { features: { id: string; owner: string }[] };
+  const data = JSON.parse(readFileSync(join(MONEY, "larder.json"), "utf8")) as { features: { id: string; owner: string; role: string }[] };
+  // The features running when Ines opened the one-block attempt: not the later waves or the late starter.
+  const running = data.features.filter((feature) => feature.role !== "wave" && feature.role !== "late-starter");
   // Each feature's area is what its checkpoint touched, as a checkpoint report records it.
-  features = data.features.map(({ id, owner }, index) => ({
+  features = running.map(({ id, owner }, index) => ({
     id,
     personId: owner,
     repo: `feature-${id}`,
@@ -63,13 +65,13 @@ before(() => {
 
 after(() => rmSync(root, { recursive: true, force: true }));
 
-describe("the money fixture's forty features", () => {
-  test("an agent's check on Ines's feature merges onto each of the 39 other features, not one per person", () => {
+describe("the money fixture's thirty-nine features running beside the one-block attempt", () => {
+  test("an agent's check on Ines's feature merges onto each of the 38 other features, not one per person", () => {
     const forks = otherForks(features, ORIGIN);
-    assert.equal(features.length, 40);
-    assert.equal(forks.length, 39);
-    assert.equal(new Set(forks.map((fork) => fork.feature)).size, 39);
-    // Thirteen people besides Ines, whose one feature is the origin, run the 39.
+    assert.equal(features.length, 39);
+    assert.equal(forks.length, 38);
+    assert.equal(new Set(forks.map((fork) => fork.feature)).size, 38);
+    // Thirteen people besides Ines, whose one feature is the origin, run the 38.
     assert.equal(new Set(forks.map((fork) => fork.person)).size, 13);
     assert.deepEqual(
       forks.filter((fork) => fork.person === "priya").map(({ feature, fork, checkpoint: sha }) => [feature, fork, sha]),

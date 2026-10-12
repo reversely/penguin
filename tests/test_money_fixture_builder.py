@@ -7,6 +7,7 @@ which tests fail where are in test_money_fixture_reproduction.py.
 
 import copy
 import importlib.util
+import itertools
 import json
 import subprocess
 import sys
@@ -115,7 +116,7 @@ def test_counts_match_the_case_study(built, penguin):
 
     affected = set()
     for feature in RAW["features"]:
-        if feature["role"] == "originating":
+        if feature["role"] in {"originating", "wave"}:
             continue
         checkpoint = f"feature-{feature['id']}-checkpoint"
         start = "base" if feature["start"] == "base" else "main"
@@ -146,7 +147,7 @@ def test_mechanical_and_behavioural_fixes_match_the_plan():
         for f in RAW["features"]
         if f["role"] == "midway"
         for c in f["commits"]
-        if "fix" in c
+        if "fix" in c and "after" not in c
     ]
     assert [fix["kind"] for fix in midway] == ["mechanical"]
     assert sum(kind == "mechanical" for kind in on_main.values()) + len(midway) == 7
@@ -183,7 +184,8 @@ def test_scopes_claim_disjoint_paths_and_hold_their_contracts(penguin):
 
 def test_identities_give_each_feature_an_agent_of_its_owner(penguin):
     identities = penguin["identities"]["identities"]
-    assert len(identities) == len(RAW["features"]) == 40
+    waves = [f for f in RAW["features"] if f["role"] == "wave"]
+    assert len(identities) == len(RAW["features"]) == 40 + len(waves)
     assert all(i["handle"].startswith(f"@{i['owner']}/") for i in identities)
     assert len({i["handle"] for i in identities}) == len(identities)
 
@@ -244,6 +246,8 @@ HOSTILE = [
     (("features", 0, "commits", 0, "date"), "2026-03-05T10:00:00"),
     (("features", 0, "commits", 1, "fix", "tests"), ["../tests/test_x.py::test_y"]),
     (("examples", 0, "file"), "orders/examples/invoice_tax.json"),
+    (("features", 3, "commits", 2, "after"), "--force"),
+    (("features", 3, "commits", 2, "after"), "fix"),
 ]
 
 
@@ -257,7 +261,7 @@ def test_loader_refuses_hostile_names(path: tuple, value):
 def test_loader_accepts_the_fixture_data():
     larder = build.load_larder(copy.deepcopy(RAW))
     assert len(larder.scopes) == 14
-    assert len(larder.features) == 40
+    assert len(larder.features) == 47
 
 
 def test_builder_refuses_a_hostile_larder_before_writing(tmp_path: Path, monkeypatch):
@@ -284,3 +288,33 @@ def test_builder_refuses_a_non_empty_target(tmp_path: Path):
 def test_builder_writes_only_inside_the_target(tmp_path: Path):
     assert run_builder(tmp_path / "repo").returncode == 0
     assert [p.name for p in tmp_path.iterdir()] == ["repo"]
+
+
+def test_waves_form_one_chain_from_main(built):
+    """Each wave starts where main stood and main moves to each wave's head in turn."""
+    repo, _ = built
+    waves = [f["id"] for f in RAW["features"] if f["role"] == "wave"]
+    assert waves[0] == "money-type" and waves[-1] == "money-contract"
+    for earlier, later in itertools.pairwise(waves):
+        first = f"feature-{later}-checkpoint^"
+        assert git(repo, "rev-parse", first) == git(
+            repo, "rev-parse", f"feature-{earlier}"
+        )
+    assert git(repo, "rev-parse", "main") == git(
+        repo, "rev-parse", f"feature-{waves[-1]}"
+    )
+
+
+def test_a_wave_fix_leaves_the_feature_branch_at_its_one_block_fix(built):
+    """A running feature's second fix is built on its checkpoint beside the first."""
+    repo, _ = built
+    for feature in RAW["features"]:
+        for commit in feature["commits"]:
+            if "after" not in commit:
+                continue
+            ref = f"feature-{feature['id']}"
+            side = f"{ref}-{commit['tag']}"
+            assert git(repo, "rev-parse", f"{side}^") == git(
+                repo, "rev-parse", f"{ref}-{commit['after']}"
+            )
+            assert git(repo, "rev-parse", ref) != git(repo, "rev-parse", side)

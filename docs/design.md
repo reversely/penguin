@@ -152,6 +152,14 @@ The procedure moves conflict handling to the start of the work. Each step below 
 5. **Break limit.** If a plan touches more running features than the project's limit (default 10),
    Penguin returns it to its author to split or restructure. The build counts the plan's behavioural
    parts ([Steps 1 to 5 in the build](#steps-1-to-5-in-the-build)).
+6. **Waves.** The author splits a returned change into waves by parallel change, each its own
+   feature and plan. The expand wave adds the new shape beside the old one and changes no existing
+   symbol, so its plan has no place. Each migrate wave moves one scope or a small group onto the new
+   shape as its own change. Its places are the other scopes on main that call what it changes. The
+   running features inside the scopes it moves are same-area features, whose people approve its
+   start. The contract wave removes the old shape. Its places are the callers left on main and in
+   running features' own changes. [case-study-money.md](case-study-money.md) runs the waves on the
+   money fixture.
 
 #### Steps 1 to 5 in the build
 

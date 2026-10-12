@@ -138,14 +138,16 @@ describe("the money-minor-units fixture", () => {
     repo = join(root, "larder");
     execFileSync(PYTHON, [join(MONEY, "build.py"), repo]);
     pins = JSON.parse(readFileSync(join(MONEY, "pins.json"), "utf8"));
-    const data = JSON.parse(readFileSync(join(MONEY, "larder.json"), "utf8")) as { features: { id: string; owner: string }[] };
-    owners = new Map(data.features.map((feature) => [feature.id, feature.owner]));
+    const data = JSON.parse(readFileSync(join(MONEY, "larder.json"), "utf8")) as { features: { id: string; owner: string; role: string }[] };
+    // The features running when Ines opened the one-block attempt: not the later waves or the late starter.
+    const running = data.features.filter((feature) => feature.role !== "wave" && feature.role !== "late-starter");
+    owners = new Map(running.map((feature) => [feature.id, feature.owner]));
   });
 
   after(() => rm(root, { recursive: true, force: true }));
 
-  test("its 40 features run as 40 targets: main and each feature Ines's change is merged onto", async () => {
-    assert.equal(owners.size, 40);
+  test("its 39 running features run as 39 targets: main and each feature Ines's change is merged onto", async () => {
+    assert.equal(owners.size, 39);
     const origin = "money-minor-units";
     const targets: ForkTarget[] = [...owners]
       .filter(([id]) => id !== origin)
@@ -154,13 +156,14 @@ describe("the money-minor-units fixture", () => {
     const { checker, targets: checked } = recordingChecker();
     const report = await new CombinedRunner({ repoPath: repo, runner, checks: checker }).run({
       checkpointSha: pins.tags[`feature-${origin}-checkpoint`] as string,
-      baselineSha: pins.branches["main"] as string,
+      // Main as the one-block attempt found it: Lena's promotion stacking on base.
+      baselineSha: pins.branches["feature-promotion-stacking"] as string,
       targets,
     });
 
     // Every running feature is a merged tree of its own, keyed by its id; none is folded into its
-    // person's, though fourteen people run the forty features.
-    assert.equal(checked.length, 40);
+    // person's, though fourteen people run the thirty-nine features.
+    assert.equal(checked.length, 39);
     assert.equal(checked[0]?.id, MAIN_TARGET);
     assert.deepEqual(checked.map(({ id }) => id).sort(), [MAIN_TARGET, ...targets.map((target) => target.id)].sort());
     assert.ok(checked.every(({ merged }) => merged !== null), "every feature merges cleanly with Ines's checkpoint");

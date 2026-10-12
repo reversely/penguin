@@ -1,11 +1,11 @@
 # Case study: moving every price to integer minor units
 
-This case follows one breaking change through Penguin on a team large enough that coordinating by
-hand fails: fourteen people, about sixty agents and about forty features in progress at once.
-[fixture-money.md](fixture-money.md) describes the Git repository that models it, with the scopes,
-features, fixes and tax sample below.
+This case follows one breaking change through Penguin on a team of fourteen people with about sixty
+agents and about forty features in progress at once. The change does not fit one plan, so its author
+splits it into waves by parallel change. Every count below comes from `propose_plan` and the review
+harness run on the fixture in [fixture-money.md](fixture-money.md).
 
-## The team
+## Team
 
 Larder is a grocery delivery marketplace with one repository. Fourteen engineers each own one or two
 scopes and each run between three and eight agents. At any moment about forty features are open.
@@ -27,140 +27,138 @@ scopes and each run between three and eight agents. At any moment about forty fe
 | Elif | `store-dashboard` | No |
 | Hugo | `platform`: shared libraries and dependencies | No |
 
-## The change
+## Change
 
-Ines opens the feature "Money in minor units". Prices today are floating-point dollars. Invoices
-have drifted by a cent against card charges. The Japan launch also needs yen, which has no minor unit.
-Stripe takes amounts in the currency's minor unit: `1000` charges 10 USD; `10` charges 10 JPY,
-because JPY is a zero-decimal currency ([Stripe currencies](https://docs.stripe.com/currencies)).
-The feature replaces every float price with `Money(amount_minor, currency)`.
+Prices today are floating-point dollars. Invoices have drifted by a cent against card charges. The
+Japan launch also needs yen, which has no minor unit. Stripe takes amounts in the currency's minor
+unit: `1000` charges 10 USD. `10` charges 10 JPY, because JPY is a zero-decimal currency
+([Stripe currencies](https://docs.stripe.com/currencies)). Ines's feature replaces float prices with
+`Money(amount_minor, currency)`.
 
-## The procedure
+## One-block attempt
 
-### 1. Open: Penguin checks the area
+Every feature is its own fork of main in Artifacts. Ines's agent opens the feature "Money in minor
+units" and declares its area: `shared/money` with the `price()`, `total()` and `display()` contracts.
+Two running features already work inside `shared/money`, so Penguin blocks the start until each of
+their people approves:
 
-Every feature is its own fork of main in Artifacts. The binding's `fork(name, { readOnly,
-defaultBranchOnly })` makes it server-side. `createToken(scope, ttl)` gives each of the feature's
-agents a write token for that one fork that expires. Opening a feature mints its fork; nobody clones
-the whole project.
+- Hugo's agent is bumping the decimal library's rounding mode. Hugo approves, because the two changes
+  touch different functions.
+- Lena's agent is adding promotion stacking, which edits a money helper. Lena declines, because both
+  edit the same helper. Penguin queues Ines's feature behind Lena's. Lena's feature reaches main first.
 
-Ines's agent opens the feature. Penguin mints its fork, `feature-money-minor-units`. The agent
-declares the feature's area: `shared/money` with the `price()` and `total()` contracts, which return
-floats today.
+Ines's checkpoint changes `price()` and `total()` to return `Money` and removes `display()`. Ines's
+agent proposes a plan with a fix for each place the change reaches. Penguin finds 32 places:
 
-Penguin checks that against the forty running features:
+- **Code on main.** The nine scopes that call the money contracts: checkout, orders, refunds,
+  invoicing, tax, payouts, analytics, messaging and mobile-api.
+- **Running features.** The 23 features whose own changes call the money contracts.
 
-- **Same area.** Two running features already work inside `shared/money`:
-  - Hugo's agent is bumping the decimal library's rounding mode.
-  - Lena's agent is adding promotion stacking, which edits a money helper.
+All 32 fixes are behavioural. Each one rewrites test data or expectations, or makes a choice per
+call such as the yen's currency, which no rewrite rule writes. The project's break limit is 10, so
+Penguin returns the plan to Ines with a signed `plan_returned` record. The returned plan stays in
+Ines's inbox.
 
-  Penguin blocks Ines's start until each of those people approves. Hugo approves, because the two
-  changes touch different functions. Lena declines, because both edit the same helper. Penguin
-  queues Ines's feature behind Lena's. Lena's lands first.
-- **Readers.** The impact graph finds 23 running features, across nine scopes, that call the
-  money contracts. None of them blocks the start. All of them are in the plan.
+## Waves by parallel change
 
-### 2. Plan: the originating agent proposes every fix
+Ines's agent splits the change into waves by parallel change: expand, migrate, then contract
+([Fowler, ParallelChange](https://martinfowler.com/bliki/ParallelChange.html)). Each wave is its own
+feature, opened from main as the wave before it left main. Each wave has its own plan. Once its parts
+are approved, Penguin moves main to the wave's head in one push. Every scope's tests pass on main between waves.
 
-Ines's agent writes the merge plan: the change itself, plus a proposed fix for each of the nine
-scopes that read money.
+| Wave | Feature | Moves | Places | Behavioural | Starts approved | Penguin's answer |
+|---|---|---|---|---|---|---|
+| 1. Expand | `money-type` | Adds `Money` and Money functions beside the float ones | 0 | 0 | 4: Hugo, Tomas (3) | Stored |
+| 2. Migrate | `money-checkout` | `checkout` | 1: promotions on main | 1 | 3: Priya (3) | Stored |
+| 3. Migrate | `money-tax` | `tax` | 1: invoicing on main | 1 | 2: Rahul (2) | Stored |
+| 4. Migrate | `money-refunds-payouts` | `refunds`, `payouts` | 0 | 0 | 4: Ade (2), Kofi (2) | Stored |
+| 5. Migrate | `money-analytics` | `analytics` | 0 | 0 | 3: Jun (3) | Stored |
+| 6. Migrate | `money-messaging-mobile` | `messaging`, `mobile-api` | 0 | 0 | 6: Sam (3), Noor (3) | Stored |
+| 7. Contract | `money-contract` | Removes the float API | 24: orders on main and 23 running features | 24 | 1: Hugo | Returned |
 
-| Scope | Kind of fix | Who writes it |
-|---|---|---|
-| `checkout`, `orders`, `refunds`, `invoicing`, `messaging`, `mobile-api` | Mechanical: the float type becomes `Money`, `* 100` conversions are removed, formatting moves to `Money.display()` | Penguin's codemod, from the rewrite rules Ines's agent declares in the plan |
-| `tax` | Behaviour: where rounding happens | Ines's agent |
-| `payouts` | Behaviour: how store fees round | Ines's agent |
-| `analytics` | Behaviour: summing revenue across currencies | Ines's agent |
+### Wave 1: expand
 
-### 3. Tell in advance: each author approves their part once
+The expand wave adds `Money`, `Money.sum()` and `discounted()` to `shared/money`. It adds
+`line_total_minor()` and `order_total_minor()` to `orders`. No existing function or class changes,
+so the impact graph finds no caller and the plan has no place. The float functions keep working, so
+no running feature breaks.
 
-The plan goes to the nine authors and their running agents before anything lands. Each author
-approves the part that touches their code:
+A stored order line keeps its unit price in dollars, as the order store records it. A Money field on
+`Line` would change the class. Penguin's impact graph would then list every `Line(...)` call as a
+caller, including the tests of every scope that reads orders. `line_total_minor()` reads the stored price into the order's
+currency instead.
 
-- **Seven approve as proposed.**
-- **Rahul's agent asks for a change.** Penguin hands it tax's declared invariant, "tax is rounded per
-  line item". Penguin then runs the tax functions side by side on main and on Ines's fork, over
-  5,000 sample orders drawn from a fixed seed. Invoice tax differs on 1,633 of them, every one with
-  two or more lines, by one or two cents. The review form marks the invariant broken, which routes to
-  Rahul. Rahul confirms the request. Ines's agent revises the tax fix. On the rerun, 10 orders still
-  differ by one cent: each has a single line whose exact tax is half a cent, which main's float
-  arithmetic rounds down. The revision matches exact decimal arithmetic on all 5,000 orders.
-  Rahul's agent cites the test that proves it. Rahul approves the revision.
-- **Jun approves and marks `analytics/revenue_report` as protected.** Jun will confirm the final
-  lines in that file before the change lands.
+The wave adds functions to `orders/model.py`, so Tomas approves its start beside the three running
+features Tomas owns in `orders`. Hugo approves it beside the rounding-mode feature.
 
-### 4. Build: everyone keeps working
+### Waves 2 to 6: migrate
 
-Each agreed fix goes where its code lives:
+Each migrate wave moves one scope, or two, off the float API. Its own change rewrites that scope's
+code and tests to import `Money` by name and to call the Money functions. The wave changes no float
+function, so the running features in that scope keep working. Their people approve the wave's start
+beside their features, 18 approvals across the five waves.
 
-- **Code already on main**, in the nine scopes: Ines's agent and Penguin's codemods write these fixes
-  into Ines's feature fork, next to the change itself.
-- **Unfinished work** in the 23 running features: as soon as an owner approves the plan, Penguin mints
-  a short write token on that feature's existing fork. The fix goes straight into it: 16 are
-  codemods Penguin writes. The other 7, in tax, payouts and analytics, are written by Ines's agent. No new branch or fork is made. Each running feature then keeps building on code that already
-  fits the new money type, so the merge conflict never forms.
+A migrate wave's places are the other scopes on main that call what it changes:
 
-The other 23 agents carry on in their own forks, now carrying the adaptation.
+- **Checkout.** `cart_total()`, `charge_amount()` and `total_line()` take the cart's currency. The
+  charge is the total's `amount_minor`, so a yen cart is charged at face value. Lena's promotion
+  stacking on main calls `cart_total()`, so the plan has one part for promotions, which Lena approves.
+- **Tax.** Tax becomes `Money` with `Decimal` rates. Invoicing on main adds the tax to the order
+  total, so the plan has one part for invoicing, which Mei approves.
+- **Refunds and payouts.** Refunds sum line totals in the order's currency. Store fees round half up
+  in the minor unit, as the store agreement says. No other scope calls them on main.
+- **Analytics.** Revenue is reported per currency, so amounts in different currencies are never
+  added together. The wave edits `analytics/revenue_report.py`, the file Jun protects. The fixture
+  lists it in the scope's `protected_paths`, which Penguin's routing does not read yet.
+- **Messaging and mobile API.** Receipts and order payloads read totals as `Money`. Their tests
+  pass unchanged, because they compare the displayed text and the minor amount.
 
-Midway through, Noor's pagination feature starts returning prices. Penguin sees this at Noor's next
-checkpoint, not at merge. Ines's agent adds a mechanical fix for it to the plan. Noor approves.
+### Rahul's revision
 
-### 5. Land as a block
+The tax wave's first checkpoint rounds the order's subtotal once. Rahul's agent submits a review form
+for tax. Penguin runs `invoice_tax_minor` on main and on the wave's fork over 5,000 recorded orders.
+Invoice tax differs on 1,633 of them by one or two cents. No single-line order differs. The form
+marks the invariant "Tax is rounded per line item" broken, so the exception goes to Rahul. Rahul asks
+for per-line rounding. Ines's agent writes the revision as the wave's next checkpoint. On the rerun 10
+orders still differ by one cent. Each has one line whose exact tax is half a cent, which main's float
+arithmetic rounds down. The revision equals exact decimal arithmetic on all 5,000 orders. The review
+holds. Ines's agent proposes the plan again at the revision.
 
-The block is every write the plan makes: Ines's feature fork, plus the fixes written into the 23
-overlapping forks. It is checked as one set and lands as one set.
+### Wave 7: contract
 
-1. **Check it.** Penguin merges Ines's feature fork onto main and onto each of the now 24
-   overlapping forks with its fix in place. It runs the deterministic checks on each result:
-   - the merge itself
-   - ruff
-   - the type checker
-   - the contract diff
-   - each affected scope's tests
-2. **Owners try it.** Jun gets an expiring read token on Ines's feature fork, clones it and checks the
-   protected file before confirming. Nothing new is created.
-3. **Promote.** When everything is green, Penguin moves main to the feature's commit in one push, with a
-   write token on main that only Penguin holds, for minutes. Main changes once, never in pieces, and
-   every overlapping fork already carries its adaptation, so none of them breaks when it next takes
-   main.
-4. **Keep the record.** The feature's fork turns read-only and shows exactly what landed.
+The contract wave removes `price()`, `total()`, `display()` and `percent_off()` from `shared/money`.
+After the migrate waves, one caller of the float API is left on main: `orders`, whose
+`line_total()` and `order_total()` call `price()` and `total()`. Its fix removes those two functions.
 
-| Result | Count | What happens |
-|---|---|---|
-| Clean | 24 forks | Each already carries its fix from the build step; Hugo's same-area fork needed none |
-| A failing test in `promotions` | 1 | Lena's promotion stacking, which promoted first, still adds floats. It shows from Ines's first checkpoint check onward. Penguin classifies it as mechanical and writes the codemod into Ines's fork |
-| Protected file | `analytics/revenue_report` | Jun confirms after trying the read-only fork |
+The migrate waves changed main's code, never the running features' own changes. The 23 running
+features that call the float API in the modules they add still call it, so each is a place of the
+contract wave. Their 23 fixes and the orders fix make 24 behavioural parts, over the limit of 10, so
+Penguin returns the contract wave's plan to Ines as well.
 
-Main is never red.
+Two moments depend on the contract wave's plan being announced:
 
-### 6. Late starters
-
-Sun opens "currency filter in search" after the plan was announced. Penguin hands Sun's agent the
-plan when the feature opens. Sun's agent writes against `Money` from the start, so there is nothing
-to resolve.
+- **Noor's pagination.** Noor's second checkpoint adds an order-lines page that calls
+  `line_total()`. The contract plan was returned, so no announced plan gains a part for it. The
+  feature's own change makes it a place of the next contract plan.
+- **Sun's late start.** Sun opens "currency filter in search" after the contract plan. Sun's agent
+  writes against `Money` from the first commit and imports it by name, so the feature calls nothing
+  the contract wave removes.
 
 ## What it took
 
 | | Count |
 |---|---|
-| People confirming an overlapping start | 2 (Hugo, Lena) |
-| People approving a plan | 10 (nine authors and Noor) |
-| Plan revisions asked for | 1 (Rahul) |
-| Protected-file confirmations | 1 (Jun) |
-| Affected running branches | 24 |
-| Affected forks that needed nothing | 1 (Hugo's) |
-| Fixes written by deterministic tools | 24 codemods: 7 in Ines's fork, 16 in reader forks, 1 in Noor's |
-| Fixes written by an agent | 11, all by Ines's agent: 3 in Ines's fork, 7 in reader forks, 1 revision |
-| Times main was broken | 0 |
+| Plans returned over the break limit | 2: the one-block attempt (32) and the contract wave (24) |
+| Plans stored | 6: the expand wave and five migrate waves |
+| Parts approved in the migrate waves | 2: Lena for promotions, Mei for invoicing |
+| Starts approved beside a running feature | 1 for the one-block attempt and 23 for the waves |
+| Times main moved | 6, one per stored wave, each with every scope's tests passing |
+| Review exceptions | 1: Rahul's broken `tax-per-line` invariant on the whole-order step |
+| Callers of the float API left on main before the contract wave | 1 scope: orders |
 
-Every step lives as a signed record in the project's record repo in Artifacts: the plan, each approval and
-its reason, Rahul's revision, the block's checks and the promotion. The feature's read-only fork holds the
-exact code that landed. That record answers why each line
-changed.
+The waves moved the nine scopes on main one or two at a time, with at most one behavioural part per
+plan. The running features' own float calls stay in place until the contract wave, so that wave
+carries the same 23 feature fixes the one-block attempt carried.
 
-## The same change without Penguin
-
-Ines opens one pull request that changes `shared/money`. Nine authors find out when their branches
-stop compiling, or when tests fail after main moves. Twenty-four branches each resolve the break on
-their own, with different conversions. Lena's float addition reaches main. Invoices drift
-again. Yen is charged at a hundred times the price on any path that still multiplies by 100.
+Every step lives as a signed record in the project's record repo in Artifacts: each plan, each
+return, each approval and its reason, Rahul's review and revision, each promotion.

@@ -312,7 +312,10 @@ person's decision. A request signs in as the owner its `X-Preview-Owner` header 
 On identity unification the plan is stored with four parts: Priya's fix commits for analytics' and
 messaging's code on main, and the patches for Jun's and Sam's forks. Jun's and Sam's agents submit
 the fixture's review forms from `examples/identity-unification/reviews/`. Sam approves both of Sam's
-parts. Jun's review raises the tablet invariant, so Jun's two parts wait on Jun. On money in minor units the plan is returned
-over the default break limit of 10; the preview then raises the project's
-limit to the plan's behavioural count and Ines's agent proposes it again, so the plan is stored and the return stays in
-Ines's inbox.
+parts. Jun's review raises the tablet invariant, so Jun's two parts wait on Jun. On money in minor units the one-block plan is returned
+over the default break limit of 10 and stays in Ines's inbox. The seed then runs the seven waves of
+[case-study-money.md](case-study-money.md): each wave opens from main as the wave before left it. The
+seed approves each overlapping start and each stored plan's parts, then moves main to the wave's
+head. Rahul's tax review raises the broken `tax-per-line` invariant on the tax wave's first
+checkpoint and holds on its revision. The contract wave's plan is returned with 24 behavioural parts
+and stays in Ines's inbox beside the one-block plan.

@@ -27,6 +27,10 @@ FEATURES = {feature["id"]: feature for feature in RAW["features"]}
 INES = f"feature-{ORIGINATING['id']}"
 STEPS = [f"{INES}-{commit['tag']}" for commit in ORIGINATING["commits"]]
 WITH_FIX = [f["id"] for f in RAW["features"] if f["role"] in {"reader", "midway"}]
+WAVES = [f for f in RAW["features"] if f["role"] == "wave"]
+# Main as the one-block attempt found it: base with Lena's promotion stacking.
+BLOCK_MAIN = f"feature-{RAW['promotions'][0]['feature']}"
+CONTRACT = f"feature-{WAVES[-1]['id']}"
 RUNNING_AT_CHECKPOINT = [
     f["id"]
     for f in RAW["features"]
@@ -78,6 +82,23 @@ def failed_tests(tree: Path, command: str = "python -m pytest") -> tuple[int, se
     return result.returncode, failed
 
 
+def failing_files(tree: Path, command: str) -> set[str]:
+    """The test files with a failing test or a module that does not import, under ``command``."""
+    result = subprocess.run(
+        f"{command} -rfE --continue-on-collection-errors",
+        check=False,
+        shell=True,
+        cwd=tree,
+        capture_output=True,
+        text=True,
+    )
+    return {
+        line.split()[1].split("::")[0]
+        for line in result.stdout.splitlines()
+        if line.startswith(("FAILED ", "ERROR "))
+    }
+
+
 @pytest.fixture(scope="module")
 def repo(tmp_path_factory: pytest.TempPathFactory) -> Path:
     target = tmp_path_factory.mktemp("money") / "repo"
@@ -108,7 +129,9 @@ def scope_of(scopes: dict[str, dict], path: str) -> str | None:
 def changed_scopes(
     repo: Path, scopes: dict[str, dict], feature_id: str, ref: str
 ) -> list[str]:
-    start = "base" if FEATURES[feature_id]["start"] == "base" else "main"
+    feature = FEATURES[feature_id]
+    first = f"feature-{feature_id}-{feature['commits'][0]['tag']}^"
+    start = "base" if feature["start"] == "base" else first
     paths = git(repo, "diff", "--name-only", f"{start}...{ref}").stdout.split()
     return sorted({scope_of(scopes, path) for path in paths} - {None})
 
@@ -147,20 +170,24 @@ def test_pins_map_each_fixed_test_to_its_commit(repo: Path):
     pins = json.loads((FIXTURE / "pins.json").read_text())
     for feature in RAW["features"]:
         for commit in feature["commits"]:
+            in_waves = "after" in commit or feature["role"] == "wave"
             for test in fixed_by(commit):
                 ref = f"feature-{feature['id']}" + (
                     f"-{commit['tag']}" if "tag" in commit else ""
                 )
-                assert (
-                    pins["fixes"][test] == git(repo, "rev-parse", ref).stdout.strip()
-                ), test
+                key = "wave_fixes" if in_waves else "fixes"
+                assert pins[key][test] == git(repo, "rev-parse", ref).stdout.strip(), (
+                    test
+                )
 
 
 @pytest.mark.parametrize("feature_id", WITH_FIX)
 def test_running_feature_breaks_on_ines_fork_until_its_fix(
     repo: Path, scopes: dict, tmp_path: Path, feature_id: str
 ):
-    (fix,) = [c for c in FEATURES[feature_id]["commits"] if "fix" in c]
+    (fix,) = [
+        c for c in FEATURES[feature_id]["commits"] if "fix" in c and "after" not in c
+    ]
     command = scopes[fix["fix"]["scope"]]["test_command"]
     checkpoint = f"feature-{feature_id}-checkpoint"
     before = extract(repo, merged(repo, INES, checkpoint), tmp_path / "before")
@@ -189,14 +216,15 @@ def test_each_checkpoint_passes_alone_but_for_its_named_failures(
 
 
 @pytest.mark.parametrize(
-    "feature_id",
-    [f["id"] for f in RAW["features"] if f["role"] in {"unaffected", "late-starter"}],
+    ("feature_id", "origin"),
+    [(f["id"], INES) for f in RAW["features"] if f["role"] == "unaffected"]
+    + [(f["id"], CONTRACT) for f in RAW["features"] if f["role"] == "late-starter"],
 )
-def test_features_outside_the_plan_pass_on_ines_fork(
-    repo: Path, scopes: dict, tmp_path: Path, feature_id: str
+def test_features_outside_the_plan_pass_on_its_fork(
+    repo: Path, scopes: dict, tmp_path: Path, feature_id: str, origin: str
 ):
     ref = f"feature-{feature_id}"
-    tree = extract(repo, merged(repo, INES, ref), tmp_path)
+    tree = extract(repo, merged(repo, origin, ref), tmp_path)
     for scope_id in changed_scopes(repo, scopes, feature_id, ref):
         assert failed_tests(tree, scopes[scope_id]["test_command"]) == (0, set()), (
             scope_id
@@ -221,9 +249,12 @@ def test_fix_commits_change_only_their_scope(repo: Path, scopes: dict):
                 f"-{commit['tag']}" if "tag" in commit else ""
             )
             paths = git(repo, "diff", "--name-only", f"{ref}^", ref).stdout.split()
+            one_block_promotions = (
+                commit["fix"]["scope"] == "promotions" and feature["role"] != "wave"
+            )
             allowed = (
                 {commit["fix"]["scope"], "money"}
-                if commit["fix"]["scope"] == "promotions"
+                if one_block_promotions
                 else {commit["fix"]["scope"]}
             )
             assert paths and {scope_of(scopes, p) for p in paths} <= allowed, (
@@ -259,7 +290,7 @@ def test_impact_of_ines_checkpoint_finds_23_readers_in_nine_scopes(
     sha = lambda ref: git(repo, "rev-parse", ref).stdout.strip()
     forks = [fork_request(repo, scopes, f, "checkpoint") for f in RUNNING_AT_CHECKPOINT]
     forks.append(fork_request(repo, scopes, "pagination", "checkpoint-1"))
-    report = impact(repo, sha("main"), sha(f"{INES}-checkpoint"), forks)
+    report = impact(repo, sha(BLOCK_MAIN), sha(f"{INES}-checkpoint"), forks)
     assert report["complete"]
     selected = {
         fork["id"] for fork in report["forks"] if fork["uses"] or fork["errors"]
@@ -284,7 +315,7 @@ def test_impact_of_ines_checkpoint_finds_23_readers_in_nine_scopes(
 
     midway = impact(
         repo,
-        sha("main"),
+        sha(BLOCK_MAIN),
         sha(f"{INES}-checkpoint"),
         [fork_request(repo, scopes, "pagination", "checkpoint")],
     )
@@ -318,11 +349,21 @@ def exact_tax(record: dict, rates: dict[str, str], per_line: bool) -> int:
     return half_up(sum(cents) * rate)
 
 
+TAX_WAVE = "feature-money-tax"
+BEFORE_TAX_WAVE = f"{TAX_WAVE}-checkpoint^"
+
+
 @pytest.mark.parametrize(
-    ("step", "per_line"), [("fix-analytics", False), ("tax-per-line", True)]
+    ("main_ref", "fork", "per_line"),
+    [
+        (BLOCK_MAIN, f"{INES}-fix-analytics", False),
+        (BLOCK_MAIN, f"{INES}-tax-per-line", True),
+        (BEFORE_TAX_WAVE, f"{TAX_WAVE}-checkpoint", False),
+        (BEFORE_TAX_WAVE, f"{TAX_WAVE}-tax-per-line", True),
+    ],
 )
 def test_tax_side_by_side_matches_exact_arithmetic_on_the_fork(
-    repo: Path, scopes: dict, tmp_path: Path, step: str, per_line: bool
+    repo: Path, scopes: dict, tmp_path: Path, main_ref: str, fork: str, per_line: bool
 ):
     """The fork's tax equals the exact tax on every order, so every difference the run reports is
     either the whole-order rounding or main's float arithmetic."""
@@ -336,8 +377,8 @@ def test_tax_side_by_side_matches_exact_arithmetic_on_the_fork(
             for c in cases
         ],
     }
-    main = side_by_side(extract(repo, "main", tmp_path / "main"), request)
-    fork = side_by_side(extract(repo, f"{INES}-{step}", tmp_path / "fork"), request)
+    main = side_by_side(extract(repo, main_ref, tmp_path / "main"), request)
+    fork = side_by_side(extract(repo, fork, tmp_path / "fork"), request)
     assert all(r["status"] == "returned" for r in main + fork)
     records = [c["args"]["order"]["args"]["record"] for c in cases]
     assert [r["value"] for r in fork] == [
@@ -349,3 +390,66 @@ def test_tax_side_by_side_matches_exact_arithmetic_on_the_fork(
         assert max(gaps) <= 1
     else:
         assert any(gaps)
+
+
+# The waves: parallel change (docs/case-study-money.md). Each wave starts from main as the wave
+# before it left main, and main moves to each wave's head in turn.
+
+
+def wave_steps() -> list[tuple[str, int]]:
+    return [
+        (wave["id"], step) for wave in WAVES for step in range(len(wave["commits"]))
+    ]
+
+
+@pytest.mark.parametrize(
+    ("wave_id", "step"), wave_steps(), ids=[f"{w}-{s}" for w, s in wave_steps()]
+)
+def test_each_wave_step_fails_only_what_a_later_step_fixes(
+    repo: Path, scopes: dict, tmp_path: Path, wave_id: str, step: int
+):
+    commits = FEATURES[wave_id]["commits"]
+    ref = f"feature-{wave_id}-{commits[step]['tag']}"
+    expected = {test for later in commits[step + 1 :] for test in fixed_by(later)}
+    tree = extract(repo, ref, tmp_path)
+    failed = set()
+    for scope in scopes.values():
+        failed |= failed_tests(tree, scope["test_command"])[1]
+    assert failed == expected
+
+
+def test_main_after_the_waves_holds_no_float_api(repo: Path):
+    money = git(repo, "show", "main:shared/money/__init__.py").stdout
+    orders = git(repo, "show", "main:orders/model.py").stdout
+    assert "\ndef price(" not in money and "\ndef display(" not in money
+    assert "\ndef line_total(" not in orders and "\ndef order_total(" not in orders
+    assert (
+        git(repo, "rev-parse", "main").stdout == git(repo, "rev-parse", CONTRACT).stdout
+    )
+
+
+def test_wave_one_changes_no_existing_symbol(repo: Path):
+    sha = lambda ref: git(repo, "rev-parse", ref).stdout.strip()
+    first = f"feature-{WAVES[0]['id']}"
+    report = impact(repo, sha(f"{first}^"), sha(first), [])
+    assert {change["change"] for change in report["changes"]} == {"added"}
+    assert report["headUses"] == []
+
+
+@pytest.mark.parametrize("feature_id", WITH_FIX)
+def test_running_feature_breaks_on_the_contract_wave_until_its_wave_fix(
+    repo: Path, scopes: dict, tmp_path: Path, feature_id: str
+):
+    (fix,) = [c for c in FEATURES[feature_id]["commits"] if "after" in c]
+    command = scopes[fix["fix"]["scope"]]["test_command"]
+    checkpoint = f"feature-{feature_id}-{fix['after']}"
+    before = extract(repo, merged(repo, CONTRACT, checkpoint), tmp_path / "before")
+    assert failing_files(before, command) == {
+        test.partition("::")[0] for test in fixed_by(fix)
+    }
+    after = extract(
+        repo,
+        merged(repo, CONTRACT, f"feature-{feature_id}-{fix['tag']}"),
+        tmp_path / "after",
+    )
+    assert failed_tests(after, command) == (0, set())
