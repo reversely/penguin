@@ -29,6 +29,11 @@ export interface ImpactRequest {
   /** The commit holding the change. */
   readonly head: string;
   readonly forks: readonly ImpactForkRequest[];
+  /**
+   * Contracts (`path::name`) searched for as if they had changed, such as retiring symbols
+   * (retiring.ts in `@penguin/protocol`). With `base` equal to `head` the report lists only their uses.
+   */
+  readonly symbols?: readonly string[];
 }
 
 export type ImpactAnalyzer = (request: ImpactRequest) => Promise<ImpactReport>;

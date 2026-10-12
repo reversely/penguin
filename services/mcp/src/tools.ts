@@ -290,7 +290,7 @@ export interface McpFeatures {
    * Takes a merge plan for feature `feature`, which the session works on, with its rewrite rules;
    * Penguin fills in the facts.
    */
-  plan(sessionId: string, feature: string, parts: unknown, rules?: unknown): Promise<FeatureCallResult>;
+  plan(sessionId: string, feature: string, parts: unknown, rules?: unknown, retiring?: unknown): Promise<FeatureCallResult>;
   /** Revises a part of the session's feature's plan whose author asked for a change. */
   revise(sessionId: string, input: PartRevision): Promise<FeatureCallResult>;
   /** A write token on the affected fork of an approved part, for the originating agent named in the plan. */
@@ -659,6 +659,20 @@ const proposePlanInput = z.strictObject({
       "Rewrite rules for the change's mechanical fixes, such as money.display($amount) to $amount.display(). Penguin applies them on the " +
         "check runner; a part whose fix is exactly what the rules write is mechanical and does not count against the break limit.",
     ),
+  retiring: z
+    .array(
+      z.strictObject({
+        contract: z.string().min(1).max(640).describe("A contract of a scope your feature's area names, path::symbol, such as shared/money/__init__.py::price."),
+        replacement: z.string().min(1).max(768).describe("What replaces it, path::name or path::Class.member, such as shared/money/__init__.py::Money."),
+      }),
+    )
+    .max(64)
+    .optional()
+    .describe(
+      "Contracts your change makes old, once the replacement sits beside them. A stored plan marks them retiring for the whole project: " +
+        "a checkpoint whose own changes call one gets a next step naming the replacement, and a rewrite rule you declare for the contract " +
+        "is how Penguin's codemod migrates the call.",
+    ),
 });
 const revisePlanPartInput = z
   .strictObject({
@@ -735,6 +749,12 @@ const applyFixInput = z.strictObject({
     .optional()
     .describe("The Python files to fix, inside your identity's charter. A lockfile fix names none."),
   edits: z.array(codemodEdit).min(1).max(50).optional().describe("For a codemod: the edits, as the contract diff names them."),
+  rules: z
+    .array(z.string().min(1).max(64))
+    .min(1)
+    .max(50)
+    .optional()
+    .describe("For a codemod instead of edits: the ids of rewrite rules of retiring symbols, as a retiring-calls step names them."),
 });
 
 const INSTRUCTIONS =
@@ -1125,7 +1145,7 @@ function registerFeatureTools(server: McpServer, features: McpFeatures): void {
       description:
         "Applies one deterministic fix to your feature's fork at its latest checkpoint: format (ruff format), " +
         "lint (ruff check --fix), lockfile (uv lock) or codemod (a rename, move or keyword rename generated " +
-        "from the contract diff). Only these kinds exist, and only Python files inside your identity's charter " +
+        "from the contract diff, or the rewrite rules of retiring symbols a retiring-calls step names). Only these kinds exist, and only Python files inside your identity's charter " +
         "can be named. The result goes back through the checks before Penguin accepts it. The check runner " +
         "applies it; the answer says it is waiting. Until a merge plan grants a write token on the fork, the fix " +
         "commit stays on the check runner and is not pushed to your fork. The result reaches this session at its " +
@@ -1133,13 +1153,14 @@ function registerFeatureTools(server: McpServer, features: McpFeatures): void {
       inputSchema: applyFixInput,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async ({ sessionId: id, feature, kind, paths, edits }) =>
+    async ({ sessionId: id, feature, kind, paths, edits, rules }) =>
       answer(
         await features.tool(id, "apply_fix", {
           feature,
           kind,
           paths: paths ?? [],
           ...(edits === undefined ? {} : { edits }),
+          ...(rules === undefined ? {} : { rules }),
         }),
       ),
   );
@@ -1165,8 +1186,8 @@ function registerFeatureTools(server: McpServer, features: McpFeatures): void {
       inputSchema: proposePlanInput,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
-    async ({ sessionId: id, feature, parts, rules }) => {
-      const outcome = await features.plan(id, feature, parts, rules);
+    async ({ sessionId: id, feature, parts, rules, retiring }) => {
+      const outcome = await features.plan(id, feature, parts, rules, retiring);
       // A plan with gaps or over the limit is an answer with the reasons, marked as an error so the agent acts on it.
       if (outcome.status === "ok" && outcome.value.status !== "stored") return { ...result({ ...outcome.value }), isError: true };
       return answer(outcome);

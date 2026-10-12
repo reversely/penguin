@@ -523,7 +523,7 @@ describe("propose_plan", () => {
         ["rule_refused", "cents"],
       ],
     );
-    assert.match(refused.missing[0]?.message ?? "", /does not touch, so it would rewrite code outside the change/u);
+    assert.match(refused.missing[0]?.message ?? "", /does not touch and the plan does not retire, so it would rewrite code outside the change/u);
     // Other rules than the reported run's: a run of their own, and the old report no longer counts.
     const again = await project.propose("ines", "s-ines", "money-minor", parts(), [CENTS]);
     assert.ok(again.status === "missing" && again.missing[0]?.code === "waiting_for_runner");

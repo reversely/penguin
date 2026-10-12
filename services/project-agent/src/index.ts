@@ -93,6 +93,7 @@ import { claimReviews, recordReview, type ReviewClaim, type ReviewReportOutcome 
 import { reviewDifferences } from "./review-view.ts";
 import {
   AgentToolStore,
+  requestRetiringCheck,
   requestTool,
   whatsNear,
   type AgentToolDeps,
@@ -127,6 +128,7 @@ import {
   type ForkReader,
 } from "./fix-write.ts";
 import { coverMidway, handOver, meeting, PlanCoverageStore } from "./plan-coverage.ts";
+import { RetiringStore } from "./retiring-store.ts";
 import type { BlockRun } from "./block-store.ts";
 import {
   BlockQueueStore,
@@ -784,6 +786,7 @@ export class ProjectAgent extends Agent {
   #protectedChanges: ProtectedChangeStore | undefined;
   #fixGrants: FixGrantStore | undefined;
   #planCoverage: PlanCoverageStore | undefined;
+  #retiring: RetiringStore | undefined;
   #blockQueue: BlockQueueStore | undefined;
   /** Plan proposals run one at a time, so no two take the same plan version or record sequence number. */
   #planSteps: Promise<unknown> = Promise.resolve();
@@ -1673,6 +1676,16 @@ export class ProjectAgent extends Agent {
             await this.#scopeMap(repos),
           );
         }),
+      // PRD 0.5 section 5.1: one retiring-calls check per checkpoint, when the project retires symbols.
+      // A failure here is logged and never fails the checkpoint.
+      checkRetiring: async (feature: Feature, session: string, commit: string) => {
+        try {
+          return await requestRetiringCheck(this.#agentToolDeps(repos), feature, session, commit);
+        } catch (error) {
+          console.error(JSON.stringify({ event: "retiring_check_failed", feature: feature.id, error: String(error).slice(0, 200) }));
+          return undefined;
+        }
+      },
     };
     return this.#featuresChanging(reportFeatureCheckpoint(deps, owner, sessionId, featureId, sha));
   }
@@ -1874,7 +1887,7 @@ export class ProjectAgent extends Agent {
     owner: string,
     sessionId: string,
     tool: "impact" | "check" | "apply_fix",
-    input: { readonly feature?: unknown; readonly kind?: unknown; readonly paths?: unknown; readonly edits?: unknown },
+    input: { readonly feature?: unknown; readonly kind?: unknown; readonly paths?: unknown; readonly edits?: unknown; readonly rules?: unknown },
     repos: ProjectRepos,
   ): Promise<ToolRequestOutcome> {
     return requestTool(this.#agentToolDeps(repos), owner, sessionId, tool, input);
@@ -1926,6 +1939,7 @@ export class ProjectAgent extends Agent {
       identity: (identityId) => this.readIdentity(identityId),
       baseline: (repo, sha) =>
         withRepo(this.env.ARTIFACTS, repo, (fork) => withRepo(this.env.ARTIFACTS, repos.base, (base) => checkpointBaseline(fork, base, sha))),
+      retiring: () => this.#retiringStore().list(),
     };
   }
 
@@ -1948,6 +1962,7 @@ export class ProjectAgent extends Agent {
           heartbeat: (caller, session) => this.sessionHeartbeat(caller, session),
           sign: async (record) => signFeatureRecord(record, (await this.#loadServiceKey()).privateKey),
           breakLimit: parseBreakLimit((this.env as unknown as ProjectAgentEnv).PENGUIN_PLAN_BREAK_LIMIT),
+          retiring: this.#retiringStore(),
           exception: (personId, featureId) => {
             this.#inboxStore().planReturned(personId, featureId);
             sendToOwner(this.getConnections<{ owner?: string }>(), personId, inboxChangedMessage());
@@ -2126,6 +2141,12 @@ export class ProjectAgent extends Agent {
   #planCoverageStore(): PlanCoverageStore {
     this.#planCoverage ??= new PlanCoverageStore(this.#database());
     return this.#planCoverage;
+  }
+
+  /** The project's retiring symbols, declared by stored merge plans (retiring-store.ts). */
+  #retiringStore(): RetiringStore {
+    this.#retiring ??= new RetiringStore(this.#database());
+    return this.#retiring;
   }
 
   #roundLimit(): number | undefined {

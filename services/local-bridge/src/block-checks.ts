@@ -84,7 +84,7 @@ export interface BlockCheckRun {
   readonly durationMs: number;
 }
 
-const TOOL_NAMES: Record<Exclude<BlockCheckName, "tests">, string> = {
+const TOOL_NAMES: Record<Exclude<BlockCheckName, "tests" | "retiring">, string> = {
   overlap: "git diff",
   merge: "git merge-tree",
   lint: "ruff",
@@ -133,7 +133,7 @@ export class BlockChecker {
   ): Promise<BlockCheck[]> {
     const { repoPath } = this.#options;
     const merged = target.merge.kind === "clean" ? target.merge.commit : null;
-    const base = (check: Exclude<BlockCheckName, "tests">, commandId: string): BlockCheckBase => ({
+    const base = (check: Exclude<BlockCheckName, "tests" | "retiring">, commandId: string): BlockCheckBase => ({
       planId: request.planId,
       target: target.id,
       check,

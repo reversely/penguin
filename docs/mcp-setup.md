@@ -240,7 +240,7 @@ identity, its input, its answer and its duration, so the feature page and a demo
 | `whats_near` | `paths`, `scopes` or both | Each running feature, other than the session's own, whose area touches them or that works in a scope depending on one of them, with its person, state and agent sessions |
 | `impact` | `feature` | The request, recorded at the feature's latest checkpoint for the check runner |
 | `check` | `feature` | The request, recorded the same way |
-| `apply_fix` | `feature`, `kind`, `paths`, `edits` | The request with its fix's command ID, recorded the same way |
+| `apply_fix` | `feature`, `kind`, `paths`, `edits` or `rules` | The request with its fix's command ID, recorded the same way |
 
 `impact`, `check` and `apply_fix` act only on the feature the session works on, once its fork has a
 checkpoint. Their answer has `state: "waiting"` and `message: "waiting for the check runner"`, with
@@ -253,7 +253,8 @@ delivered results under `toolResults`, newest first. Each entry carries the full
 
 | Tool | `outcome` holds |
 |---|---|
-| `impact` | `impact`: the impact graph and contract diff, with each other running feature's fork |
+| `impact` | `impact`: the impact graph and contract diff, with each other running feature's fork. While symbols are retiring, `migration`: the remaining callers on main and in each running feature's own changes, grouped by owner |
+| `impact`, from a checkpoint | The retiring-calls check Penguin asked for: `decisions`, one next step per file and retiring symbol the checkpoint's own changes use, each naming the replacement |
 | `check` | `checks`: every block check; `decisions`: one next step from the ladder per failing check |
 | `apply_fix` | `fix`: the fix's run with the files it changed; `fixRef` and `pushed` |
 
@@ -266,6 +267,8 @@ its worktree.
 files inside the session identity's charter. A lockfile fix names no files. A codemod carries
 `edits`, each `{"kind": "rename" | "move", "from": "<dotted name>", "to": "<dotted name>"}` or
 `{"kind": "rename-parameter", "function": "<dotted name>", "from": "<name>", "to": "<name>"}`.
+A codemod may carry `rules` instead: the ids of rewrite rules declared for retiring symbols, as a
+step 3 of the retiring-calls check names them.
 Penguin refuses a call with an unknown kind, a file outside the charter, a path that leaves the
 repository or an edit whose names are not Python names. A refused call records nothing.
 
@@ -295,7 +298,14 @@ A plan may also declare `rules`: up to 32 rewrite rules for its mechanical fixes
 `money.display($amount)` and replacement `$amount.display()` rewrites each call of `display`. A part
 whose fix is exactly what the rules write is mechanical. A refused rule comes back in `missing` as
 `rule_refused` with its `rule` id and the reason. Other rules than the last call's ask the runner
-for a new facts run. A complete
+for a new facts run.
+
+A plan may also declare `retiring`: up to 64 `{ "contract": "<path::symbol>", "replacement":
+"<path::name>" }` pairs, for contracts the change leaves in place beside their replacement. Each
+contract must be one `penguin/scopes.json` declares for a scope the feature's area names. A rule
+may name a retiring contract the contract diff does not touch. Once the plan is stored, every
+checkpoint whose own changes call a retiring symbol gets a next step naming the replacement. A
+complete
 plan answers `stored` with its id, facts and parts. Every `missing` or `returned` answer is marked as
 a tool error. Text from the repository and the run, such as the commit subject, docstrings, assertion
 lines, diff lines and the agent's own note, arrives only inside `personWritten`

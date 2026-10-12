@@ -7,7 +7,11 @@
 // repository, as it does for reviews (review-run.ts).
 //
 // - `impact` runs `analysis:python-impact` on the baseline and the checkpoint, searching each other
-//   fork for uses of the change.
+//   fork for uses of the change. When the project has retiring symbols (retiring.ts), the request
+//   carries them. A request Penguin made at a checkpoint (`search: "own"`) is the retiring-calls
+//   check: one analysis of the checkpoint's own changes, with one ladder step per file and symbol it
+//   uses. An agent's `impact` call also lists the remaining callers on main and in each other
+//   running feature's own changes, grouped by owner, from a second analysis.
 // - `check` runs a combined run with the block checks (combined-run.ts): the checkpoint merged onto
 //   its baseline (`main`) and onto each other running feature's fork, keyed by the feature id. A
 //   person with two running features gets two merged trees, each tested in that person's scopes. Each failed or erred
@@ -31,8 +35,15 @@ import {
   type CodemodEdit,
   type FixKind,
   type ImpactReport,
+  migrationGroups,
+  retiringCallDecisions,
+  retiringUses,
+  rewriteRuleContractPath,
+  type RetiringDeclaration,
+  type RewriteRule,
   type ToolCaller,
 } from "@penguin/protocol";
+import { runGit } from "@penguin/git-analysis";
 import type { ScopeMap } from "@penguin/scope-map";
 
 import type { FixApplier } from "./apply-fix.ts";
@@ -152,15 +163,94 @@ function ownedScopes(scopeMap: ScopeMap, person: string): string[] {
   return [...scopeMap.scopes.values()].filter((scope) => scope.ownerId === person).map((scope) => scope.id);
 }
 
+/** The retiring symbols a request carries, as the ProjectAgent recorded them; empty when none. */
+function retiringOf(claim: ClaimedToolRun): RetiringDeclaration[] {
+  const listed = claim.input["retiring"];
+  return Array.isArray(listed) ? (listed as RetiringDeclaration[]) : [];
+}
+
 async function runImpact(options: ToolPassOptions, claim: ClaimedToolRun): Promise<AgentToolResult> {
   const scopeMap = await loadScopeMap(options.repoPath, claim.checkpoint);
+  const retiring = retiringOf(claim);
+  if (retiring.length > 0 && claim.input["search"] === "own") return runRetiringCheck(options, claim, scopeMap, retiring);
   const forks = claim.forks.map((other) => ({ id: other.feature, sha: other.checkpoint, scopes: ownedScopes(scopeMap, other.person) }));
   const impact: ImpactReport = await options.impact({ base: claim.base, head: claim.checkpoint, forks });
   const using = selectAffectedForks(impact);
   const summary =
     `${plural(impact.changes.length, "changed symbol")}, ${plural(impact.contracts.length, "contract")} touched; ` +
     (using.length === 0 ? "no other running feature uses the change" : `used by ${using.join(", ")}`);
-  return { ...emptyResult(claim), impact, summary: bounded(summary) };
+  if (retiring.length === 0) return { ...emptyResult(claim), impact, summary: bounded(summary) };
+  // The remaining callers of retiring symbols: on main (the baseline) and in each running feature's
+  // own changes since its merge base with main.
+  const callers = await options.impact({
+    base: claim.base,
+    head: claim.base,
+    forks: claim.forks.map((other) => ({ id: other.feature, sha: other.checkpoint, scopes: [], since: claim.base })),
+    symbols: retiring.map((each) => each.contract),
+  });
+  const person = new Map(claim.forks.map((other) => [other.feature, other.person]));
+  const migration = migrationGroups(callers, retiring, (scope) => scopeMap.scopes.get(scope)?.ownerId, (feature) => person.get(feature));
+  const places = migration.groups.reduce((sum, group) => sum + group.places.length, 0);
+  const listed = `; retiring symbols: ${plural(places, "place")} left in ${plural(migration.groups.length, "owner group")}`;
+  return { ...emptyResult(claim), impact, migration, summary: bounded(`${summary}${listed}`) };
+}
+
+/**
+ * For each file of the checkpoint's own changes that uses a retiring symbol with declared rewrite
+ * rules: the ids of the rules that rewrite it, from a dry run of the codemod on the checkpoint that
+ * commits nothing (FixApplier.rewrite). A file no rule changes is absent.
+ */
+async function ruleRewrites(
+  options: ToolPassOptions,
+  claim: ClaimedToolRun,
+  impact: ImpactReport,
+  retiring: readonly RetiringDeclaration[],
+): Promise<Map<string, string[]>> {
+  const rulesByPath = new Map<string, Map<string, RewriteRule>>();
+  for (const { use, declaration } of retiringUses(impact.forks.find((fork) => fork.id === claim.feature)?.uses ?? [], retiring)) {
+    const rules = rulesByPath.get(use.path) ?? new Map<string, RewriteRule>();
+    for (const rule of declaration.rules) rules.set(rule.id, rule);
+    if (rules.size > 0) rulesByPath.set(use.path, rules);
+  }
+  const rewritten = new Map<string, string[]>();
+  for (const [path, byId] of rulesByPath) {
+    const rules = [...byId.values()];
+    const contracts: Record<string, string> = {};
+    for (const contract of new Set(rules.map(rewriteRuleContractPath))) {
+      try {
+        contracts[contract] = await runGit(options.repoPath, ["show", `${claim.checkpoint}:${contract}`]);
+      } catch {
+        // Absent at the checkpoint: the codemod refuses the rule.
+      }
+    }
+    const outcome = await options.fixes.rewrite({ commit: claim.checkpoint, paths: [path], allowed: [path], rules, contracts });
+    const file = outcome.error === null ? outcome.files.find((each) => each.path === path) : undefined;
+    if (file !== undefined) rewritten.set(path, [...file.rules]);
+  }
+  return rewritten;
+}
+
+/**
+ * The retiring-calls check (PRD 0.5 section 5.1) on a checkpoint Penguin recorded: one analysis of the
+ * checkpoint against its baseline, with the checkpoint as a fork of its own changes since the
+ * baseline, searched for the retiring symbols. Each file and symbol it uses gets one next step.
+ */
+async function runRetiringCheck(options: ToolPassOptions, claim: ClaimedToolRun, scopeMap: ScopeMap, retiring: readonly RetiringDeclaration[]): Promise<AgentToolResult> {
+  const impact = await options.impact({
+    base: claim.base,
+    head: claim.checkpoint,
+    forks: [{ id: claim.feature, sha: claim.checkpoint, scopes: [], since: claim.base }],
+    symbols: retiring.map((each) => each.contract),
+  });
+  const context = await routing(options, claim, scopeMap);
+  const rewritten = await ruleRewrites(options, claim, impact, retiring);
+  const decisions = retiringCallDecisions(impact, claim.feature, retiring, context, claim.checkpoint, (path) => rewritten.get(path) ?? []);
+  const summary =
+    decisions.length === 0
+      ? "the checkpoint's own changes call no retiring symbol"
+      : `the checkpoint's own changes use retiring symbols in ${plural(decisions.length, "place")}: ` +
+        decisions.map((decision) => `${decision.evidence.findings[0]?.path} (step ${decision.step})`).join(", ");
+  return { ...emptyResult(claim), impact, decisions, summary: bounded(summary) };
 }
 
 /** The caller's charter as the ladder reads it, with the project's identities for the owners' agents. */
@@ -191,7 +281,13 @@ async function runFix(options: ToolPassOptions, claim: ClaimedToolRun): Promise<
   const scopeMap = await loadScopeMap(options.repoPath, claim.checkpoint);
   const { handle, person, scopes, paths } = claim.charter;
   const charter: CharterView = { handle, person, scopes, paths };
-  const input = claim.input as { readonly kind: FixKind; readonly paths?: readonly string[]; readonly edits?: readonly CodemodEdit[] };
+  const input = claim.input as {
+    readonly kind: FixKind;
+    readonly paths?: readonly string[];
+    readonly edits?: readonly CodemodEdit[];
+    /** A codemod by the rewrite rules of retiring symbols, as the ProjectAgent resolved them. */
+    readonly rules?: readonly RewriteRule[];
+  };
   const run = await options.fixes.apply(
     {
       kind: input.kind,
@@ -199,6 +295,7 @@ async function runFix(options: ToolPassOptions, claim: ClaimedToolRun): Promise<
       paths: [...(input.paths ?? [])],
       allowed: charterPaths(scopeMap, charter),
       ...(input.edits === undefined ? {} : { edits: input.edits }),
+      ...(input.rules === undefined ? {} : { rules: input.rules }),
       caller: handle as ToolCaller,
     },
     `apply_fix-${claim.runId}`,

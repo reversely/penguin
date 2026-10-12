@@ -14,6 +14,7 @@
 
 import { IMPACT_REPORT_SCHEMA, type ImpactReport, type ImpactUse } from "./impact.ts";
 import { FINGERPRINT_PATTERN } from "./operation-schema.ts";
+import type { RetiringSymbol } from "./retiring.ts";
 import type { RewriteRule } from "./rewrite-rule.ts";
 import { checkSchema, type JsonSchema, type SchemaError } from "./schema-check.ts";
 
@@ -471,6 +472,8 @@ export interface Plan {
   readonly facts: PlanFacts;
   /** The rewrite rules the plan declares; absent on a plan from before rules. */
   readonly rules?: readonly RewriteRule[];
+  /** The contracts the plan marks as retiring, each with its replacement (retiring.ts); absent is none. */
+  readonly retiring?: readonly RetiringSymbol[];
   readonly parts: readonly PlanPart[];
   /** How long Penguin took to assemble the facts and parts, in milliseconds. */
   readonly assembledMs: number;

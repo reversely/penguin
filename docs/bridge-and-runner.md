@@ -386,7 +386,9 @@ may also name `since`, a commit on main. The script then looks up the fork's mer
 the fork's uses and unreadable files only in paths the fork added or changed since that merge base.
 The fork's entry in the report repeats `since` and adds `mergeBase` and `carried`, the number of uses
 left out. When the two histories never meet, `mergeBase` is null and every file counts as the fork's
-own. The report comes back on standard output and is checked against `IMPACT_REPORT_SCHEMA` in
+own. A request may also list `symbols`, up to 64 contracts as `path::name`. The script searches for
+each one as if it had changed, so a request whose base equals its head reports only their uses.
+Penguin uses it for retiring symbols ([design.md](design.md#steps-1-to-5-in-the-build)). The report comes back on standard output and is checked against `IMPACT_REPORT_SCHEMA` in
 `packages/protocol` before anything reads it. [design.md](design.md#impact-graph-and-contract-diff-for-python)
 lists what the report holds.
 
@@ -668,14 +670,22 @@ Runner mode answers the `impact`, `check` and `apply_fix` calls agents make thro
 and every other running feature's fork with read tokens into the runner's repository:
 
 - `impact` runs the [impact analysis](#impact-analysis) on the checkpoint's baseline and the
-  checkpoint, with each other fork, keyed by its feature id, searched in its person's scopes.
+  checkpoint, with each other fork, keyed by its feature id, searched in its person's scopes. While
+  the project has retiring symbols, the request carries them. The runner then runs a second
+  analysis on the baseline alone, with each other fork's own changes searched for the retiring
+  symbols. It reports the remaining callers grouped by owner under `migration`.
+- A request Penguin records at a checkpoint with `search: "own"` is the retiring-calls check. The
+  runner runs one analysis with the checkpoint as a fork of its own changes. It applies the declared
+  rewrite rules to each file that uses a retiring symbol in a throwaway worktree and reports one
+  ladder step per file and symbol under `decisions`.
 - `check` runs the [block checks](#block-checks) on the checkpoint merged onto its baseline and onto
   each other running feature's fork. Each merged tree is named by its feature id, so a person with
   several running features has each one checked. The feature's person decides which scopes' tests
   run and receives the routed failures. Each failed or erred check gets
   one decision from the [resolution ladder](#resolution-ladder). No fix runs.
 - `apply_fix` runs the [fix](#resolution-ladder) the agent asked for on the checkpoint. The fix may
-  change only the named files inside the caller identity's charter.
+  change only the named files inside the caller identity's charter. A codemod by `rules` runs the
+  rewrite rules of retiring symbols, each contract module read at the checkpoint.
 
 The runner reports each result to `POST /tool-runs/<id>`. Penguin hands it to the requesting session
 at its next safe checkpoint. A request whose forks cannot be fetched stays claimed and runs again

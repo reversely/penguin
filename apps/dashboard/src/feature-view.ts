@@ -78,6 +78,7 @@ const RECORD_LABEL: Readonly<Record<string, string>> = {
   approve_overlap: "Start approved",
   propose_plan: "Plan proposed",
   plan_returned: "Plan returned",
+  retire_symbols: "Symbols retiring",
   approve_plan_part: "Part approved",
   request_plan_change: "Change requested",
   revise_plan_part: "Part revised",

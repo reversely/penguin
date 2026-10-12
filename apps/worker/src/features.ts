@@ -366,9 +366,9 @@ export function mcpFeatures(ports: FeaturePorts, owner: string): McpFeatures {
         const outcome = await (await ports.directory()).submitReview(owner, sessionId, { feature, scope, form }, ports.repos);
         return outcome.status === "ok" ? { status: "ok", value: reviewFields(outcome) } : outcome;
       }),
-    plan: (sessionId, feature, parts, rules) =>
+    plan: (sessionId, feature, parts, rules, retiring) =>
       guarded(async () => {
-        const outcome = await (await ports.directory()).proposePlan(owner, sessionId, { feature, parts, rules }, ports.repos);
+        const outcome = await (await ports.directory()).proposePlan(owner, sessionId, { feature, parts, rules, retiring }, ports.repos);
         return outcome.status === "rejected" ? outcome : { status: "ok", value: planAnswer(outcome) };
       }),
     revise: (sessionId, input) =>

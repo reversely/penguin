@@ -12,6 +12,7 @@ import { OverlapStore } from "../src/overlap-lock.ts";
 import { PlanFactsStore } from "../src/plan-facts.ts";
 import { PlanStore } from "../src/plan-store.ts";
 import { proposePlan, type ProposePlanDeps, type ProposePlanOutcome } from "../src/propose-plan.ts";
+import { RetiringStore } from "../src/retiring-store.ts";
 import type { Session, SessionOutcome } from "../src/session-store.ts";
 import { gitReader } from "./git-reader.ts";
 import { sqlite } from "./issues-repo.ts";
@@ -23,6 +24,7 @@ export class PlanProject {
   readonly plans = new PlanStore(this.sql);
   readonly overlaps = new OverlapStore(this.sql);
   readonly inbox = new InboxStore(this.sql, new IdentityStore(this.sql));
+  readonly retiring = new RetiringStore(this.sql);
   /** Each session: its person and identity handle. */
   readonly sessions = new Map<string, { readonly person: string; readonly handle: string }>();
   readonly exceptions: { readonly person: string; readonly feature: string }[] = [];
@@ -89,7 +91,7 @@ export class PlanProject {
     return { status: "ok", session: view };
   }
 
-  propose(caller: string, sessionId: string, feature: string, parts: unknown, rules?: unknown): Promise<ProposePlanOutcome> {
+  propose(caller: string, sessionId: string, feature: string, parts: unknown, rules?: unknown, retiring?: unknown): Promise<ProposePlanOutcome> {
     return proposePlan(
       {
         features: this.features,
@@ -111,10 +113,11 @@ export class PlanProject {
           this.inbox.planReturned(person, feature);
         },
         ...(this.announce === undefined ? {} : { announce: this.announce }),
+        retiring: this.retiring,
       },
       caller,
       sessionId,
-      { feature, parts, ...(rules === undefined ? {} : { rules }) },
+      { feature, parts, ...(rules === undefined ? {} : { rules }), ...(retiring === undefined ? {} : { retiring }) },
     );
   }
 

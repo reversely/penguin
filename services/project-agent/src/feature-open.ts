@@ -288,6 +288,8 @@ export type FeatureCheckpointOutcome =
       readonly planNotices: Delivery["planNotices"];
       /** The announced plans that gained a part for this feature at this checkpoint (PRD 4.4 step 3). */
       readonly plansJoined: readonly JoinedPlan[];
+      /** The retiring-calls check this checkpoint asked the check runner for, or null (agent-tools.ts). */
+      readonly retiringCheck: number | null;
       readonly durationMs: number;
     })
   | FeatureRejection;
@@ -310,6 +312,11 @@ export interface FeatureCheckpointDeps extends FeatureDeps {
    * Absent, nobody is asked.
    */
   readonly protectedChanges?: (feature: Feature, sha: string) => Promise<unknown>;
+  /**
+   * Asks the check runner for the retiring-calls check on the checkpoint a session reported, once per
+   * checkpoint (agent-tools.ts requestRetiringCheck); its run id, or undefined when none was asked.
+   */
+  readonly checkRetiring?: (feature: Feature, sessionId: string, sha: string) => Promise<number | undefined>;
   readonly now?: () => number;
 }
 
@@ -350,6 +357,7 @@ export async function reportFeatureCheckpoint(
   if (outcome.status === "rejected") return outcome;
   // Joining plans runs before the delivery, so the originating sessions' notices already name the new part.
   const plansJoined = (await deps.joinPlans?.(outcome.feature)) ?? [];
+  const retiringCheck = sessionId === null ? undefined : await deps.checkRetiring?.(outcome.feature, sessionId, sha);
   const delivery = sessionId === null ? undefined : deps.deliver(caller, sessionId);
   return {
     ...outcome,
@@ -360,6 +368,7 @@ export async function reportFeatureCheckpoint(
     toolResults: delivery?.toolResults ?? [],
     planNotices: delivery?.planNotices ?? NO_PLAN_NOTICES,
     plansJoined,
+    retiringCheck: retiringCheck ?? null,
     durationMs: now() - started,
   };
 }

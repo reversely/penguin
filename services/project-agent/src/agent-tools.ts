@@ -7,6 +7,13 @@
 // which reaches the requesting session at its next safe checkpoint. `apply_fix` accepts only the
 // fixed fix kinds, files inside the caller's charter and codemod edits that are dotted Python names.
 //
+// Retiring symbols (retiring-store.ts) reach the runner through these requests. An `impact` request
+// carries them, so its result also lists the remaining callers grouped by owner. Each checkpoint of a
+// feature with an agent session gets one `impact` request of Penguin's own, the retiring-calls check
+// (`requestRetiringCheck`): the runner searches the checkpoint's own changes and returns one ladder
+// step per file and retiring symbol they use. A step 3 names the declaring plan's rewrite rule, which
+// `apply_fix` applies as a codemod by `rules`.
+//
 // Every call is recorded with its tool, caller, input and answer, so a feature page or a demo shows
 // each tool's use and how many calls an agent made per resolution (PRD section 11).
 
@@ -18,6 +25,8 @@ import {
   type AgentToolName,
   type AgentToolResult,
   type FixKind,
+  type RetiringDeclaration,
+  type RewriteRule,
   type ToolRunResult,
 } from "@penguin/protocol";
 import type { ScopeMap } from "@penguin/scope-map";
@@ -270,6 +279,8 @@ export interface AgentToolDeps {
   readonly identity: (identityId: string) => CharterIdentity | undefined;
   /** The checkpoint `sha` of fork `repo`'s baseline on main (`checkpointBaseline`). */
   readonly baseline: (repo: string, sha: string) => Promise<string>;
+  /** The project's retiring symbols (retiring-store.ts); absent is none. */
+  readonly retiring?: () => readonly RetiringDeclaration[];
 }
 
 /** A running feature near the asked paths or scopes, with its person and agents. */
@@ -382,7 +393,7 @@ export async function requestTool(
   caller: string,
   sessionId: string,
   tool: Exclude<AgentToolName, "whats_near">,
-  input: { readonly feature?: unknown; readonly kind?: unknown; readonly paths?: unknown; readonly edits?: unknown },
+  input: { readonly feature?: unknown; readonly kind?: unknown; readonly paths?: unknown; readonly edits?: unknown; readonly rules?: unknown },
 ): Promise<ToolRequestOutcome> {
   const started = performance.now();
   const live = deps.heartbeat(caller, sessionId);
@@ -406,6 +417,9 @@ export async function requestTool(
     recorded = { feature: featureId, ...fix.input };
     commandId = FIX_COMMAND_IDS[fix.input.kind];
   }
+  // With retiring symbols, the impact result also lists the remaining callers grouped by owner.
+  const retiring = deps.retiring?.() ?? [];
+  if (tool === "impact" && retiring.length > 0) recorded = { ...recorded, retiring: retiring.map(retiringInput) };
   // The runner compares the checkpoint with its baseline on main, as a review's side-by-side run does.
   const baseSha = await deps.baseline(feature.repo, feature.latestCheckpointSha);
   const run = deps.runs.insert({
@@ -424,11 +438,62 @@ export async function requestTool(
   return { status: "ok", runId: run.id, tool, featureId, checkpointSha: feature.latestCheckpointSha, input: recorded, commandId };
 }
 
+/** A retiring symbol as a runner request carries it: what the analysis and the ladder need. */
+function retiringInput(each: RetiringDeclaration): RetiringDeclaration {
+  const { contract, replacement, feature, planId, person, rules, recordId, declaredAt } = each;
+  return { contract, replacement, feature, planId, person, rules, recordId, declaredAt };
+}
+
+/**
+ * The retiring-calls check (PRD 0.5 section 5.1) on checkpoint `sha` of `feature`, reported by session
+ * `sessionId`: one `impact` request of Penguin's own, searching the checkpoint's own changes for the
+ * project's retiring symbols. Its result reaches the session at its next safe checkpoint with one next
+ * step per file and symbol. Undefined when the project retires nothing, the session has no identity or
+ * the checkpoint was already checked.
+ */
+export async function requestRetiringCheck(deps: AgentToolDeps, feature: Feature, sessionId: string, sha: string): Promise<number | undefined> {
+  const retiring = deps.retiring?.() ?? [];
+  const session = deps.session(sessionId);
+  if (retiring.length === 0 || session === undefined || feature.repo === null) return undefined;
+  const checked = deps.runs.list(feature.id).some((run) => run.checkpointSha === sha && run.input["search"] === "own");
+  if (checked) return undefined;
+  const started = performance.now();
+  const baseSha = await deps.baseline(feature.repo, sha);
+  const run = deps.runs.insert({
+    featureId: feature.id,
+    sessionId,
+    caller: session.handle,
+    tool: "impact",
+    input: { feature: feature.id, search: "own", retiring: retiring.map(retiringInput) },
+    result: "waiting",
+    summary: `the retiring-calls check on ${feature.id}@${sha.slice(0, 12)} waits for the check runner`,
+    checkpointSha: sha,
+    durationMs: performance.now() - started,
+    identityId: session.identityId,
+    baseSha,
+  });
+  return run.id;
+}
+
+/** The rewrite rules of retiring symbols `ids` names, or a message naming the first unknown id. */
+function retiringRules(deps: AgentToolDeps, ids: unknown): RewriteRule[] | string {
+  const listed = listOf(ids, AGENT_TOOL_LIMITS.edits);
+  if (listed === undefined || listed.length === 0) return `rules must name 1 to ${AGENT_TOOL_LIMITS.edits} rewrite rules of retiring symbols`;
+  const known = new Map((deps.retiring?.() ?? []).flatMap((each) => each.rules.map((rule) => [rule.id, rule] as const)));
+  const rules: RewriteRule[] = [];
+  for (const id of new Set(listed)) {
+    const rule = typeof id === "string" ? known.get(id) : undefined;
+    if (rule === undefined) return `${JSON.stringify(String(id).slice(0, 80))} is not a rewrite rule of a retiring symbol`;
+    rules.push(rule);
+  }
+  return rules;
+}
+
 async function checkFix(
   deps: AgentToolDeps,
   session: Session,
-  input: { readonly kind?: unknown; readonly paths?: unknown; readonly edits?: unknown },
-): Promise<{ readonly status: "ok"; readonly input: { kind: FixKind; paths: string[]; edits?: unknown[] } } | FeatureRejection> {
+  input: { readonly kind?: unknown; readonly paths?: unknown; readonly edits?: unknown; readonly rules?: unknown },
+): Promise<{ readonly status: "ok"; readonly input: { kind: FixKind; paths: string[]; edits?: unknown[]; rules?: RewriteRule[] } } | FeatureRejection> {
   if (typeof input.kind !== "string" || !(FIX_KINDS as readonly string[]).includes(input.kind)) {
     return rejected("invalid", `kind must be one of ${FIX_KINDS.join(", ")}`);
   }
@@ -449,8 +514,15 @@ async function checkFix(
   const verdict = withinCharter(identity, undefined, [], clean, await deps.scopeMap());
   if (!verdict.allowed) return rejected("forbidden", verdict.message);
   if (kind !== "codemod") {
-    if (input.edits !== undefined) return rejected("invalid", "only a codemod takes edits");
+    if (input.edits !== undefined || input.rules !== undefined) return rejected("invalid", "only a codemod takes edits or rules");
     return { status: "ok", input: { kind, paths: clean } };
+  }
+  // A codemod by the rewrite rules of retiring symbols: the ladder's step 3 for a new retiring call.
+  if (input.rules !== undefined) {
+    if (input.edits !== undefined) return rejected("invalid", "a codemod takes edits or rules, not both");
+    const rules = retiringRules(deps, input.rules);
+    if (typeof rules === "string") return rejected("invalid", rules);
+    return { status: "ok", input: { kind, paths: clean, rules } };
   }
   const edits = listOf(input.edits, AGENT_TOOL_LIMITS.edits);
   if (edits === undefined || edits.length === 0) return rejected("invalid", `a codemod needs 1 to ${AGENT_TOOL_LIMITS.edits} edits`);

@@ -30,6 +30,8 @@ import { isObjectId, runGit } from "@penguin/git-analysis";
 import {
   codemodEditProblem,
   FIX_COMMAND_IDS,
+  rewriteRuleContractPath,
+  rewriteRuleProblem,
   FIX_KINDS,
   REGENERATED_LOCKFILES,
   type BlockCheckFinding,
@@ -58,6 +60,11 @@ export interface FixRequest {
   readonly allowed: readonly string[];
   /** The codemod's edits, from the contract diff. */
   readonly edits?: readonly CodemodEdit[];
+  /**
+   * Instead of edits: rewrite rules a plan declared for retiring symbols (retiring.ts), applied as the
+   * ladder's step 3 to a new call of a retiring symbol. Each rule's contract module is read at `commit`.
+   */
+  readonly rules?: readonly RewriteRule[];
   /** For a lockfile fix: the commit merged in first; the lockfiles it conflicts on are regenerated. */
   readonly merge?: string;
   readonly caller?: ToolCaller;
@@ -156,14 +163,21 @@ export function checkFixRequest(request: FixRequest): void {
       }
     }
   }
-  if (request.kind === "codemod") {
+  if (request.kind === "codemod" && request.rules !== undefined) {
+    if (request.edits !== undefined) throw new FixRefusedError("a codemod takes edits or rules, not both");
+    if (request.rules.length === 0) throw new FixRefusedError("a codemod by rules needs at least one rule");
+    for (const rule of request.rules) {
+      const problem = rewriteRuleProblem(rule);
+      if (problem !== null) throw new FixRefusedError(`a rewrite rule is malformed: ${problem}`);
+    }
+  } else if (request.kind === "codemod") {
     if (request.edits === undefined || request.edits.length === 0) throw new FixRefusedError("a codemod needs edits from the contract diff");
     for (const edit of request.edits) {
       const problem = codemodEditProblem(edit);
       if (problem !== null) throw new FixRefusedError(`a codemod edit is malformed: ${problem}`);
     }
-  } else if (request.edits !== undefined) {
-    throw new FixRefusedError("only a codemod takes edits");
+  } else if (request.edits !== undefined || request.rules !== undefined) {
+    throw new FixRefusedError("only a codemod takes edits or rules");
   }
 }
 
@@ -217,6 +231,7 @@ export class FixApplier {
       paths: [...request.paths],
       allowed: [...request.allowed],
       ...(request.edits === undefined ? {} : { edits: request.edits.map((edit) => ({ ...edit })) }),
+      ...(request.rules === undefined ? {} : { rules: request.rules.map((rule) => rule.id) }),
       ...(request.merge === undefined ? {} : { merge: request.merge }),
     };
     const record = (fields: Pick<ToolRunRecord, "result" | "summary"> & Partial<ToolRunRecord>): ToolRunRecord => ({
@@ -370,7 +385,7 @@ export class FixApplier {
       case "codemod": {
         const { script } = resolveAnalysisCommand(FIX_COMMAND_IDS.codemod);
         const python = this.#options.python ?? defaultCodemodPython(this.#options.env);
-        const input = JSON.stringify({ edits: request.edits, paths });
+        const input = JSON.stringify(request.rules === undefined ? { edits: request.edits, paths } : { rules: request.rules, contracts: await ruleContracts(worktree, request.rules), paths });
         const outcome = await runProgram(python, ["-I", script, "--tree", worktree], worktree, { ...options, input });
         return done(failedExit(outcome, [0], "the codemod"), codemodFindings(outcome.stdout));
       }
@@ -443,6 +458,22 @@ function remainingLint(stdout: string, worktree: string): BlockCheckFinding[] {
 }
 
 /** The files the codemod refused or could not parse. */
+/**
+ * Each rule's contract module as the worktree holds it, by path: the codemod reads which names the
+ * module defines from it. A module the worktree lacks is left out, and the codemod refuses its rules.
+ */
+async function ruleContracts(worktree: string, rules: readonly RewriteRule[]): Promise<Record<string, string>> {
+  const contracts: Record<string, string> = {};
+  for (const path of new Set(rules.map(rewriteRuleContractPath))) {
+    try {
+      contracts[path] = await runGit(worktree, ["show", `HEAD:${normalizeRepoPath(path)}`]);
+    } catch {
+      // Absent at the commit.
+    }
+  }
+  return contracts;
+}
+
 function codemodFindings(stdout: string): BlockCheckFinding[] {
   try {
     const report = JSON.parse(stdout) as { errors?: { path: string; kind: string; message: string }[] };

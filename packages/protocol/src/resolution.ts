@@ -92,14 +92,14 @@ export const RESOLUTION_LADDER: readonly LadderStep[] = [
   { step: 2, failure: "Lockfile conflict", nextStep: "Penguin regenerates the lockfile", actor: "penguin", fixes: ["lockfile"] },
   {
     step: 3,
-    failure: "Mechanical interface change: rename, move, added parameter with a default",
-    nextStep: "Penguin applies a codemod generated from the contract diff",
+    failure: "Mechanical interface change: rename, move, added parameter with a default, or a new call to a retiring symbol that a declared rewrite rule rewrites",
+    nextStep: "Penguin applies a codemod generated from the contract diff or the rule",
     actor: "penguin",
     fixes: ["codemod"],
   },
   {
     step: 4,
-    failure: "Behaviour change inside the agent's charter",
+    failure: "Behaviour change inside the agent's charter, or a new call to a retiring symbol no rule covers",
     nextStep: "The originating agent adapts, with the failing check and the changed lines attached",
     actor: "originating-agent",
     fixes: [],
@@ -119,6 +119,8 @@ export const FAILURE_KINDS = [
   "behaviour",
   "tool-error",
   "round-limit",
+  "retiring-rule",
+  "retiring-call",
 ] as const;
 export type FailureKind = (typeof FAILURE_KINDS)[number];
 
@@ -149,6 +151,8 @@ export const LADDER_ROUTES: readonly LadderRoute[] = [
   { check: "typecheck", failure: "rename", step: 3, fix: "codemod" },
   { check: "typecheck", failure: "move", step: 3, fix: "codemod" },
   { check: "typecheck", failure: "signature", step: 3, fix: "codemod" },
+  { check: "retiring", failure: "retiring-rule", step: 3, fix: "codemod" },
+  { check: "retiring", failure: "retiring-call", step: 4, outsideCharter: 5 },
   { check: ANY_CHECK, failure: "behaviour", step: 4, outsideCharter: 5 },
   { check: ANY_CHECK, failure: "tool-error", step: 6 },
   { check: ANY_CHECK, failure: "round-limit", step: 6 },
@@ -246,6 +250,11 @@ export interface FailureFacts {
   readonly failedFixes: number;
   /** Rounds of fixes already run on this block. */
   readonly round: number;
+  /**
+   * For the retiring-calls check: the retiring contract, its replacement and the ids of the declared
+   * rewrite rules that rewrite the failing file's uses of it; empty when none does.
+   */
+  readonly retiring?: { readonly contract: string; readonly replacement: string; readonly rules: readonly string[] };
 }
 
 export interface LadderActor {
@@ -274,6 +283,7 @@ export interface LadderDecision {
 export function failureKind(facts: FailureFacts): FailureKind {
   const { check } = facts;
   if (check.result === "error") return "tool-error";
+  if (check.check === "retiring") return (facts.retiring?.rules.length ?? 0) === 0 ? "retiring-call" : "retiring-rule";
   if (check.check === "format") return "formatting";
   if (check.check === "lint") return "lint";
   if (check.check === "merge") {
@@ -389,6 +399,10 @@ function reasonFor(failure: FailureKind, facts: FailureFacts): string {
       const edits = facts.codemod?.edits ?? [];
       return `the contract diff shows ${edits.map(describeEdit).join(", ")}, used in ${facts.codemod?.paths.length ?? 0} file(s) of ${check.target}`;
     }
+    case "retiring-rule":
+      return `${check.summary}; the declared rewrite rules ${facts.retiring?.rules.join(", ")} rewrite it: apply_fix codemod with these rules`;
+    case "retiring-call":
+      return `${check.summary}; no declared rewrite rule rewrites it there`;
     default:
       return `${check.check} failed: ${check.summary}`;
   }

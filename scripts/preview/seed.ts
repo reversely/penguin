@@ -32,13 +32,13 @@ import {
   TestRunner,
   toolPass,
 } from "@penguin/local-bridge";
-import { boundReviewRecord, type Plan, type ReviewForm, type RewriteRule } from "@penguin/protocol";
+import { boundReviewRecord, type Plan, type RetiringSymbol, type ReviewForm, type RewriteRule } from "@penguin/protocol";
 import { parseScopeMap, type ScopeMap } from "@penguin/scope-map";
 
 import type { DashboardBackend } from "../../apps/worker/src/dashboard.ts";
 import { featureView } from "../../apps/worker/src/features.ts";
 import { claimToolRuns, recordToolResult } from "../../services/project-agent/src/agent-tool-runner.ts";
-import { AgentToolStore, requestTool, whatsNear, type AgentToolDeps } from "../../services/project-agent/src/agent-tools.ts";
+import { AgentToolStore, requestRetiringCheck, requestTool, whatsNear, type AgentToolDeps } from "../../services/project-agent/src/agent-tools.ts";
 import { buildBoard } from "../../services/project-agent/src/board.ts";
 import { checkpointBaseline, checkpointChange, type RepoHistoryReader } from "../../services/project-agent/src/combined-run-schedule.ts";
 import { buildFeaturePage, buildFeaturePlan, buildTeamView, type DashboardViewDeps } from "../../services/project-agent/src/dashboard-views.ts";
@@ -71,6 +71,7 @@ import {
   type ConfirmDeps,
 } from "../../services/project-agent/src/protected-change.ts";
 import { fileDiffs } from "../../services/project-agent/src/repo-diff.ts";
+import { RetiringStore } from "../../services/project-agent/src/retiring-store.ts";
 import { claimReviews, recordReview } from "../../services/project-agent/src/review-record.ts";
 import { ReviewStore, submitReview } from "../../services/project-agent/src/review-submit.ts";
 import { reviewDifferences } from "../../services/project-agent/src/review-view.ts";
@@ -121,6 +122,7 @@ export class PreviewProject {
   readonly tools: AgentToolStore;
   readonly index: IssueIndex;
   readonly forks: OwnerForkStore;
+  readonly retiring: RetiringStore;
   readonly steps: SeedStep[] = [];
   /** Each person whose inbox changed, in order, as the live feed would tell them. */
   readonly notified: string[] = [];
@@ -161,6 +163,7 @@ export class PreviewProject {
     this.reviews = new ReviewStore(this.sql);
     this.tools = new AgentToolStore(this.sql);
     this.forks = new OwnerForkStore(this.sql, now);
+    this.retiring = new RetiringStore(this.sql, now);
     let sessions: SessionStore | undefined;
     this.index = new IssueIndex(this.sql, { assignmentsChanged: (issueId, added, removed) => sessions?.assignmentsChanged(issueId, added, removed) });
     sessions = new SessionStore(this.sql, this.identities, {
@@ -261,6 +264,7 @@ export class PreviewProject {
       session: (sessionId) => this.sessions.get(sessionId),
       identity: (identityId) => this.identities.get(identityId),
       baseline: (_repo, sha) => checkpointBaseline(history, history, sha),
+      retiring: () => this.retiring.list(),
     };
   }
 
@@ -327,6 +331,7 @@ export class PreviewProject {
             commit,
             this.scopeMap,
           ),
+        checkRetiring: (checked, session, commit) => requestRetiringCheck(this.toolDeps(), checked, session, commit),
         now: () => Date.now(),
       },
       feature.personId,
@@ -373,13 +378,22 @@ export class PreviewProject {
     await whatsNear(this.toolDeps(), feature.personId, this.sessionOf.get(featureId) as string, { scopes: feature.area.scopes });
   }
 
-  /** The feature's agent calls `impact` or `check`; the check runner claims and runs it. */
-  async runnerTool(featureId: string, tool: "impact" | "check"): Promise<void> {
+  /**
+   * The feature's agent calls `impact`, `check` or `apply_fix` with `input`; the check runner claims and
+   * runs it with every other waiting request. Answers the request's run id.
+   */
+  async runnerTool(featureId: string, tool: "impact" | "check" | "apply_fix", input: Record<string, unknown> = {}): Promise<number> {
     this.tick();
     const feature = this.features.get(featureId);
     if (feature === undefined) throw new Error(`no feature ${featureId}`);
-    const requested = await requestTool(this.toolDeps(), feature.personId, this.sessionOf.get(featureId) as string, tool, { feature: featureId });
+    const requested = await requestTool(this.toolDeps(), feature.personId, this.sessionOf.get(featureId) as string, tool, { ...input, feature: featureId });
     if (requested.status === "rejected") throw new Error(`${tool} on ${featureId}: ${requested.message}`);
+    await this.runnerPass();
+    return requested.runId;
+  }
+
+  /** The check runner claims and runs every waiting tool request, such as a checkpoint's retiring-calls check. */
+  async runnerPass(): Promise<void> {
     const repo = await this.#runner();
     const scratch = `${repo}-scratch`;
     const impact = pythonImpactAnalyzer({ repoPath: repo, python: PYTHON, env: ENV });
@@ -410,7 +424,12 @@ export class PreviewProject {
       repoPath: repo,
     });
     const failed = pass.runs.find((run) => run.error !== null);
-    if (failed !== undefined) throw new Error(`${tool} on ${featureId}: ${failed.error}`);
+    if (failed !== undefined) throw new Error(`tool request ${failed.runId} (${failed.tool}) on ${failed.feature}: ${failed.error}`);
+  }
+
+  /** A file at a commit of the check runner's repository, such as a fix `apply_fix` kept there unpushed. */
+  async runnerFile(sha: string, path: string): Promise<string> {
+    return execFileSync("git", ["-C", await this.#runner(), "show", `${sha}:${path}`], { encoding: "utf8" });
   }
 
   /** An empty repository for the check runner, which fetches each fork as runner mode does. */
@@ -429,7 +448,7 @@ export class PreviewProject {
    * the facts run, which the check runner makes, rules included; the second stores the plan and tells
    * every author.
    */
-  async propose(featureId: string, parts: readonly unknown[], rules: readonly RewriteRule[] = []): Promise<ProposePlanOutcome> {
+  async propose(featureId: string, parts: readonly unknown[], rules: readonly RewriteRule[] = [], retiring: readonly RetiringSymbol[] = []): Promise<ProposePlanOutcome> {
     this.tick();
     const feature = this.features.get(featureId);
     if (feature === undefined) throw new Error(`no feature ${featureId}`);
@@ -451,10 +470,11 @@ export class PreviewProject {
             this.#notify(person);
           },
           announce: (plan, scopeMap) => announcePlan(this.approvalDeps(), plan, scopeMap),
+          retiring: this.retiring,
         },
         feature.personId,
         this.sessionOf.get(featureId) as string,
-        { feature: featureId, parts, ...(rules.length === 0 ? {} : { rules }) },
+        { feature: featureId, parts, ...(rules.length === 0 ? {} : { rules }), ...(retiring.length === 0 ? {} : { retiring }) },
       );
     const first = await call();
     if (first.status !== "missing" || !first.missing.some((item) => item.code === "waiting_for_runner")) return first;

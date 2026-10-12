@@ -345,6 +345,58 @@ inputs and `feature-money-tax-tax-per-line` on 10.
   `apps/worker/test/money-waves.test.ts` derives the expected item from `larder.json`: each wave of
   another person whose area is a scope with `protected_paths`.
 
+## Retiring the float API
+
+`apps/worker/test/money-retiring.test.ts` runs the retiring step on the fixture's own data through
+the preview seed's stores and the check runner's programs. Every caller and the midway feature run
+at their first checkpoint. The expand wave's plan, with no place, declares the larder plan's seven
+rewrite rules and marks six contracts retiring:
+
+| Retiring contract | Replacement | Rules declared for it |
+|---|---|---|
+| `shared/money/__init__.py::price` | `shared/money/__init__.py::Money` | 4 |
+| `shared/money/__init__.py::total` | `shared/money/__init__.py::Money.sum` | 1 |
+| `shared/money/__init__.py::display` | `shared/money/__init__.py::Money.display` | 2 |
+| `shared/money/discounts.py::percent_off` | `shared/money/discounts.py::discounted` | 0 |
+| `orders/model.py::line_total` | `orders/model.py::line_total_minor` | 0 |
+| `orders/model.py::order_total` | `orders/model.py::order_total_minor` | 0 |
+
+Penguin stores the plan and signs one `retire_symbols` record. Main then moves to the messaging and
+mobile-api wave's head, past the five migrate waves.
+
+Noor's pagination reports its second checkpoint. Its own change, `mobile_api/order_lines_page.py`,
+calls `money.display(line_total(line))`. The retiring-calls check gives two steps:
+
+| Retiring contract | Step | To | Why |
+|---|---|---|---|
+| `orders/model.py::line_total` | 4 | `@noor/pagination` | No rule is declared for it; the step names `line_total_minor` |
+| `shared/money/__init__.py::display` | 3 | Penguin | The `display` rule rewrites the file |
+
+`apply_fix` with `rules: ["display"]` then writes `line_total(line).display()` in a commit kept on
+the check runner.
+
+From a checkpoint at main's head, Ines's agent calls `impact`. The migration groups list 26 places
+in 10 owner groups:
+
+| Owner | Places | Uses |
+|---|---|---|
+| ade | `partial-refunds`, `store-credit` | 2 |
+| ines | scope `money` | 10 |
+| jun | `basket-size`, `cohort-ltv`, `store-league` | 8 |
+| kofi | `instant-payouts`, `weekly-statements` | 3 |
+| mei | `business-accounts`, `credit-notes`, `pdf-layout` | 6 |
+| noor | `cart-sync`, `order-history`, `pagination` | 7 |
+| priya | `japan-launch`, `saved-carts`, `tip-jar` | 3 |
+| rahul | `bottle-deposit`, `tax-exempt` | 2 |
+| sam | `order-shipped`, `refund-email`, `weekly-digest` | 9 |
+| tomas | `reorder`, `split-shipments`, `substitutions`, scope `orders` | 12 |
+
+The 24 feature places are the 23 readers and the midway feature, each in its own person's group. The
+two places on main are tests: `shared/money/tests/test_money.py` and
+`shared/money/tests/test_discounts.py` test the retiring functions themselves.
+`orders/tests/test_model.py` tests `line_total()` and `order_total()`. Each reader carries 52 more
+uses from `base` in files it never changed; those belong to main.
+
 ## Changing the fixture
 
 A change to `larder.json` or to a source directory changes the SHA of every commit built after it.

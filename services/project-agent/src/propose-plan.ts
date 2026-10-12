@@ -25,7 +25,14 @@
 // resolution ladder's step 3 applies), or when every file it changes is exactly what the plan's
 // rewrite rules write there (rewrite-rule.ts): the facts run applies the rules on the check runner and
 // reports each file's blob before and after, which Penguin compares with the fix's own blobs. Any
-// other fix is behavioural. A plan whose behavioural parts
+// other fix is behavioural.
+//
+// A plan may also mark contracts as retiring, each with its replacement (retiring.ts), once its
+// expand step has put the replacement beside them. Each must be a declared contract of a scope the
+// feature's area names. A rewrite rule may then name a retiring contract the contract diff does not
+// touch. A stored plan's retiring symbols become signed project data (retiring-store.ts).
+//
+// A plan whose behavioural parts
 // outnumber the project's break limit is returned to its author and the originating person gets the
 // exception (PRD section 7). A complete plan is signed and kept with every part (plan-store.ts),
 // then sent to every author at once (plan-approval.ts). Nothing here calls a model or runs code.
@@ -41,6 +48,7 @@ import {
   PLAN_LIMITS,
   PLAN_MAIN_TARGET,
   PLAN_SCHEMA_VERSION,
+  parseRetiring,
   placeLabel,
   planId as makePlanId,
   testNameWords,
@@ -59,6 +67,8 @@ import {
   type PlanPartKind,
   type PlanPlace,
   type PlanRewriteReport,
+  type RetiringDeclaration,
+  type RetiringSymbol,
   type RewriteRule,
 } from "@penguin/protocol";
 import { InvariantsFileError, parseInvariantsBytes, scopeForPath, type ScopeMap } from "@penguin/scope-map";
@@ -96,6 +106,11 @@ export interface ProposePlanDeps {
    * item each, and their running sessions at the next safe checkpoint. Absent, the plan is only kept.
    */
   readonly announce?: (plan: Plan, scopeMap: ScopeMap) => void;
+  /** The project's retiring symbols (retiring-store.ts). Absent, a plan that declares any is refused. */
+  readonly retiring?: {
+    heldElsewhere(featureId: string, symbols: readonly RetiringSymbol[]): string[];
+    declare(plan: Plan, symbols: readonly RetiringSymbol[], recordId: string): RetiringDeclaration[];
+  };
   readonly now?: () => number;
 }
 
@@ -104,6 +119,8 @@ export interface ProposePlanInput {
   readonly parts: unknown;
   /** The plan's rewrite rules (rewrite-rule.ts); absent is none. */
   readonly rules?: unknown;
+  /** Contracts the plan marks as retiring, each `{ contract, replacement }` (retiring.ts); absent is none. */
+  readonly retiring?: unknown;
 }
 
 /** Something the plan lacks, with the place or part it concerns. */
@@ -531,22 +548,22 @@ export function classifyPart(
  * Whether the contract diff touches `contract` (`path::symbol`): a declared contract it lists, or a
  * changed module-level symbol of that file.
  */
-function contractTouched(impact: ImpactReport, contract: string): boolean {
-  if (impact.contracts.includes(contract)) return true;
+function contractTouched(impact: ImpactReport, contract: string, retiring: ReadonlySet<string>): boolean {
+  if (impact.contracts.includes(contract) || retiring.has(contract)) return true;
   const [path, symbol] = contract.split("::") as [string, string];
   return impact.changes.some((change) => change.path === path && change.symbol.split(".").at(-1) === symbol);
 }
 
 /** Every reason the plan's rules may not apply: a contract outside the diff, or the runner's refusals. */
-function ruleProblems(rules: readonly RewriteRule[], impact: ImpactReport, report: PlanFactsReport): MissingItem[] {
+function ruleProblems(rules: readonly RewriteRule[], impact: ImpactReport, report: PlanFactsReport, retiring: ReadonlySet<string>): MissingItem[] {
   if (rules.length === 0) return [];
   const problems: MissingItem[] = [];
   for (const rule of rules) {
-    if (!contractTouched(impact, rule.contract)) {
+    if (!contractTouched(impact, rule.contract, retiring)) {
       problems.push({
         code: "rule_refused",
         rule: rule.id,
-        message: `rule ${rule.id} migrates ${rule.contract}, which the contract diff does not touch, so it would rewrite code outside the change`,
+        message: `rule ${rule.id} migrates ${rule.contract}, which the contract diff does not touch and the plan does not retire, so it would rewrite code outside the change`,
       });
     }
   }
@@ -597,6 +614,9 @@ export async function proposePlan(deps: ProposePlanDeps, caller: string, session
   if (typeof parts === "string") return rejected("invalid", parts);
   const rules = parseRewriteRules(input.rules);
   if (typeof rules === "string") return rejected("invalid", rules);
+  const retiring = parseRetiring(input.retiring);
+  if (typeof retiring === "string") return rejected("invalid", retiring);
+  if (retiring.length > 0 && deps.retiring === undefined) return rejected("misconfigured", "this project keeps no retiring symbols");
   if (feature.repo === null || feature.latestCheckpointSha === null) {
     return rejected("not_found", `feature ${featureId} has no checkpoint on its fork; report one before its plan`);
   }
@@ -606,6 +626,10 @@ export async function proposePlan(deps: ProposePlanDeps, caller: string, session
   const repo = feature.repo;
 
   const scopeMap = await deps.scopeMap();
+  const outsideArea = retiringOutsideArea(retiring, feature, scopeMap);
+  if (outsideArea !== undefined) return rejected("invalid", outsideArea);
+  const held = retiring.length === 0 ? [] : (deps.retiring?.heldElsewhere(featureId, retiring) ?? []);
+  if (held.length > 0) return rejected("conflict", `another feature already retires ${held.join(", ")}`);
   let invariantsFile;
   try {
     invariantsFile = parseInvariantsBytes(await deps.invariantsFile(), scopeMap);
@@ -651,7 +675,7 @@ export async function proposePlan(deps: ProposePlanDeps, caller: string, session
   }
   const impact = report.impact;
 
-  const missing: MissingItem[] = ruleProblems(rules, impact, report);
+  const missing: MissingItem[] = ruleProblems(rules, impact, report, new Set(retiring.map((each) => each.contract)));
   const byPlace = new Map(places.map((place) => [placeKey(place.place), place]));
   const claimed = new Map<string, number>();
   for (const [index, part] of parts.entries()) {
@@ -728,6 +752,7 @@ export async function proposePlan(deps: ProposePlanDeps, caller: string, session
     facts_run: run.runId,
     break_limit: deps.breakLimit,
     rules: rules.map((rule) => rule.id),
+    ...(retiring.length === 0 ? {} : { retiring: retiring.map((each) => ({ ...each })) }),
     parts: built.map((part) => ({ part_id: part.partId, place: part.place, kind: part.kind, diff: part.diff.ref })),
   });
   const plan: Plan = {
@@ -743,6 +768,7 @@ export async function proposePlan(deps: ProposePlanDeps, caller: string, session
     breakLimit: deps.breakLimit,
     facts,
     rules,
+    ...(retiring.length === 0 ? {} : { retiring }),
     parts: built,
     assembledMs,
   };
@@ -751,8 +777,31 @@ export async function proposePlan(deps: ProposePlanDeps, caller: string, session
     return rejected("conflict", `plan version ${version} of feature ${featureId} was kept by another proposal; propose again`);
   }
   deps.features.addRecord(record);
+  if (retiring.length > 0 && deps.retiring !== undefined) {
+    const retire = await deps.sign(
+      deps.features.draftRecord(featureId, "retire_symbols", { identity: live.session.handle }, {
+        plan_id: id,
+        symbols: retiring.map((each) => ({ ...each, rules: rules.filter((rule) => rule.contract === each.contract).map((rule) => rule.id) })),
+      }),
+    );
+    deps.features.addRecord(retire);
+    deps.retiring.declare(plan, retiring, retire.record_id);
+  }
   deps.announce?.(plan, scopeMap);
   return { status: "stored", plan };
+}
+
+/**
+ * Why the plan may not retire one of its symbols, or undefined: each must be a contract
+ * `penguin/scopes.json` declares for a scope the feature's area names.
+ */
+function retiringOutsideArea(retiring: readonly RetiringSymbol[], feature: Feature, scopeMap: ScopeMap): string | undefined {
+  for (const each of retiring) {
+    const scope = [...scopeMap.scopes.values()].find((candidate) => candidate.contracts.includes(each.contract));
+    if (scope === undefined) return `${each.contract} is not a contract in penguin/scopes.json`;
+    if (!feature.area.scopes.includes(scope.id)) return `${each.contract} belongs to scope ${scope.id}, which feature ${feature.id}'s area does not name`;
+  }
+  return undefined;
 }
 
 /** How a plan names a part's fix: the commit, or the patch's base and the patch's SHA-256. */

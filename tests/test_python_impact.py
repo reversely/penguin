@@ -418,6 +418,58 @@ def test_a_fork_with_since_reports_only_uses_in_its_own_changes(repo: Repo):
     )
 
 
+def test_watched_symbols_list_their_uses_in_each_forks_own_changes(repo: Repo):
+    """A retiring symbol is searched for as if it had changed, with base equal to head."""
+    main = repo.commit(
+        base_files(
+            **{
+                "core/money.py": "def price(x):\n    return x\n\n\ndef cents(x):\n    return x\n",
+                "app/old.py": "from core.money import price\n\nold = price(1)\n",
+            }
+        )
+    )
+    fork = repo.commit(
+        {
+            "app/new.py": "from core import money\n\nnew = money.price(2)\nkept = money.cents(3)\n",
+        }
+    )
+    request = impact.parse_request(
+        {
+            "base": main,
+            "head": main,
+            "forks": [{"id": "adds", "sha": fork, "scopes": [], "since": main}],
+            "symbols": ["core/money.py::price"],
+        }
+    )
+    report = impact.analyse(impact.GitRepo(str(repo.path)), request, impact.Limits())
+    assert report["changes"] == []
+    # Main's caller is a head use; the fork's own new call is its use; cents is not watched.
+    assert [(use["path"], use["symbol"]) for use in report["headUses"]] == [
+        ("app/old.py", "core.money.price"),
+        ("app/old.py", "core.money.price"),
+    ]
+    assert [
+        (use["path"], use["line"], use["kind"]) for use in report["forks"][0]["uses"]
+    ] == [("app/new.py", 3, "call")]
+    assert report["forks"][0]["carried"] == 2
+
+
+@pytest.mark.parametrize(
+    "symbols",
+    [
+        "core/money.py::price",
+        ["core/money.py"],
+        ["core/money.txt::price"],
+        ["core/money.py::price; rm"],
+        ["1core/money.py::price"],
+        ["core/money.py::price"] * 65,
+    ],
+)
+def test_malformed_watched_symbols_are_refused(symbols):
+    with pytest.raises(impact.RequestError):
+        impact.parse_request({"base": "a" * 40, "head": "a" * 40, "symbols": symbols})
+
+
 def test_a_fork_without_since_keeps_every_use_in_its_scopes(repo: Repo):
     main, head, forks = _forks_since_main(repo)
     report = run(

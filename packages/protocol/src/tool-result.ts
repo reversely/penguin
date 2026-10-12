@@ -12,6 +12,7 @@
 
 import { BLOCK_CHECK_LIMITS, BLOCK_CHECK_NAMES, BLOCK_CHECK_SCHEMA, type BlockCheck } from "./block-check.ts";
 import { IMPACT_REPORT_SCHEMA, type ImpactReport } from "./impact.ts";
+import type { MigrationGroup } from "./retiring.ts";
 import { AGENT_TOOLS, FAILURE_KINDS, FIX_KINDS, type AgentToolName, type LadderDecision, type ToolRunRecord } from "./resolution.ts";
 import { checkSchema, type JsonSchema } from "./schema-check.ts";
 
@@ -41,8 +42,16 @@ export interface AgentToolResult {
   readonly summary: string;
   readonly impact: ImpactReport | null;
   readonly checks: readonly BlockCheck[];
-  /** One next step per failed or erred check. */
+  /**
+   * One next step per failed or erred check. An `impact` result that searched for retiring symbols
+   * carries one `retiring` step per file and symbol the checkpoint's own changes use (retiring.ts).
+   */
   readonly decisions: readonly LadderDecision[];
+  /**
+   * For an `impact` request that searched for retiring symbols across the running features: the
+   * remaining callers on main and in their own changes, grouped by owner. Absent otherwise.
+   */
+  readonly migration?: { readonly groups: readonly MigrationGroup[]; readonly unowned: number };
   readonly fix: ToolRunRecord | null;
   /** The runner's ref that keeps the fix commit, such as `refs/penguin/fixes/<commit>`; null without one. */
   readonly fixRef: string | null;
@@ -96,11 +105,23 @@ const TOOL_RUN = object({
   durationMs: MS,
 });
 
-/** JSON Schema (draft 2020-12) of one agent tool result as the runner reports it. */
-export const TOOL_RESULT_SCHEMA: JsonSchema = {
-  $schema: "https://json-schema.org/draft/2020-12/schema",
-  title: "Penguin agent tool result",
-  ...object({
+const USE = object({
+  path: text(BLOCK_CHECK_LIMITS.pathLength, 1),
+  line: { type: "integer", minimum: 1 },
+  kind: { type: "string", enum: ["import", "call", "reference"] },
+  symbol: text(1_024, 1),
+  name: text(1_024, 1),
+  scope: nullable(text(128, 1)),
+});
+const PLACE = {
+  anyOf: [object({ kind: { const: "scope" }, scope: text(128, 1) }), object({ kind: { const: "feature" }, feature: text(128, 1) })],
+};
+const MIGRATION = object({
+  groups: list(object({ owner: text(128, 1), places: list(object({ place: PLACE, uses: list(USE, 2_000) }), 256), uses: { type: "integer", minimum: 0 } }), 256),
+  unowned: { type: "integer", minimum: 0 },
+});
+
+const RESULT = object({
     schemaVersion: { const: TOOL_RESULT_SCHEMA_VERSION },
     tool: { type: "string", enum: [...RUNNER_TOOLS] },
     base: SHA,
@@ -114,7 +135,15 @@ export const TOOL_RESULT_SCHEMA: JsonSchema = {
     fixRef: nullable({ type: "string", pattern: "^refs/penguin/fixes/[0-9a-f]{40}(?:[0-9a-f]{24})?$" }),
     pushed: { const: false },
     durationMs: MS,
-  }),
+});
+
+/** JSON Schema (draft 2020-12) of one agent tool result as the runner reports it. */
+export const TOOL_RESULT_SCHEMA: JsonSchema = {
+  $schema: "https://json-schema.org/draft/2020-12/schema",
+  title: "Penguin agent tool result",
+  ...RESULT,
+  // `migration` is optional: only an impact request that searched for retiring symbols carries it.
+  properties: { ...(RESULT["properties"] as Record<string, JsonSchema>), migration: MIGRATION },
 };
 
 export type ParsedToolResult = { readonly ok: true; readonly result: AgentToolResult } | { readonly ok: false; readonly problems: string[] };
@@ -135,9 +164,13 @@ export function parseToolResult(value: unknown): ParsedToolResult {
   const result = value as AgentToolResult;
   const problems: string[] = [];
   if (result.tool !== "impact" && result.impact !== null) problems.push(`/impact a ${result.tool} result carries no impact report`);
-  if (result.tool !== "check" && (result.checks.length > 0 || result.decisions.length > 0)) {
-    problems.push(`/checks a ${result.tool} result carries no checks`);
-  }
+  if (result.tool !== "check" && result.checks.length > 0) problems.push(`/checks a ${result.tool} result carries no checks`);
+  // Only an impact result carries the retiring-calls steps; a check result carries the block checks' steps.
+  const retiringSteps = result.decisions.filter((decision) => decision.check === "retiring").length;
+  if (result.tool === "apply_fix" && result.decisions.length > 0) problems.push("/decisions an apply_fix result carries no next steps");
+  if (result.tool === "impact" && retiringSteps !== result.decisions.length) problems.push("/decisions an impact result carries only retiring-calls steps");
+  if (result.tool === "check" && retiringSteps > 0) problems.push("/decisions a check result carries no retiring-calls steps");
+  if (result.tool !== "impact" && result.migration !== undefined) problems.push(`/migration a ${result.tool} result carries no migration groups`);
   if (result.tool !== "apply_fix" && (result.fix !== null || result.fixRef !== null)) problems.push(`/fix a ${result.tool} result carries no fix`);
   if (result.impact !== null && (result.impact.base !== result.base || result.impact.head !== result.checkpoint)) {
     problems.push("/impact names other commits than the result");

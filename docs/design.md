@@ -160,6 +160,14 @@ The procedure moves conflict handling to the start of the work. Each step below 
    start. The contract wave removes the old shape. Its places are the callers left on main and in
    running features' own changes. [case-study-money.md](case-study-money.md) runs the waves on the
    money fixture.
+7. **Retiring symbols.** Once the expand step has put the new shape beside the old one, its plan
+   marks the old contracts as retiring, each with its replacement. A checkpoint whose own changes
+   call a retiring symbol gets a next step naming the replacement
+   ([Routing](#routing-and-the-resolution-ladder)). Penguin lists the remaining callers on main and
+   in running features' own changes, grouped by owner, as the migration's parts. Software
+   Engineering at Google, chapter 22, describes both: Rosie "shards [a large change] based upon
+   project boundaries and ownership rules". Google's review tooling reports a change "when an engineer
+   introduces a new use of a deprecated object", to prevent "backsliding".
 
 #### Steps 1 to 5 in the build
 
@@ -246,6 +254,33 @@ The procedure moves conflict handling to the start of the work. Each step below 
   newest plan as JSON for the dashboard. A part's patch and changed lines (`diff.patch`, `diff.files`) go to the feature's person, the part's owner
   and that owner's delegate, the same rule the feature page applies (`mayReadPartLines` in
   `dashboard-views.ts`). For any other signed-in person both fields are null.
+- **Retiring symbols.** `propose_plan` takes `retiring`: up to 64 `{ contract, replacement }`
+  pairs, each `path::symbol` (`retiring.ts` in `packages/protocol`). Each contract must be one that
+  `penguin/scopes.json` declares for a scope the feature's area names. Only an agent session of the
+  feature's own person proposes its plan, so only that person declares. A contract another feature
+  already retires is refused as `conflict`. A rewrite rule may name a retiring contract the
+  contract diff does not touch. When the plan is stored, Penguin signs a `retire_symbols` record
+  on the feature with each contract, its replacement and the ids of the plan's rules for it. The
+  `RetiringSymbol` table on the ProjectAgent keeps the declarations
+  (`services/project-agent/src/retiring-store.ts`). A newer plan of the same feature replaces them.
+  - **Retiring calls.** Each checkpoint that an agent session reports while symbols are retiring
+    records one `impact` request of Penguin's own (`requestRetiringCheck` in `agent-tools.ts`), once
+    per checkpoint. The check runner runs `analysis:python-impact` once, from the checkpoint's
+    baseline to the checkpoint, with the checkpoint as a fork of its own changes since the baseline
+    and the retiring contracts as `symbols`: the analysis searches for them as if they had
+    changed. For each file that uses a retiring symbol with declared rules, the runner applies the
+    rules to that file with the codemod in a throwaway worktree that keeps no commit. Each
+    file and symbol gets one ladder step. The step is 3 when a rule rewrote the file, so `apply_fix`
+    with `kind: codemod` and the step's `rules` applies it. Otherwise the step is 4 inside the
+    checkpoint identity's charter, or 5 outside it. Each step names the replacement and lists the
+    uses as findings. The result reaches the session at its next safe checkpoint under
+    `toolResults`.
+  - **Migration groups.** While symbols are retiring, an agent's `impact` request carries them. The
+    runner runs a second analysis from the request's baseline to itself, with every other running
+    feature as a fork of its own changes since that baseline. `migrationGroups` groups the uses:
+    a use on main is a place of its scope, owned by the scope's owner; a use in a running feature's
+    own changes is a place of that feature, owned by its person. The result's `migration` lists one
+    group per owner. An agent asks from a checkpoint at main's head to see main as it is.
 - **Limits.** A commit subject is cut at 300 characters, a docstring at 500 and an assertion or error
   line at 300. A note may hold 2,000 characters and a plan 128 parts. Penguin keeps every such string
   as data. The MCP answer puts each one inside `personWritten`.
@@ -490,6 +525,7 @@ Each check is a mechanical fact about code. No check calls a model.
 | Lint | Lint rules on the merged tree |
 | Dependency diff | A shared library changed version; which forks use it |
 | Tests | Each affected scope's own tests on the merged tree |
+| Retiring calls | Uses of a retiring symbol in a checkpoint's own changes |
 
 Penguin runs tests and type checks only for forks the impact graph marks as affected.
 
@@ -572,7 +608,7 @@ Agents call these tools through MCP. Each tool answers with facts or applies one
 | `whats_near` | Running features that touch these paths or depend on these scopes, with their people and agents |
 | `impact` | Functions, contracts and forks a checkpoint affects |
 | `check` | Runs the [checks](#checks) on the agent's change combined with each affected fork |
-| `apply_fix` | Applies one deterministic fix: format, lint autofix, regenerate a lockfile, or a codemod for a rename, move or signature change |
+| `apply_fix` | Applies one deterministic fix: format, lint autofix, regenerate a lockfile, or a codemod for a rename, move or signature change, or by the rewrite rules of a retiring symbol |
 | `propose_plan` | Submits a merge plan; Penguin fills in the facts and returns what is missing |
 | `submit_review` | Submits the review form for a plan part ([Review harness](#review-harness)) |
 
@@ -589,7 +625,8 @@ request and records it at the feature's latest checkpoint, with that checkpoint'
 Its answer says the request waits for the check runner. Only an agent session of the feature may
 call them. `apply_fix` takes one of the fixed kinds `format`, `lint`, `lockfile` and `codemod`. It
 takes only Python files inside the caller identity's charter. Its codemod edits must name dotted
-Python names. By hand, `penguin-bridge apply-fix` applies one fix and `penguin-bridge resolve` runs
+Python names. A codemod may name `rules` instead of edits: ids of rewrite rules declared for
+retiring symbols, which Penguin looks up in its own store. By hand, `penguin-bridge apply-fix` applies one fix and `penguin-bridge resolve` runs
 the checks with the ladder ([bridge-and-runner.md](bridge-and-runner.md#resolution-ladder)).
 
 Each call is an `AgentToolRun` row: the feature, the session, the caller's identity, the tool, its
@@ -644,8 +681,8 @@ therefore never tries tools in turn.
 |---|---|---|
 | 1 | Formatting, import order, lint | Penguin applies the formatter and lint autofix |
 | 2 | Lockfile conflict | Penguin regenerates the lockfile |
-| 3 | Mechanical interface change: rename, move, added parameter with a default | Penguin applies a codemod generated from the contract diff |
-| 4 | Behaviour change inside the agent's charter | The originating agent adapts, with the failing check and the changed lines attached |
+| 3 | Mechanical interface change: rename, move, added parameter with a default, or a new call to a retiring symbol that a declared rewrite rule rewrites | Penguin applies a codemod generated from the contract diff or the rule |
+| 4 | Behaviour change inside the agent's charter, or a new call to a retiring symbol no rule rewrites | The originating agent adapts, with the failing check and the changed lines attached |
 | 5 | Behaviour change outside its charter | The agent of the scope's owner adapts |
 | 6 | Exception ([Exceptions](#exceptions)) | One person |
 
@@ -664,6 +701,8 @@ Penguin applies there. A row for one check wins over a row for any check:
 | Lint | New lint findings, import order among them | 1 | `fix:ruff-autofix` |
 | Merge | Conflicts only in `uv.lock` | 2 | `fix:uv-lock` |
 | Tests, type check | The target uses a symbol the contract diff shows renamed, moved, or with one keyword parameter renamed | 3 | `fix:python-codemod` |
+| Retiring calls | A rule declared for the retiring contract rewrites the file | 3 | `fix:python-codemod` with the rule |
+| Retiring calls | No declared rule rewrites the file | 4 inside the checkpoint identity's charter, 5 outside it | None |
 | Any | Any other failure: a behaviour change | 4 inside the originating agent's charter, 5 outside it | None |
 | Any | The check could not run | 6 | None |
 | Any | A step 1 to 3 failure past the round limit | 6 | None |

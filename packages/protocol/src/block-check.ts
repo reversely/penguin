@@ -10,7 +10,11 @@
 import { checkSchema, type JsonSchema, type SchemaError } from "./schema-check.ts";
 import { COMMAND_ID_PATTERN, FINGERPRINT_PATTERN } from "./operation-schema.ts";
 
-export const BLOCK_CHECK_NAMES = ["overlap", "merge", "lint", "format", "dependencies", "typecheck", "tests"] as const;
+/**
+ * The section 5.1 checks. `retiring` is the retiring-calls check (retiring.ts): it runs on a
+ * checkpoint's own changes, never on a merged tree of a block.
+ */
+export const BLOCK_CHECK_NAMES = ["overlap", "merge", "lint", "format", "dependencies", "typecheck", "tests", "retiring"] as const;
 export type BlockCheckName = (typeof BLOCK_CHECK_NAMES)[number];
 
 /**

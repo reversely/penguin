@@ -84,6 +84,7 @@ export type FeatureRecordType =
   | "overlap_check"
   | "approve_overlap"
   | "propose_plan"
+  | "retire_symbols"
   | "plan_returned"
   | "approve_plan_part"
   | "request_plan_change"

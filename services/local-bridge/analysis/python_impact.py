@@ -8,6 +8,10 @@ method, class and module-level value the change from ``base`` to ``head`` touche
 signatures, the removed exports, the changed stored data shapes, and each place in each fork's
 scopes that imports, calls or references a changed symbol, with its file and line.
 
+The request may add ``"symbols": ["path::name", ...]``: contracts to search for as if they had
+changed, such as the retiring symbols of a parallel change. Their uses are reported beside the uses
+of the change itself, so ``base`` equal to ``head`` lists only them.
+
 A fork with ``since`` (main's commit) reports only the uses in files the fork added or changed since
 its merge base with ``since``. A use in a file the fork carries unchanged from main is main's caller,
 which the fork takes with main; the report counts those as ``carried``.
@@ -38,6 +42,10 @@ SHA = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
 FORK_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 MAX_REQUEST_BYTES = 1_000_000
 MAX_FORKS = 256
+MAX_SYMBOLS = 64
+CONTRACT = re.compile(
+    r"^[A-Za-z0-9_][A-Za-z0-9_./-]{0,511}\.py::[A-Za-z_][A-Za-z0-9_]{0,127}$"
+)
 
 # Kinds of change that leave existing callers pointing at different behaviour or at nothing.
 CALLER_CHANGES = frozenset({"modified", "removed", "renamed", "moved"})
@@ -1337,6 +1345,8 @@ class AnalysisRequest:
     base: str
     head: str
     forks: tuple[ForkRequest, ...]
+    # Contracts (path::name) searched for as if they had changed.
+    symbols: tuple[str, ...] = ()
 
 
 def parse_request(raw: object) -> AnalysisRequest:
@@ -1379,7 +1389,32 @@ def parse_request(raw: object) -> AnalysisRequest:
             )
         seen.add(fork_id)
         forks.append(ForkRequest(fork_id, sha, tuple(sorted(set(scopes))), since))
-    return AnalysisRequest(raw["base"], raw["head"], tuple(forks))
+    symbols_raw = raw.get("symbols", [])
+    if (
+        not isinstance(symbols_raw, list)
+        or len(symbols_raw) > MAX_SYMBOLS
+        or not all(
+            isinstance(symbol, str)
+            and CONTRACT.match(symbol)
+            and module_name(symbol.split("::")[0]) is not None
+            for symbol in symbols_raw
+        )
+    ):
+        raise RequestError(
+            f"symbols must list at most {MAX_SYMBOLS} contracts as path::name in a Python module"
+        )
+    return AnalysisRequest(
+        raw["base"], raw["head"], tuple(forks), tuple(sorted(set(symbols_raw)))
+    )
+
+
+def watched_symbols(symbols: tuple[str, ...]) -> dict[str, str]:
+    """Each requested contract's dotted name, mapped to its path, as ``changed_symbols`` maps a change."""
+    watched = {}
+    for contract in symbols:
+        path, name = contract.split("::")
+        watched[f"{module_name(path)}.{name}"] = path
+    return watched
 
 
 def unanalysed_paths(base: Tree, head: Tree) -> list[str]:
@@ -1434,7 +1469,8 @@ def analyse(
     base = load_tree(repo, "base", request.base, cache, limits)
     head = load_tree(repo, "head", request.head, cache, limits)
     diff = contract_diff(base, head)
-    changed = changed_symbols(diff, head, base)
+    # A watched symbol's own module is left out, so a use of the module's other names is no use of it.
+    changed = changed_symbols(diff, head, base) | watched_symbols(request.symbols)
     unanalysed = unanalysed_paths(base, head)
     changed_paths = set(unanalysed) | {
         path

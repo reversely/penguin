@@ -148,6 +148,24 @@ Two moments depend on the contract wave's plan being announced:
   writes against `Money` from the first commit and imports it by name, so the feature calls nothing
   the contract wave removes.
 
+### Retiring the float API
+
+The expand wave's plan can also mark the float API retiring: `price()`, `total()`, `display()`,
+`percent_off()`, `line_total()` and `order_total()`, each with its Money replacement. Penguin keeps
+the six declarations as signed project data. From then on each checkpoint gets one retiring-calls
+check of its own changes.
+
+- **Noor's pagination.** Noor's second checkpoint adds `money.display(line_total(line))`. Its check
+  gives two next steps. The plan's `display` rule rewrites the `display()` call, so that step is
+  Penguin's codemod, step 3. No rule covers `line_total()`, so that step goes to Noor's agent at step
+  4 with `line_total_minor()` named as the replacement.
+- **The remaining callers.** After the migrate waves, Ines's agent asks for the remaining callers.
+  Penguin lists 26 places in 10 owner groups. The 23 readers and the pagination feature sit in
+  their own people's groups. Two scopes on main, money (Ines) and orders (Tomas), still call the
+  float functions in their tests. Each group is one owner's set of migration parts.
+
+[fixture-money.md](fixture-money.md#retiring-the-float-api) lists each group with its uses.
+
 ## What it took
 
 | | Count |
