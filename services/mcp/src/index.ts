@@ -1,6 +1,7 @@
 export const packageName: string = "@penguin/mcp";
 
-export { MCP_ROUTE, serveMcp } from "./handler.ts";
+export { MCP_ROUTE, serveMcp, serveReviewTaskMcp } from "./handler.ts";
+export { createReviewTaskMcpServer, type McpReviewTask } from "./review-task-tools.ts";
 export {
   createPenguinMcpServer,
   landingFields,

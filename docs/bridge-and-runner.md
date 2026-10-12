@@ -209,8 +209,9 @@ Each pass:
 1. **Claim.** `POST /edit-tasks/claim` hands the bridge its owner's oldest waiting tasks, at most
    `PENGUIN_BACKGROUND_RUN_CAP` running at once (default 2). Each task names its fork, files, allowed
    paths, Penguin's instructions and the checks that verify it. Each comes with a write token minted
-   for that task on that fork alone, for `PENGUIN_EDIT_RUN_MINUTES` (default 20). The claim also
-   holds the owner's queue.
+   for that task on that fork alone, for `PENGUIN_EDIT_RUN_MINUTES` (default 20). A review form gets
+   a read token instead, plus a task token for Penguin's MCP server ([Review forms](#review-forms)).
+   The claim also holds the owner's queue.
 2. **Worktree.** The bridge fetches the fork's `main` with the task's token into `<state>/edits/repo`
    and adds a fresh detached worktree of its head under `<state>/edits/worktrees`.
 3. **Run.** The bridge starts one CLI process per task in that worktree, with a prompt built from the
@@ -244,6 +245,35 @@ An approved fix needs no agent: its patch is fixed, so the bridge writes it with
 
 Penguin keeps a reported commit only when it has one parent, sits on the fork's `main` and changes
 only the task's allowed paths. Otherwise the task goes back to the owner with Penguin's reason.
+
+### Review forms
+
+A review task asks the owner's steward for the review form of one scope on one revision of a plan
+part ([mcp-setup.md](mcp-setup.md#edit-tasks)). The run changes no file. The agent sends the form
+itself with `submit_review` on Penguin's MCP server (`edit-run.ts`).
+
+1. **Claim.** The task names its part, revision and scope under `review`. It comes with a read
+   token on the reviewed feature's fork and `mcp`, a task token (`pgt_...`). The task token allows
+   `submit_review` for that part revision and scope, plus `whats_near` and `impact` on that feature.
+   It stops working when the claim ends or the bridge reports the task.
+2. **MCP config.** The bridge hands the CLI Penguin's MCP server, `<server>/mcp`, as its only server:
+
+   | `--vendor` | Command | Where the token goes |
+   |---|---|---|
+   | `claude` | `claude -p <prompt> --output-format json --permission-mode dontAsk --restricted --strict-mcp-config --mcp-config <file> --allowedTools Read,Glob,Grep,mcp__penguin__submit_review,mcp__penguin__whats_near,mcp__penguin__impact` | An MCP config file with the `Authorization` header, mode 0600, in a directory of its own under `<state>/edits/worktrees` outside the task's worktree. `--restricted` confines the file tools to the worktree, so the agent cannot read the file. The bridge deletes it after the run |
+   | `codex` | `codex exec --sandbox read-only --cd <worktree> --ephemeral --json --ignore-user-config -c approval_policy="never" -c mcp_servers.penguin.url=... -c mcp_servers.penguin.bearer_token_env_var="PENGUIN_TASK_TOKEN" -c mcp_servers.penguin.required=true -c mcp_servers.penguin.enabled_tools=[...] -c mcp_servers.penguin.default_tools_approval_mode="approve" -c shell_environment_policy.filters={PENGUIN_TASK_TOKEN="exclude"}` | `PENGUIN_TASK_TOKEN` in the CLI's environment, which the MCP settings name. The shell policy keeps it from every command the agent runs |
+
+   The token never appears in the CLI's arguments or in anything the bridge prints.
+   `--strict-mcp-config` and `--ignore-user-config` keep the owner's other MCP servers out of the
+   run, so each review run holds one MCP connection. The flags come from `claude --help`,
+   `codex exec --help` and the Codex configuration reference.
+3. **Form.** Penguin checks each call against the task before it runs. The form then goes through
+   the same validation, part trial and routing as a form from a running session. A refused form
+   answers every reason. The agent then submits again. A form for another scope or feature, any other
+   tool and any call after the task ends are refused.
+4. **Report.** The bridge reports `done` with no commit. Penguin keeps the report only when the run
+   submitted a form it did not refuse. Otherwise the task goes back to the owner as `run_failed`. A
+   form that arrived closes the task as done even before the report.
 
 The outcome line is built from facts: the CLI, its exit, the number of files changed, the time and
 the commit. Nothing the agent printed leaves the machine. The CLI's JSON output is read locally for
@@ -282,6 +312,24 @@ PENGUIN_EDIT_E2E=1 node --test tests/e2e/edit-task-run.test.ts
 It needs `wrangler` signed in to the account that holds the Artifacts namespace, `claude` signed in
 on the machine and `uv sync` for the runner's tests. `PENGUIN_EDIT_E2E_MODEL` picks the model
 (default `sonnet`). `PENGUIN_EDIT_E2E_OUT` names the folder for `evidence.json` and the Worker log.
+
+### Review task live check
+
+`tests/e2e/review-task-run.test.ts` runs PRD case 2 on the helpful-fix fixture against real
+Artifacts under local `wrangler dev`, with every repo under a prefix unique to the run. It runs the
+walkthrough's steps up to Priya's plan, so Google Chrome drives the dashboard steps. Priya's agent
+reports `owner-priya-local-day` before it proposes the plan, as PRD case 2 orders it. No steward session
+runs. Jun's and Sam's bridges each run `penguin-bridge edits --once --vendor claude`, which submits
+each review form through Penguin's MCP server. The check runner then records the forms and runs the
+part trials. `evidence.json` records each part's decision, who approved it, whether any author was
+asked and the repos deleted at the end. Nothing prints a token.
+
+```sh
+PENGUIN_REVIEW_E2E=1 node --test tests/e2e/review-task-run.test.ts
+```
+
+It needs what the edit task live check needs, plus Google Chrome. `PENGUIN_REVIEW_E2E_MODEL` picks
+the model (default `haiku`). `PENGUIN_REVIEW_E2E_OUT` names the output folder.
 
 ## Runner mode
 

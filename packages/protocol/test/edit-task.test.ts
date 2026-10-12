@@ -108,8 +108,14 @@ test("a claimed task's spec is checked field by field", () => {
     evidence: [],
     leaseUntil: "2026-10-12T10:00:00.000Z",
     fixWrite: null,
+    review: null,
   };
   assert.deepEqual(checkEditTaskSpec(spec), []);
   assert.notDeepEqual(checkEditTaskSpec({ ...spec, fork: "owner-jun" }), []);
   assert.notDeepEqual(checkEditTaskSpec({ ...spec, extra: 1 }), []);
+  // A review names the one part revision and scope its form covers.
+  const review = { ...spec, kind: "review", review: { feature: "utc-day", scope: "analytics", part: "utc-day/v1#1", revision: 1 } };
+  assert.deepEqual(checkEditTaskSpec(review), []);
+  assert.notDeepEqual(checkEditTaskSpec({ ...review, review: { ...review.review, revision: 0 } }), []);
+  assert.notDeepEqual(checkEditTaskSpec({ ...review, review: { ...review.review, token: "x" } }), []);
 });

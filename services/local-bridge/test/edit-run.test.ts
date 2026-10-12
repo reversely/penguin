@@ -63,6 +63,7 @@ const SPEC: EditTaskSpec = {
   evidence: ["analytics/tests/test_weekly.py:9 assert 2 == 1"],
   leaseUntil: "2026-10-12T10:20:00.000Z",
   fixWrite: null,
+  review: null,
 };
 const claimed = (spec: Partial<EditTaskSpec> = {}): ClaimedEditTask => ({ spec: { ...SPEC, ...spec }, token: { token: "art_secret", remote: "https://artifacts.test/x.git", expiresAt: "2026-10-12T10:20:00Z" } });
 
@@ -250,5 +251,17 @@ describe("claiming from Penguin", () => {
     assert.deepEqual([claim.tasks[0]?.spec.taskId, claim.tasks[0]?.token.token, claim.queue.cap], [11, "art_1", 2]);
     await assert.rejects(claimEditTasks("https://penguin.test", "bridge", answer({ ...SPEC, fork: "base", token }) as typeof fetch), /without its spec and token/u);
     await assert.rejects(claimEditTasks("https://penguin.test", "bridge", answer({ ...SPEC }) as typeof fetch), /without its spec and token/u);
+  });
+
+  test("a review carries its task token for /mcp; without one it reports at once and runs nothing", async () => {
+    const review = { ...SPEC, kind: "review", review: { feature: "utc-day", scope: "analytics", part: "utc-day/v1#1", revision: 1 } };
+    const mcp = { token: "pgt_1", expiresAt: "2026-10-12T10:20:00Z" };
+    const claim = await claimEditTasks("https://penguin.test", "bridge", answer({ ...review, token, mcp }) as typeof fetch);
+    assert.deepEqual(claim.tasks[0]?.mcp, mcp);
+    const setup = setUp("review");
+    const { options } = runner(setup, "claude");
+    const result = await runEditTask({ ...options, mcpUrl: "https://penguin.test/mcp" }, { ...claim.tasks[0]!, mcp: null });
+    assert.deepEqual(result.report, { status: "failed", outcome: "the claim carried no task token for Penguin's MCP server" });
+    assert.equal(existsSync(join(setup.root, "worktrees")), false);
   });
 });

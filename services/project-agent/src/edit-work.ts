@@ -5,8 +5,8 @@
 // - `review`: each revision of a plan part waiting on its owner asks for one review form per scope
 //   of the part. It is routed to the steward of the scope's DRI, or down the scope's fallback order
 //   while the DRI has no bridge online and no session (#135). A review form submitted for that
-//   scope on the plan's feature since the revision started waiting does it; the part leaving
-//   `pending` without one drops it.
+//   scope on the plan's feature since the revision started waiting does it, unless Penguin refused
+//   the form at submission; the part leaving `pending` without one drops it.
 // - `fix`: each approved behavioural part whose place is a running feature asks for its patch to be
 //   written into that feature's fork. The whole part goes to the target feature's builder, else the
 //   steward of the target's person: an approved patch is written whole, as one commit, so it never
@@ -25,9 +25,12 @@
 // view sees the current state; a source is routed once, when it opens.
 //
 // A bridge's claim gets each task's spec: the fork, files, allowed paths, instructions and the checks
-// that verify it, plus, for a fix, the approved write. Its report of a done run names one commit,
-// which Penguin reads from the fork before keeping it: one parent, on the fork's branch, changing only
-// the task's allowed paths. A fix's commit goes through the fix-write checks instead.
+// that verify it, plus, for a fix, the approved write. A review also gets its part revision and scope,
+// and a task token for Penguin's MCP server that allows that form alone (review-task.ts, #138). Its
+// report of a done run names one commit, which Penguin reads from the fork before keeping it: one
+// parent, on the fork's branch, changing only the task's allowed paths. A fix's commit goes through
+// the fix-write checks instead. A review's done report names no commit: Penguin keeps it only when
+// the run submitted a form Penguin did not refuse. Every report revokes the task's token.
 
 import {
   FIX_WRITE_BRANCH,
@@ -47,9 +50,11 @@ import type { EditRoster } from "./edit-roster.ts";
 import type { EditReportOutcome, EditSource, EditTask, EditTaskStore, SessionFor } from "./edit-tasks.ts";
 import type { FeatureStore } from "./feature-store.ts";
 import { taskFixGrant, taskFixReport, type FixGrantStore, type FixWriteDeps } from "./fix-write.ts";
+import type { IssuedTaskToken } from "./mcp-tokens.ts";
 import { RUNNING_STATES } from "./overlap-lock.ts";
 import type { PartRoute, PlanRouteStore } from "./plan-approval.ts";
 import { changedFiles } from "./repo-diff.ts";
+import { taskSessionId } from "./review-task.ts";
 import type { Session } from "./session-store.ts";
 
 export interface EditWorkDeps {
@@ -59,7 +64,17 @@ export interface EditWorkDeps {
   readonly routes: PlanRouteStore;
   readonly grants: FixGrantStore;
   /** The review forms submitted on a feature (ReviewStore.list). */
-  readonly reviews: (featureId: string) => readonly { readonly scopeId: string; readonly createdAt: string }[];
+  readonly reviews: (featureId: string) => readonly {
+    readonly scopeId: string;
+    readonly createdAt: string;
+    readonly state?: string;
+    readonly sessionId?: string | null;
+  }[];
+  /** Issues and revokes the task tokens of review runs (McpTokenStore); absent, no review is claimed. */
+  readonly taskTokens?: {
+    issueTask(ownerId: string, taskId: number, expiresAt: number): Promise<IssuedTaskToken>;
+    revokeTask(taskId: number): number;
+  };
   readonly scopeMap: () => Promise<ScopeMap>;
   /** Every running session. */
   readonly running: () => readonly Session[];
@@ -160,7 +175,13 @@ function syncReviews(deps: EditWorkDeps, pending: readonly PartRoute[], routing:
     const feature = deps.features.get(route.featureId);
     if (feature === undefined) continue;
     const since = Date.parse(route.updatedAt);
-    const reviewed = new Set(deps.reviews(route.featureId).filter((review) => Date.parse(review.createdAt) >= since).map((review) => review.scopeId));
+    // A form Penguin refused at submission is no review: the task stays open for a corrected one.
+    const reviewed = new Set(
+      deps
+        .reviews(route.featureId)
+        .filter((review) => review.state !== "refused" && Date.parse(review.createdAt) >= since)
+        .map((review) => review.scopeId),
+    );
     for (const scope of route.scopes) {
       const key = reviewKey(route, scope);
       if (reviewed.has(scope)) {
@@ -320,7 +341,13 @@ export function holdsFixTask(tasks: EditTaskStore, sessionId: string, partId: st
   return tasks.forSession(sessionId).some((task) => task.kind === "fix" && task.ref["part"] === partId && task.ref["revision"] === revision);
 }
 
-export type EditClaim = { readonly status: "ok"; readonly tasks: readonly EditTaskSpec[]; readonly queue: EditQueue };
+export type EditClaim = {
+  readonly status: "ok";
+  readonly tasks: readonly EditTaskSpec[];
+  /** The task token of each claimed review, by task id; the plaintext goes to this claim alone. */
+  readonly mcp: Readonly<Record<number, IssuedTaskToken>>;
+  readonly queue: EditQueue;
+};
 
 /**
  * The bridge of `person` claims the person's waiting tasks, up to the cap. A fix whose write can no
@@ -329,8 +356,11 @@ export type EditClaim = { readonly status: "ok"; readonly tasks: readonly EditTa
 export async function claimEditTasks(deps: EditWorkDeps, person: string, bridgeId: string): Promise<EditClaim> {
   await syncEditWork(deps);
   const scopeMap = await deps.scopeMap();
-  const claimed = deps.tasks.claim(person, bridgeId, deps.cap, deps.leaseMs, sessionFor(deps));
+  // Without task tokens a review cannot run headless, so the claim leaves reviews to sessions.
+  const claimable = deps.taskTokens === undefined ? (task: Pick<EditTask, "kind">) => task.kind !== "review" : () => true;
+  const claimed = deps.tasks.claim(person, bridgeId, deps.cap, deps.leaseMs, sessionFor(deps), claimable);
   const specs: EditTaskSpec[] = [];
+  const mcp: Record<number, IssuedTaskToken> = {};
   for (const task of claimed) {
     let fixWrite: EditTaskSpec["fixWrite"] = null;
     if (task.kind === "fix") {
@@ -341,10 +371,11 @@ export async function claimEditTasks(deps: EditWorkDeps, person: string, bridgeI
       }
       fixWrite = granted.spec;
     }
+    if (task.kind === "review" && deps.taskTokens !== undefined) mcp[task.id] = await deps.taskTokens.issueTask(person, task.id, task.leaseUntil as number);
     specs.push(taskSpec(task, scopeMap, fixWrite));
   }
   if (claimed.length > 0) deps.notify(person);
-  return { status: "ok", tasks: specs, queue: deps.tasks.queue(person, deps.cap) };
+  return { status: "ok", tasks: specs, mcp, queue: deps.tasks.queue(person, deps.cap) };
 }
 
 const fixPart = (task: EditTask) => ({ feature: task.feature, part: task.ref["part"], revision: task.ref["revision"] });
@@ -371,7 +402,14 @@ function taskSpec(task: EditTask, scopeMap: ScopeMap, fixWrite: EditTaskSpec["fi
     evidence: task.evidence,
     leaseUntil: new Date(task.leaseUntil as number).toISOString(),
     fixWrite,
+    review: task.kind === "review" ? reviewTarget(task) : null,
   };
+}
+
+/** The part revision and scope a review task's form covers. */
+function reviewTarget(task: EditTask): EditTaskSpec["review"] {
+  const { part, revision, scope } = task.ref;
+  return { feature: task.target, scope: typeof scope === "string" ? scope : (task.scopes[0] ?? ""), part: String(part), revision: Number(revision) };
 }
 
 /**
@@ -383,6 +421,7 @@ export async function reportEditTask(deps: EditWorkDeps, person: string, bridgeI
   const report = (typeof body === "object" && body !== null ? body : {}) as EditTaskReport;
   const task = deps.tasks.get(taskId);
   if (task === undefined || task.person !== person) return { status: "rejected", reason: "not_found", message: `no edit task ${taskId} for ${person}` };
+  if (task.kind === "review") return reportReviewTask(deps, person, bridgeId, task, report);
   if (report.status === "done" && task.claimedBy === bridgeId && task.state === "running") {
     const problem = await commitProblem(deps, task, report.commit);
     if (problem !== null) {
@@ -394,6 +433,31 @@ export async function reportEditTask(deps: EditWorkDeps, person: string, bridgeI
   const outcome = deps.tasks.report(bridgeId, taskId, report);
   if (outcome.status === "ok") {
     if (outcome.task.state === "done") deps.tasks.close(outcome.task.sourceKey, "done", outcome.task.outcome ?? "done", outcome.task.commit);
+    deps.notify(person);
+  }
+  return outcome;
+}
+
+/**
+ * A review run's report. The run's result is the form it submitted under the task's session id, so a
+ * done report counts only when Penguin kept such a form and did not refuse it. A form that arrived
+ * may already have closed the task as done at the last sync: the report then confirms it. The task's
+ * token is revoked either way.
+ */
+async function reportReviewTask(deps: EditWorkDeps, person: string, bridgeId: string, task: EditTask, report: EditTaskReport): Promise<EditReportOutcome> {
+  deps.taskTokens?.revokeTask(task.id);
+  const forms = deps.reviews(task.target).filter((review) => review.sessionId === taskSessionId(task.id));
+  const kept = forms.some((review) => review.state !== "refused");
+  if (report.status === "done" && task.state === "done" && kept && report.commit === undefined) return { status: "ok", task };
+  if (report.status === "done" && task.claimedBy === bridgeId && task.state === "running" && !kept) {
+    const why = forms.length === 0 ? "the run submitted no review form" : "Penguin refused every form the run submitted";
+    const released = deps.tasks.report(bridgeId, task.id, { status: "failed", outcome: why });
+    deps.notify(person);
+    return released.status === "ok" ? { status: "rejected", reason: "invalid", message: why } : released;
+  }
+  const outcome = deps.tasks.report(bridgeId, task.id, report);
+  if (outcome.status === "ok") {
+    if (outcome.task.state === "done") deps.tasks.close(outcome.task.sourceKey, "done", outcome.task.outcome ?? "done");
     deps.notify(person);
   }
   return outcome;

@@ -37,9 +37,10 @@ export const OPEN_EDIT_TASK_STATES: readonly EditTaskState[] = ["queued", "deliv
 
 /**
  * Why a task waits on its person. `bridge_offline`: no session runs and the person's bridge has not
- * polled lately. `needs_session`: a review form is filled in by a session, never headless.
- * `no_identity`: no identity's charter holds the place. `run_failed`, `run_timeout`: the bridge's run
- * failed or ran out of time. `lease_expired`: the bridge stopped reporting during a run.
+ * polled lately. `needs_session`: a review form asked before headless runs could submit one (#138);
+ * Penguin no longer asks for this reason and puts such a task back in the queue. `no_identity`: no
+ * identity's charter holds the place. `run_failed`, `run_timeout`: the bridge's run failed or ran out
+ * of time. `lease_expired`: the bridge stopped reporting during a run.
  */
 export const EDIT_ASK_REASONS = ["bridge_offline", "needs_session", "no_identity", "run_failed", "run_timeout", "lease_expired"] as const;
 export type EditAskReason = (typeof EDIT_ASK_REASONS)[number];
@@ -202,6 +203,21 @@ export function routeEdit(target: EditTarget, places: readonly EditPlace[], cont
 
 // The task as the person's bridge claims it.
 
+/**
+ * The MCP tools a headless review run may call, with the task's own token: the form itself and the
+ * two read tools a reviewer uses. The token refuses every other tool.
+ */
+export const REVIEW_TASK_TOOLS = ["submit_review", "whats_near", "impact"] as const;
+export type ReviewTaskTool = (typeof REVIEW_TASK_TOOLS)[number];
+
+/** The one part revision and scope a review task's form covers, on the feature that proposed the plan. */
+export interface EditReviewTarget {
+  readonly feature: string;
+  readonly scope: string;
+  readonly part: string;
+  readonly revision: number;
+}
+
 export const EDIT_TASK_LIMITS = {
   instructionsLength: 4_000,
   verifierLength: 1_000,
@@ -239,6 +255,8 @@ export interface EditTaskSpec {
   readonly leaseUntil: string;
   /** For a `fix`: the approved write, made without an agent; null otherwise. */
   readonly fixWrite: FixWriteSpec | null;
+  /** For a `review`: the part revision and scope the form covers; null otherwise. */
+  readonly review: EditReviewTarget | null;
 }
 
 const text = (maxLength: number): JsonSchema => ({ type: "string", maxLength });
@@ -248,7 +266,7 @@ const strings = (maxItems: number, maxLength: number): JsonSchema => ({ type: "a
 export const EDIT_TASK_SPEC_SCHEMA: JsonSchema = {
   type: "object",
   additionalProperties: false,
-  required: ["taskId", "kind", "handle", "person", "feature", "fork", "branch", "paths", "scopes", "allowed", "instructions", "verifier", "evidence", "leaseUntil", "fixWrite"],
+  required: ["taskId", "kind", "handle", "person", "feature", "fork", "branch", "paths", "scopes", "allowed", "instructions", "verifier", "evidence", "leaseUntil", "fixWrite", "review"],
   properties: {
     taskId: { type: "integer", minimum: 1 },
     kind: { type: "string", enum: [...EDIT_TASK_KINDS] },
@@ -265,6 +283,17 @@ export const EDIT_TASK_SPEC_SCHEMA: JsonSchema = {
     evidence: strings(EDIT_TASK_LIMITS.evidenceLines, EDIT_TASK_LIMITS.evidenceLineLength),
     leaseUntil: text(40),
     fixWrite: { oneOf: [{ type: "null" }, FIX_WRITE_SPEC_SCHEMA] },
+    review: {
+      oneOf: [
+        { type: "null" },
+        {
+          type: "object",
+          additionalProperties: false,
+          required: ["feature", "scope", "part", "revision"],
+          properties: { feature: text(63), scope: text(128), part: text(200), revision: { type: "integer", minimum: 1 } },
+        },
+      ],
+    },
   },
 };
 
@@ -273,7 +302,10 @@ export function checkEditTaskSpec(value: unknown): SchemaError[] {
   return checkSchema(EDIT_TASK_SPEC_SCHEMA, value);
 }
 
-/** What a bridge reports when a run ends. `commit` is required for `done`. */
+/**
+ * What a bridge reports when a run ends. `commit` is required for `done`, except for a review: its
+ * result is the form the run submitted, which Penguin looks up itself.
+ */
 export interface EditTaskReport {
   readonly status: "done" | "failed" | "timeout";
   /** One line the bridge builds from facts; never the agent's transcript. */

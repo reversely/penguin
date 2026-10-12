@@ -27,6 +27,7 @@ const SPEC: EditTaskSpec = {
   evidence: [],
   leaseUntil: "2026-10-12T10:20:00.000Z",
   fixWrite: null,
+  review: null,
 };
 
 function bridgeHandlers() {
@@ -95,5 +96,27 @@ describe("POST /edit-tasks/<id>", () => {
     assert.deepEqual(reports, [{ caller: { bridgeId: "b-jun", ownerId: "jun" }, taskId: 7, body }]);
     const other = post("/edit-tasks/8", body);
     assert.equal((await handleBridgeRoute(other, new URL(other.url), { tokenTtlSeconds: 3_600 }, handlers))?.status, 403);
+  });
+});
+
+describe("POST /edit-tasks/claim for a review", () => {
+  test("a review reads its fork and carries its task token for /mcp", async () => {
+    const { mints, handlers } = bridgeHandlers();
+    const review: EditTaskSpec = { ...SPEC, taskId: 9, kind: "review", fork: "feature-utc-day", review: { feature: "utc-day", scope: "analytics", part: "utc-day/v1#1", revision: 1 } };
+    const directory = (handlers as unknown as { bridges: () => Record<string, unknown> }).bridges();
+    directory["claimEditTasks"] = async () => ({
+      status: "ok",
+      tasks: [review],
+      mcp: { 9: { token: "pgt_task", expiresAt: "2026-10-12T10:20:00.000Z" } },
+      queue: { running: 1, queued: 0, asked: 0, cap: 2 },
+    });
+    const request = post("/edit-tasks/claim", {});
+    const response = await handleBridgeRoute(request, new URL(request.url), { tokenTtlSeconds: 3_600, editTokenTtlSeconds: 1_200 }, handlers);
+    assert.equal(response?.status, 200);
+    // A review changes no file: its fork token reads.
+    assert.deepEqual(mints, [{ repo: "feature-utc-day", scope: "read", ttl: 1_200 }]);
+    const body = (await response?.json()) as { tasks: Record<string, unknown>[] };
+    assert.deepEqual(body.tasks[0]?.["mcp"], { token: "pgt_task", expiresAt: "2026-10-12T10:20:00.000Z" });
+    assert.deepEqual(body.tasks[0]?.["review"], review.review);
   });
 });

@@ -28,6 +28,8 @@ export const EDITS_USAGE = `       penguin-bridge edits [--once] [--interval <ms
          cap at once, and runs each headless in a fresh worktree of its fork: claude -p with file
          tools only, or codex exec in the workspace-write sandbox. Each result is shown before it is
          published, and your yes stands for later results of the same identity on the same fork.
+         A review form runs read-only with Penguin's MCP server and a token for that task alone;
+         the agent submits the form itself.
 `;
 
 /** Runs `edits`. Resolves with the exit code. */
@@ -74,6 +76,8 @@ export async function runEditsCommand(args: readonly string[], io: CliIo, keySto
     confirm: async (preview: string) => /^y(es)?$/iu.test((await io.ask(`${preview}Publish it? [y/N] `)).trim()),
     write: io.write,
     projectId: values.project,
+    // A review run's CLI reaches Penguin's MCP server on the same origin the bridge registered with.
+    mcpUrl: new URL("/mcp", registration.server).toString(),
   };
   const pass = (): Promise<EditPassResult> =>
     editPass({

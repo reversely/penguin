@@ -1,5 +1,5 @@
 import { getAgentByName, routeAgentRequest } from "agents";
-import { serveMcp } from "@penguin/mcp";
+import { serveMcp, serveReviewTaskMcp } from "@penguin/mcp";
 import { LIVE_OWNER_HEADER, type BlockProjectPort, type InboxReason } from "@penguin/project-agent";
 import { featureOfBlockRun, parseEditRunMinutes } from "@penguin/protocol";
 
@@ -8,7 +8,7 @@ import type { BlockReportAnswer } from "./bridges.ts";
 import { handleRequest } from "./gateway.ts";
 import { parseOwnerMap } from "./github-oauth.ts";
 import { consumePushEvents } from "./push-events.ts";
-import { featureView, mcpFeatures, openFeatureWithFork, type FeaturePorts } from "./features.ts";
+import { featureView, mcpFeatures, mcpReviewTask, openFeatureWithFork, type FeaturePorts } from "./features.ts";
 import { forkFeatureRepo, forkHuddleRepo, parseFeatureForkOptions, RepoNames, setUpProject } from "./repos.ts";
 import { artifactsRepoName, mintRepoToken, parseFeatureTokenTtl, parseFixTokenTtl, parseProjectRepo, parseTokenTtl } from "./tokens.ts";
 
@@ -200,6 +200,8 @@ export default {
             { issues: names.issues, base: names.base, ownerFork: names.owner(owner) },
             mcpFeatures(features, owner),
           ),
+        // A task token reaches the review tools alone, bound to its task (#138).
+        serveReviewTaskMcp: (mcpRequest, owner, taskId) => serveReviewTaskMcp(mcpRequest, mcpReviewTask(features, owner, taskId)),
         ownerForkRepo: (owner) => names.owner(owner),
         projectRepos: repos,
         mintToken: (repo, scope, ttl) => {

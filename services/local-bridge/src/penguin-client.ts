@@ -996,7 +996,7 @@ export async function claimEditTasks(server: string, bridgeToken: string, fetchI
   const queue = body["queue"] as Record<string, unknown> | undefined;
   const count = (key: string) => (typeof queue?.[key] === "number" ? (queue[key] as number) : 0);
   const tasks = body["tasks"].map((entry: unknown): ClaimedEditTask => {
-    const { token: tokenField, fixWrite, ...fields } = (entry ?? {}) as Record<string, unknown>;
+    const { token: tokenField, fixWrite, mcp: mcpField, ...fields } = (entry ?? {}) as Record<string, unknown>;
     const fix = fixWrite === null || fixWrite === undefined ? null : fixWriteSpecOf(fixWrite);
     const spec = { ...fields, fixWrite: fix ?? null } as unknown as EditTaskSpec;
     const { token, remote, expiresAt } = (tokenField ?? {}) as Record<string, unknown>;
@@ -1004,7 +1004,10 @@ export async function claimEditTasks(server: string, bridgeToken: string, fetchI
       throw new RemoteUnavailableError("Penguin listed an edit task without its spec and token");
     }
     checkedOrigin(remote, "the Artifacts remote");
-    return { spec, token: { token, remote, expiresAt } };
+    // A review's task token for /mcp; a review without one runs nowhere and reports at once.
+    const { token: mcpToken, expiresAt: mcpExpiresAt } = (mcpField ?? {}) as Record<string, unknown>;
+    const mcp = typeof mcpToken === "string" && typeof mcpExpiresAt === "string" ? { token: mcpToken, expiresAt: mcpExpiresAt } : null;
+    return { spec, token: { token, remote, expiresAt }, mcp };
   });
   return { tasks, queue: { running: count("running"), queued: count("queued"), asked: count("asked"), cap: count("cap") } };
 }

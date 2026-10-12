@@ -167,9 +167,9 @@ test("a plan part waiting on its owner asks one review form per scope, from the 
   assert.deepEqual(
     reviews.map(({ kind, handle, scopes, state, askReason }) => ({ kind, handle, scopes, state, askReason })),
     [
-      // A review form is filled in by a running session, never headless: with none, Jun is asked.
-      { kind: "review", handle: "@jun/steward", scopes: ["analytics"], state: "asked", askReason: "needs_session" },
-      { kind: "review", handle: "@jun/steward", scopes: ["reports"], state: "asked", askReason: "needs_session" },
+      // A review form waits for a session or the bridge like any task (#138): with neither, Jun is asked.
+      { kind: "review", handle: "@jun/steward", scopes: ["analytics"], state: "asked", askReason: "bridge_offline" },
+      { kind: "review", handle: "@jun/steward", scopes: ["reports"], state: "asked", askReason: "bridge_offline" },
     ],
   );
   // Jun starts the steward: its session takes both forms at its next safe checkpoint.

@@ -19,13 +19,25 @@
 // An approved fix is written without an agent: its patch is fixed, so `writeFix` makes the commit.
 // A failed run, a timeout and a bridge that stops release the task: Penguin asks the person. Nothing
 // the agent printed leaves the machine.
+//
+// A review form changes no file (#138). Its claim carries a read token on the reviewed fork and a task
+// token for Penguin's MCP server, which allows `submit_review` for the task's one part revision and
+// scope plus `whats_near` and `impact`, until the task ends. The bridge checks the fork out the same
+// way and starts the CLI with Penguin's MCP server as its only one: `claude -p` reads the server and
+// the token from an MCP config file the bridge writes outside the worktree, readable by the person
+// alone and removed after the run; `codex exec` takes the server through `-c mcp_servers.penguin.*`
+// settings and reads the token from the variable they name, which no shell command it runs inherits.
+// The token never appears in the CLI's arguments or in anything the bridge prints. The CLI may read
+// files and call those three tools only. The run publishes nothing: the agent sends the form itself,
+// and Penguin checks it as it checks a session's form. The bridge then reports the run, and Penguin
+// keeps a done report only when the run submitted a form it did not refuse.
 
 import { spawn } from "node:child_process";
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { runGit } from "@penguin/git-analysis";
-import { checkEditTaskSpec, type EditQueue, type EditTaskReport, type EditTaskSpec, type FixWriteSpec } from "@penguin/protocol";
+import { checkEditTaskSpec, REVIEW_TASK_TOOLS, type EditQueue, type EditTaskReport, type EditTaskSpec, type FixWriteSpec } from "@penguin/protocol";
 
 import type { ConsentStore, ConsentTarget } from "./consent-store.ts";
 import { writeFix } from "./fix-write.ts";
@@ -41,6 +53,13 @@ const VENDOR_SESSION: Readonly<Record<EditVendor, string>> = { claude: "claude-c
 /** The file tools a `claude -p` run may use without asking; restricted mode removes every tool that runs code. */
 export const CLAUDE_ALLOWED_TOOLS = ["Read", "Edit", "Write", "Glob", "Grep"] as const;
 
+/** The name a review run's CLI knows Penguin's MCP server by. */
+export const PENGUIN_MCP_SERVER = "penguin";
+/** The variable `codex exec` reads a review run's task token from; nothing else reads it. */
+export const TASK_TOKEN_VARIABLE = "PENGUIN_TASK_TOKEN";
+/** What a review run's `claude -p` may use: the read-only file tools and Penguin's review tools. */
+export const CLAUDE_REVIEW_TOOLS: readonly string[] = ["Read", "Glob", "Grep", ...REVIEW_TASK_TOOLS.map((tool) => `mcp__${PENGUIN_MCP_SERVER}__${tool}`)];
+
 /** A run longer than this is stopped unless the bridge sets another limit. */
 export const EDIT_RUN_TIMEOUT_DEFAULT_MS = 15 * 60_000;
 /** Output read from a CLI before the rest is dropped; it is parsed here and never sent. */
@@ -51,20 +70,72 @@ const NO_HOOKS = ["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false"
 export interface ClaimedEditTask {
   readonly spec: EditTaskSpec;
   readonly token: { readonly token: string; readonly remote: string; readonly expiresAt: string };
+  /** A review's task token for Penguin's MCP server; absent for any other kind. */
+  readonly mcp?: { readonly token: string; readonly expiresAt: string } | null;
 }
+
+/** How a review run's CLI reaches Penguin's MCP server: claude's config file, or codex's server URL. */
+export type ReviewMcp = { readonly configFile: string } | { readonly url: string };
 
 export interface EditClaimAnswer {
   readonly tasks: readonly ClaimedEditTask[];
   readonly queue: EditQueue;
 }
 
-/** The arguments of the vendor's headless command for one prompt in one worktree. */
-export function vendorArgs(vendor: EditVendor, prompt: string, worktree: string, model?: string): string[] {
+/**
+ * The arguments of the vendor's headless command for one prompt in one worktree. A review run also
+ * gets Penguin's MCP server as its only server, and its CLI may change no file.
+ */
+export function vendorArgs(vendor: EditVendor, prompt: string, worktree: string, model?: string, review?: ReviewMcp): string[] {
   const chosen = model === undefined ? [] : ["--model", model];
   if (vendor === "claude") {
-    return ["-p", prompt, "--output-format", "json", "--permission-mode", "dontAsk", "--restricted", "--allowedTools", CLAUDE_ALLOWED_TOOLS.join(","), ...chosen];
+    const base = ["-p", prompt, "--output-format", "json", "--permission-mode", "dontAsk", "--restricted"];
+    if (review !== undefined && "configFile" in review) {
+      return [...base, "--strict-mcp-config", "--mcp-config", review.configFile, "--allowedTools", CLAUDE_REVIEW_TOOLS.join(","), ...chosen];
+    }
+    return [...base, "--allowedTools", CLAUDE_ALLOWED_TOOLS.join(","), ...chosen];
   }
-  return ["exec", "--sandbox", "workspace-write", "--cd", worktree, "--ephemeral", "--json", "-c", 'approval_policy="never"', ...chosen.map((arg) => (arg === "--model" ? "-m" : arg)), prompt];
+  const codexModel = chosen.map((arg) => (arg === "--model" ? "-m" : arg));
+  if (review !== undefined && "url" in review) {
+    const server = `mcp_servers.${PENGUIN_MCP_SERVER}`;
+    const settings = [
+      'approval_policy="never"',
+      `${server}.url=${JSON.stringify(review.url)}`,
+      `${server}.bearer_token_env_var="${TASK_TOKEN_VARIABLE}"`,
+      `${server}.required=true`,
+      `${server}.enabled_tools=${JSON.stringify(REVIEW_TASK_TOOLS)}`,
+      `${server}.default_tools_approval_mode="approve"`,
+      `shell_environment_policy.filters={${TASK_TOKEN_VARIABLE}="exclude"}`,
+    ];
+    return ["exec", "--sandbox", "read-only", "--cd", worktree, "--ephemeral", "--json", "--ignore-user-config", ...settings.flatMap((setting) => ["-c", setting]), ...codexModel, prompt];
+  }
+  return ["exec", "--sandbox", "workspace-write", "--cd", worktree, "--ephemeral", "--json", "-c", 'approval_policy="never"', ...codexModel, prompt];
+}
+
+/** A review run's MCP config for `claude --mcp-config`: Penguin's server with the task token. */
+export function claudeMcpConfig(url: string, token: string): string {
+  return `${JSON.stringify({ mcpServers: { [PENGUIN_MCP_SERVER]: { type: "http", url, headers: { Authorization: `Bearer ${token}` } } } }, null, 2)}\n`;
+}
+
+/** The prompt for a review task: Penguin's instructions and the one form to send, with no file to change. */
+export function reviewPrompt(spec: EditTaskSpec): string {
+  const review = spec.review;
+  const lines = [
+    `You are ${spec.handle}, working for ${spec.person} in a read-only checkout of ${spec.fork}, the fork of feature ${spec.feature}.`,
+    `Penguin routed you edit task ${spec.taskId}: a review form.`,
+    "",
+    "Instructions from Penguin:",
+    spec.instructions,
+    "",
+    review === null
+      ? "Send the form with the submit_review tool of the penguin MCP server."
+      : `Send the form with the submit_review tool of the penguin MCP server, with feature "${review.feature}" and scope "${review.scope}" (part ${review.part}, revision ${review.revision}).`,
+    "Read penguin/invariants.json and penguin/scopes.json for the scope's invariants and contracts, and cite evidence that exists in this checkout.",
+    "If Penguin refuses the form, read every reason, fix the form and submit it again.",
+    "Change no file and run no command. The penguin server's whats_near and impact tools give facts about the change.",
+    `Afterwards: ${spec.verifier}`,
+  ];
+  return `${lines.join("\n")}\n`;
 }
 
 /** The prompt for one task: Penguin's instructions, the files it may change and the checks that follow. */
@@ -100,17 +171,25 @@ export interface VendorRunOptions {
   readonly signal?: AbortSignal;
 }
 
+/** A review run's reach to Penguin's MCP server, and the token codex reads from its variable. */
+export interface ReviewRun {
+  readonly mcp: ReviewMcp;
+  readonly codexToken?: string;
+}
+
 /**
  * Starts the vendor CLI in `worktree` and waits for it, up to the time limit. Its output stays in this
  * process: only whether the agent reported an error is read from it.
  */
-export function runVendor(options: VendorRunOptions, prompt: string, worktree: string): Promise<VendorRunResult> {
+export function runVendor(options: VendorRunOptions, prompt: string, worktree: string, review?: ReviewRun): Promise<VendorRunResult> {
   const started = performance.now();
   const elapsed = () => Math.round(performance.now() - started);
+  const env = agentEnvironment(process.env);
+  if (review?.codexToken !== undefined) env[TASK_TOKEN_VARIABLE] = review.codexToken;
   return new Promise((resolve, reject) => {
-    const child = spawn(options.program ?? options.vendor, vendorArgs(options.vendor, prompt, worktree, options.model), {
+    const child = spawn(options.program ?? options.vendor, vendorArgs(options.vendor, prompt, worktree, options.model, review?.mcp), {
       cwd: worktree,
-      env: agentEnvironment(process.env),
+      env,
       stdio: ["ignore", "pipe", "ignore"],
     });
     let output = "";
@@ -142,9 +221,9 @@ export function runVendor(options: VendorRunOptions, prompt: string, worktree: s
   });
 }
 
-/** The CLI's environment: the person's own, with any Git credential configuration taken out. */
+/** The CLI's environment: the person's own, with any Git credential configuration and stray task token taken out. */
 function agentEnvironment(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  return Object.fromEntries(Object.entries(base).filter(([key]) => !/^GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)$/u.test(key)));
+  return Object.fromEntries(Object.entries(base).filter(([key]) => !/^GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)$/u.test(key) && key !== TASK_TOKEN_VARIABLE));
 }
 
 /** Whether the CLI's own output says the agent failed: `is_error` from claude, a failed turn or error event from codex. */
@@ -184,6 +263,8 @@ export interface EditRunnerOptions {
   readonly remote?: (fork: string, token: ClaimedEditTask["token"]) => GitRemote;
   /** Writes an approved fix; defaults to `writeFix`. */
   readonly writeFix?: (remote: GitRemote, spec: FixWriteSpec) => ReturnType<typeof writeFix>;
+  /** Penguin's MCP endpoint, `<server>/mcp`, which a review run's CLI calls with the task token. */
+  readonly mcpUrl?: string;
 }
 
 /** What one run comes to: the report for Penguin, and the commit to report as a checkpoint. */
@@ -204,12 +285,9 @@ export async function runEditTask(options: EditRunnerOptions, claimed: ClaimedEd
     return failed(written.status === "moved" ? `the fork moved to ${written.head.slice(0, 12)}` : written.reason, null);
   }
 
-  const ref = `refs/penguin/edit-tasks/${spec.taskId}`;
-  const worktree = join(options.worktreeRoot, `task-${spec.taskId}-${process.pid}-${Date.now()}`);
-  await mkdir(options.worktreeRoot, { recursive: true, mode: 0o700 });
-  await remote.git(options.repoPath, (url) => ["fetch", "--quiet", "--no-tags", "--end-of-options", url, `+refs/heads/${spec.branch}:${ref}`]);
-  const head = (await runGit(options.repoPath, ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`])).trim();
-  await runGit(options.repoPath, ["worktree", "add", "--quiet", "--detach", worktree, head]);
+  if (spec.kind === "review") return runReviewTask(options, claimed, remote, signal);
+
+  const { ref, worktree, head } = await checkOut(options, spec, remote);
   try {
     const label = VENDOR_LABEL[options.vendor.vendor];
     const run = await runVendor({ ...options.vendor, ...(signal === undefined ? {} : { signal }) }, editPrompt(spec), worktree);
@@ -245,6 +323,54 @@ export async function runEditTask(options: EditRunnerOptions, claimed: ClaimedEd
   } catch (error) {
     return failed(`the run stopped: ${firstLine((error as Error).message)}`, worktree);
   } finally {
+    await runGit(options.repoPath, ["worktree", "remove", "--force", worktree]).catch(() => rm(worktree, { recursive: true, force: true }));
+    await runGit(options.repoPath, ["update-ref", "-d", ref]).catch(() => undefined);
+  }
+}
+
+/** Fetches the task's fork branch and adds a fresh detached worktree of its head. */
+async function checkOut(options: EditRunnerOptions, spec: EditTaskSpec, remote: GitRemote): Promise<{ ref: string; worktree: string; head: string }> {
+  const ref = `refs/penguin/edit-tasks/${spec.taskId}`;
+  const worktree = join(options.worktreeRoot, `task-${spec.taskId}-${process.pid}-${Date.now()}`);
+  await mkdir(options.worktreeRoot, { recursive: true, mode: 0o700 });
+  await remote.git(options.repoPath, (url) => ["fetch", "--quiet", "--no-tags", "--end-of-options", url, `+refs/heads/${spec.branch}:${ref}`]);
+  const head = (await runGit(options.repoPath, ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`])).trim();
+  await runGit(options.repoPath, ["worktree", "add", "--quiet", "--detach", worktree, head]);
+  return { ref, worktree, head };
+}
+
+/**
+ * Runs a review task: the CLI reads a checkout of the reviewed fork and sends the form itself through
+ * Penguin's MCP server with the task token. Nothing is committed or pushed. The claude config file sits
+ * in a directory of its own outside the worktree, which the CLI's file tools cannot reach, and is
+ * removed with the worktree.
+ */
+async function runReviewTask(options: EditRunnerOptions, claimed: ClaimedEditTask, remote: GitRemote, signal?: AbortSignal): Promise<EditRunResult> {
+  const { spec } = claimed;
+  if (claimed.mcp == null || options.mcpUrl === undefined) return failed("the claim carried no task token for Penguin's MCP server", null);
+  const { ref, worktree } = await checkOut(options, spec, remote);
+  let configDir: string | null = null;
+  try {
+    const label = VENDOR_LABEL[options.vendor.vendor];
+    let review: ReviewRun;
+    if (options.vendor.vendor === "claude") {
+      configDir = await mkdtemp(join(options.worktreeRoot, `mcp-${spec.taskId}-`));
+      const configFile = join(configDir, "penguin.json");
+      await writeFile(configFile, claudeMcpConfig(options.mcpUrl, claimed.mcp.token), { mode: 0o600, flag: "wx" });
+      review = { mcp: { configFile } };
+    } else {
+      review = { mcp: { url: options.mcpUrl }, codexToken: claimed.mcp.token };
+    }
+    const run = await runVendor({ ...options.vendor, ...(signal === undefined ? {} : { signal }) }, reviewPrompt(spec), worktree, review);
+    const seconds = Math.round(run.durationMs / 1000);
+    if (run.status === "timeout") return { report: { status: "timeout", outcome: `${label} ran past ${Math.round(options.vendor.timeoutMs / 60_000)} minutes and was stopped` }, worktree };
+    if (run.status === "stopped") return failed(`the bridge stopped during ${label}`, worktree);
+    if (run.exitCode !== 0 || run.agentError) return failed(`${label} ended with exit ${run.exitCode}${run.agentError ? " and an error result" : ""} after ${seconds} s`, worktree);
+    return { report: { status: "done", outcome: `${label} finished the review of part ${spec.review?.part ?? "?"} in ${seconds} s` }, worktree };
+  } catch (error) {
+    return failed(`the run stopped: ${firstLine((error as Error).message)}`, worktree);
+  } finally {
+    if (configDir !== null) await rm(configDir, { recursive: true, force: true });
     await runGit(options.repoPath, ["worktree", "remove", "--force", worktree]).catch(() => rm(worktree, { recursive: true, force: true }));
     await runGit(options.repoPath, ["update-ref", "-d", ref]).catch(() => undefined);
   }

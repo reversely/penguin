@@ -47,13 +47,15 @@ import type {
   ProposePlanOutcome,
   ReviewInput,
   ReviewOutcome,
+  ReviewTaskCall,
+  ReviewTaskCallOutcome,
   RevisionInput,
   TokenGrant,
   ToolRequestOutcome,
   WhatsNearOutcome,
 } from "@penguin/project-agent";
 
-import { planNoticeFields, type FeatureCallResult, type McpFeatures } from "@penguin/mcp";
+import { planNoticeFields, type FeatureCallResult, type McpFeatures, type McpReviewTask } from "@penguin/mcp";
 import { REVIEW_SCHEMA_VERSION, SEGMENT_PATTERN, type FixWriteSpec, type Plan, type PlanFacts, type PlanPart } from "@penguin/protocol";
 
 import { artifactsErrorCode, type FeatureForkOptions } from "./repos.ts";
@@ -86,6 +88,8 @@ export interface FeatureDirectory {
   features(): MaybePromise<readonly Feature[]>;
   submitReview(owner: string, sessionId: string, input: ReviewInput, repos: ProjectRepos): Promise<ReviewOutcome>;
   whatsNear(owner: string, sessionId: string, input: { readonly paths?: unknown; readonly scopes?: unknown }, repos: ProjectRepos): Promise<WhatsNearOutcome>;
+  /** One call of review task `taskId`'s headless run, made with its task token (review-task.ts). */
+  reviewTaskCall(owner: string, taskId: number, call: ReviewTaskCall, repos: ProjectRepos): Promise<ReviewTaskCallOutcome>;
   requestAgentTool(
     owner: string,
     sessionId: string,
@@ -454,6 +458,49 @@ export function mcpFeatures(ports: FeaturePorts, owner: string): McpFeatures {
       };
     },
   };
+}
+
+/**
+ * The review tools of `owner`'s review task `taskId`, for the server its task token reaches. Each
+ * answer has the fields the same tool gives a session; the ProjectAgent refuses a call outside the task.
+ */
+export function mcpReviewTask(ports: FeaturePorts, owner: string, taskId: number): McpReviewTask {
+  const call = async (each: ReviewTaskCall) => (await ports.directory()).reviewTaskCall(owner, taskId, each, ports.repos);
+  return {
+    review: (feature, scope, form) =>
+      guarded(async () => {
+        const called = await call({ tool: "submit_review", input: { feature, scope, form } });
+        if (called.status === "rejected") return called;
+        const outcome = called.tool === "submit_review" ? called.outcome : unexpected();
+        return outcome.status === "ok" ? { status: "ok", value: reviewFields(outcome) } : outcome;
+      }),
+    whatsNear: async (input) => {
+      const called = await call({ tool: "whats_near", input });
+      if (called.status === "rejected") return called;
+      const near = called.tool === "whats_near" ? called.outcome : unexpected();
+      if (near.status === "rejected") return near;
+      return { status: "ok", value: { recordedAs: near.runId, features: near.features.map(nearFields) } };
+    },
+    impact: async (feature) => {
+      const called = await call({ tool: "impact", input: { feature } });
+      if (called.status === "rejected") return called;
+      if (called.tool !== "impact") return unexpected();
+      if ("reported" in called) {
+        const { id, featureId, checkpointSha, result, summary, outcome } = called.reported;
+        return { status: "ok", value: { state: "reported", recordedAs: id, tool: "impact", feature: featureId, checkpoint: checkpointSha, result, summary, report: outcome } };
+      }
+      const requested = called.outcome;
+      if (requested.status === "rejected") return requested;
+      return {
+        status: "ok",
+        value: { state: "waiting", recordedAs: requested.runId, tool: "impact", feature: requested.featureId, checkpoint: requested.checkpointSha, message: "waiting for the check runner" },
+      };
+    },
+  };
+}
+
+function unexpected(): never {
+  throw new Error("the review task call answered for another tool");
 }
 
 /** A running feature near the asked paths or scopes, as `whats_near` answers it. */

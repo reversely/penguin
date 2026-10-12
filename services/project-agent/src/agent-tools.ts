@@ -301,6 +301,11 @@ export interface AgentToolDeps {
   readonly retiring?: () => readonly RetiringDeclaration[];
   /** A feature's split (contract-split.ts); absent, no feature has one. */
   readonly split?: (featureId: string) => ContractSplitView | undefined;
+  /**
+   * The feature a caller that is no feature agent may ask about, such as a review task's run on the
+   * feature it reviews (review-task.ts); absent, only a feature's own sessions may.
+   */
+  readonly workingOn?: (sessionId: string) => string | undefined;
 }
 
 /** A running feature near the asked paths or scopes, with its person and agents. */
@@ -422,7 +427,7 @@ export async function requestTool(
   if (featureId === undefined) return rejected("invalid", "the feature id is not a valid feature id");
   const feature = deps.features.get(featureId);
   if (feature === undefined) return rejected("not_found", `no feature ${featureId}`);
-  if (deps.features.featureOfSession(sessionId) !== featureId) {
+  if ((deps.workingOn?.(sessionId) ?? deps.features.featureOfSession(sessionId)) !== featureId) {
     return rejected("forbidden", `this session is not an agent of feature ${featureId}`);
   }
   if (feature.latestCheckpointSha === null || feature.repo === null) {

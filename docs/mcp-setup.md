@@ -260,6 +260,24 @@ checkpoint. Penguin closes each task from the facts: the form arriving, the writ
 block check passing. `editQueue` counts the developer's `running`, `queued` and `asked` tasks against
 `cap`, the most background runs the developer's bridge holds at once.
 
+### Review tasks run headless
+
+With no steward session running, the developer's bridge runs a review task headless
+([bridge-and-runner.md](bridge-and-runner.md#review-forms)). Penguin issues the run a task token,
+`pgt_...`, when the bridge claims the task. The bridge puts it in the CLI's MCP config for
+`<worker-url>/mcp`. A task token differs from the owner's MCP token in four ways:
+
+| Property | Task token |
+|---|---|
+| Tools | `submit_review`, `whats_near` and `impact` alone; `tools/list` shows nothing else |
+| Scope | `submit_review` for the task's feature, scope and part revision; `impact` on that feature |
+| Session | None: the tools take no `sessionId`. The form is stored under the reviewer `@<person>/steward` and the session id `edit-task-<task id>` |
+| Lifetime | Until the claim ends (`PENGUIN_EDIT_RUN_MINUTES`), the bridge reports the task, or the part moves to another revision or out of `pending` |
+
+`impact` answers the check runner's newest report on the feature's latest checkpoint when one
+exists. Otherwise it records a request, as a session's call does. Penguin keeps only the token's
+SHA-256 hash.
+
 ## Agent tools for a feature
 
 A session that works on a feature calls four tools for facts and deterministic fixes

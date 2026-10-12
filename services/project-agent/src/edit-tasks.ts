@@ -11,12 +11,13 @@
 //    builder, a running session of the same person working on the target feature counts too: a
 //    builder's own sub-agents count as the builder.
 // 2. With no such session, the person's bridge claims it (`claim`) and runs the identity headless.
-//    A person holds at most `cap` running tasks; the rest wait, oldest first, behind the steward.
+//    A review form runs headless too, through Penguin's MCP server with a token for that task alone
+//    (#138). A person holds at most `cap` running tasks; the rest wait, oldest first, behind the steward.
 // 3. The person is asked, and the task waits as `asked`, only when their bridge has not polled within
-//    the online window, when the task is a review form (filled in by a session, never headless), when
-//    no identity's charter holds the place, or when a run failed, timed out or stopped reporting.
-//    An `asked` task whose bridge was offline goes back to the queue when the bridge polls again; a
-//    task whose run failed stays with the person or a session.
+//    the online window, when no identity's charter holds the place, or when a run failed, timed out
+//    or stopped reporting. An `asked` task whose bridge was offline goes back to the queue when the
+//    bridge polls again, as does a review asked before #138 (`needs_session`); a task whose run failed
+//    stays with the person or a session.
 //
 // Every caller-supplied value reaches SQL as a bound parameter.
 
@@ -305,8 +306,9 @@ export class EditTaskStore {
   /**
    * The bridge of `person` polls: it is online from now on, and it claims the person's oldest waiting
    * tasks that no session takes, up to `cap` running at once. Each claim holds until `leaseMs` from now.
+   * `claimable` leaves out the tasks this bridge cannot run.
    */
-  claim(person: string, bridgeId: string, cap: number, leaseMs: number, sessionFor: SessionFor): EditTask[] {
+  claim(person: string, bridgeId: string, cap: number, leaseMs: number, sessionFor: SessionFor, claimable: (task: EditTask) => boolean = () => true): EditTask[] {
     return this.#db.transaction(() => {
       const now = this.#now();
       this.#db.exec(
@@ -322,12 +324,12 @@ export class EditTaskStore {
       if (room === 0) return claimed;
       const waiting = this.#db
         .exec(
-          `SELECT * FROM EditTask WHERE person = ? AND handle IS NOT NULL AND kind != 'review'
-             AND (state = 'queued' OR (state = 'asked' AND ask_reason = 'bridge_offline')) ORDER BY id`,
+          `SELECT * FROM EditTask WHERE person = ? AND handle IS NOT NULL
+             AND (state = 'queued' OR (state = 'asked' AND ask_reason IN ('bridge_offline', 'needs_session'))) ORDER BY id`,
           person,
         )
         .map(taskOf)
-        .filter((task) => !sessionFor(task));
+        .filter((task) => !sessionFor(task) && claimable(task));
       for (const task of waiting.slice(0, room)) {
         this.#db.exec(
           `UPDATE EditTask SET state = 'running', ask_reason = NULL, claimed_by = ?, lease_until = ?, attempts = attempts + 1, updated_at = ? WHERE id = ?`,
@@ -343,14 +345,15 @@ export class EditTaskStore {
   }
 
   /**
-   * The claiming bridge reports a run's end. `done` closes the task with its commit, which the caller
-   * checked first; `failed` and `timeout` release it to the person, who is asked.
+   * The claiming bridge reports a run's end. `done` closes the task with its commit, or for a review
+   * with no commit, which the caller checked first; `failed` and `timeout` release it to the person,
+   * who is asked.
    */
   report(bridgeId: string, taskId: number, report: EditTaskReport): EditReportOutcome {
     return this.#db.transaction((): EditReportOutcome => {
-      const problem = reportProblem(report);
-      if (problem !== null) return { status: "rejected", reason: "invalid", message: problem };
       const task = this.get(taskId);
+      const problem = reportProblem(report, task?.kind);
+      if (problem !== null) return { status: "rejected", reason: "invalid", message: problem };
       if (task === undefined) return { status: "rejected", reason: "not_found", message: `no edit task ${taskId}` };
       if (task.claimedBy !== bridgeId) return { status: "rejected", reason: "forbidden", message: `edit task ${taskId} is not claimed by this bridge` };
       if (task.state !== "running") return { status: "rejected", reason: "conflict", message: `edit task ${taskId} is ${task.state}, not running` };
@@ -409,7 +412,6 @@ export class EditTaskStore {
   /** Where an undelivered task waits: queued for a session or the bridge, or asked with why. */
   #waitingState(task: EditTask, sessionFor: SessionFor): { readonly state: "queued" | "asked"; readonly reason: EditAskReason | null } {
     if (sessionFor(task)) return { state: "queued", reason: null };
-    if (task.kind === "review") return { state: "asked", reason: "needs_session" };
     return this.bridgeOnline(task.person) ? { state: "queued", reason: null } : { state: "asked", reason: "bridge_offline" };
   }
 
@@ -418,13 +420,17 @@ export class EditTaskStore {
   }
 }
 
-/** Why a bridge's report is malformed, or null. */
-function reportProblem(report: EditTaskReport): string | null {
+/** Why a bridge's report is malformed, or null. A review's done report names no commit. */
+function reportProblem(report: EditTaskReport, kind: EditTaskKind | undefined): string | null {
   if (typeof report !== "object" || report === null) return "the report must be an object";
   if (!["done", "failed", "timeout"].includes(report.status as string)) return "status must be done, failed or timeout";
   if (typeof report.outcome !== "string" || report.outcome.trim() === "" || /[\u0000-\u001f\u007f]/u.test(report.outcome)) {
     return "outcome must be one line of text";
   }
-  if (report.status === "done" && (typeof report.commit !== "string" || !SHA.test(report.commit))) return "a done report names its commit as a full 40-character SHA";
+  if (kind === "review") {
+    if (report.commit !== undefined) return "a review's report names no commit: its result is the form it submitted";
+  } else if (report.status === "done" && (typeof report.commit !== "string" || !SHA.test(report.commit))) {
+    return "a done report names its commit as a full 40-character SHA";
+  }
   return null;
 }

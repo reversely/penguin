@@ -71,10 +71,13 @@
  * - POST /edit-tasks/claim, bridge token of any bridge: claims the waiting edit tasks of the bridge's
  *   person, up to PENGUIN_BACKGROUND_RUN_CAP running at once (PRD 0.5 section 4.4a). Each names its
  *   fork, files, allowed paths, instructions and verifier, with a write token minted for that task on
- *   that fork alone, for PENGUIN_EDIT_RUN_MINUTES. The answer also counts the person's queue.
+ *   that fork alone, for PENGUIN_EDIT_RUN_MINUTES. A review task reads the fork, so its token is
+ *   `read`; it also carries `mcp`, the task token for Penguin's MCP server that allows that one form
+ *   (#138). The answer also counts the person's queue.
  * - POST /edit-tasks/<task id>, bridge token of the bridge that claimed it: reports the run as done
  *   with its commit, failed or timed out. Penguin keeps a commit only when it changes the task's
- *   allowed paths alone; a failure asks the person.
+ *   allowed paths alone, and a review's done run only when it submitted a form Penguin kept; a
+ *   failure asks the person.
  * - POST /blocks/claim, bridge token of a runner bridge: claims the waiting block runs (PRD 0.4
  *   section 4.5): for each, the feature's checkpoint, main's head, main's branch and every other
  *   running feature's fork head, with the originating agent's charter. No token comes with a claim.
@@ -925,8 +928,9 @@ async function anyBridge(request: Request, handlers: BridgeHandlers): Promise<Br
 }
 
 /**
- * Hands a bridge its person's waiting edit tasks, each with a write token minted for that task on its
- * fork alone, for PENGUIN_EDIT_RUN_MINUTES, and the person's queue for the bridge's status line.
+ * Hands a bridge its person's waiting edit tasks, each with a token minted for that task on its fork
+ * alone, for PENGUIN_EDIT_RUN_MINUTES, and the person's queue for the bridge's status line. A review
+ * changes no file, so its fork token is `read`, and it carries its task token for /mcp.
  */
 async function claimEditTasks(request: Request, options: BridgeOptions, handlers: BridgeHandlers): Promise<Response> {
   const bridge = await anyBridge(request, handlers);
@@ -938,12 +942,14 @@ async function claimEditTasks(request: Request, options: BridgeOptions, handlers
   const tasks = [];
   for (const spec of claim.tasks) {
     // One token per task, on the task's fork alone; the plaintext goes to this answer only.
-    const token = await handlers.mintToken(spec.fork, "write", ttl);
+    const token = await handlers.mintToken(spec.fork, spec.kind === "review" ? "read" : "write", ttl);
     const { fixWrite, ...fields } = spec;
+    const mcp = claim.mcp?.[spec.taskId];
     tasks.push({
       ...fields,
       fixWrite: fixWrite === null ? null : fixWriteFields(fixWrite),
       token: { token: token.token, remote: token.remote, scope: token.scope, expiresAt: token.expiresAt },
+      mcp: mcp === undefined ? null : { token: mcp.token, expiresAt: mcp.expiresAt },
     });
   }
   return json({ tasks, queue: claim.queue }, 200, NO_STORE);

@@ -6,6 +6,8 @@
  *   deployer until dashboard sign-in (open decision 7, ticket #28) can show the token to the owner.
  * - DELETE /mcp/tokens/<id>, deployer only: revokes a token.
  * - /mcp, MCP token: the session tools, acting as the token's owner.
+ * - /mcp, task token: the review tools alone, for the one review task the token was issued to when the
+ *   owner's bridge claimed it (#138). The token expires with the task's claim.
  *
  * Responses that carry a token are marked `Cache-Control: no-store`.
  */
@@ -25,9 +27,14 @@ export interface McpTokenDirectory {
 /** Answers one /mcp request as `owner`, the person whose token the gateway accepted. */
 export type McpServe = (request: Request, owner: string) => Promise<Response>;
 
+/** Answers one /mcp request on the task token of `owner`'s review task `taskId`. */
+export type McpTaskServe = (request: Request, owner: string, taskId: number) => Promise<Response>;
+
 export interface McpHandlers {
   readonly mcpTokens: () => McpTokenDirectory | Promise<McpTokenDirectory>;
   readonly serveMcp: McpServe;
+  /** Absent, a task token is refused. */
+  readonly serveReviewTaskMcp?: McpTaskServe;
 }
 
 export interface McpOptions {
@@ -83,6 +90,10 @@ async function serve(request: Request, handlers: McpHandlers): Promise<Response>
   const caller = token === undefined ? undefined : await (await handlers.mcpTokens()).authenticateMcpToken(token);
   if (caller === undefined) {
     return json({ error: "unauthorized" }, 401, { "WWW-Authenticate": 'Bearer realm="penguin"' });
+  }
+  if (caller.task !== undefined) {
+    if (handlers.serveReviewTaskMcp === undefined) return json({ error: "forbidden", message: "review task tokens are not served here" }, 403);
+    return handlers.serveReviewTaskMcp(request, caller.ownerId, caller.task.taskId);
   }
   return handlers.serveMcp(request, caller.ownerId);
 }

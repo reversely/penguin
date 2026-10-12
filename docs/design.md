@@ -736,7 +736,9 @@ agent becomes an edit task for one of them.
 5. A person runs at most two background runs at once by default. Further tasks queue behind the
    steward.
 6. The person is asked to start a session only when no identity can take the task: their bridge
-   is offline, the task is a review form, no charter holds the place, or a background run failed.
+   is offline, no charter holds the place, or a background run failed. A review form runs headless
+   too. Its CLI reaches Penguin's MCP server with a token for that one form
+   ([bridge-and-runner.md](bridge-and-runner.md#review-forms)).
 
 #### Edit tasks in the build
 
@@ -753,7 +755,7 @@ agent becomes an edit task for one of them.
 
   | Kind | Opened by | Routed | Done when |
   |---|---|---|---|
-  | `review` | A plan part revision waiting on its owner, one task per scope of the part | The steward of the scope's DRI, or of the fallback standing in | A review form for that scope reaches the plan's feature; the part leaving `pending` without one drops it |
+  | `review` | A plan part revision waiting on its owner, one task per scope of the part | The steward of the scope's DRI, or of the fallback standing in | A review form for that scope reaches the plan's feature and Penguin does not refuse it; the part leaving `pending` without one drops it |
   | `fix` | An approved behavioural part whose place is a running feature | The whole part to the target feature's builder, else the steward of the target's person: an approved patch is written as one commit, so it never splits | The write is kept as a `fix_write` record |
   | `next_step` | A failed block run's decision at ladder step 4 or 5, one source per failing target and check | Each failing file by charter, in the failing feature's fork, or in the originating fork for a failure on main | A newer run of the feature no longer shows it, a passing run, or the feature reaching main |
   | `migration` | A part of a split's migration plan that the declared rewrite rules do not write whole, through `openEditTask` ([Migration plans in the build](#migration-plans-in-the-build)) | A running feature's own changes: each file by charter in that feature's fork, its builder first. Code on main: the steward of the scope's DRI, in the plan's block feature | The bridge's commit is kept |
@@ -767,10 +769,10 @@ agent becomes an edit task for one of them.
   per identity or person. A source that opens again while its tasks are open is not routed again.
   `routeEdit` in `packages/protocol/src/edit-task.ts` holds the rule.
 - **States.** `queued`, `delivered` (a session took it), `running` (the bridge claimed it), `asked`,
-  `done` and `dropped`. An asked task names why: `bridge_offline`, `needs_session` (a review form),
-  `no_identity`, `run_failed`, `run_timeout` or `lease_expired`. A task asked because the bridge was
-  offline returns to the queue when the bridge polls again. A task whose run failed waits for a
-  session.
+  `done` and `dropped`. An asked task names why: `bridge_offline`, `no_identity`, `run_failed`,
+  `run_timeout` or `lease_expired`. A review asked as `needs_session` by an earlier build returns to
+  the queue. A task asked because the bridge was offline returns to the queue when the bridge polls
+  again. A task whose run failed waits for a session.
 - **Delivery to a session.** A session's checkpoint, report of a checkpoint or registration
   delivers every waiting task it counts for. A session of the task's identity counts. For a
   builder's task, a session of the same person working on the target feature counts too. The bridge

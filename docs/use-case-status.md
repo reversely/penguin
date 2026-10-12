@@ -26,6 +26,7 @@ not work yet), **rule needed** (the procedure does not yet say what should happe
 | Sort: `start_of_day` behaviour change, merge plan kept | works | #116 fixture test |
 | Plan proposed after `start_of_local_day()` exists | works | The plan is proposed at `owner-priya-local-day` (#126, `apps/worker/test/preview-approvals.test.ts`) |
 | Jun's and Sam's parts approved by Penguin | works | Preview: 2 of 2 parts approved by Penguin; both trials pass and both forms hold (#126) |
+| Jun's and Sam's forms filled in headless, with no one asked | works | Live check `tests/e2e/review-task-run.test.ts` (#138): with no steward session running, each author's bridge ran `claude -p` (haiku). Each run sent its form through Penguin's MCP server with its task token. Penguin refused Jun's first form for a line range as evidence. The run fixed it and submitted again. Both forms were accepted, both trials passed and Penguin approved 2 of 2 parts with no author asked |
 | Land as one block | works | Walkthrough case 2 promoted |
 
 ## Case 3: dependency bump (merge plan)

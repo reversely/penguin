@@ -3,6 +3,7 @@
 
 import { createMcpHandler } from "agents/mcp/server";
 
+import { createReviewTaskMcpServer, type McpReviewTask } from "./review-task-tools.ts";
 import { createPenguinMcpServer, type McpFeatures, type McpProject, type McpRepos } from "./tools.ts";
 
 export const MCP_ROUTE = "/mcp";
@@ -27,5 +28,14 @@ export function serveMcp(
     // Agents call with a bearer token and send no Origin; a browser page has no business here.
     corsOptions: false,
   });
+  return handler.fetch(request);
+}
+
+/**
+ * Answers one MCP request on a review task's token: only the review tools, bound by the Worker to the
+ * task the token names (review-task-tools.ts).
+ */
+export function serveReviewTaskMcp(request: Request, task: McpReviewTask): Promise<Response> {
+  const handler = createMcpHandler(async () => createReviewTaskMcpServer(task), { route: MCP_ROUTE, corsOptions: false });
   return handler.fetch(request);
 }

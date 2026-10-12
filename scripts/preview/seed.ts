@@ -360,7 +360,7 @@ export class PreviewProject {
       // As edit-work.ts openEditTask: the roster brought up to date, then the source routed once.
       openTask: async (source, adjust) => {
         this.roster.sync(this.scopeMap, this.features.list());
-        return this.editTasks.open(source, adjust(editRouting({ roster: this.roster, features: this.features }, this.scopeMap)));
+        return this.editTasks.open(source, adjust(editRouting({ roster: this.roster, features: this.features }, this.scopeMap, () => true)));
       },
       adminMode: this.adminMode,
       // The fixture's repository stands in for Artifacts: a fork of main is a branch at main's head.

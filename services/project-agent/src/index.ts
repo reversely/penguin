@@ -29,6 +29,7 @@ import {
 } from "./identities-page.ts";
 import { InboxStore, parseOverlapRef, type InboxItem, type InboxOutcome, type InboxReason } from "./inbox-store.ts";
 import { McpTokenStore, type IssuedMcpToken, type McpCaller } from "./mcp-tokens.ts";
+import { reviewTaskCall, type ReviewTaskCall, type ReviewTaskCallOutcome } from "./review-task.ts";
 import {
   OwnerForkStore,
   recordReportedCheckpoint,
@@ -332,7 +333,8 @@ export {
   PAGE_SESSIONS_PER_IDENTITY,
   type IdentitiesPageSources,
 } from "./identities-page.ts";
-export { McpTokenStore, type IssuedMcpToken, type McpCaller } from "./mcp-tokens.ts";
+export { McpTokenStore, type IssuedMcpToken, type IssuedTaskToken, type McpCaller } from "./mcp-tokens.ts";
+export { reviewTaskCall, reviewTaskCallProblem, reviewTaskGrant, taskHeartbeat, taskSessionId, type ReviewTaskCall, type ReviewTaskCallDeps, type ReviewTaskCallOutcome, type ReviewTaskDeps, type ReviewTaskGrant, type ReviewTaskGrantOutcome } from "./review-task.ts";
 export {
   CHECKPOINT_SHA_PATTERN,
   OwnerForkStore,
@@ -2008,6 +2010,10 @@ export class ProjectAgent extends Agent {
    * on main and the evidence in the feature's fork at its latest checkpoint.
    */
   submitReview(owner: string, sessionId: string, input: ReviewInput, repos: ProjectRepos): Promise<ReviewOutcome> {
+    return this.#submitReview(owner, sessionId, input, repos, (caller, session) => this.sessionHeartbeat(caller, session));
+  }
+
+  #submitReview(owner: string, sessionId: string, input: ReviewInput, repos: ProjectRepos, heartbeat: (caller: string, sessionId: string) => SessionOutcome): Promise<ReviewOutcome> {
     return this.#featuresChanging(submitReview(
       {
         features: this.#featureStore(),
@@ -2017,7 +2023,7 @@ export class ProjectAgent extends Agent {
         readForkFile: (repo, sha, path) => withRepo(this.env.ARTIFACTS, repo, (fork) => fork.readFile({ ref: sha, path })),
         baseline: (repo, sha) =>
           withRepo(this.env.ARTIFACTS, repo, (fork) => withRepo(this.env.ARTIFACTS, repos.base, (base) => checkpointBaseline(fork, base, sha))),
-        heartbeat: (caller, session) => this.sessionHeartbeat(caller, session),
+        heartbeat,
         coveringPart: (featureId, scopeId, checkpoint) => this.#coveringPart(featureId, scopeId, checkpoint),
       },
       owner,
@@ -2174,6 +2180,26 @@ export class ProjectAgent extends Agent {
     repos: ProjectRepos,
   ): Promise<ToolRequestOutcome> {
     return requestTool(this.#agentToolDeps(repos), owner, sessionId, tool, input);
+  }
+
+  /**
+   * A call on the MCP server of review task `taskId`, whose task token the gateway accepted for
+   * `owner` (review-task.ts, #138): checked against the task, then run as a session's call runs, as
+   * the task's identity under its own session id.
+   */
+  reviewTaskCall(owner: string, taskId: number, call: ReviewTaskCall, repos: ProjectRepos): Promise<ReviewTaskCallOutcome> {
+    return reviewTaskCall(
+      {
+        tasks: this.#editTaskStore(),
+        routes: this.#planRouteStore(),
+        identityId: (handle) => this.#identityStore().byHandle(handle)?.id,
+        submit: (caller, session, input, heartbeat) => this.#submitReview(caller, session, input, repos, heartbeat),
+        agentTools: this.#agentToolDeps(repos),
+      },
+      owner,
+      taskId,
+      call,
+    );
   }
 
   /** The agent tool calls recorded on a feature, oldest first, for its page. */
@@ -2642,6 +2668,7 @@ export class ProjectAgent extends Agent {
   #editWorkDeps(repos: ProjectRepos): EditWorkDeps {
     const minutes = parseEditRunMinutes((this.env as unknown as ProjectAgentEnv).PENGUIN_EDIT_RUN_MINUTES);
     return {
+      taskTokens: this.#mcpTokenStore(),
       tasks: this.#editTaskStore(),
       roster: this.#editRosterStore(),
       features: this.#featureStore(),

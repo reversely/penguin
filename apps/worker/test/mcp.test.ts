@@ -7,6 +7,7 @@ import { sqlite } from "../../../services/project-agent/test/issues-repo.ts";
 import { serveMcp, type McpProject } from "@penguin/mcp";
 
 import { type GatewayHandlers, handleRequest } from "../src/gateway.ts";
+import { handleMcpRoute } from "../src/mcp.ts";
 
 const DEPLOYER_TOKEN = "deployer-secret-for-tests";
 const OPTIONS = { deployerToken: DEPLOYER_TOKEN, tokenTtlSeconds: 600 };
@@ -137,4 +138,29 @@ test("tools/list over the gateway with an owner's token returns the five session
     "register_session",
     "report_checkpoint",
   ]);
+});
+
+test("a review task's token reaches the task's review tools alone, and never the owner's session tools", async () => {
+  const { store, served, send } = gateway();
+  const tasks: [string, number][] = [];
+  const { token } = await store.issueTask("jun", 7, Date.now() + 60_000);
+  const request = mcpRequest(token);
+  const response = await handleMcpRoute(request, new URL(request.url), {}, {
+    mcpTokens: () => ({
+      issueMcpToken: (owner: string) => store.issue(owner),
+      authenticateMcpToken: (each: string) => store.authenticate(each),
+      revokeMcpToken: (tokenId: string) => store.revoke(tokenId),
+    }),
+    serveMcp: async () => Response.json({ owner: true }),
+    serveReviewTaskMcp: async (_request, owner, taskId) => {
+      tasks.push([owner, taskId]);
+      return Response.json({ task: taskId });
+    },
+  });
+  assert.deepEqual([response?.status, tasks], [200, [["jun", 7]]]);
+  // A gateway that serves no review tasks refuses the token rather than serving the session tools.
+  assert.equal((await send(mcpRequest(token))).status, 403);
+  assert.deepEqual(served, []);
+  store.revokeTask(7);
+  assert.equal((await send(mcpRequest(token))).status, 401);
 });
