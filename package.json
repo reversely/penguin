@@ -12,7 +12,10 @@
     "packages/*"
   ],
   "scripts": {
-    "test": "node --test \"{apps,services,packages}/*/{src,test}/**/*.test.ts\" \"tests/**/*.test.ts\"",
+    "test": "node scripts/test.mjs fast",
+    "test:copy": "node scripts/test.mjs copy",
+    "test:slow": "node scripts/test.mjs slow",
+    "test:all": "node scripts/test.mjs all",
     "typecheck": "tsc --noEmit && npm run typecheck -w @penguin/worker && npm run typecheck -w @penguin/dashboard",
     "walkthrough": "playwright test -c tests/walkthrough/playwright.config.ts"
   },
