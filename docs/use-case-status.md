@@ -58,6 +58,7 @@ not work yet), **rule needed** (the procedure does not yet say what should happe
 | Rahul's tax part routes to Rahul | works | #107, #122 |
 | Clean wave parts approved by Penguin | works | Preview: Lena's promotions part and Mei's invoicing part, 2 of 2, with the fixture's forms and each scope's own tests inside its place (#126, `apps/worker/test/money-waves.test.ts`) |
 | Jun confirms the protected revenue report | works | #112 |
+| Block feature lands once every part is written | gap | #141 |
 | Contract when no caller is left | partial | #117 counts callers after each promotion and proposes at zero; the money fixture still has 59 callers after the waves (14 on main, 45 in readers' own changes); #131 puts every one of them in a migration plan. No plan has reached main yet |
 | Contract after the originating feature has landed | works | Penguin opens `contract-<owner>-<feature>` from main for the DRI of each defining scope, signs a no-places `contract_proposed` there approved by Penguin and gives the removal to that DRI's steward as a `contract` edit task (`services/project-agent/test/migration-plans.test.ts`). Not reached on the fixture: callers remain |
 | Runner fetches 40 forks | works | #119 live proof (20 forks) |
