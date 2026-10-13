@@ -202,7 +202,9 @@ when a block reaches main: `cart_total()` still returns dollars, computed in `Mo
 
 ## Cases 1 to 3
 
-Each case's originating feature opens from main as the case before it left it. Its affected
+Each case's originating feature opens from main as the case before it left it. `store-dashboard`,
+`messaging`, `checkout` and `payouts` declare `platform` in `depends_on`, because the running
+features of cases 2 and 3 in those scopes call the shared date helper and the HTTP client. Its affected
 features forked from `base` and are among Larder's forty readers and unaffected features. Every fix
 an originating agent writes into another person's fork is authored by the originating person. The
 merged trees below are the originating commit merged onto the affected fork with
@@ -219,9 +221,9 @@ event carries and links no identities. Analytics counts daily active shoppers wi
 
 | Tag suffix | Feature | Author | Change |
 |---|---|---|---|
-| `checkpoint` | `accounts-merge` | Priya | A `login` links its device to the user. A shared verified email links identities. `Shopper` keeps attributes per identity (`by_identity`), so its stored shape changes |
+| `checkpoint` | `accounts-merge` | Priya | A `login` links its device to the user. A shared verified email links identities. `Shopper` keeps attributes per identity (`by_identity`), so its stored shape changes. The plan is proposed here; the next two commits are its parts' fixes for code on main |
 | `fix-analytics` | `accounts-merge` | Priya | `daily_active_users` counts identities before a cutover day and shoppers from it on |
-| `fix-messaging` | `accounts-merge` | Priya | `is_subscribed` reads each linked identity's latest consent. The plan is proposed here |
+| `fix-messaging` | `accounts-merge` | Priya | `is_subscribed` reads each linked identity's latest consent |
 | `backfill` | `accounts-merge` | Priya | `accounts/backfill.py::backfill_shopper` moves a stored record's attributes under its own identity |
 | `limit-five` | `accounts-merge` | Priya | A login links a device to at most five user identities |
 | `limit-one` | `accounts-merge` | Priya | The limit lowered to one |
@@ -237,14 +239,16 @@ event carries and links no identities. Analytics counts daily active shoppers wi
 | `accounts-merge-limit-five` onto `cohort-ltv-cutover` | `test_kiosk.py::test_shared_device_split` |
 | `accounts-merge-limit-one` onto `cohort-ltv-cutover` or `weekly-digest-consent` | nothing |
 
-Loyalty's tests pass on every tree of the case, so loyalty's place is a verify part. The
-review forms are `reviews/case1-analytics.json` and `reviews/case1-messaging.json`.
+Loyalty's tests pass on every tree of the case, so loyalty's place is a verify part. Jun's
+analytics review has one form per round: `reviews/case1-analytics-checkpoint.json` and
+`case1-analytics-limit-five.json` report `kiosk-shoppers-separate` broken,
+`case1-analytics-limit-one.json` reports it holding. Sam's is `reviews/case1-messaging.json`.
 
 | Review | Base | Fork | Result |
 |---|---|---|---|
 | Analytics | `base` | `accounts-merge-checkpoint` | Refused: the cutover marker the form names is in Jun's fork only. Three shoppers on one kiosk: 3 on main, 1 on the fork; six: 6 and 1. A `protected_difference` goes to Jun |
 | Analytics | `cohort-ltv-cutover` | `accounts-merge-limit-five` merged onto it | Accepted. Six shoppers on one kiosk: 6 and 2. A `protected_difference` goes to Jun |
-| Analytics | `cohort-ltv-cutover` | `accounts-merge-limit-one` merged onto it | Accepted. No example differs |
+| Analytics | `cohort-ltv-cutover` | `accounts-merge-limit-one` merged onto it | Accepted with `case1-analytics-limit-one.json`. No example differs and no exception is raised |
 | Messaging | `weekly-digest-consent` | `accounts-merge-fix-messaging` or `accounts-merge-backfill` merged onto it | Accepted. The stored `Shopper` shape changed and messaging only reads it, so the owning change covers it: Sam's parts go to Priya until the plan names `accounts/backfill.py::backfill_shopper` as its store marker |
 
 ### Case 2: the helpful fix

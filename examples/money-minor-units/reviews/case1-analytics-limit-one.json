@@ -1,0 +1,10 @@
+{
+  "rows": [
+    {"invariant": "revenue-matches-orders", "verdict": "holds", "evidence": ["analytics/revenue_report.py::revenue_by_day"], "storedData": ""},
+    {"invariant": "no-cross-currency-sum", "verdict": "holds", "evidence": ["analytics/revenue_report.py::revenue_by_day"], "storedData": ""},
+    {"invariant": "kiosk-shoppers-separate", "verdict": "holds", "evidence": ["analytics/activity.py::daily_active_users"], "storedData": ""},
+    {"invariant": "published-day-counts-stable", "verdict": "holds", "evidence": ["analytics/activity.py::daily_active_users"], "storedData": ""}
+  ],
+  "riskyInputs": [],
+  "storedDataMarker": {"kind": "cutover", "evidence": "analytics/retention.py::shopper_id_cutover"}
+}

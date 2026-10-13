@@ -187,7 +187,8 @@
         "checkout/cart.py::charge_amount"
       ],
       "depends_on": [
-        "money"
+        "money",
+        "platform"
       ]
     },
     {
@@ -430,7 +431,8 @@
       ],
       "depends_on": [
         "money",
-        "orders"
+        "orders",
+        "platform"
       ]
     },
     {
@@ -559,7 +561,8 @@
       "depends_on": [
         "money",
         "orders",
-        "accounts"
+        "accounts",
+        "platform"
       ]
     },
     {
@@ -627,7 +630,9 @@
       "contracts": [
         "store_dashboard/hours.py::is_open"
       ],
-      "depends_on": []
+      "depends_on": [
+        "platform"
+      ]
     },
     {
       "id": "store-onboarding",
@@ -920,9 +925,9 @@
       ] },
     {"id": "accounts-merge", "owner": "priya", "title": "Merge guest checkouts into shopper accounts", "role": "originating", "case": 1, "vendor": "claude-code", "area": ["accounts"], "start": "base",
       "commits": [
-        {"source": "checkpoint", "tag": "checkpoint", "date": "2026-03-03T10:00:00+00:00", "message": "Merge a shopper's identities into one account\n\nA login links its device to the shopper's account. A verified email links a\nguest checkout to it. The stored Shopper keeps attributes per identity.\n"},
+        {"source": "checkpoint", "tag": "checkpoint", "plan": true, "date": "2026-03-03T10:00:00+00:00", "message": "Merge a shopper's identities into one account\n\nA login links its device to the shopper's account. A verified email links a\nguest checkout to it. The stored Shopper keeps attributes per identity.\n"},
         {"source": "fix-analytics", "tag": "fix-analytics", "date": "2026-03-03T10:30:00+00:00", "message": "Keep published days' shopper counts on main\n", "fix": {"scope": "analytics", "kind": "fix", "tests": ["analytics/tests/test_activity.py::test_published_day_keeps_its_count_after_a_later_login"]}},
-        {"source": "fix-messaging", "tag": "fix-messaging", "plan": true, "date": "2026-03-03T10:45:00+00:00", "message": "Honour an unsubscribe on any linked identity on main\n", "fix": {"scope": "messaging", "kind": "fix", "tests": ["messaging/tests/test_subscriptions.py::test_unsubscribe_on_a_linked_identity_holds_after_a_signup"]}},
+        {"source": "fix-messaging", "tag": "fix-messaging", "date": "2026-03-03T10:45:00+00:00", "message": "Honour an unsubscribe on any linked identity on main\n", "fix": {"scope": "messaging", "kind": "fix", "tests": ["messaging/tests/test_subscriptions.py::test_unsubscribe_on_a_linked_identity_holds_after_a_signup"]}},
         {"source": "backfill", "tag": "backfill", "date": "2026-03-03T11:30:00+00:00", "message": "Backfill stored shoppers into the per-identity shape\n", "fix": {"scope": "accounts", "kind": "backfill", "tests": []}, "declares": {"contracts": {"accounts": ["accounts/backfill.py::backfill_shopper"]}}},
         {"source": "limit-five", "tag": "limit-five", "date": "2026-03-03T13:00:00+00:00", "message": "Limit the accounts a login links to one device to five\n", "fix": {"scope": "analytics", "kind": "revision", "tests": []}},
         {"source": "limit-one", "tag": "limit-one", "date": "2026-03-03T14:00:00+00:00", "message": "Lower the accounts per device to one\n", "fix": {"scope": "analytics", "kind": "revision", "tests": ["analytics/tests/test_kiosk.py::test_shared_device_split"]}}
