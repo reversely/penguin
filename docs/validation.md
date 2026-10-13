@@ -25,7 +25,7 @@ sets how much of the review Penguin does and how much people do
 
 Custom path rules and Place are one kind. The review policy keeps them as two rows, so a sandbox may
 let Penguin decide one and not the other. Overlapping starts is no row of the policy: an overlapping
-start never waits on a person.
+start never waits on a worktree owner's review.
 
 A scope file written before the rename may still name its custom path rules `protected_paths`. The
 scope map reads that key as `custom_paths`. The wire and record names keep the earlier word so that
@@ -36,14 +36,16 @@ routing reason and plan part ask `protected_path`, the inbox reason `protected_p
 ## How a result is decided
 
 1. Penguin runs the checks of each kind that apply to the part or the start.
-2. A failed test sends the part back to the agent. Nothing else is decided until the tests pass.
+2. A failed test sends the part back to the agent that made the change. Nothing else is decided until the tests pass.
 3. Each other kind whose check does not pass marks the part with that kind's type of approval.
-4. The sandbox's review policy names, for each type, Penguin or a person. Production sends every
-   part to a person whatever its rows say. A part goes to a person
-   when any of its types is set to person. Penguin approves it when every one of its types is set to
-   Penguin, or when no check marked it. The owners are told of every approval Penguin makes.
+4. The sandbox's review policy names, for each type, Auto-merge or Worktree owner reviews (stored as
+   `penguin` and `person`). An update that passes merges into the affected branch automatically
+   when every one of its types is set to auto-merge, or when no check marked it. The worktree owners are told
+   of every update Penguin merges. An update waits for the worktree owner's review
+   when any of its types is set to worktree owner review. Production sends every update to its worktree owner whatever
+   its rows say.
 5. While a review form is still to come, Penguin waits for it when Logic, Data matching or Stored
-   data is set to person, as those kinds read the form.
+   data is set to worktree owner review, as those kinds read the form.
 
 `policyRoute` in `packages/protocol/src/validation.ts` holds the rule. Each decision's signed record
 carries the route under `review_policy`: the preset, whether a row was changed, whether admin mode

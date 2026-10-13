@@ -355,17 +355,17 @@ export function policyRuleText(route: PolicyRoute, owner?: string): string {
     case "checks_clean":
       return `${name}, checks clean`;
     case "set_to_penguin":
-      return `${types} ${verb} set to Penguin`;
+      return `${types} ${verb} set to auto-merge`;
     case "set_to_person":
-      return `${types} ${verb} set to person`;
+      return `${types} ${verb} set to worktree owner review`;
     case "tests":
       return "Tests have not passed";
     case "awaiting_review":
       return `${name}, the review form is not in yet`;
     case "every_part":
-      return `${name}, every part goes to a person`;
+      return `${name}, every update goes to its worktree owner`;
     case "admin_mode":
-      return "Admin mode, every part goes to a person";
+      return "Admin mode, every update goes to its worktree owner";
     case "reversed":
       return `${owner ?? "The owner"} reversed Penguin's approval`;
   }
@@ -562,6 +562,6 @@ export function penguinApprovalText(route: PolicyRoute, partKind: string): strin
   const name = `${presetLabel(route.preset)} policy${route.changed ? ", changed" : ""}`;
   const set = route.rule === "set_to_penguin" ? new Set(route.types.map((type) => APPROVAL_TYPE_KIND[type])) : new Set<ValidationKind>();
   const clean = checkedKinds(partKind).filter((kind) => !set.has(kind)).map((kind) => VALIDATION_KIND_LABEL[kind]);
-  const parts = [`${joinLabels(clean)} clean`, ...(set.size === 0 ? [] : [`${joinLabels([...set].map((kind) => VALIDATION_KIND_LABEL[kind]))} set to Penguin`])];
+  const parts = [`${joinLabels(clean)} clean`, ...(set.size === 0 ? [] : [`${joinLabels([...set].map((kind) => VALIDATION_KIND_LABEL[kind]))} set to auto-merge`])];
   return `Approved by Penguin (${name}: ${parts.join("; ")})`;
 }

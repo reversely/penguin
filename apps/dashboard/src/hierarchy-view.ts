@@ -42,7 +42,7 @@ export function teamMembers(team: TeamSummary): string[] {
 export type FeatureGroup = "person" | "running" | "main" | "closed";
 
 export const GROUP_LABEL: Readonly<Record<FeatureGroup, string>> = {
-  person: "Needs a person",
+  person: "Needs the worktree owner",
   running: "In progress",
   main: "On main",
   closed: "Closed",

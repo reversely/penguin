@@ -231,11 +231,11 @@ export function ApprovalsView({ approvals, busy, failed, unread = false, navigat
                   <FeatureLink feature={item.feature} navigate={navigate} />
                 </h3>
                 <span className="tag tag-attention">
-                  {item.inPerson.length} of {item.breakLimit} needing a person
+                  {item.inPerson.length} of {item.breakLimit} needing the worktree owner's review
                 </span>
               </header>
               <p className="muted">Please split the plan into smaller plans</p>
-              <ul className="chip-list" aria-label="Places needing a person">
+              <ul className="chip-list" aria-label="Places needing the worktree owner's review">
                 {item.inPerson.map((place) => (
                   <li key={place} className="chip">
                     {place}

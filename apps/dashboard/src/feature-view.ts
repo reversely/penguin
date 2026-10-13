@@ -60,7 +60,7 @@ export interface RoutedPart {
 
 /**
  * A part's state with the route and the rule that sent it there: `Approved by Penguin (Dev policy:
- * Tests clean)`, `Approved by jun in the dashboard`, `Waiting for jun: Data matching is set to person`.
+ * Tests clean)`, `Approved by jun in the dashboard`, `Waiting for jun: Data matching is set to worktree owner review`.
  */
 export function partRouteText(part: RoutedPart, originator?: string): string {
   const { state, approvedBy, kind } = part;
@@ -93,7 +93,7 @@ export function exceptionText(exception: FeatureException): string {
     case "round_limit":
       return `Part ${partNumber(exception.partId)} past the round limit`;
     case "plan_returned":
-      return `Plan returned with ${counted(exception.inPerson, "part")} needing a person over the limit of ${exception.breakLimit}`;
+      return `Plan returned with ${counted(exception.inPerson, "part")} needing the worktree owner's review over the limit of ${exception.breakLimit}`;
     case "broken_invariant":
       return `${exception.invariant} reported broken in ${exception.scope}`;
     case "protected_difference":
@@ -136,7 +136,7 @@ export function reasonText(reason: PartRoutingReason): string {
 function reasonLine(reason: PartRoutingReason): string {
   switch (reason.kind) {
     case "admin_mode":
-      return "Admin mode needs a person for every part";
+      return "Admin mode needs the worktree owner's review for every update";
     case "reversed":
       return `${reason.by} reversed Penguin's approval`;
     case "tests":

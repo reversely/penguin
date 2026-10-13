@@ -36,29 +36,29 @@ import { ORG_PATH, POLICY_PATH } from "./routes.ts";
 /** The policy view the shell read; undefined while it loads or on a failed read. */
 export const PolicyContext = createContext<ReviewPolicyView | undefined>(undefined);
 
-const DECIDER_LABEL: Readonly<Record<Decider, string>> = { penguin: "Penguin", person: "Person" };
+const DECIDER_LABEL: Readonly<Record<Decider, string>> = { penguin: "Auto-merge", person: "Worktree owner reviews" };
 
 /**
  * Who decides a result of each kind under the policy, as bare labels: one label, or one per policy row
- * when the kind's rows differ, such as `Custom path rules: Person` and `Place: Penguin`. An
+ * when the kind's rows differ, such as `Custom path rules: Worktree owner reviews` and `Place: Auto-merge`. An
  * overlapping start opens at every stage and its owner is told.
  */
 export function kindDeciders(policy: ReviewPolicy, kind: ValidationKind): string[] {
   if (kind === "tests") return ["Agent fixes a failure"];
   if (kind === "overlapping_starts") return ["Penguin", "Owner told"];
-  if (policy.preset === "production") return ["Person"];
+  if (policy.preset === "production") return ["Worktree owner reviews"];
   const rows = APPROVAL_TYPES.filter((type) => APPROVAL_TYPE_KIND[type] === kind);
   const deciders = new Set(rows.map((type) => policy.rows[type]));
   if (deciders.size === 1) return [DECIDER_LABEL[[...deciders][0] as Decider]];
   return rows.map((type) => `${APPROVAL_TYPE_LABEL[type]}: ${DECIDER_LABEL[policy.rows[type]]}`);
 }
 
-/** What each stage's preset sends to a person, as the label under the stage. */
+/** What each stage's preset sends to the worktree owner, as the label under the stage. */
 const STAGE_SENDS: Readonly<Record<ReviewPreset, string>> = {
-  local_development: "Penguin decides every part",
-  central_development: "Person decides flagged parts",
-  pre_production: "Person decides flagged parts and migration differences",
-  production: "Person decides every part",
+  local_development: "Auto-merged, worktree owner told",
+  central_development: "Worktree owner reviews flagged updates",
+  pre_production: "Worktree owner reviews flagged updates and migration differences",
+  production: "Worktree owner reviews every update",
 };
 
 /**
@@ -179,7 +179,7 @@ export function SplitTable({ split, label }: { readonly split: ReviewSplit; read
           <tr>
             <th scope="col">Type</th>
             <th scope="col">Penguin automatically</th>
-            <th scope="col">Person in the dashboard</th>
+            <th scope="col">Worktree owner reviews</th>
             <th scope="col">Penguin share</th>
           </tr>
         </thead>
@@ -188,7 +188,7 @@ export function SplitTable({ split, label }: { readonly split: ReviewSplit; read
             <tr key={row.key}>
               <th scope="row">{row.name}</th>
               <td className="hierarchy-count" data-label="Penguin automatically">{row.count.penguin}</td>
-              <td className="hierarchy-count" data-label="Person in the dashboard">{row.count.people}</td>
+              <td className="hierarchy-count" data-label="Worktree owner reviews">{row.count.people}</td>
               <td className="hierarchy-count" data-label="Penguin share">{shareText(row.count) || <span className="muted">None</span>}</td>
             </tr>
           ))}
@@ -273,7 +273,7 @@ export function PolicyView({ view, navigate, onSignedOut, onChanged }: PolicyVie
           </>
         )}
       </p>
-      {view.locked ? <p className="notice">Admin mode sends every part to a person</p> : null}
+      {view.locked ? <p className="notice">Admin mode sends every update to its worktree owner</p> : null}
       {!editable && !view.locked ? <p className="muted">Please ask a team lead to change the policy</p> : null}
       <section className="team-section" aria-labelledby="policy-preset">
         <h2 id="policy-preset" className="team-section-heading">

@@ -120,7 +120,7 @@ export interface PipelineStage {
   readonly jobs: readonly PipelineJob[];
 }
 
-export const BRANCH_LABELS = ["sent", "reviewing", "waiting", "fix written", "approved", "needs a person"] as const;
+export const BRANCH_LABELS = ["sent", "reviewing", "waiting", "fix written", "approved", "needs the worktree owner's review"] as const;
 export type BranchLabel = (typeof BRANCH_LABELS)[number];
 
 /** The feature's work reaching another person or their agent, at the stage where it happened. */
@@ -546,7 +546,7 @@ function branches(facts: PipelineFacts, stages: readonly PipelineStage[], path: 
   for (const stage of ["open", "expand"] as const) {
     for (const job of jobs(stage)) {
       if (job.fact.kind !== "start" || job.fact.person === facts.person) continue;
-      out.push({ key: job.key, stage, person: job.fact.person, agent: null, label: job.status === "passed" ? "approved" : "needs a person", partId: null, settled: job.status === "passed" });
+      out.push({ key: job.key, stage, person: job.fact.person, agent: null, label: job.status === "passed" ? "approved" : "needs the worktree owner's review", partId: null, settled: job.status === "passed" });
     }
   }
   if (path === "split") {
@@ -583,26 +583,26 @@ function branches(facts: PipelineFacts, stages: readonly PipelineStage[], path: 
   // A stopped run needs the feature's own person, who has its run_failed inbox item.
   for (const stage of stages) {
     for (const job of stage.jobs) {
-      if (job.fact.kind === "stopped") out.push({ key: job.key, stage: stage.key, person: facts.person, agent: null, label: "needs a person", partId: null, settled: false });
+      if (job.fact.kind === "stopped") out.push({ key: job.key, stage: stage.key, person: facts.person, agent: null, label: "needs the worktree owner's review", partId: null, settled: false });
     }
   }
   const last = path === "split" ? "done" : "promoted";
   for (const job of jobs(last)) {
     if (job.fact.kind !== "protected" || job.fact.owner === facts.person) continue;
-    out.push({ key: job.key, stage: last, person: job.fact.owner, agent: null, label: job.status === "passed" ? "approved" : "needs a person", partId: null, settled: job.status === "passed" });
+    out.push({ key: job.key, stage: last, person: job.fact.owner, agent: null, label: job.status === "passed" ? "approved" : "needs the worktree owner's review", partId: null, settled: job.status === "passed" });
   }
   return out;
 }
 
 function groupLabel(status: JobStatus): BranchLabel {
   if (status === "passed") return "approved";
-  if (status === "person" || status === "failed") return "needs a person";
+  if (status === "person" || status === "failed") return "needs the worktree owner's review";
   return status === "running" ? "reviewing" : "sent";
 }
 
 function partLabel(job: PipelineJob): BranchLabel {
   if (job.status === "passed") return "approved";
-  if (job.status === "person" || job.status === "failed") return "needs a person";
+  if (job.status === "person" || job.status === "failed") return "needs the worktree owner's review";
   return job.status === "running" ? "reviewing" : "sent";
 }
 

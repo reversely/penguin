@@ -99,7 +99,7 @@ then holds one row per team, declared teams first:
 Below the teams, Review policy names the sandbox's policy, such as `Central development policy`, with `Locked by admin
 mode` while `PENGUIN_PLAN_ADMIN_MODE` is on and a Settings link to `/review-policy`. Its table holds
 the approvals of the last 30 days by route: one row for every approval, then one per type of approval
-that sent the part there. Each row counts Penguin automatically, Person in the dashboard and Penguin's
+that sent the part there. Each row counts Penguin automatically, Worktree owner reviews and Penguin's
 share as a percent.
 
 ### Team page
@@ -139,22 +139,22 @@ of the org page, counting only the parts and starts the team's members own.
 
 `/review-policy` (`review-policy.tsx`) is the settings view of the sandbox's review policy
 ([review-policies.md](review-policies.md)), read from `GET /api/review-policy`. It shows who changed
-the policy last and when, or `Central development by default`; `Admin mode sends every part to a
-person` while admin mode locks it; Stage, the release pipeline in one row; and Types of approval, one
-row per type with its kind, what sends a part to a person and a Penguin or Person choice.
+the policy last and when, or `Central development by default`; `Admin mode sends every update to
+its worktree owner` while admin mode locks it; Stage, the release pipeline in one row; and Types of approval, one
+row per type with its kind, what sends a part to its worktree owner and an Auto-merge or Worktree owner reviews choice.
 
 Stage draws the pipeline left to right with the feature timeline's bar and stage nodes: Local
 development, Central development, Test, Pre-production, Production. The stage the policy names is
 marked as the current one, with its dot ringed and its name in the heading weight. Under each stage a
-label says what it sends to a person:
+label says what it sends to the worktree owner:
 
 | Stage | Label |
 |---|---|
-| Local development | Penguin decides every part |
-| Central development | Person decides flagged parts |
+| Local development | Auto-merged, worktree owner told |
+| Central development | Worktree owner reviews flagged updates |
 | Test | Same setting as Pre-production |
-| Pre-production | Person decides flagged parts and migration differences |
-| Production | Person decides every part |
+| Pre-production | Worktree owner reviews flagged updates and migration differences |
+| Production | Worktree owner reviews every update |
 
 Test shares Pre-production's setting, so choosing Pre-production marks both. Each other stage is a
 radio choice for a team lead. Below 39rem of width the row wraps, one dot and name per line.
@@ -168,8 +168,8 @@ choice disabled and `Please ask a team lead to change the policy`. Last, the app
 
 A folded panel on the org, team, feature, inbox and review policy pages lists the six kinds of
 validation ([validation.md](validation.md)): each kind, what it checks in one line and who decides it
-under the sandbox's policy, such as `Person`, `Penguin` or, when the policy's two rows of Custom path
-rules and place differ, `Custom path rules: Person` and `Place: Penguin`. Overlapping starts reads
+under the sandbox's policy, such as `Worktree owner reviews`, `Auto-merge` or, when the policy's two rows of Custom path
+rules and place differ, `Custom path rules: Worktree owner reviews` and `Place: Auto-merge`. Overlapping starts reads
 `Penguin` and `Owner told` at every stage. Its summary names the policy by its stage, such as
 `Central development policy`. Outside the review policy page the open panel starts with the release
 pipeline row, read-only, with that stage marked. It links to `/review-policy`.
@@ -192,7 +192,7 @@ Every decision and every write names its route:
 | Person in the dashboard | The person and the dashboard, such as `Approved by jun in the dashboard` |
 
 A part still waiting names whom it waits for and the policy's rule, such as `Waiting for jun: Logic
-and Data matching are set to person`. The Record view reads each record's route from its author:
+and Data matching are set to worktree owner review`. The Record view reads each record's route from its author:
 `{ identity }` is an agent through MCP, `{ penguin: true }` is Penguin automatically and `{ person }`
 is a person in the dashboard.
 
@@ -202,7 +202,7 @@ is a person in the dashboard.
 
 - **Waiting:** one row per feature holding items that wait on the person, most first, with a tag per
   kind such as `3 parts` or `1 start`. Each row opens the feature.
-- **Features:** Needs a person, then In progress, each feature with its timeline strip, its
+- **Features:** Needs the worktree owner, then In progress, each feature with its timeline strip, its
   exceptions, its agents and its builders' open tasks. The features on main fold behind On main
   with their count. Closed blocks fold behind Closed. They list no agents: their builders have
   finished.
@@ -262,8 +262,8 @@ feature page shows the last reason on the run's failed job.
 |---|---|
 | Breadcrumb | Org, the person's team, the feature's person, the feature, then the part and the file an anchor or a link opened. The part reads its number and place, such as `#3 tax`; the file reads its name. Each opens its fold on the page |
 | Title | The feature's name, its person as a pill in the person's hue and its scopes as pills in their owners' hues |
-| Timeline bar | One node per stage of the feature's pipeline ([design.md](design.md#the-merge-as-a-pipeline-in-the-build)): split features run Open, Expand, Migrate, Contract and Done; the rest run Open, Plan, Review, Fixes written, Block checks and Promoted. Each node shows its status as a dot and its count of passed jobs, such as `2 of 4`, with Needs a person or Failed when a job is. The current stage is ringed. A node opens its stage in the Pipeline view |
-| Branches | One line per person per stage holds the work that reached the person and has not settled. That work is their parts, starts and confirmations plus the open edit tasks the feature raised ([design.md](design.md#edit-tasks-in-the-build)). The line shows the person's agent, the count by kind (such as `2 parts 1 task`) and the most urgent tag. It shows the person instead when no agent or several agents took the work. A part, start or confirmation is tagged sent, reviewing, waiting (its fix waits for its turn on the fork), fix written, approved or needs a person; a task is tagged running, queued, waiting (its write waits for its turn on the fork) or asked. Opening the line lists each item with its tag and its part's number and place, which opens its diff, or the task's kind and place, such as `Review form analytics`. An item names its agent when the items' agents differ. A task names `builder` when a builder took it. A line of one item shows the item itself and opens to its fact: the job's fact, why the task's person is asked or how its run ended. Within a stage, lines needing a person (needs a person, asked) come first, then running lines (reviewing, running), then waiting lines (sent, waiting, queued); the latest stage's lines come first. On a plan a task hangs from Review (a review form), Fixes written (a fix) or Block checks (a next step); on a split a contract step hangs from Contract and any other task from Migrate. A task another feature raised in this feature's fork hangs from that feature's timeline. Another feature's fix waiting for its turn on this feature's fork hangs from the current stage under that feature's person, tagged waiting. A settled branch has rejoined the bar as the person's avatar under its stage. Six lines show before a button counts the rest |
+| Timeline bar | One node per stage of the feature's pipeline ([design.md](design.md#the-merge-as-a-pipeline-in-the-build)): split features run Open, Expand, Migrate, Contract and Done; the rest run Open, Plan, Review, Fixes written, Block checks and Promoted. Each node shows its status as a dot and its count of passed jobs, such as `2 of 4`, with Needs the worktree owner or Failed when a job is. The current stage is ringed. A node opens its stage in the Pipeline view |
+| Branches | One line per person per stage holds the work that reached the person and has not settled. That work is their parts, starts and confirmations plus the open edit tasks the feature raised ([design.md](design.md#edit-tasks-in-the-build)). The line shows the person's agent, the count by kind (such as `2 parts 1 task`) and the most urgent tag. It shows the person instead when no agent or several agents took the work. A part, start or confirmation is tagged sent, reviewing, waiting (its fix waits for its turn on the fork), fix written, approved or needs the worktree owner's review; a task is tagged running, queued, waiting (its write waits for its turn on the fork) or asked. Opening the line lists each item with its tag and its part's number and place, which opens its diff, or the task's kind and place, such as `Review form analytics`. An item names its agent when the items' agents differ. A task names `builder` when a builder took it. A line of one item shows the item itself and opens to its fact: the job's fact, why the task's person is asked or how its run ended. Within a stage, lines needing the worktree owner (needs the worktree owner's review, asked) come first, then running lines (reviewing, running), then waiting lines (sent, waiting, queued); the latest stage's lines come first. On a plan a task hangs from Review (a review form), Fixes written (a fix) or Block checks (a next step); on a split a contract step hangs from Contract and any other task from Migrate. A task another feature raised in this feature's fork hangs from that feature's timeline. Another feature's fix waiting for its turn on this feature's fork hangs from the current stage under that feature's person, tagged waiting. A settled branch has rejoined the bar as the person's avatar under its stage. Six lines show before a button counts the rest |
 | Summary | At most three lines: the contract change with its counts of changes, breaking signatures and incompatible entries; how many features and people the feature reaches; the first place needing a person, else the first failed job. Each line opens what it sums up |
 
 **Views.** Four tabs, each with its own anchor, so a link can open one: `#changes`, `#pipeline`,
@@ -274,7 +274,7 @@ feature page shows the last reason on the run's failed job.
 |---|---|
 | Changes | The contract change first: each signature and stored data shape before and after as a diff, the retiring symbols with their replacements and, for each, its own uses in its defining module and its scope's tests, which the contract step removes with it, the incompatible and behaviour entries Penguin sorted, and the callers on main. Then each place the plan fixes: its number and place, owner, state with its route ([Kinds and routes on results](#kinds-and-routes-on-results)) and file count; its kind, revision and rounds; a fix written into another fork with its writer and commit; the latest requested change; each file as a unified diff with both sides' line numbers, cut at 80 lines with a button for the rest; and its breaks, invariants and uses behind a line that counts them. Last, the declared area: contracts, paths and latest checkpoint |
 | Pipeline | Each stage with its status and count, then its jobs: each job's status, label and one fact, with a link to its diff or its results. A failed or person-needed job shows its failing targets or its reviewing agent. Block checks has one check job per check kind. Once the block run a `land` asked for has reported, those jobs come from that run's checks in its signed `block_checked` record, so a promoted feature shows the run that gated its land. Before then they come from the newest `check` run. A block run never has a `retiring` job, since that check runs only on a checkpoint's own changes. A check job from a `check` run lists the findings its passing targets still name, such as the dependency diff's changed library and each place the target imports it; the `block_checked` record keeps no findings. A run the check runner stopped at the failure limit is a failed job with its last reason. The current stage lists each checkpoint the feature's agents reported with the checks run on it. What a stage's jobs ran sits under it: the plan's facts with the tool or read behind each under Plan, the review forms with their side-by-side runs under Review, the newest `check` run's results by tool under Block checks (the failing targets with their findings, each passing target whose check names findings, a count of the rest and one next step per failing check), and each agent tool call under the stage it served |
-| People | Read by: one row per running feature that reads what this feature changes, the one whose part needs a person first, then by stage. Its columns are the feature, its person as a pill, the reading scope and the scope it reads as pills in their owners' hues, the reader's current stage and this plan's part for it, which opens the part's diff. Start: one row per running feature this feature's start overlaps, with its person, the lock (approved, or waiting on a lock opened before #177) and who approved it, `Penguin` for a start since #177. Agents: the agents whose sessions joined the feature. Each table scrolls inside itself on a phone |
+| People | Read by: one row per running feature that reads what this feature changes, the one whose part needs the worktree owner's review first, then by stage. Its columns are the feature, its worktree owner as a pill, the reading scope and the scope it reads as pills in their owners' hues, the reader's current stage and this plan's part for it, which opens the part's diff. Start: one row per running feature this feature's start overlaps, with its worktree owner, the lock (approved, or waiting on a lock opened before #177) and who approved it, `Penguin` for a start since #177. Agents: the agents whose sessions joined the feature. Each table scrolls inside itself on a phone |
 | Record | Each signed record with its type, its route (an agent with its MCP tool, Penguin automatically or a person in the dashboard), the kinds of validation its result belongs to, time and path in the record repo, filtered by type. Once a record is in the record repo its path links to `GET /api/features/<id>/records/<record id>`, which answers the signed file as the repo holds it at the commit that added it. A record still waiting for its push shows its path as plain text. An expand checkpoint promoted on its own shows as its own `Expand promoted` record after its `Expand requested` record. The contract step shows as `Contract step approved` when Penguin approves removing a retiring symbol with no caller left, `Contract step withdrawn` when a caller comes back and `Symbols removed` once the block that removes it reaches main. A feature Penguin opened that main moved past shows `Rebuilt from main` when Penguin forks it again from main and re-applies its parts |
 
 **Rows.** Every fold starts closed except what needs the viewer: a part the viewer decides that

@@ -26,7 +26,7 @@ export const STATUS_LABEL: Readonly<Record<JobStatus, string>> = {
   running: "Running",
   passed: "Passed",
   failed: "Failed",
-  person: "Needs a person",
+  person: "Needs the worktree owner",
 };
 
 /** A stage's count of passed jobs, `7 of 10`, or null for a stage with no job. */
@@ -51,7 +51,7 @@ export function currentStageText(strip: PipelineStrip): string {
   if (strip.building === true && stage.status !== "person" && stage.status !== "failed") return BUILDING_LABEL;
   const last = stage.key === "promoted" || stage.key === "done";
   const name = last && stage.status !== "passed" ? PROMOTION_LABEL : STAGE_LABEL[stage.key];
-  if (stage.status === "person") return `${name} needs a person`;
+  if (stage.status === "person") return `${name} waits for the worktree owner`;
   if (stage.status === "failed") return `${name} failed`;
   return name;
 }
@@ -96,7 +96,7 @@ export function jobText(fact: JobFact): { readonly label: string; readonly fact:
     case "facts":
       return { label: "Facts run", fact: fact.state === "pending" ? "With the runner" : fact.state === "reported" ? "Reported" : "Replaced" };
     case "plan":
-      if (fact.returned) return { label: "Plan", fact: `Returned with ${fact.inPerson} needing a person` };
+      if (fact.returned) return { label: "Plan", fact: `Returned with ${fact.inPerson} needing the worktree owner's review` };
       if (fact.needed === false) return { label: "Plan", fact: "No plan needed" };
       return { label: fact.planId ?? "Plan", fact: fact.planId === null ? "No plan yet" : counted(fact.parts, "part") };
     case "part":
@@ -213,7 +213,7 @@ export interface BranchRow {
 }
 
 const LABEL_URGENCY: Readonly<Record<PipelineBranch["label"], Urgency>> = {
-  "needs a person": 0,
+  "needs the worktree owner's review": 0,
   reviewing: 1,
   sent: 2,
   waiting: 2,

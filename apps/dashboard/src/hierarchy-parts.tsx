@@ -87,7 +87,7 @@ export function StagePills({ buckets, more, navigate }: { readonly buckets: read
           <li key={bucket.key}>
             <a className={bucket.attention ? "pill pill-tone-person" : "pill"} href={path} onClick={linkHandler(navigate, path)} title={bucket.features.join(" ")}>
               {bucket.label}
-              {bucket.attention ? <span className="visually-hidden"> needs a person</span> : null}
+              {bucket.attention ? <span className="visually-hidden"> needs the worktree owner's review</span> : null}
               <span className="tab-count">{bucket.features.length}</span>
             </a>
             {tasks === null ? null : (
