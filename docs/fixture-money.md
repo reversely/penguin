@@ -221,16 +221,21 @@ event carries and links no identities. Analytics counts daily active shoppers wi
 
 | Tag suffix | Feature | Author | Change |
 |---|---|---|---|
-| `checkpoint` | `accounts-merge` | Priya | A `login` links its device to the user. A shared verified email links identities. `Shopper` keeps attributes per identity (`by_identity`), so its stored shape changes. The plan is proposed here; the next two commits are its parts' fixes for code on main |
+| `checkpoint` | `accounts-merge` | Priya | A `login` links its device to the user. A shared verified email links identities. `Shopper` keeps attributes per identity (`by_identity`), so its stored shape changes. The plan is first proposed here, with no backfill |
+| `backfill` | `accounts-merge` | Priya | `accounts/backfill.py::backfill_shopper` moves a stored record's attributes under its own identity. The plan is proposed again here and names the backfill as its store marker |
 | `fix-analytics` | `accounts-merge` | Priya | `daily_active_users` counts identities before a cutover day and shoppers from it on |
 | `fix-messaging` | `accounts-merge` | Priya | `is_subscribed` reads each linked identity's latest consent |
-| `backfill` | `accounts-merge` | Priya | `accounts/backfill.py::backfill_shopper` moves a stored record's attributes under its own identity |
 | `limit-five` | `accounts-merge` | Priya | A login links a device to at most five user identities |
 | `limit-one` | `accounts-merge` | Priya | The limit lowered to one |
 | `checkpoint` | `cohort-ltv` | Jun | The retention dashboard (`analytics/retention.py`) beside lifetime value |
 | `cutover` | `cohort-ltv` | Priya | The dashboard counts shoppers by `shopper_id` from a cutover day on |
 | `checkpoint` | `weekly-digest` | Sam | The digest's audience (`messaging/audience.py`) and send times (`messaging/digest_schedule.py`) |
 | `consent` | `weekly-digest` | Priya | The audience leaves out a shopper with any unsubscribed identity |
+| `take-main` | `weekly-digest` | Sam | Merges main after case 1, which holds the per-identity `Shopper` and its backfill |
+
+`fix-analytics` and `fix-messaging` are the fixes for code on main of the plan's analytics and
+messaging parts. They follow the backfill, so the plan proposed at the backfill keeps Sam's parts
+in the plan with the store marker named, and Penguin approves them.
 
 | Merged tree | Fails |
 |---|---|
@@ -263,7 +268,10 @@ datetime it receives.
 | `checkpoint` | `holiday-closures` | Elif | `is_closed()` takes the store's local day from `start_of_day()` |
 | `local-day` | `holiday-closures` | Hugo | `is_closed()` calls `start_of_local_day()` with the store's offset |
 | `take-main` | `holiday-closures` | Elif | Merges main after case 2, which holds `start_of_local_day()` |
-| `local-day` | `weekly-digest` | Hugo | The digest's send time starts from `start_of_local_day()` with the shopper's offset |
+| `local-day` | `weekly-digest` | Hugo | The digest's send time starts from `start_of_local_day()` with the shopper's offset, on the digest's `take-main` |
+
+Sam's digest took main after case 1, so its fork already holds case 1's `Shopper` when case 2's
+plan is tried there, and case 2 changes no stored shape the digest reads.
 
 | Merged tree | Fails |
 |---|---|
