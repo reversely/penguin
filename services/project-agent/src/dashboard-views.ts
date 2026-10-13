@@ -608,6 +608,12 @@ function recordPart(record: FeatureRecord): string | null {
   return typeof part === "string" ? part : null;
 }
 
+/** `copiedFrom` on a copy write's `fix_write` record: the revision it copied the modules from. Empty for any other record. */
+function recordCopiedFrom(record: FeatureRecord): { readonly copiedFrom?: string } {
+  const source = record.type === "fix_write" ? record.payload["copied_from"] : undefined;
+  return typeof source === "string" ? { copiedFrom: source } : {};
+}
+
 /** A record's author as its record path names it: a person, an identity's handle or Penguin. */
 function authorLabel(record: FeatureRecord): string {
   const { author } = record;
@@ -696,7 +702,7 @@ export async function buildFeaturePage(deps: DashboardViewDeps, featureId: strin
       path: stored.path,
       commit: commits?.get(stored.recordId) ?? null,
       kinds: records[index] === undefined ? [] : recordValidationKinds(records[index]),
-      ...(records[index] === undefined ? {} : { route: recordRoute(records[index]), partId: recordPart(records[index]) }),
+      ...(records[index] === undefined ? {} : { route: recordRoute(records[index]), partId: recordPart(records[index]), ...recordCopiedFrom(records[index]) }),
     })),
   };
 }

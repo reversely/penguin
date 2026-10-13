@@ -19,7 +19,7 @@ import { hunkHeader, hunkRows } from "./diff-view.ts";
 import { counted, partNumber, partRouteText, roundText, shortSha } from "./feature-view.ts";
 import { Fold } from "./fold.tsx";
 import { linkHandler } from "./links.ts";
-import { CONTRACT_FOLD } from "./page-view.ts";
+import { CONTRACT_FOLD, type CopyWrite } from "./page-view.ts";
 import { partAnchor, placeName } from "./pipeline-view.ts";
 import { BreakList } from "./review-card.tsx";
 import { featurePath, personPath } from "./routes.ts";
@@ -47,12 +47,14 @@ interface TreeProps {
   readonly navigate: (path: string) => void;
   /** Who wrote each part's fix and how, from its `fix_write` record: an agent through MCP or Penguin's check runner. */
   readonly writes?: ReadonlyMap<string, DecisionRoute>;
+  /** Each part's copy writes: Penguin's check runner copying the originating modules into the part's fork. */
+  readonly copies?: ReadonlyMap<string, readonly CopyWrite[]>;
 }
 
-export function ChangeTree({ plan, contract, fixes, featureId, person, viewer, dependents, owners, navigate, writes = new Map() }: TreeProps) {
+export function ChangeTree({ plan, contract, fixes, featureId, person, viewer, dependents, owners, navigate, writes = new Map(), copies = new Map() }: TreeProps) {
   const hasContract = plan?.contractDiff != null || (contract?.entries.length ?? 0) > 0 || (contract?.split?.retiring.length ?? 0) > 0;
   const node = (part: PlanPartView) =>
-    plan === null ? null : <PartNode part={part} plan={plan} fix={fixes.find((fix) => fix.partId === part.partId)} write={writes.get(part.partId)} featureId={featureId} person={person} navigate={navigate} />;
+    plan === null ? null : <PartNode part={part} plan={plan} fix={fixes.find((fix) => fix.partId === part.partId)} write={writes.get(part.partId)} copies={copies.get(part.partId) ?? []} featureId={featureId} person={person} navigate={navigate} />;
   if (viewer !== person) {
     const yours = yourChanges({ plan }, viewer);
     const readers = yourReaders({ dependents }, viewer);
@@ -282,6 +284,8 @@ interface PartProps {
   readonly part: PlanPartView;
   /** The route of the part's fix write, from its signed record. */
   readonly write?: DecisionRoute | undefined;
+  /** The part's copy writes into the same fork, from their signed records. */
+  readonly copies: readonly CopyWrite[];
   readonly plan: FeaturePlanView;
   readonly fix: FixView | undefined;
   readonly featureId: string;
@@ -303,7 +307,7 @@ function writtenBy(writer: string, route: DecisionRoute | undefined): string {
   return writer === "runner" ? "by Penguin (check runner)" : "by the originating agent (MCP report_fix_write)";
 }
 
-function PartNode({ part, plan, fix, write, featureId, person, navigate }: PartProps) {
+function PartNode({ part, plan, fix, write, copies, featureId, person, navigate }: PartProps) {
   const anchor = partAnchor(part.partId);
   const ownerPath = personPath(part.owner);
   return (
@@ -348,6 +352,14 @@ function PartNode({ part, plan, fix, write, featureId, person, navigate }: PartP
               {fix.write.commit === null ? null : <code>{shortSha(fix.write.commit)}</code>}
             </span>
           )}
+          {copies.map((copy, index) => (
+            <span key={`${copy.from}-${index}`} className="fix-write">
+              <span className="verdict-holds">Modules copied</span>
+              <span className="muted">{writtenBy("runner", copy.route)}</span>
+              <span className="muted">from revision</span>
+              <code>{shortSha(copy.from)}</code>
+            </span>
+          ))}
         </p>
         {part.changeRequest === null ? null : (
           <blockquote className="approval-quote">

@@ -549,6 +549,8 @@ export interface FeatureRecordView {
   readonly route?: DecisionRoute;
   /** The plan part the record concerns, or null. Absent from an older Worker. */
   readonly partId?: string | null;
+  /** On a copy write's `fix_write` record: the originating change's revision Penguin copied the modules from. Absent on every other record. */
+  readonly copiedFrom?: string;
 }
 
 /** GET /api/features/<id>/page: the feature page (PRD section 10). */

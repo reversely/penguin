@@ -3,7 +3,7 @@
 // and Start tables. Pure, so the rules are tested without a browser (test/pipeline-view.test.ts). Every
 // string is a bare label, a count or one clause with no comma.
 
-import type { FeaturePage, JobStatus, PipelineStageKey, PipelineStrip, PlanPartState } from "@penguin/protocol";
+import type { DecisionRoute, FeaturePage, JobStatus, PipelineStageKey, PipelineStrip, PlanPartState } from "@penguin/protocol";
 
 import { counted } from "./feature-view.ts";
 import { jobText, partAnchor } from "./pipeline-view.ts";
@@ -178,4 +178,26 @@ export function recordKinds(records: FeaturePage["records"]): { readonly type: s
   const counts = new Map<string, number>();
   for (const record of records) counts.set(record.type, (counts.get(record.type) ?? 0) + 1);
   return [...counts].map(([type, count]) => ({ type, count }));
+}
+
+/** A copy write into a part's fork: who wrote it and the originating revision it copied the modules from. */
+export interface CopyWrite {
+  readonly route: DecisionRoute;
+  readonly from: string;
+}
+
+/**
+ * Each part's own fix write route, from the newest `fix_write` record naming the part that is not a
+ * copy write, and each part's copy writes in record order. A behavioural part's agent writes its patch,
+ * then Penguin's check runner copies the originating modules into the same fork under the same part id.
+ */
+export function partWrites(records: FeaturePage["records"]): { readonly writes: Map<string, DecisionRoute>; readonly copies: Map<string, CopyWrite[]> } {
+  const writes = new Map<string, DecisionRoute>();
+  const copies = new Map<string, CopyWrite[]>();
+  for (const record of records) {
+    if (record.type !== "fix_write" || !record.partId || !record.route) continue;
+    if (record.copiedFrom === undefined) writes.set(record.partId, record.route);
+    else copies.set(record.partId, [...(copies.get(record.partId) ?? []), { route: record.route, from: record.copiedFrom }]);
+  }
+  return { writes, copies };
 }

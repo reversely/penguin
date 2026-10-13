@@ -8,9 +8,10 @@ import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
-import type { Plan, PlanPart } from "@penguin/protocol";
+import { recordRoute, type Plan, type PlanPart } from "@penguin/protocol";
 import { parseScopeMap, parseTeams } from "@penguin/scope-map";
 
+import { partWrites } from "../../apps/dashboard/src/page-view.ts";
 import { requestLand, type LandDeps } from "../../services/project-agent/src/block-land.ts";
 import type { Feature, FeatureStore } from "../../services/project-agent/src/feature-store.ts";
 import {
@@ -334,4 +335,22 @@ test("a revision that holds the fork's own lines is copied over them", async () 
   });
   assert.equal(read.status, "ok");
   assert.deepEqual(read.status === "ok" ? read.copy?.paths : undefined, ["shared/money.py"]);
+});
+
+test("the feature page names the agent as a behavioural part's writer and Penguin's copy write beside it", () => {
+  const source = "a".repeat(40);
+  const record = (recordId: string, author: unknown, copiedFrom?: string) => ({
+    recordId,
+    type: "fix_write",
+    author: "",
+    createdAt: "",
+    path: "",
+    route: recordRoute({ type: "fix_write", author }),
+    partId: "money/v1#weekly",
+    ...(copiedFrom === undefined ? {} : { copiedFrom }),
+  });
+  // The agent writes its patch, then the check runner copies the originating modules into the same fork.
+  const { writes, copies } = partWrites([record("r1", { identity: "@priya/money" }), record("r2", { penguin: true }, source)]);
+  assert.deepEqual(writes.get("money/v1#weekly"), { route: "agent", actor: "@priya/money", tool: "report_fix_write" });
+  assert.deepEqual(copies.get("money/v1#weekly"), [{ route: { route: "penguin", actor: "penguin", tool: null }, from: source }]);
 });

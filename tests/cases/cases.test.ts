@@ -211,6 +211,14 @@ test("case 1's feature page names each kind of validation on its results and eac
 
   const inbox = results(render.inboxHtml((await backend.planParts(jun)) as PlanInbox));
   for (const kind of ["logic", "data_matching"] as const) assert.ok(inbox.includes(VALIDATION_KIND_LABEL[kind]), `${VALIDATION_KIND_LABEL[kind]} in ${jun}'s inbox`);
+
+  // Case 2: the originating agent writes each behavioural part, then Penguin copies its modules into that fork.
+  const second = originOf(2);
+  const changes = results(render.featureHtml((await backend.featurePage(second.owner, second.id)) as FeaturePage, second.owner, "changes"));
+  const behavioural = (await preview.plan(second.id))!.parts.filter((part) => part.place.kind === "feature" && part.kind === "behavioural").length;
+  assert.ok(behavioural > 0);
+  assert.equal(changes.match(/Written\s+by @[a-z0-9-]+\/[a-z0-9.-]+ \(MCP report_fix_write\)/gu)?.length, behavioural, "each behavioural part names the agent that wrote it");
+  assert.equal(changes.match(/Modules copied\s+by Penguin \(check runner\)/gu)?.length, behavioural, "each copy write shows as Penguin's copy");
 });
 
 for (const useCase of [2, 3]) {

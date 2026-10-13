@@ -28,6 +28,7 @@ import {
   CONTRACT_FOLD,
   foldParents,
   initialFolds,
+  partWrites,
   readByRows,
   recordKinds,
   stageAnchor,
@@ -258,10 +259,12 @@ interface ChangesProps {
 
 function ChangesView({ page, viewer, owners, navigate }: ChangesProps) {
   const { feature } = page;
+  const { writes, copies } = partWrites(page.records);
   return (
     <div className="view-body">
       <ChangeTree
-        writes={fixWrites(page)}
+        writes={writes}
+        copies={copies}
         plan={page.plan}
         contract={page.contract ?? null}
         fixes={page.fixes}
@@ -297,13 +300,6 @@ function ChangesView({ page, viewer, owners, navigate }: ChangesProps) {
       </Fold>
     </div>
   );
-}
-
-/** Each part's fix write route, from the newest `fix_write` record naming the part. */
-function fixWrites(page: FeaturePage): Map<string, DecisionRoute> {
-  const writes = new Map<string, DecisionRoute>();
-  for (const record of page.records) if (record.type === "fix_write" && record.partId && record.route) writes.set(record.partId, record.route);
-  return writes;
 }
 
 /** Which stage holds what a job ran: reviews, tool runs and the block checks. */
