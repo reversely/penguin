@@ -10,8 +10,13 @@
 //   main at the plan's baseline and applies the part's fix commit from the originating fork. A verify
 //   part, a place that needs no change, has no fix: its trial is the checkpoint merged onto the
 //   place and runs the scope's tests, with no form.
+// - Newest revision. The originating change merged into a trial is the originating fork's newest
+//   revision of the part: when the originating agent revised a part for code on main covering one of
+//   the part's scopes, the fix commit of the most revised such part, which holds the plan's
+//   checkpoint; otherwise the plan's checkpoint. A revision gets a new trial, which supersedes the
+//   part's older trials.
 // - Reviews. Each trial carries the newest form of each of the part's scopes submitted on the plan's
-//   checkpoint. The runner runs the review harness for it on the trial tree against the target, so the
+//   checkpoint, whichever revision it merges. The runner runs the review harness for it on the trial tree against the target, so the
 //   evidence check, the stored data rule and the side-by-side run read the affected code with the fix
 //   in place, and a running feature's own declared examples run. A form
 //   still pending when its trial reports is completed with the trial's record; until then the review
@@ -68,6 +73,7 @@ export interface StoredPartTrial {
   readonly planId: string;
   readonly partId: string;
   readonly revision: number;
+  /** The checkpoint the trial's forms were submitted on: the plan's, even when the trial merges a newer revision. */
   readonly checkpoint: string;
   readonly scopes: readonly string[];
   readonly request: PartTrialRequest;
@@ -105,8 +111,11 @@ export class PartTrialStore {
     for (const statement of [...PART_TRIAL_TABLE_SCHEMA, ...RUN_FAILURE_SCHEMA]) db.exec(statement);
   }
 
-  /** Asks for a trial of `spec`'s part revision; every older trial of the part, and of another plan of the feature, stops counting. */
-  queue(spec: TrialSpec, scopes: readonly string[]): StoredPartTrial {
+  /**
+   * Asks for a trial of `spec`'s part revision, whose forms were submitted on `formsOn`; every older
+   * trial of the part, and of another plan of the feature, stops counting.
+   */
+  queue(spec: TrialSpec, scopes: readonly string[], formsOn: string = spec.checkpoint): StoredPartTrial {
     return this.#db.transaction(() => {
       this.#db.exec(
         `UPDATE PartTrial SET state = 'superseded' WHERE feature_id = ? AND state != 'superseded' AND (plan_id != ? OR part_id = ?)`,
@@ -121,7 +130,7 @@ export class PartTrialStore {
         spec.planId,
         spec.partId,
         spec.revision,
-        spec.checkpoint,
+        formsOn,
         JSON.stringify(scopes),
         JSON.stringify(spec),
         this.#now(),
@@ -205,6 +214,21 @@ export function trialForms(reviews: readonly StoredReview[], scopes: readonly st
 }
 
 /**
+ * The originating fork's newest revision of `part`: the fix commit of the most revised part for code
+ * on main covering one of its scopes, once the originating agent revised one, or else the plan's
+ * checkpoint. A revision commit is written on top of the checkpoint, so it holds it.
+ */
+export function newestRevision(plan: Plan, part: Pick<PlanPart, "scopes">): string {
+  const scopes = new Set(part.scopes);
+  let newest: PlanPart | undefined;
+  for (const each of plan.parts) {
+    if (each.revision < 2 || each.diff.source !== "commit" || each.diff.commit === null || !each.scopes.some((scope) => scopes.has(scope))) continue;
+    if (newest === undefined || each.revision > newest.revision) newest = each;
+  }
+  return newest?.diff.commit ?? plan.facts.change.checkpoint;
+}
+
+/**
  * The trial of one part revision, or undefined when the part's fix has no base to apply against (a
  * fix commit with no parent). `reviews` are the feature's stored reviews.
  */
@@ -230,19 +254,21 @@ export function trialSpec(plan: Plan, part: PlanPart, reviews: readonly StoredRe
     target = { id: "main", repo: "base", sha: plan.facts.change.baseline };
     fix = { kind: "commit", repo: diff.repo, commit: diff.commit, base: diff.base };
   }
-  const { checkpoint } = plan.facts.change;
   return {
     feature: plan.featureId,
     planId: plan.planId,
     partId: part.partId,
     revision: part.revision,
     fork: `feature-${plan.featureId}`,
-    checkpoint,
+    checkpoint: newestRevision(plan, part),
     target,
     fix,
     commandIds: [...part.scopes].sort().map((scope) => `test:${scope}`),
     // A verify part needs no form, so its trial reviews none.
-    reviews: part.kind === "verify" ? [] : trialForms(reviews, part.scopes, checkpoint).map((review) => ({ reviewId: review.id, scope: review.scopeId, form: review.form })),
+    reviews:
+      part.kind === "verify"
+        ? []
+        : trialForms(reviews, part.scopes, plan.facts.change.checkpoint).map((review) => ({ reviewId: review.id, scope: review.scopeId, form: review.form })),
   };
 }
 
@@ -251,12 +277,21 @@ export interface TrialQueueDeps {
   readonly reviews: ReviewStore;
 }
 
-/** Asks for a trial of each of `parts` of `plan` (every part when omitted); answers the trials queued. */
+/**
+ * Asks for a trial of each of `parts` of `plan` (every part when omitted), and of each other part whose
+ * trial merges an older revision than the originating fork's newest, as after a revision; answers the
+ * trials queued.
+ */
 export function queueTrials(deps: TrialQueueDeps, plan: Plan, parts: readonly PlanPart[] = plan.parts): StoredPartTrial[] {
   const reviews = deps.reviews.list(plan.featureId);
-  return parts.flatMap((part) => {
+  const asked = new Set(parts.map((part) => part.partId));
+  const behind = plan.parts.filter((part) => {
+    const current = asked.has(part.partId) ? undefined : deps.trials.ofPart(plan.featureId, part.partId);
+    return current !== undefined && current.planId === plan.planId && current.request.checkpoint !== newestRevision(plan, part);
+  });
+  return [...parts, ...behind].flatMap((part) => {
     const spec = trialSpec(plan, part, reviews);
-    return spec === undefined ? [] : [deps.trials.queue(spec, part.scopes)];
+    return spec === undefined ? [] : [deps.trials.queue(spec, part.scopes, plan.facts.change.checkpoint)];
   });
 }
 
@@ -268,7 +303,7 @@ export function queueTrials(deps: TrialQueueDeps, plan: Plan, parts: readonly Pl
 export function queueTrialOn(deps: TrialQueueDeps, plan: Plan, part: PlanPart, head: string): StoredPartTrial | undefined {
   const spec = trialSpec(plan, part, deps.reviews.list(plan.featureId));
   if (spec === undefined || spec.target.id === "main") return undefined;
-  return deps.trials.queue({ ...spec, target: { ...spec.target, sha: head } }, part.scopes);
+  return deps.trials.queue({ ...spec, target: { ...spec.target, sha: head } }, part.scopes, plan.facts.change.checkpoint);
 }
 
 /** After a form of `scope` is submitted on the plan's checkpoint, asks again for each part covering the scope. */

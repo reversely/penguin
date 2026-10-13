@@ -712,9 +712,9 @@ that also fails another check stays with its author. Its stored data reason is l
   for a trial of every part when it stores a plan and of a part when it is revised. It asks again for
   each part covering a scope when that scope's agent submits a form. The check runner builds the
   trial tree and runs the part's scopes' tests and the review harness for the newest form of each
-  scope on it. Penguin keeps the report against the part revision. A newer trial of the part, or a
-  newer plan of the feature, supersedes the older trial, so only the newest trial of the current
-  revision counts.
+  scope on it. The tree merges the originating fork's newest revision of the part. Penguin keeps the
+  report against the part revision. A newer trial of the part, or a newer plan of the feature,
+  supersedes the older trial, so only the newest trial of the current revision counts.
 - **Decision.** Penguin approves each part whose checks are clean
   ([Penguin's approval in the build](#penguins-approval-in-the-build)). For any other part the author
   approves it or asks for a change on the dashboard inbox, which
@@ -1588,8 +1588,11 @@ tree from Git objects alone, with no checkout and no ref (`trial-tree.ts`):
    which is the head Penguin writes the fix onto once the part is approved. A part for a scope on
    main starts at main at the plan's baseline.
 2. A patch is applied to that head, as the fix write applies it (`patch-tree.ts`).
-3. The plan's originating checkpoint is merged in with `git merge-tree --write-tree`, as a land
-   merges it.
+3. The originating fork's newest revision of the part is merged in with `git merge-tree
+   --write-tree`, as a land merges it (`newestRevision`). Once the originating agent revised a part
+   for code on main that covers one of this part's scopes, that is the fix commit of the most
+   revised such part, which is written on top of the plan's checkpoint. Otherwise it is the plan's
+   checkpoint.
 4. A fix commit in the originating fork is applied on top as its own change against its base, with
    `git merge-tree --merge-base`: a cherry-pick of the fix without the rest of the fork.
 
@@ -1620,8 +1623,12 @@ The recorded trial is the part revision's evidence for the checks of PRD 4.3 ste
 `fixInTree` true only for a built tree. Its reviews take the shape of the routing's review results.
 A trial still running, one of another revision, or none gives no evidence.
 
-The trial uses the plan's checkpoint. A later checkpoint of the originating feature is outside the
-trial until a new plan is proposed on it. On the helpful-fix fixture Jun's and Sam's fixes import
+A revision gets its own trial on the revision. Penguin also asks again for each other part of the
+plan whose current trial merges an older revision than its newest one, so the older trial no longer
+counts: in Larder's case 1, once Priya's agent revises the analytics part with the limit of one,
+Jun's cohort report part is trialled again on that commit. Its forms stay those submitted on the
+plan's checkpoint. A later checkpoint of the originating feature that no revision names is outside
+the trial until a new plan is proposed on it. On the helpful-fix fixture Jun's and Sam's fixes import
 `start_of_local_day`, so Priya's agent proposes the plan at the checkpoint that adds it, as PRD case 2
 orders it. Both trials then pass and Penguin approves both parts. Proposed one checkpoint earlier,
 the plan is answered `missing` with `patch_missing_symbol` for each patch, naming

@@ -1,10 +1,16 @@
 // PRD 0.5 section 4.3: Penguin approves a part when every check is clean; any other part goes to a
-// person. Each test states one condition and checks the routing it produces.
+// person. Each test states one condition and checks the routing it produces. The last test checks
+// which tree a part's tests and reviews run on: the trial of the originating fork's newest revision.
 
 import assert from "node:assert/strict";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
-import { needsPerson, partRouting, routesToOriginator, type PartEvidence } from "@penguin/protocol";
+import { needsPerson, partRouting, routesToOriginator, type PartEvidence, type Plan, type PlanPart } from "@penguin/protocol";
+
+import type { SqlDatabase } from "../../services/project-agent/src/issue-index.ts";
+import { PartTrialStore, queueTrials } from "../../services/project-agent/src/part-trial.ts";
+import type { ReviewStore } from "../../services/project-agent/src/review-submit.ts";
 
 const CHECKPOINT = "a".repeat(40);
 
@@ -108,4 +114,32 @@ test("a reader of stored data the originating change reshapes goes to the origin
   const unmarked = partRouting(part(), evidence({ reviews }), noProtection);
   assert.ok(routesToOriginator(unmarked));
   assert.equal(partRouting(part(), evidence({ reviews, storeMarked: true }), noProtection).inPerson, false);
+});
+
+test("a part's trial runs on the originating fork's newest revision; the trial of the older revision no longer counts", () => {
+  const db = new DatabaseSync(":memory:");
+  const sql: SqlDatabase = {
+    exec: (query, ...bindings) => db.prepare(query).all(...(bindings as never[])) as Record<string, string | number | null>[],
+    transaction: (body) => body(),
+  };
+  const deps = { trials: new PartTrialStore(sql, () => 1_000), reviews: { list: () => [] } as unknown as ReviewStore };
+  const [baseline, revision, forkHead] = ["b", "c", "d"].map((char) => char.repeat(40)) as [string, string, string];
+  const onMain = { ...part(), partId: "plan-1#1", place: { kind: "scope", scope: "analytics" }, kind: "behavioural" } as unknown as PlanPart;
+  const inFork = { ...part(), partId: "plan-1#2", place: { kind: "feature", feature: "cohort-ltv" }, kind: "behavioural", diff: { ...part().diff, base: forkHead, patch: "diff" } } as unknown as PlanPart;
+  const plan = (parts: readonly PlanPart[]) => ({ featureId: "accounts-merge", planId: "plan-1", parts, facts: { change: { checkpoint: CHECKPOINT, baseline } } }) as unknown as Plan;
+  const commit = (sha: string) => ({ ...onMain.diff, source: "commit" as const, commit: sha, base: CHECKPOINT, patch: null });
+
+  queueTrials(deps, plan([{ ...onMain, diff: commit("e".repeat(40)) }, inFork]));
+  const stale = deps.trials.ofPart("accounts-merge", "plan-1#2");
+  assert.equal(stale?.request.checkpoint, CHECKPOINT, "before any revision both trials merge the plan's checkpoint");
+
+  // The originating agent revises the part for code on main with a newer commit of its own fork.
+  const revised = plan([{ ...onMain, revision: 2, diff: commit(revision) }, inFork]);
+  queueTrials(deps, revised, revised.parts.slice(0, 1));
+  for (const partId of ["plan-1#1", "plan-1#2"]) {
+    const current = deps.trials.ofPart("accounts-merge", partId);
+    assert.equal(current?.request.checkpoint, revision, `${partId} is trialled on the revision`);
+    assert.equal(current?.checkpoint, CHECKPOINT, "its forms are still those submitted on the plan's checkpoint");
+  }
+  assert.equal(deps.trials.get(stale!.id)?.state, "superseded");
 });
