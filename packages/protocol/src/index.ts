@@ -16,6 +16,7 @@ export * from "./part-trial.ts";
 export * from "./dashboard.ts";
 export * from "./patch.ts";
 export * from "./fix-write.ts";
+export * from "./module-copy.ts";
 export * from "./edit-task.ts";
 export { RUNNER_INTERVAL_MS } from "./runner.ts";
 export { checkSchema, type JsonSchema, type SchemaError } from "./schema-check.ts";

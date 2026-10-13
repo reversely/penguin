@@ -534,8 +534,10 @@ v1 failed for 7 of the 20 forks with `bad band #78`, on both passes.
 ### Fix writes
 
 Once an author approves a part of a merge plan, its fix becomes one commit on the affected feature's
-fork ([design.md](design.md#steps-1-and-3-in-the-build)). The originating agent wrote the patch.
-Three writers commit it, all with the same code (`fix-write.ts`):
+fork ([design.md](design.md#steps-1-and-3-in-the-build)). A mechanical or verify part's commit is
+Penguin's update. The plan's rules rewrite the fork's call sites. The runner copies the originating
+change's modules the fork imports. Three writers commit it, all with the same code
+(`fix-write.ts`):
 
 - The originating agent pipes the answer of the `fix_token` MCP tool to `penguin-bridge fix-write`.
   The command fetches the fork into `<state-dir>/fix-writes`, or `--repo <path>`, writes the fix and
@@ -543,7 +545,7 @@ Three writers commit it, all with the same code (`fix-write.ts`):
 - The affected feature's builder takes the part's fix task ([Edit tasks](#edit-tasks)). When the
   person's bridge claims that task, the bridge commits the approved patch itself, with no agent run
   (`edit-run.ts`).
-- Runner mode claims the writes of approved mechanical parts at `POST /fix-writes/claim` under a
+- Runner mode claims the writes of approved mechanical and verify parts at `POST /fix-writes/claim` under a
   10-minute lease. An approved rule-written part of a split's migration plan comes the same way,
   onto its running feature's fork or its plan's block feature
   ([design.md](design.md#migration-plans-in-the-build)); a fork whose start waits on an overlap lock
@@ -555,8 +557,12 @@ Three writers commit it, all with the same code (`fix-write.ts`):
 The writer fetches the fork's `main` and stops with `moved` when its head is not the granted parent.
 It reads each file the patch writes at the parent and applies the patch with `applyPatchFile`
 (`packages/protocol`), the function Penguin checks the commit with. Every hunk must match at its line.
-The writer stores each new file as a blob in a scratch index over the parent's tree. It refuses when
-the tree changes anything but the patch's files. It commits with Penguin's message as author
+The writer stores each new file as a blob in a scratch index over the parent's tree. A write whose
+spec names a `copy` then sets each copied module to its blob and mode at the originating revision,
+byte for byte (`copiedTree`). The writer first lists the originating change's own files with
+`git diff-tree` from the change's baseline to the revision. It refuses a copy of any other file and
+a revision its repository does not hold. Runner mode fetches the originating fork before such a
+write. The writer refuses when the tree changes anything but the patch's files and the copies. It commits with Penguin's message as author
 `Penguin` with no hook or signing. It pushes the commit to `main` with no force. The token reaches
 Git only in the push's environment. A fork whose head moved refuses the push; asking `fix_token`
 again rebases the write or sends the part back for revision.
@@ -910,7 +916,10 @@ The codemod script uses libcst 1.9.0 (T21). A `rename` or `move` edit rewrites e
 reference of one dotted name to another with libcst's `RenameCommand`. A `rename-parameter` edit
 rewrites one keyword in each call that resolves to the function. Given a plan's rewrite rules in
 place of edits, the script compiles each rule into LibCST matchers. A name in the contract's module
-matches however the file imports it, through `QualifiedNameProvider`. Each placeholder captures one
+matches however the file imports it, through `QualifiedNameProvider`. A method a pattern calls
+through the contract class, such as `Client.post($client, "/v1/payouts", $body)`, also matches
+`client.post("/v1/payouts", body)` when `ScopeProvider` shows `client` bound only as a parameter
+annotated with the class. Each placeholder captures one
 expression, parenthesised where the replacement needs it. After the rewrite the script removes each
 import of the contract's module that the file no longer uses and adds each import a replacement
 declares. The script parses the code and never imports or runs it. The runner starts it with the interpreter of this repository's uv

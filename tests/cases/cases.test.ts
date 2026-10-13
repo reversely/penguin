@@ -44,12 +44,13 @@ const recordsOf = (preview: PreviewProject, featureId: string, type: string) =>
   preview.features.records(featureId).map((stored) => JSON.parse(stored.file) as { type: string; payload: Record<string, unknown> }).filter((record) => record.type === type);
 const toldOf = (preview: PreviewProject, person: string) => preview.inbox.items(person).map((item) => item.reason);
 const forksOf = (parts: readonly PlanPart[]) => parts.flatMap((part) => (part.place.kind === "feature" ? [part.place.feature] : [])).sort();
-/** The running features the originating person wrote a fix into, as the fixture holds them. */
+/** The running features Penguin updated, or the originating person wrote a fix into, as the fixture holds them. */
 const forksFixedBy = (origin: LarderFeature) => {
   const opened = Date.parse(origin.commits[0]?.date as string);
   const promoted = Date.parse(LARDER.promotions.find((promotion) => promotion.feature === origin.id)?.date as string);
+  const fixes = (commit: LarderFeature["commits"][number]) => commit.update?.from === origin.id || commit.author === origin.owner;
   return LARDER.features
-    .filter((feature) => feature.id !== origin.id && feature.commits.some((commit) => commit.author === origin.owner && Date.parse(commit.date) >= opened && Date.parse(commit.date) < promoted))
+    .filter((feature) => feature.id !== origin.id && feature.commits.some((commit) => fixes(commit) && Date.parse(commit.date) >= opened && Date.parse(commit.date) < promoted))
     .map((feature) => feature.id)
     .sort();
 };
@@ -192,7 +193,7 @@ test("case 1's feature page names each kind of validation on its results and eac
   const shown = ["changes", "pipeline", "record"].map((view) => results(render.featureHtml(page, origin.owner, view))).join(" ");
   for (const kind of VALIDATION_KINDS) assert.ok(shown.includes(VALIDATION_KIND_LABEL[kind]), `${VALIDATION_KIND_LABEL[kind]} on the feature page`);
   const jun = preview.scopeMap.scopes.get("analytics")?.driId as string;
-  assert.match(shown, /by @[a-z0-9-]+\/[a-z0-9.-]+ \(MCP report_fix_write\)/u, "a fix an agent wrote through MCP");
+  assert.ok(shown.includes("by Penguin (check runner)"), "an update Penguin's check runner wrote into an affected fork");
   assert.match(shown, /Approved by Penguin \(Dev policy: Tests/u, "a part Penguin approved under the policy");
   assert.ok(shown.includes(`Approved by ${jun} in the dashboard`), "a part a person approved in the dashboard");
   assert.match(shown, /@[a-z0-9-]+\/[a-z0-9.-]+ \(MCP propose_plan\)/u, "the record view names the agent's tool");
@@ -239,9 +240,17 @@ test("cases 1 to 3 each write their approved fixes, pass the block checks and re
   for (const useCase of [1, 2, 3]) {
     const origin = originOf(useCase);
     const plan = (await preview.plan(origin.id))!;
-    const written = recordsOf(preview, origin.id, "fix_write").map((record) => record.payload["part_id"]);
-    const fixes = plan.parts.filter((part) => part.place.kind === "feature" && part.kind !== "verify").map((part) => part.partId);
-    assert.deepEqual([...written].sort(), [...fixes].sort(), `${origin.id} writes each approved fix into its fork`);
+    const writes = recordsOf(preview, origin.id, "fix_write");
+    const written = writes.map((record) => record.payload["part_id"]);
+    const featureParts = plan.parts.filter((part) => part.place.kind === "feature");
+    const fixes = featureParts.filter((part) => part.kind !== "verify").map((part) => part.partId);
+    assert.ok(fixes.every((part) => written.includes(part)), `${origin.id} writes each approved fix into its fork`);
+    assert.ok(written.every((part) => featureParts.some((each) => each.partId === part)), `${origin.id} writes only into affected forks`);
+    if (useCase !== 2) {
+      // Cases 1 and 3: Penguin's check runner updates every affected fork; no agent writes into one.
+      assert.deepEqual([...written].sort(), featureParts.map((part) => part.partId).sort(), `${origin.id} updates every affected fork`);
+      assert.ok(writes.every((record) => record.payload["written_by"] === "penguin"), `${origin.id}'s updates are Penguin's`);
+    }
     assert.equal(recordsOf(preview, origin.id, "land_requested").length, 1);
     const checked = recordsOf(preview, origin.id, "block_checked");
     assert.equal(checked.length, 1);

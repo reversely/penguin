@@ -3,14 +3,16 @@
 //
 // Once a part's author approves it, Penguin hands one writer a `FixWriteSpec` with a write token on the
 // affected fork alone: the originating agent for a behavioural part, the check runner for a mechanical
-// one. The writer applies the part's patch to `parent`, the fork head, as one commit with `message`,
-// and pushes it to the fork's `main` as a fast-forward. Penguin then reads the commit through the
+// or verify one. The writer applies the part's patch to `parent`, the fork head, copies the originating
+// change's modules the spec's `copy` names byte for byte (module-copy.ts), and pushes the result to the
+// fork's `main` as one fast-forward commit with `message`. Penguin then reads the commit through the
 // Artifacts binding and keeps a signed `fix_write` record of it only when the commit's parent, message
-// and files are exactly the approved patch applied to `parent`.
+// and files are exactly the approved patch and the copies applied to `parent`.
 //
 // The commit message is built here from validated fields only: ids, a revision number, an identity
 // handle and the fix's reference. No text an agent or a person wrote reaches it.
 
+import { MODULE_COPY_LIMIT, type ModuleCopy } from "./module-copy.ts";
 import { FEATURE_ID_MAX_LENGTH } from "./overlap.ts";
 import { SEGMENT_PATTERN } from "./operation-schema.ts";
 import { PATCH_LIMITS } from "./patch.ts";
@@ -46,10 +48,12 @@ export interface FixWriteSpec {
   readonly parent: string;
   /** True when the fork head moved past the patch's base and the patch still applies there unchanged. */
   readonly rebased: boolean;
-  /** The files the patch writes; the commit changes these and nothing else. */
+  /** The files the patch writes; the commit changes these and the copies and nothing else. */
   readonly paths: readonly string[];
-  /** The approved patch, as the originating agent submitted it. */
+  /** The approved patch: the rules' rewrite of the fork's call sites, or an agent's fix. Empty when the write only copies. */
   readonly patch: string;
+  /** The originating change's modules Penguin copies into the fork; absent when it copies none. */
+  readonly copy?: ModuleCopy;
   readonly message: string;
 }
 
@@ -101,8 +105,18 @@ export const FIX_WRITE_SPEC_SCHEMA: JsonSchema = {
     branch: { const: FIX_WRITE_BRANCH },
     parent: SHA,
     rebased: { type: "boolean" },
-    paths: { type: "array", minItems: 1, maxItems: PATCH_LIMITS.files, items: { type: "string", minLength: 1, maxLength: PATCH_LIMITS.pathLength } },
-    patch: { type: "string", minLength: 1, maxLength: PATCH_LIMITS.bytes },
+    paths: { type: "array", maxItems: PATCH_LIMITS.files, items: { type: "string", minLength: 1, maxLength: PATCH_LIMITS.pathLength } },
+    patch: { type: "string", maxLength: PATCH_LIMITS.bytes },
+    copy: {
+      type: "object",
+      additionalProperties: false,
+      required: ["source", "base", "paths"],
+      properties: {
+        source: SHA,
+        base: SHA,
+        paths: { type: "array", minItems: 1, maxItems: MODULE_COPY_LIMIT, items: { type: "string", minLength: 1, maxLength: PATCH_LIMITS.pathLength } },
+      },
+    },
     message: { type: "string", minLength: 1, maxLength: 2_048 },
   },
 };

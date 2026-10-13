@@ -18,13 +18,20 @@ creates a Git repository in TARGET:
 - A commit with ``"merge": "main"`` merges main into the branch first: its parents are main and the
   branch's head, and its tree is main's tree with every file the branch's commits laid. A reader's
   migration uses it, since the reader started from ``base`` and the replacements are on main.
+- A commit with ``"update"`` is Penguin's update of a fork from an originating change: each module
+  in ``copies`` is copied byte for byte from the originating feature's tagged commit, then the
+  originating feature's ``rules`` rewrite the fork's own files with Penguin's codemod and ruff, as
+  the check runner writes a mechanical part. A copy of a file the originating change did not add
+  or change stops the build.
 - A promotion moves ``main`` to a feature's head, as Penguin promotes a block in one push.
 
 Commits and promotions are applied in date order. Every value Git hashes is fixed (author, committer,
 dates, message, file bytes and modes), so every machine gets the same commit SHAs. ``pins.json``
 records them; ``--pins`` prints the pins of the build as JSON instead of one ref per line.
 
-The builder runs only local Git commands, makes no network request and writes only inside TARGET.
+The builder runs local Git commands, Penguin's codemod and ruff from the interpreter's environment
+(this repository's uv environment). It makes no network request and writes only inside TARGET and
+a temporary folder of its own.
 """
 
 import argparse
@@ -33,12 +40,17 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 LARDER = HERE / "larder.json"
+# Penguin's codemod, which the check runner applies a plan's rewrite rules with (fix:python-codemod).
+CODEMOD = (
+    HERE.parents[1] / "services" / "local-bridge" / "analysis" / "python_codemod.py"
+)
 
 # Files a local test run leaves in a source directory; they never belong in a commit.
 SKIPPED_DIRS = frozenset({"__pycache__", ".pytest_cache"})
@@ -92,9 +104,21 @@ class LarderError(ValueError):
 
 
 @dataclass(frozen=True)
+class Update:
+    """Penguin's update of a fork from an originating change: the modules copied byte for byte from
+    the originating commit, then the originating plan's rewrite rules applied to the fork's own files."""
+
+    origin: str
+    tag: str
+    copies: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class CommitSpec:
     feature: str
-    source: str
+    # The directory under features/<id>/ whose files the commit lays; None for Penguin's update or a
+    # merge of main that lays nothing of its own.
+    source: str | None
     date: str
     message: str
     author: str
@@ -106,6 +130,7 @@ class CommitSpec:
     # The commit at which the feature's agent proposes its merge plan.
     plan: bool = False
     declares: "Declares | None" = None
+    update: Update | None = None
 
 
 @dataclass(frozen=True)
@@ -364,13 +389,18 @@ def check_commit(
 ) -> CommitSpec | None:
     before = len(check.problems)
     source = commit.get("source")
-    if not isinstance(source, str) or not SEGMENT.fullmatch(source):
+    update = check_update(commit.get("update"), f"{at}.update", check)
+    if (source is not None or (update is None and commit.get("merge") is None)) and (
+        not isinstance(source, str) or not SEGMENT.fullmatch(source)
+    ):
         check.fail(f"{at}.source", f"{source!r} is not one directory name")
+    if update is not None and source is not None:
+        check.fail(f"{at}.source", "Penguin's update lays no source directory")
     if commit.get("tag") is not None:
         check.id(commit["tag"], f"{at}.tag")
     check.date(commit.get("date"), f"{at}.date")
     check.text(commit.get("message"), f"{at}.message")
-    author = commit.get("author", "owner")
+    author = commit.get("author", "owner" if update is None else "codemod")
     if author not in {"owner", "codemod"} and author not in people:
         check.fail(f"{at}.author", f"{author!r} is not 'owner', 'codemod' or a person")
     fix = commit.get("fix")
@@ -404,7 +434,40 @@ def check_commit(
         merge=merge,
         plan=commit.get("plan", False),
         declares=declares,
+        update=update,
     )
+
+
+def check_update(update: object, at: str, check: Checker) -> Update | None:
+    """Penguin's update a commit is, or None when it names none."""
+    if update is None:
+        return None
+    if not isinstance(update, dict) or set(update) != {"from", "tag", "copies"}:
+        check.fail(at, "an update has exactly the fields from, tag and copies")
+        return None
+    check.id(update["from"], f"{at}.from")
+    check.id(update["tag"], f"{at}.tag")
+    copies = update["copies"]
+    if not isinstance(copies, list) or not copies:
+        check.fail(f"{at}.copies", "must list the modules Penguin copies")
+        return None
+    paths = [check.path(path, f"{at}.copies") for path in copies]
+    if not all(paths):
+        return None
+    return Update(update["from"], update["tag"], tuple(paths))
+
+
+def check_rules(rules: object, at: str, check: Checker) -> None:
+    """The rewrite rules an originating feature's plan declares; the codemod checks the rest."""
+    if not isinstance(rules, list):
+        check.fail(at, "must list rewrite rules")
+        return
+    for i, rule in enumerate(rules):
+        if not isinstance(rule, dict) or not isinstance(rule.get("contract"), str):
+            check.fail(f"{at}[{i}]", "a rule names its contract as path::symbol")
+            continue
+        check.id(rule.get("id"), f"{at}[{i}].id")
+        check.path(rule["contract"].partition("::")[0], f"{at}[{i}].contract")
 
 
 def check_features(
@@ -437,6 +500,8 @@ def check_features(
                 )
             else:
                 cases[case] = feature["id"]
+        if "rules" in feature:
+            check_rules(feature["rules"], f"{at}.rules", check)
         if not feature.get("area"):
             check.fail(f"{at}.area", "must list the scopes the feature declares")
         for scope_id in feature.get("area", []):
@@ -908,6 +973,89 @@ def penguin_files(larder: Larder) -> dict[str, bytes]:
     }
 
 
+def changed_paths(tree: dict[str, bytes], start: dict[str, bytes]) -> set[str]:
+    """The files a change added or changed: those of ``tree`` that differ from ``start``."""
+    return {path for path, data in tree.items() if start.get(path) != data}
+
+
+def ruff() -> str:
+    """The ruff of the interpreter's environment, as the runner's, else ruff on PATH."""
+    beside = Path(sys.executable).parent / "ruff"
+    return str(beside) if beside.exists() else "ruff"
+
+
+def rewritten(
+    files: dict[str, bytes], rules: list[dict], contracts: dict[str, str]
+) -> dict[str, bytes]:
+    """The files the rules change, as the check runner writes them: Penguin's codemod with the rules,
+    then ruff's lint autofix and formatter on each file it changed."""
+    with tempfile.TemporaryDirectory(prefix="larder-rules-") as scratch:
+        tree = Path(scratch)
+        for path, data in files.items():
+            (tree / path).parent.mkdir(parents=True, exist_ok=True)
+            (tree / path).write_bytes(data)
+        request = {"rules": rules, "contracts": contracts, "paths": sorted(files)}
+        ran = subprocess.run(
+            [sys.executable, "-I", str(CODEMOD), "--tree", str(tree)],
+            input=json.dumps(request).encode(),
+            capture_output=True,
+            check=True,
+        )
+        report = json.loads(ran.stdout)
+        if report["refused"] or report["errors"]:
+            raise SystemExit(f"the codemod refused the rules: {report}")
+        touched = [entry["path"] for entry in report["changed"]]
+        if not touched:
+            return {}
+        for argv in (
+            ["check", "--fix", "--no-cache", "--exit-zero", "--quiet", "--isolated"],
+            ["format", "--no-cache", "--quiet", "--isolated"],
+        ):
+            subprocess.run([ruff(), *argv, "--", *touched], cwd=tree, check=True)
+        return {path: (tree / path).read_bytes() for path in touched}
+
+
+def penguin_update(
+    larder: Larder,
+    spec: CommitSpec,
+    own: dict[str, bytes],
+    origin: dict[str, bytes],
+    origin_start: dict[str, bytes],
+) -> dict[str, bytes]:
+    """The files of Penguin's update of a fork: each copied module byte for byte from the originating
+    commit, then the originating plan's rules applied to the fork's own files in its scopes. A copy of
+    a file the originating change did not itself add or change stops the build."""
+    update = spec.update
+    assert update is not None
+    changed = changed_paths(origin, origin_start)
+    files = {}
+    for path in update.copies:
+        if path not in changed:
+            raise SystemExit(
+                f"{spec.feature}: {path} is not a file {update.origin} added or changed, so "
+                "Penguin does not copy it"
+            )
+        files[path] = origin[path]
+    rules = larder.features[update.origin].get("rules", [])
+    area = [
+        path
+        for scope in larder.features[spec.feature]["area"]
+        for path in larder.scope_paths[scope]
+    ]
+    targets = {
+        path: data
+        for path, data in own.items()
+        if path.endswith(".py") and inside(path, area) and path not in files
+    }
+    if rules and targets:
+        contracts = {
+            path: origin[path].decode()
+            for path in {rule["contract"].partition("::")[0] for rule in rules}
+        }
+        files.update(rewritten(targets, rules, contracts))
+    return files
+
+
 @dataclass(frozen=True)
 class Built:
     """What a build made: every branch head and tag, and the SHA of each feature commit."""
@@ -937,6 +1085,9 @@ def build(target: Path, larder: Larder | None = None) -> Built:
     )
     heads = {"main": base_mark}
     tags = {base["tag"]: base_mark}
+    # Each commit's whole tree, and the commit each branch started from, for Penguin's updates.
+    trees: dict[int, dict[str, bytes]] = {base_mark: files}
+    starts: dict[str, int] = {}
 
     commits = []
     # Every file each branch's own commits laid, for a commit that merges main into the branch.
@@ -956,7 +1107,25 @@ def build(target: Path, larder: Larder | None = None) -> Built:
         if name not in heads:
             from_main = larder.features[event.feature]["start"] == "main"
             heads[name] = heads["main"] if from_main else base_mark
-        files = source_files(HERE / "features" / event.feature / event.source)
+            starts[name] = heads[name]
+        if event.update is not None:
+            origin = tags.get(f"{branch(event.update.origin)}-{event.update.tag}")
+            if origin is None:
+                raise SystemExit(
+                    f"{name} updates from {event.update.origin}-{event.update.tag}, "
+                    "which is not built yet"
+                )
+            files = penguin_update(
+                larder,
+                event,
+                laid.get(name, {}),
+                trees[origin],
+                trees[starts[branch(event.update.origin)]],
+            )
+        elif event.source is None:
+            files = {}
+        else:
+            files = source_files(HERE / "features" / event.feature / event.source)
         laid[name] = {**laid.get(name, {}), **files}
         parent, merged = heads[name], None
         if event.onto == "main":
@@ -977,6 +1146,7 @@ def build(target: Path, larder: Larder | None = None) -> Built:
         mark = stream.commit(
             parent, author_of(larder, event), event.date, event.message, files, merged
         )
+        trees[mark] = {**trees[parent], **files}
         heads[name] = mark
         declared[mark] = carried
         commits.append((event, mark))

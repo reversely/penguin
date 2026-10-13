@@ -170,3 +170,17 @@ def test_merged_shopper_keeps_the_latest_value():
         ]
     )
     assert shopper_map.shopper("device:d1").get("plan") == "free"
+
+
+def test_the_map_counts_an_event_by_its_identity_before_the_cutover_day():
+    events = [
+        Event("web", "page_view", "2026-01-05", 1, user_id="u1"),
+        Event("mobile", "app_open", "2026-01-05", 2, device_id="d1"),
+        Event("mobile", "login", "2026-01-06", 3, user_id="u1", device_id="d1"),
+    ]
+    shopper_map = ShopperMap.from_events(events)
+    assert [shopper_map.counted_as(event) for event in events] == [
+        "user:u1",
+        "device:d1",
+        "user:u1",
+    ]

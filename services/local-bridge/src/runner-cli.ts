@@ -344,7 +344,11 @@ async function testJobsPass(
       fixWritePass({
         claim: () => claimFixWrites(server, bridgeToken, fetchImpl),
         // The token Penguin minted for this part reaches Git only through the push's environment.
-        write: ({ spec, token }) => writeFix({ repoPath: repo, remote: tokenRemote(penguinRemote(spec.fork), token) }, spec),
+        // A write that copies the originating change's modules reads them from the originating fork.
+        write: async ({ spec, token }) => {
+          if (spec.copy !== undefined) await fetchRepoBranches(repo, readRemotes, `feature-${spec.feature}`);
+          return writeFix({ repoPath: repo, remote: tokenRemote(penguinRemote(spec.fork), token) }, spec);
+        },
         report: (writeId, commit) => reportFixWrite(server, bridgeToken, writeId, commit, fetchImpl),
         fail,
       }),

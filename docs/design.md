@@ -335,7 +335,11 @@ The procedure moves conflict handling to the start of the work. Each step below 
   `packages/protocol`). Each rule names one contract the contract diff touches (`path::symbol`), a
   kind, a pattern, a replacement and the imports the replacement needs. An `expression` rule
   rewrites each expression its pattern matches, such as `money.display($amount)` to
-  `$amount.display()`. Its pattern must name a use of the contract. An `annotation` rule rewrites a
+  `$amount.display()`. Its pattern must name a use of the contract. A pattern may call a method of a
+  contract class through the class, such as `ShopperMap.resolve($map, $event)`. It then also matches
+  `shopper_map.resolve(event)` where `shopper_map` is a parameter of the enclosing function annotated
+  with the class and bound nowhere else, the one place the codemod knows a name's class without
+  running the code. An `annotation` rule rewrites a
   type annotation, such as `float` to `money.Money`, on a function's return when every `return`
   calls the contract, and on a parameter passed by name to a call of the contract.
   - The facts run carries the rules (#105). The check runner compiles each rule into LibCST
@@ -799,9 +803,16 @@ that also fails another check stays with its author. Its stored data reason is l
 
 ### Build
 
-1. As soon as an author approves their part, Penguin issues the originating agent a short-lived write
-   token on that author's feature fork. The agent writes the approved fix straight into the fork. No
-   new branch or fork is made.
+1. As soon as an author approves their part, Penguin writes the approved fix straight into that
+   author's feature fork. No new branch or fork is made. No agent writes code into another person's
+   fork when the plan's rules write the part: Penguin's check runner copies the originating change's
+   new or changed modules that the fork imports, byte for byte from the originating change's newest
+   revision. The plan's rewrite rules rewrite the fork's call sites to those modules' functions. A
+   call site no rule rewrites goes back to the originating agent, which answers in its own branch
+   with a rule or a new function in its module. Each affected fork then runs its own tests alone.
+   Once the originating change reaches main, the fork holds main's bytes of each copied module, so
+   taking main conflicts in none of them. A behavioural part the originating agent wrote is written
+   with a short-lived write token on that fork.
 2. The affected feature's own agents keep working on code that already fits the change, so the merge
    conflict never forms.
 3. A running feature that starts touching the plan's area midway shows up at its next checkpoint.
@@ -817,7 +828,9 @@ that also fails another check stays with its author. Its stored data reason is l
   part. Its session on the originating feature calls `fix_token` with the part and the revision. A
   mechanical part is Penguin's codemod, so the check runner writes it: the approval queues the write
   and the runner claims it at `POST /fix-writes/claim`
-  ([bridge-and-runner.md](bridge-and-runner.md#fix-writes)). An approved rule-written part of a
+  ([bridge-and-runner.md](bridge-and-runner.md#fix-writes)). An approved verify part on a running
+  feature queues a runner write too. The claim withdraws it when the fork needs no module copied. An
+  approved rule-written part of a
   split's migration plan is queued the same way, onto its running feature's fork or its plan's block
   feature ([Migration plans in the build](#migration-plans-in-the-build)). A part for code on main gets no token on
   another fork. Its fix is a commit in the originating fork already
@@ -831,6 +844,16 @@ that also fails another check stays with its author. Its stored data reason is l
 - **The paths.** Before any grant, Penguin parses the approved patch again. Every file it writes must
   lie inside the part's scopes and in the part's approved diff. A patch that writes another path gets
   no token.
+- **The copies.** A runner write of a plan part also copies the originating change's modules the
+  fork needs (`readCopy`, `services/project-agent/src/module-copy.ts`). The originating change is its
+  baseline compared with its newest revision (`newestRevision`), read in the originating fork. Penguin
+  reads the Python files of the part's scopes at the fork head, with the patch applied, as text. Each
+  file of the change that one of them imports is copied. So is each file of the change that a copied
+  module imports (`copiedModules`, `packages/protocol/src/module-copy.ts`). A module the fork already
+  holds at the revision's bytes is left out. A module the fork changed itself is never overwritten:
+  the write is refused with that reason. The grant's `copy` names the revision, its baseline and the
+  copied paths. A copy may name only a file the originating change itself added or changed
+  (`copyProblem`). An agent's write and a migration part's write copy nothing.
 - **The fork head.** The commit must fast-forward the affected fork's `main`. When the head is still
   the patch's base, the base is the parent. When the author's own agent moved the head, Penguin
   applies the patch to the new head's files. If every hunk still matches at its line, the new head is
@@ -842,13 +865,14 @@ that also fails another check stays with its author. Its stored data reason is l
   Penguin builds the message from validated fields only: the part, the revision, the approver, the
   fix's reference and the writer's handle (`fixCommitMessage`, `packages/protocol`).
   `penguin-bridge fix-write` makes the commit from the `fix_token` answer without a checkout. It
-  applies the patch with `applyPatchFile`, checks that the commit changes exactly the patch's files
-  and pushes it with no force. A fork whose head moved refuses the push.
+  applies the patch with `applyPatchFile`, sets each copied module to its blob at the revision,
+  checks that the commit changes exactly the patch's files and the copies and pushes it with no
+  force. A fork whose head moved refuses the push.
 - **The record.** The writer reports the commit: the agent with `report_fix_write`, the runner at
   `POST /fix-writes/<write id>`. Penguin reads the commit through the Artifacts binding. It keeps the
   write only when the commit has the granted head as its one parent, carries the built message,
-  changes exactly the patch's files with each file equal to the patch applied to the parent and sits
-  on the fork's `main`. A kept write is a signed `fix_write` record on the originating feature and a
+  changes exactly the patch's files and the copies, holds each file equal to the patch applied to the
+  parent, holds each copied module at the revision's blob and sits on the fork's `main`. A kept write is a signed `fix_write` record on the originating feature and a
   `FixWrite(plan_part_id, target_repo, commit_sha)` row in the feature's plan store. A refused commit
   gets a signed `fix_write_refused` record.
 - **Midway.** Each announced plan keeps its area: the scopes whose symbols its contract diff changes,
@@ -865,8 +889,8 @@ that also fails another check stays with its author. Its stored data reason is l
 #### Step 4 in the build
 
 - **The order.** Approving a part on a running feature opens its write (`openFixWrite`,
-  `services/project-agent/src/fix-write.ts`). The check runner writes a mechanical part. The
-  originating agent or the holder of its fix task writes a behavioural one. The writes into one fork
+  `services/project-agent/src/fix-write.ts`). The check runner writes a mechanical or verify part.
+  The originating agent or the holder of its fix task writes a behavioural one. The writes into one fork
   stand in the order they opened.
 - **One token per fork.** Penguin grants a write only when three conditions hold
   (`FixGrantStore.waitsFor`). No other write into the same fork holds a token. No earlier write into

@@ -6,13 +6,14 @@ below picks the client version for the whole repository.
 
 from vendor.wire_v2 import Client, Request, Response, Timeout, __version__
 
-__all__ = ["Client", "Request", "Response", "Timeout", "__version__", "idempotency_key"]
+__all__ = ["Client", "Request", "Response", "Timeout", "__version__", "post_once"]
 
 
-def idempotency_key(kind: str, reference: str) -> str:
-    """Return the ``Idempotency-Key`` header value for the money movement ``reference``.
+def post_once(client: Client, path: str, body: dict) -> Response:
+    """Send a request that moves money, so the money moves once however often it is sent.
 
-    wire 2.0.0 retries a timed-out request. The key depends only on what the money moves for, so a
-    retried request carries the same key and the processor answers it without moving money again.
+    wire 2.0.0 retries a timed-out request. The ``Idempotency-Key`` header is the body's
+    ``reference``, the order or payout the money moves for, so a retried request carries the same
+    key and the processor answers it without moving money again.
     """
-    return f"{kind}-{reference}"
+    return client.post(path, body, {"Idempotency-Key": str(body["reference"])})

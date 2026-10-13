@@ -206,6 +206,47 @@ def test_codemod_expand_keeps_the_old_name_working_beside_the_new(
     )
 
 
+def test_a_rule_rewrites_a_method_call_only_on_a_parameter_of_the_contract_class(
+    tmp_path: Path,
+) -> None:
+    tree = tmp_path / "tree"
+    (tree / "payouts").mkdir(parents=True)
+    caller = (
+        "from shared.http import Client\n\n\n"
+        "def pay(client: Client, body):\n"
+        '    return client.post("/v1/payouts", body)\n\n\n'
+        "def other(client, body):\n"
+        '    return client.post("/v1/payouts", body)\n'
+    )
+    (tree / "payouts" / "send.py").write_text(caller)
+    report = run(
+        "python_codemod.py",
+        "--tree",
+        tree,
+        {
+            "rules": [
+                {
+                    "id": "payout-once",
+                    "contract": "shared/http.py::Client",
+                    "kind": "expression",
+                    "pattern": 'Client.post($client, "/v1/payouts", $body)',
+                    "replacement": 'http.post_once($client, "/v1/payouts", $body)',
+                    "imports": [],
+                }
+            ],
+            "contracts": {
+                "shared/http.py": "class Client:\n    def post(self, path, body):\n        pass\n\n\n"
+                "def post_once(client, path, body):\n    pass\n"
+            },
+            "paths": ["payouts/send.py"],
+        },
+    )
+    text = (tree / "payouts" / "send.py").read_text()
+    assert report["refused"] == [], report
+    assert 'return post_once(client, "/v1/payouts", body)' in text
+    assert text.count('client.post("/v1/payouts", body)') == 1
+
+
 def test_dependency_diff_names_the_bumped_library_and_who_imports_it(
     tmp_path: Path,
 ) -> None:

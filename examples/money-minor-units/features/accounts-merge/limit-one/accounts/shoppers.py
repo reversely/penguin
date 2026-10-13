@@ -20,6 +20,8 @@ Code that read shoppers before the merge rules calls two rules from this module:
 
 - ``shopper_id_cutover()`` and ``counted_as()``: a metric counts identities before the first day the
   shopper map links any. It counts shoppers from that day on, so a published day keeps its count.
+  ``ShopperMap.counted_as()`` gives the same key from the map alone, with the cutover of the events
+  the map observed, for code that holds the map but not its events.
 - ``consented()`` and ``withdrawn()``: a consent such as ``email_subscribed`` withdrawn on one
   identity stays withdrawn after another identity of the same shopper gives it.
 """
@@ -103,6 +105,9 @@ class ShopperMap:
     def __init__(self) -> None:
         # Union-find over identity keys: each identity points towards its shopper's root identity.
         self._parent: dict[str, str] = {}
+        self._observed: list[Event] = []
+        # The cutover of the events observed so far, with how many there were when it was read.
+        self._cutover: tuple[int, str | None] | None = None
         self._first_seen: dict[str, int] = {}
         self._shoppers: dict[str, Shopper] = {}
         self._verified_emails: dict[str, str] = {}
@@ -116,6 +121,7 @@ class ShopperMap:
         return shopper_map
 
     def observe(self, event: Event) -> Shopper:
+        self._observed.append(event)
         identity = identity_key(event)
         shopper = self._add(identity)
         if event.type == LOGIN and event.user_id and event.device_id:
@@ -141,6 +147,13 @@ class ShopperMap:
     def resolve(self, event: Event) -> str:
         """Return the shopper_id of the shopper an event belongs to."""
         return self.shopper_id(identity_key(event))
+
+    def counted_as(self, event: Event) -> str:
+        """Return the key a metric counts ``event`` under, as ``counted_as()`` does, with the cutover
+        of the events this map observed."""
+        if self._cutover is None or self._cutover[0] != len(self._observed):
+            self._cutover = (len(self._observed), shopper_id_cutover(self._observed))
+        return counted_as(event, self, self._cutover[1])
 
     def shopper(self, key: str) -> Shopper:
         """Return the shopper of the shopper that owns the identity ``key``."""

@@ -1,15 +1,18 @@
 // Writing an approved plan part's fix into the affected feature's fork (PRD 0.4 section 4.4 step 1).
 //
 // The writer is the originating agent's bridge, through `penguin-bridge fix-write` with the answer of
-// the `fix_token` MCP tool, or the check runner for a mechanical part, through the writes it claims at
-// POST /fix-writes/claim. Either way the writer holds a `FixWriteSpec` and a write token minted for that
-// one part on that one fork.
+// the `fix_token` MCP tool, or the check runner for a mechanical or verify part, through the writes it
+// claims at POST /fix-writes/claim. Either way the writer holds a `FixWriteSpec` and a write token
+// minted for that one part on that one fork.
 //
 // The fix becomes one commit built without a checkout: the fork's `main` is fetched, its head must be
 // the spec's `parent`, each file the patch writes is read at the parent, patched with `applyPatchFile`
 // (the function Penguin checks the commit with), written as a blob into a scratch index over the
-// parent's tree. The tree is committed with the spec's message. The commit must change exactly the
-// spec's paths, which are the patch's own files; anything else stops the write before any push. The
+// parent's tree. Each module the spec's `copy` names then takes its blob at the originating checkpoint,
+// byte for byte, once the writer has checked it is a file the originating change itself added or
+// changed (`git diff-tree` from the change's base to the checkpoint). The tree is committed with the
+// spec's message. The commit must change exactly the patch's files and the copies; anything else
+// stops the write before any push. The
 // push fast-forwards `main` with no force, so a fork whose head moved refuses it and nothing is
 // overwritten. No hook, editor or credential helper runs.
 
@@ -18,7 +21,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { runGit } from "@penguin/git-analysis";
-import { checkFixWriteSpec, parsePatch, type FixWriteSpec } from "@penguin/protocol";
+import { checkFixWriteSpec, copyProblem, parsePatch, type FixWriteSpec, type ModuleCopy, type PlanFileDiff } from "@penguin/protocol";
 
 import type { GitRemote } from "./git-remote.ts";
 import { patchedTree } from "./patch-tree.ts";
@@ -56,10 +59,14 @@ export async function writeFix(options: FixWriterOptions, spec: FixWriteSpec): P
 
   const problems = checkFixWriteSpec(spec);
   if (problems.length > 0) return refused(`the write is malformed at ${problems[0]?.path || "the top"}: ${problems[0]?.message}`);
-  const parsed = parsePatch(spec.patch);
+  const parsed: { ok: true; files: readonly PlanFileDiff[] } | { ok: false; message: string } = spec.patch === "" ? { ok: true, files: [] } : parsePatch(spec.patch);
   if (!parsed.ok) return refused(`the patch does not parse: ${parsed.message}`);
+  if (parsed.files.length === 0 && spec.copy === undefined) return refused("the write carries neither a patch nor a copy");
   const paths = parsed.files.map((file) => file.path).sort();
   if (paths.join("\n") !== [...spec.paths].sort().join("\n")) return refused("the spec's paths are not the patch's files");
+  const copies = [...(spec.copy?.paths ?? [])].sort();
+  const both = copies.find((path) => paths.includes(path));
+  if (both !== undefined) return refused(`the patch and the copy both write ${both}`);
 
   const { repoPath, remote } = options;
   const ref = `refs/penguin/fix-writes/${spec.writeId}`;
@@ -71,9 +78,12 @@ export async function writeFix(options: FixWriterOptions, spec: FixWriteSpec): P
   try {
     const patched = await patchedTree(repoPath, spec.parent, parsed.files, scratch);
     if (!patched.ok) return refused(patched.message);
-    const { tree } = patched;
+    const copied = spec.copy === undefined ? patched : await copiedTree(repoPath, patched.tree, spec.copy, scratch);
+    if (!copied.ok) return refused(copied.message);
+    const { tree } = copied;
     const changed = (await runGit(repoPath, ["diff-tree", "-r", "-z", "--name-only", "--no-renames", spec.parent, tree])).split("\0").filter(Boolean).sort();
-    if (changed.join("\n") !== paths.join("\n")) return refused(`the commit would change ${changed.join(", ") || "nothing"}, not exactly the patch's files`);
+    const expected = [...paths, ...copies].sort();
+    if (changed.join("\n") !== expected.join("\n")) return refused(`the commit would change ${changed.join(", ") || "nothing"}, not exactly the patch's files and the copies`);
     const message = join(scratch, "message");
     await writeFile(message, spec.message, { mode: 0o600 });
     const commit = (await runGit(repoPath, [...NO_HOOKS, "commit-tree", tree, "-p", spec.parent, "-F", message], { env: WRITER_ENV })).trim();
@@ -92,7 +102,39 @@ export async function writeFix(options: FixWriterOptions, spec: FixWriteSpec): P
   }
 }
 
-/** One write the runner claimed: the spec and the token minted for that part on that fork. */
+const REGULAR_MODES = new Set(["100644", "100755"]);
+
+/**
+ * `tree` with each of `copy`'s modules set to its blob and mode at the originating checkpoint, byte for
+ * byte. A module that is not a file the originating change itself added or changed, from its base to
+ * the checkpoint, is refused, as is an originating commit this repository does not hold. `scratch` is
+ * an empty folder.
+ */
+export async function copiedTree(repoPath: string, tree: string, copy: ModuleCopy, scratch: string): Promise<{ readonly ok: true; readonly tree: string } | { readonly ok: false; readonly message: string }> {
+  for (const commit of [copy.source, copy.base]) {
+    const held = await runGit(repoPath, ["cat-file", "-e", `${commit}^{commit}`]).then(
+      () => true,
+      () => false,
+    );
+    if (!held) return { ok: false, message: `the originating commit ${commit} is not in the repository` };
+  }
+  const changed = new Set((await runGit(repoPath, ["diff-tree", "-r", "-z", "--name-only", "--no-renames", copy.base, copy.source])).split("\0").filter(Boolean));
+  const problem = copyProblem(copy.paths, changed);
+  if (problem !== null) return { ok: false, message: problem };
+  const env = { GIT_INDEX_FILE: join(scratch, "copy-index") };
+  await runGit(repoPath, ["read-tree", tree], { env });
+  for (const path of copy.paths) {
+    const entry = (await runGit(repoPath, ["ls-tree", "-z", "--end-of-options", copy.source, "--", path])).split("\0")[0] ?? "";
+    const [meta = "", listed] = entry.split("\t");
+    const [mode, , blob] = meta.split(" ");
+    // A module the change deleted is no module to copy.
+    if (listed !== path || !REGULAR_MODES.has(mode ?? "")) return { ok: false, message: `${path} is not a regular file at the originating checkpoint` };
+    await runGit(repoPath, ["update-index", "--add", "--cacheinfo", `${mode},${blob},${path}`], { env });
+  }
+  return { ok: true, tree: (await runGit(repoPath, ["write-tree"], { env })).trim() };
+}
+
+/** One write the runner claimed:the spec and the token minted for that part on that fork. */
 export interface ClaimedFixWrite {
   readonly spec: FixWriteSpec;
   readonly token: { readonly token: string; readonly remote: string; readonly expiresAt: string };

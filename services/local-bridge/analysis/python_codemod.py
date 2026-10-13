@@ -46,7 +46,11 @@ Each rule is compiled into LibCST matchers; nothing in it is run. A rule is refu
 the reason, when its pattern or replacement does not parse as a Python expression, when an expression
 pattern names no use of its contract (it would rewrite code outside the contract), or when its
 replacement names anything other than its placeholders, the contract's module and the rule's own
-imports from that module or the standard library. See ``compile_rule``. The valid rules apply in the
+imports from that module or the standard library. See ``compile_rule``. A pattern may call a method
+of a contract class through its class, ``ShopperMap.resolve($map, $event)``: it then also matches
+``shopper_map.resolve(event)`` where ``shopper_map`` is a parameter of the enclosing function annotated
+with the class and never assigned again, the one place a name's class is known without running the
+code. The valid rules apply in the
 order given; then each file's imports of a contract module that the rewrite left unused go, and each
 import a replacement needs is added.
 
@@ -72,7 +76,12 @@ import libcst as cst
 import libcst.matchers as m
 from libcst.codemod import CodemodContext, VisitorBasedCodemodCommand
 from libcst.codemod.commands.rename import RenameCommand
-from libcst.metadata import MetadataWrapper, ParentNodeProvider, QualifiedNameProvider
+from libcst.metadata import (
+    MetadataWrapper,
+    ParentNodeProvider,
+    QualifiedNameProvider,
+    ScopeProvider,
+)
 
 SCHEMA_VERSION = 1
 MAX_EDITS = 50
@@ -648,6 +657,14 @@ def provided_names(source: str) -> tuple[set[str], set[str]]:
     return top - {""}, members - {""}
 
 
+def defines_class(source: str, name: str) -> bool:
+    """Whether the module defines the class ``name`` itself, rather than importing it."""
+    return any(
+        isinstance(statement, cst.ClassDef) and statement.name.value == name
+        for statement in cst.parse_module(source).body
+    )
+
+
 def placeholder_of(node: cst.CSTNode) -> str | None:
     """The placeholder a sentinel Name stands for, or None."""
     if isinstance(node, cst.Name) and node.value.startswith(SENTINEL):
@@ -738,11 +755,19 @@ class Rule:
     replacement: cst.BaseExpression
     imports: dict[str, str]
     matcher: m.BaseMatcherNode
+    # The members of the module's classes, so a method a pattern calls through the contract class
+    # is checked; None when the module re-exports the class, whose members it does not show.
+    members: set[str] | None = None
+    # Each method call a pattern writes through the contract class: the marker its matched call is
+    # saved under and the placeholder that captures the receiver.
+    receivers: dict[str, str] = dataclasses.field(default_factory=dict)
 
     def module_name_of(self, chain: str) -> str | None:
         """The qualified name a pattern's dotted name stands for in the contract's module, or None."""
         if chain == self.symbol:
             return self.qualified
+        if chain.startswith(f"{self.symbol}."):
+            return f"{self.qualified}{chain[len(self.symbol) :]}"
         for root in (self.alias, self.module):
             if chain.startswith(f"{root}."):
                 return f"{self.module}.{chain[len(root) + 1 :]}"
@@ -795,12 +820,15 @@ def compile_rule(rule: dict, contracts: dict[str, str]) -> Rule:
         replacement=replacement,
         imports=imports,
         matcher=m.DoNotCare(),
+        members=members if defines_class(source, symbol) else None,
     )
     if rule["kind"] == "expression":
+        # The contract itself, or a member of it such as a method called through its class.
+        named = [compiled.module_name_of(chain) or "" for chain in chains(pattern)]
         uses = [
-            chain
-            for chain in chains(pattern)
-            if compiled.module_name_of(chain) == compiled.qualified
+            name
+            for name in named
+            if name == compiled.qualified or name.startswith(f"{compiled.qualified}.")
         ]
         if not uses:
             raise RuleRefused(
@@ -870,12 +898,49 @@ def check_replacement(rule: Rule, top: set[str], members: set[str]) -> None:
     walk(rule.replacement)
 
 
+def method_call(node: cst.CSTNode, rule: Rule) -> tuple[str, str] | None:
+    """The method and the receiver's placeholder when ``node`` calls a method of the contract class
+    through the class, as ``ShopperMap.resolve($map, $event)``; None otherwise."""
+    if not isinstance(node, cst.Call) or not node.args:
+        return None
+    chain = dotted(node.func)
+    qualified = None if chain is None else rule.module_name_of(chain)
+    if qualified is None or not qualified.startswith(f"{rule.qualified}."):
+        return None
+    method = qualified[len(rule.qualified) + 1 :]
+    first = node.args[0]
+    receiver = placeholder_of(first.value)
+    if "." in method or receiver is None or first.keyword is not None or first.star:
+        return None
+    if rule.members is not None and method not in rule.members:
+        raise RuleRefused(f"{rule.qualified} defines no method {method}")
+    return method, receiver
+
+
 def matcher_for(node: cst.CSTNode, rule: Rule) -> m.BaseMatcherNode:
     """A LibCST matcher for a pattern node: formatting is ignored, placeholders match anything and
-    a name in the contract's module matches any spelling that resolves to it."""
+    a name in the contract's module matches any spelling that resolves to it. A method called
+    through the contract class also matches the call on a receiver of that class."""
     name = placeholder_of(node)
     if name is not None:
         return m.SaveMatchedNode(m.DoNotCare(), name)
+    called = method_call(node, rule)
+    if called is not None:
+        method, receiver = called
+        marker = f"__method_{len(rule.receivers)}__"
+        rule.receivers[marker] = receiver
+        assert isinstance(node, cst.Call)
+        on_receiver = m.Call(
+            func=m.Attribute(
+                value=m.SaveMatchedNode(m.Name(), receiver), attr=m.Name(method)
+            ),
+            args=[matcher_value(arg, rule) for arg in node.args[1:]],
+        )
+        through_class = m.Call(
+            func=matcher_value(node.func, rule),
+            args=[matcher_value(arg, rule) for arg in node.args],
+        )
+        return m.OneOf(m.SaveMatchedNode(on_receiver, marker), through_class)
     chain = dotted(node)
     if chain is not None:
         qualified = rule.module_name_of(chain)
@@ -1020,7 +1085,7 @@ class RulePass(VisitorBasedCodemodCommand):
     """One round of a list of rules over a module. At each expression the first rule in the list whose
     pattern matches applies. Imports the replacements need are collected, not added here."""
 
-    METADATA_DEPENDENCIES = (QualifiedNameProvider, ParentNodeProvider)
+    METADATA_DEPENDENCIES = (QualifiedNameProvider, ParentNodeProvider, ScopeProvider)
 
     def __init__(self, context: CodemodContext, rules: list[Rule]) -> None:
         super().__init__(context)
@@ -1033,6 +1098,20 @@ class RulePass(VisitorBasedCodemodCommand):
         names = self.get_metadata(QualifiedNameProvider, node, set())
         return any(each.name == rule.qualified for each in names)
 
+    def of_class(self, rule: Rule, receiver: cst.CSTNode) -> bool:
+        """Whether ``receiver`` is a parameter annotated with the rule's contract class and never
+        bound again in its function: the one place its class is known from the code."""
+        if not isinstance(receiver, cst.Name):
+            return False
+        scope = self.get_metadata(ScopeProvider, receiver, None)
+        if scope is None:
+            return False
+        bound = list(scope[receiver.value])
+        if len(bound) != 1 or not isinstance(bound[0].node, cst.Param):
+            return False
+        annotation = bound[0].node.annotation
+        return annotation is not None and self.calls_of(rule, annotation.annotation)
+
     def on_leave(self, original_node: cst.CSTNode, updated_node: cst.CSTNode) -> object:
         updated = super().on_leave(original_node, updated_node)
         if not isinstance(original_node, cst.BaseExpression):
@@ -1040,6 +1119,12 @@ class RulePass(VisitorBasedCodemodCommand):
         for rule in self.expression:
             captures = m.extract(original_node, rule.matcher, metadata_resolver=self)
             if captures is None:
+                continue
+            if not all(
+                self.of_class(rule, captures[receiver])
+                for marker, receiver in rule.receivers.items()
+                if marker in captures
+            ):
                 continue
             built, imports = fill(
                 rule, captures, module_alias(captures.get("__contract__"))

@@ -685,7 +685,7 @@ export class PreviewProject {
     const heartbeat = (caller: string, session: string) => this.sessions.heartbeat(caller, session);
     const input = { feature: featureId, part: partId, revision: part.revision };
     let spec: FixWriteSpec;
-    if (part.kind === "mechanical") {
+    if (part.kind !== "behavioural") {
       const claimed = await claimRunnerWrites(deps, RUNNER);
       const found = claimed.status === "ok" ? claimed.writes.find((write) => write.spec.partId === partId) : undefined;
       if (found === undefined) throw new Error(`the check runner claimed no write of ${partId}`);
@@ -698,7 +698,7 @@ export class PreviewProject {
     const written = await writeFix({ repoPath: await this.#runner(), remote: this.#forkRemote(spec.fork) }, spec);
     if (written.status !== "written") throw new Error(`writing ${partId} into ${spec.fork}: ${written.status === "moved" ? `the fork moved to ${written.head}` : written.reason}`);
     const reported =
-      part.kind === "mechanical"
+      part.kind !== "behavioural"
         ? await runnerFixReport(deps, RUNNER, spec.writeId, { commit: written.commit })
         : await agentFixReport(deps, heartbeat, feature.personId, sessionId, { ...input, commit: written.commit });
     if (reported.status !== "ok") throw new Error(`report_fix_write ${partId}: ${reported.message}`);
@@ -1788,7 +1788,8 @@ async function featuresFixture(preview: PreviewProject): Promise<void> {
 }
 
 export interface LarderCommit {
-  readonly source: string;
+  /** Absent for Penguin's update of a fork and for a merge of main that lays nothing of its own. */
+  readonly source?: string;
   readonly tag?: string;
   readonly date: string;
   readonly message: string;
@@ -1798,6 +1799,8 @@ export interface LarderCommit {
   readonly merge?: string;
   readonly fix?: { readonly scope: string; readonly kind: string };
   readonly declares?: { readonly contracts?: Readonly<Record<string, readonly string[]>> };
+  /** Penguin's update of this fork from an originating change: the modules it copies from `tag` of feature `from`. */
+  readonly update?: { readonly from: string; readonly tag: string; readonly copies: readonly string[] };
 }
 export interface LarderFeature {
   readonly id: string;
@@ -1808,6 +1811,8 @@ export interface LarderFeature {
   readonly case?: number;
   /** The scopes the feature declares when it opens. */
   readonly area: readonly string[];
+  /** The rewrite rules an originating feature's agent declares with its merge plan. */
+  readonly rules?: readonly RewriteRule[];
   readonly commits: readonly LarderCommit[];
 }
 
@@ -1864,13 +1869,13 @@ async function casesOneToThree(preview: PreviewProject, larder: Larder): Promise
     .sort((a, b) => a.at - b.at);
 
   // The originating feature whose case runs: its commits' fixes written into other forks, by date.
+  // Penguin's update of a fork names its originating feature; a fix the originating agent wrote is
+  // authored by its person.
   const originAt = (at: number) => origins.find((origin) => Date.parse(origin.commits[0]?.date as string) <= at && at < promotionOf(origin));
+  const fixedBy = (origin: LarderFeature, feature: LarderFeature, commit: LarderCommit): boolean =>
+    feature.id !== origin.id && originAt(Date.parse(commit.date)) === origin && (commit.update?.from === origin.id || commit.author === origin.owner);
   const writtenFixes = (origin: LarderFeature) =>
-    data.features.flatMap((feature) =>
-      feature.commits
-        .filter((commit) => commit.author === origin.owner && feature.id !== origin.id && originAt(Date.parse(commit.date)) === origin)
-        .map((commit) => ({ feature, commit })),
-    );
+    data.features.flatMap((feature) => feature.commits.filter((commit) => fixedBy(origin, feature, commit)).map((commit) => ({ feature, commit })));
 
   /** The parts the originating agent proposes, from the fixture's own commits. */
   const partsOf = (origin: LarderFeature): unknown[] => {
@@ -1879,8 +1884,14 @@ async function casesOneToThree(preview: PreviewProject, larder: Larder): Promise
       .map((commit) => ({ place: { scope: commit.fix?.scope }, diff: { commit: sha(tagOf(origin, commit.tag as string)) } }));
     const featureParts = writtenFixes(origin).map(({ feature, commit }) => {
       const base = preview.features.get(feature.id)?.latestCheckpointSha as string;
+      // Penguin's update: the patch is the rules' rewrite of the fork's own files; the copied
+      // modules are Penguin's to copy at the write, never part of the patch.
+      const copies = (commit.update?.copies ?? []).map((path) => `:(exclude)${path}`);
       const paths = feature.area.flatMap((scope) => preview.scopeMap.scopes.get(scope)?.paths ?? []);
-      return { place: { feature: feature.id }, patch: { base, diff: preview.diff(base, sha(tagOf(feature, commit.tag as string)), paths) } };
+      const diff = preview.diff(base, sha(tagOf(feature, commit.tag as string)), [...paths, ...copies]);
+      // An update that only copies has nothing for the rules to rewrite: the place is a verify part,
+      // whose write copies the modules.
+      return diff === "" ? { place: { feature: feature.id }, verify: true } : { place: { feature: feature.id }, patch: { base, diff } };
     });
     return [...scopeParts, ...featureParts];
   };
@@ -1904,7 +1915,8 @@ async function casesOneToThree(preview: PreviewProject, larder: Larder): Promise
     const plan = (await preview.plan(origin.id)) as Plan;
     const tags = origin.commits.slice(0, index + 1).map((commit) => commit.tag as string).reverse();
     const at = origin.commits[index]?.tag as string;
-    for (const place of plan.parts.map((part) => part.place)) {
+    // A verify part asks for no review form.
+    for (const place of plan.parts.filter((part) => part.kind !== "verify").map((part) => part.place)) {
       if (place.kind !== "feature") continue;
       const reviewer = byId.get(place.feature) as LarderFeature;
       for (const scope of reviewer.area) {
@@ -1923,12 +1935,13 @@ async function casesOneToThree(preview: PreviewProject, larder: Larder): Promise
     const parts = partsOf(origin);
     const marker = markerAt(origin, index);
     const outcome = await preview.step(`propose_plan ${origin.id} at ${commit.tag}`, async () => {
-      const first = await preview.propose(origin.id, parts, [], [], marker);
+      const rules = origin.rules ?? [];
+      const first = await preview.propose(origin.id, parts, rules, [], marker);
       // An affected place with no fix of its own, such as loyalty in case 1, gets a verify part.
       const unclaimed = first.status === "missing" ? first.missing.filter((item) => item.code === "no_part") : [];
       if (first.status !== "missing" || unclaimed.length !== first.missing.length) return first;
       const verify = unclaimed.map((item) => ({ place: item.place?.kind === "scope" ? { scope: item.place.scope } : { feature: (item.place as { feature: string }).feature }, verify: true }));
-      return preview.propose(origin.id, [...parts, ...verify], [], [], marker);
+      return preview.propose(origin.id, [...parts, ...verify], rules, [], marker);
     });
     if (outcome.status !== "stored") throw new Error(`${origin.id} plan at ${commit.tag}: ${JSON.stringify(outcome).slice(0, 2_000)}`);
     preview.planOutcome = outcome;
@@ -2049,9 +2062,10 @@ async function casesOneToThree(preview: PreviewProject, larder: Larder): Promise
     } else if (index === 0 && feature.start === "base") {
       await open(feature);
       await preview.step(`checkpoint ${feature.id}`, () => preview.checkpoint(feature.id, tagOf(feature, tag)));
-    } else if (origins.some((origin) => origin.owner === commit.author)) {
-      // The fixture's commit is the approved fix of the originating plan's part on this fork. The
-      // originating agent writes that part's approved patch into the fork (fix_token), unchanged.
+    } else if (origins.some((origin) => fixedBy(origin, feature, commit))) {
+      // The fixture's commit is the approved fix of the originating plan's part on this fork. Penguin's
+      // check runner writes a mechanical or verify part's update (the rules' patch and the copied
+      // modules); the originating agent writes a behavioural part's patch (fix_token), unchanged.
       const origin = originAt(event.at) as LarderFeature;
       const part = (await preview.plan(origin.id))?.parts.find((each) => each.place.kind === "feature" && each.place.feature === feature.id);
       if (part?.approvalState !== "approved") throw new Error(`${feature.id} ${tag}: ${origin.id}'s part there is ${part?.approvalState ?? "missing"}, not approved`);
