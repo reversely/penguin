@@ -232,7 +232,7 @@ test("case 3: the dependency diff names the two other people's running features 
   assert.deepEqual(others, forksFixedBy(origin));
 });
 
-test("cases 1 to 3 each write their approved fixes, pass the block checks and reach promotion, in order", async () => {
+test("cases 1 to 3 each write their approved fixes, copy the originating modules into each affected fork before the land, pass the block checks and reach promotion, in order", async () => {
   const preview = await larder();
   // The retiring-calls check runs on a checkpoint, not on a block.
   const blockChecks = BLOCK_CHECK_NAMES.filter((name) => name !== "retiring");
@@ -252,6 +252,16 @@ test("cases 1 to 3 each write their approved fixes, pass the block checks and re
       assert.ok(writes.every((record) => record.payload["written_by"] === "penguin"), `${origin.id}'s updates are Penguin's`);
     }
     assert.equal(recordsOf(preview, origin.id, "land_requested").length, 1);
+    // Each affected fork holds the originating change's modules before the land is asked: a mechanical
+    // or verify part's own write copies them, and a behavioural part's copy write follows the agent's.
+    const ordered = preview.features.records(origin.id).map((stored) => JSON.parse(stored.file) as { type: string; payload: Record<string, unknown> });
+    const landAt = ordered.findIndex((record) => record.type === "land_requested");
+    const copiedInto = ordered.slice(0, landAt).filter((record) => record.type === "fix_write" && ((record.payload["copied"] as unknown[] | undefined)?.length ?? 0) > 0);
+    assert.deepEqual(
+      [...new Set(copiedInto.map((record) => record.payload["target_repo"]))].sort(),
+      featureParts.map((part) => `feature-${(part.place as { feature: string }).feature}`).sort(),
+      `${origin.id}'s affected forks each hold its modules before it lands`,
+    );
     const checked = recordsOf(preview, origin.id, "block_checked");
     assert.equal(checked.length, 1);
     assert.equal(checked[0]!.payload["passed"], true);

@@ -78,9 +78,14 @@ import {
   agentFixGrant,
   agentFixReport,
   claimRunnerWrites,
+  copiesBehind,
+  copyWriteOf,
   FixGrantStore,
+  openCopyWrites,
   openFixWrite,
   runnerFixReport,
+  writtenPart,
+  type FixGrant,
   type FixWriteDeps,
 } from "../../services/project-agent/src/fix-write.ts";
 import { buildIdentitiesPage } from "../../services/project-agent/src/identities-page.ts";
@@ -512,8 +517,12 @@ export class PreviewProject {
       sign: (record) => this.#sign(record),
       roundLimit: this.roundLimit,
       notify: this.#notify,
-      // An approved part on a running feature takes its place in its fork's order of writes.
-      approved: (featureId, plan, part) => openFixWrite(this.fixGrants, featureId, plan, part),
+      // An approved part on a running feature takes its place in its fork's order of writes. Each
+      // approval also opens the copy writes of the originating change's current modules (#179).
+      approved: (featureId, plan, part) => {
+        openFixWrite(this.fixGrants, featureId, plan, part);
+        openCopyWrites(this.fixGrants, featureId, plan, part);
+      },
       checks: {
         reviews: (featureId) => this.reviews.list(featureId),
         scopeMap: async () => this.scopeMap,
@@ -684,34 +693,87 @@ export class PreviewProject {
     const sessionId = this.sessionOf.get(featureId) as string;
     const heartbeat = (caller: string, session: string) => this.sessions.heartbeat(caller, session);
     const input = { feature: featureId, part: partId, revision: part.revision };
-    let spec: FixWriteSpec;
     if (part.kind !== "behavioural") {
-      const claimed = await claimRunnerWrites(deps, RUNNER);
-      const found = claimed.status === "ok" ? claimed.writes.find((write) => write.spec.partId === partId) : undefined;
-      if (found === undefined) throw new Error(`the check runner claimed no write of ${partId}`);
-      spec = found.spec;
-    } else {
-      const granted = await agentFixGrant(deps, heartbeat, feature.personId, sessionId, input);
-      if (granted.status !== "ok") throw new Error(`fix_token ${partId}: ${granted.message}`);
-      spec = granted.spec;
+      const [own] = await this.#runnerClaim((grant) => grant.partId === partId);
+      if (own === undefined) throw new Error(`the check runner claimed no write of ${partId}`);
+      return own.commit;
     }
-    const written = await writeFix({ repoPath: await this.#runner(), remote: this.#forkRemote(spec.fork) }, spec);
-    if (written.status !== "written") throw new Error(`writing ${partId} into ${spec.fork}: ${written.status === "moved" ? `the fork moved to ${written.head}` : written.reason}`);
-    const reported =
-      part.kind !== "behavioural"
-        ? await runnerFixReport(deps, RUNNER, spec.writeId, { commit: written.commit })
-        : await agentFixReport(deps, heartbeat, feature.personId, sessionId, { ...input, commit: written.commit });
+    const granted = await agentFixGrant(deps, heartbeat, feature.personId, sessionId, input);
+    if (granted.status !== "ok") throw new Error(`fix_token ${partId}: ${granted.message}`);
+    const written = await this.#pushFix(granted.spec);
+    const reported = await agentFixReport(deps, heartbeat, feature.personId, sessionId, { ...input, commit: written });
     if (reported.status !== "ok") throw new Error(`report_fix_write ${partId}: ${reported.message}`);
+    return written;
+  }
+
+  /**
+   * Writes `spec` into its fork with the bridge's `writeFix`; answers the commit pushed. A write that
+   * copies the originating change's modules reads them from the originating fork, as runner mode does.
+   */
+  async #pushFix(spec: FixWriteSpec): Promise<string> {
+    const repo = await this.#runner();
+    if (spec.copy !== undefined) await fetchRepoBranches(repo, () => localRemote(this.repo), `feature-${spec.feature}`);
+    const written = await writeFix({ repoPath: repo, remote: this.#forkRemote(spec.fork) }, spec);
+    if (written.status !== "written") throw new Error(`writing ${spec.partId} into ${spec.fork}: ${written.status === "moved" ? `the fork moved to ${written.head}` : written.reason}`);
     return written.commit;
   }
 
-  /** The originating agent asks to land its feature (`land_feature`): a signed `land_requested` record names the block run. */
-  async requestLand(featureId: string): Promise<void> {
+  /**
+   * One claim of the check runner's (`POST /fix-writes/claim`): it writes and reports each claimed
+   * write whose grant `pick` accepts, and releases the rest, which go back to their place in their
+   * fork's order for a later claim. The preview writes each fork's writes at the fixture's dates, so
+   * one claim does not write them all as a polling runner would. Answers each write kept.
+   */
+  async #runnerClaim(pick: (grant: FixGrant) => boolean): Promise<{ readonly grant: FixGrant; readonly commit: string }[]> {
+    const deps = this.fixWriteDeps();
+    const claimed = await claimRunnerWrites(deps, RUNNER);
+    if (claimed.status !== "ok") throw new Error(claimed.message);
+    const kept: { grant: FixGrant; commit: string }[] = [];
+    for (const { spec } of claimed.writes) {
+      const grant = this.fixGrants.byId(spec.writeId) as FixGrant;
+      if (!pick(grant)) {
+        this.fixGrants.release(grant.id, RUNNER.bridgeId);
+        continue;
+      }
+      const commit = await this.#pushFix(spec);
+      const reported = await runnerFixReport(deps, RUNNER, spec.writeId, { commit });
+      if (reported.status !== "ok") throw new Error(`report_fix_write ${grant.partId}: ${reported.message}`);
+      kept.push({ grant, commit });
+    }
+    return kept;
+  }
+
+  /** Whether a copy write waits to be made into feature `featureId`'s fork. */
+  copiesWaiting(featureId: string): boolean {
+    return this.fixGrants.openOn(featureId).some((grant) => copyWriteOf(grant) !== undefined);
+  }
+
+  /**
+   * The check runner claims the copy writes whose turn it is, into feature `target`'s fork or into
+   * any, and copies the originating change's current modules there (fix-write.ts `openCopyWrites`).
+   * A copy write whose fork already holds every module is withdrawn by the claim. Answers each copy
+   * kept, as `<part> into <feature>`.
+   */
+  async writeCopies(target?: string): Promise<string[]> {
+    this.tick();
+    const kept = await this.#runnerClaim((grant) => copyWriteOf(grant) !== undefined && (target === undefined || grant.targetFeatureId === target));
+    return kept.map(({ grant }) => `${writtenPart(grant)} into ${grant.targetFeatureId}`);
+  }
+
+  /**
+   * The originating agent asks to land its feature (`land_feature`): a signed `land_requested` record
+   * names the block run. Answers `copy_not_written` when an affected fork does not yet hold the
+   * originating change's current modules: Penguin opened that fork's copy write, and the agent asks
+   * again once it is written.
+   */
+  async requestLand(featureId: string): Promise<"asked" | "copy_not_written"> {
     this.tick();
     const feature = this.features.get(featureId);
     if (feature === undefined) throw new Error(`no feature ${featureId}`);
     const asked = await requestLand(this.landDeps(), feature.personId, this.sessionOf.get(featureId) as string, { feature: featureId });
+    if (asked.status === "rejected" && asked.reason === "copy_not_written") return "copy_not_written";
     if (asked.status === "rejected") throw new Error(`land ${featureId}: ${asked.message}`);
+    return "asked";
   }
 
   /** The promotion of the block `checkBlocks` held, once the next step lets it go. */
@@ -1143,6 +1205,8 @@ export class PreviewProject {
       branch: "main",
       queue: this.blockQueue,
       unconfirmedProtected: (id) => unconfirmedProtected(this.protectedChanges, id),
+      // A land waits until every affected fork holds the originating change's current modules (#179).
+      copiesBehind: (plan, targets) => copiesBehind(this.fixWriteDeps(), plan, targets),
       sign: (record) => this.#sign(record),
       notify: this.#notify,
     };
@@ -1458,6 +1522,12 @@ export class PreviewProject {
         const open = grant.state === "queued" || grant.state === "granted";
         return { ...grant, waitsFor: open ? this.fixGrants.waitsFor(grant) : null };
       },
+      // Another plan's writes that wait their turn in the feature's fork, a copy write by its part, as the ProjectAgent reads them.
+      incomingWrites: (featureId) =>
+        this.fixGrants
+          .openOn(featureId)
+          .filter((grant) => grant.featureId !== featureId && this.fixGrants.waitsFor(grant) !== null)
+          .map((grant) => ({ partId: writtenPart(grant), feature: grant.featureId, person: this.features.get(grant.featureId)?.personId ?? grant.featureId })),
       contract: (feature) => contractWork(this.splitDeps(), feature, this.scopeMap),
       protectedChanges: (featureId) => this.protectedChanges.ofFeature(featureId),
       split: (featureId) => this.splits.get(featureId),
@@ -2041,8 +2111,14 @@ async function casesOneToThree(preview: PreviewProject, larder: Larder): Promise
         await preview.step(`checkpoint ${feature.id} ${head.tag}`, () => preview.checkpoint(feature.id, tagOf(feature, head.tag as string)));
       }
       // The agent asks to land; the check runner checks the block on main and every running fork;
-      // the passing block's promotion moves main.
-      await preview.step(`land_feature ${feature.id}`, () => preview.requestLand(feature.id));
+      // the passing block's promotion moves main. While an affected fork lacks the originating
+      // change's current modules the land is refused: the check runner copies them, then the agent asks again.
+      let asked = await preview.step(`land_feature ${feature.id}`, () => preview.requestLand(feature.id));
+      while (asked === "copy_not_written") {
+        const copied = await preview.step(`check runner copies ${feature.id}'s modules into its affected forks`, () => preview.writeCopies());
+        if (copied.length === 0) throw new Error(`${feature.id}'s land waits for copies the check runner did not write`);
+        asked = await preview.step(`land_feature ${feature.id} again`, () => preview.requestLand(feature.id));
+      }
       await preview.step(`block checks of ${feature.id}`, () => preview.checkBlocks());
       await preview.step(`promote ${feature.id}`, async () => {
         await preview.promoteChecked();
@@ -2070,6 +2146,11 @@ async function casesOneToThree(preview: PreviewProject, larder: Larder): Promise
       const part = (await preview.plan(origin.id))?.parts.find((each) => each.place.kind === "feature" && each.place.feature === feature.id);
       if (part?.approvalState !== "approved") throw new Error(`${feature.id} ${tag}: ${origin.id}'s part there is ${part?.approvalState ?? "missing"}, not approved`);
       await preview.step(`fix_write ${part.partId} into ${feature.id}`, () => preview.writeApprovedFix(origin.id, part.partId));
+      // A behavioural part's copy write follows the agent's write into the fork: the check runner
+      // copies the originating change's current modules the fork imports.
+      if (preview.copiesWaiting(feature.id)) {
+        await preview.step(`check runner copies ${origin.id}'s modules into ${feature.id}`, () => preview.writeCopies(feature.id));
+      }
     } else if (commit.merge === "main") {
       await preview.step(`${feature.id} takes main`, () => preview.checkpoint(feature.id, tagOf(feature, tag)));
     } else {

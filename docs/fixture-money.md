@@ -528,14 +528,24 @@ date order up to the split's first commit:
   writes a mechanical or verify part through its claim: the rules' patch and the copied modules, a
   commit made with the bridge's `writeFix` on the fork head, then its report, which keeps a
   `fix_write` record. The originating agent writes a behavioural part's patch unchanged:
-  `fix_token`, `writeFix`, then `report_fix_write`. Later fixture
-  commits of that fork stand on the fixture's own copy of the fix, whose tree is the same. A
-  `merge` commit takes main.
+  `fix_token`, `writeFix`, then `report_fix_write`. Each approval also opens the copy writes of the
+  originating change's current modules, as the ProjectAgent does (`openCopyWrites`). After a
+  behavioural part's write, the step `check runner copies <origin>'s modules into <feature>` claims
+  that fork's copy write and copies the modules: in case 2 `shared/platform/dates.py` reaches
+  `holiday-closures` and `weekly-digest`. A runner write that copies modules first fetches the
+  originating fork, as runner mode does. A claim the seed does not write at that step goes back to
+  its place in the fork's order. Later fixture commits of that fork stand on the fixture's own copy
+  of the fix, whose tree is the same. A `merge` commit takes main.
 - At each promotion the feature reports its head as a checkpoint and lands in three steps:
   `land_feature` (a `land_requested` record), `block checks of` (the check runner checks the block
   on main and every running fork: overlap, merge, dependency diff, lint, format, type check and
   tests, one `block_checked` record), and `promote` (main moves to the checkpoint, a `promotion`
-  record). Lena's promotion stacking lands the same way.
+  record). Lena's promotion stacking lands the same way. The land checks the copies as the Worker
+  does (`copiesBehind`). While an affected fork lacks the originating change's current modules,
+  `land_feature` answers `copy_not_written`. The step `check runner copies <feature>'s modules into
+  its affected forks` then writes the copy writes Penguin opened, and `land_feature <feature> again`
+  asks once more. In cases 1 to 3 every fork holds its modules before the first ask: the mechanical
+  and verify parts of cases 1 and 3 copy them in their own writes, so no land is refused.
 
 In step mode (`node scripts/preview/dashboard.ts --example money-minor-units --step`) each of these is
 its own step in `GET /preview/steps`, and each case's feature page reaches its last stage: Promoted
