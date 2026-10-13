@@ -221,21 +221,27 @@ event carries and links no identities. Analytics counts daily active shoppers wi
 
 | Tag suffix | Feature | Author | Change |
 |---|---|---|---|
-| `checkpoint` | `accounts-merge` | Priya | A `login` links its device to the user. A shared verified email links identities. `Shopper` keeps attributes per identity (`by_identity`), so its stored shape changes. The plan is first proposed here, with no backfill |
+| `checkpoint` | `accounts-merge` | Priya | A `login` links its device to the user. A shared verified email links identities. `Shopper` keeps attributes per identity (`by_identity`), so its stored shape changes. `accounts/shoppers.py` exports the two rules the readers need: `shopper_id_cutover()` with `counted_as()` for counts, `consented()` with `withdrawn()` for consent. The plan is first proposed here, with no backfill |
 | `backfill` | `accounts-merge` | Priya | `accounts/backfill.py::backfill_shopper` moves a stored record's attributes under its own identity. The plan is proposed again here and names the backfill as its store marker |
-| `fix-analytics` | `accounts-merge` | Priya | `daily_active_users` counts identities before a cutover day and shoppers from it on |
-| `fix-messaging` | `accounts-merge` | Priya | `is_subscribed` reads each linked identity's latest consent |
+| `fix-analytics` | `accounts-merge` | Priya | `daily_active_users` calls `shopper_id_cutover()` and `counted_as()`: identities before the cutover day, shoppers from it on |
+| `fix-messaging` | `accounts-merge` | Priya | `is_subscribed` calls `consented()`, which reads each linked identity's latest consent |
 | `limit-five` | `accounts-merge` | Priya | A login links a device to at most five user identities |
 | `limit-one` | `accounts-merge` | Priya | The limit lowered to one |
 | `checkpoint` | `cohort-ltv` | Jun | The retention dashboard (`analytics/retention.py`) beside lifetime value |
-| `cutover` | `cohort-ltv` | Priya | The dashboard counts shoppers by `shopper_id` from a cutover day on |
+| `cutover` | `cohort-ltv` | Priya | The dashboard's cohorts call `shopper_id_cutover()` and `counted_as()`, as `daily_active_users` does |
 | `checkpoint` | `weekly-digest` | Sam | The digest's audience (`messaging/audience.py`) and send times (`messaging/digest_schedule.py`) |
-| `consent` | `weekly-digest` | Priya | The audience leaves out a shopper with any unsubscribed identity |
+| `consent` | `weekly-digest` | Priya | The audience suppresses an address with `withdrawn()`, so an unsubscribe on any identity of a shopper holds |
 | `take-main` | `weekly-digest` | Sam | Merges main after case 1, which holds the per-identity `Shopper` and its backfill |
 
 `fix-analytics` and `fix-messaging` are the fixes for code on main of the plan's analytics and
 messaging parts. They follow the backfill, so the plan proposed at the backfill keeps Sam's parts
 in the plan with the store marker named, and Penguin approves them.
+
+Each fix imports its rule from Priya's change to `accounts/` and calls it where the old code read
+the shopper map. No fix adds a rule of its own. `cutover` and `consent` import from
+`accounts/shoppers.py`, which Jun's and Sam's forks hold only once merged with Priya's change, so
+their tests run on the merged trees below. Each fork takes main when it next merges it: Sam's at
+`take-main`, Jun's at its migration.
 
 | Merged tree | Fails |
 |---|---|
@@ -294,11 +300,15 @@ response.
 
 | Tag suffix | Feature | Author | Change |
 |---|---|---|---|
-| `checkpoint` | `dependency-audit` | Hugo | Adds `vendor/wire_v2/` (wire 2.0.0, which retries a timed-out request up to 2 more times) and imports it in `shared/platform/http.py`. A flag's rollout is read when the flag service drops one request. The plan is proposed here |
+| `checkpoint` | `dependency-audit` | Hugo | Adds `vendor/wire_v2/` (wire 2.0.0, which retries a timed-out request up to 2 more times) and imports it in `shared/platform/http.py`, which also exports `idempotency_key(kind, reference)`. A flag's rollout is read when the flag service drops one request. The plan is proposed here |
 | `checkpoint` | `instant-payouts` | Kofi | `payouts/send.py` sends an instant payout through the client |
-| `keys` | `instant-payouts` | Hugo | Each payout carries `Idempotency-Key: payout-<id>` |
+| `keys` | `instant-payouts` | Hugo | Each payout carries `Idempotency-Key: payout-<id>`, from `idempotency_key("payout", payout_id)` |
 | `checkpoint` | `tip-jar` | Priya | `checkout/tip_charge.py` charges a tip through the client |
-| `keys` | `tip-jar` | Hugo | Each tip charge carries `Idempotency-Key: tip-<order id>` |
+| `keys` | `tip-jar` | Hugo | Each tip charge carries `Idempotency-Key: tip-<order id>`, from `idempotency_key("tip", order_id)` |
+
+Both `keys` fixes import `idempotency_key()` from Hugo's `shared/platform/http.py` and pass it as
+the request's header. No fix adds a rule of its own. Kofi's and Priya's forks hold the function only
+once merged with Hugo's change, so their tests run on the merged trees below.
 
 | Merged tree | Fails |
 |---|---|
@@ -312,6 +322,43 @@ The dependency diff from `structured-logs` to `dependency-audit-checkpoint` repo
 the upgrade alone shows a second movement for the timed-out payout and tip. A
 `protected_difference` goes to Kofi and to Priya. On the trial trees with the keys no example differs
 and the reviews `reviews/case3-payouts.json` and `reviews/case3-checkout.json` are accepted.
+
+### Local runs of the fixes
+
+Every fix of cases 1 and 3 is checked by running the fixture's own pytest files on its merged tree,
+through this repository's uv environment. The originating change's head is merged onto each place
+it fixes, as one block: every place is tried on the same head. Main moves to that head once. Each
+run builds Larder, merges with `git merge-tree --write-tree`, extracts the tree and runs pytest on
+all of it:
+
+```sh
+uv run python examples/money-minor-units/build.py /tmp/larder
+tree=$(git -C /tmp/larder merge-tree --write-tree feature-accounts-merge-limit-one feature-cohort-ltv-cutover | head -1)
+mkdir /tmp/merged && git -C /tmp/larder archive "$tree" | tar -x -C /tmp/merged
+(cd /tmp/merged && uv run --project "$OLDPWD" python -m pytest -q)
+```
+
+The replay column calls `payouts_sent("po-2", "s-1", 480, lost_responses=1)` or
+`tip_charges("o-3", "cus_7", 62, lost_responses=1)` on the same tree. The runs below were made on
+an Apple silicon laptop with Python 3.13; each pytest run took under half a second.
+
+| Originating commit | Merged onto | pytest | Replay |
+|---|---|---|---|
+| `accounts-merge-checkpoint` | `cohort-ltv-checkpoint` | 2 failed, 89 passed: `test_shared_device_split`, `test_dau_stable` | |
+| `accounts-merge-checkpoint` | `weekly-digest-checkpoint` | 1 failed, 94 passed: `test_unsubscribe_survives` | |
+| `accounts-merge-fix-analytics` | its own tree | 88 passed | |
+| `accounts-merge-fix-messaging` | its own tree | 89 passed | |
+| `accounts-merge-limit-five` | `cohort-ltv-cutover` | 1 failed, 96 passed: `test_shared_device_split` | |
+| `accounts-merge-limit-one` | `cohort-ltv-cutover` | 97 passed | |
+| `accounts-merge-limit-one` | `weekly-digest-consent` | 102 passed | |
+| `dependency-audit-checkpoint` | `instant-payouts-checkpoint` | 1 failed, 101 passed: `test_timed_out_payout_is_paid_once` | 2 payouts |
+| `dependency-audit-checkpoint` | `tip-jar-checkpoint` | 1 failed, 102 passed: `test_timed_out_tip_is_charged_once` | 2 charges |
+| `dependency-audit-checkpoint` | `instant-payouts-keys` | 102 passed | 1 payout |
+| `dependency-audit-checkpoint` | `tip-jar-keys` | 103 passed | 1 charge |
+
+Two running forks are never merged with each other: each declares its own contracts in
+`penguin/scopes.json` and `penguin/invariants.json`, so `instant-payouts-keys` and `tip-jar-keys`
+conflict there. `tests/test_fixtures.py` checks the failing tests of each row on every slow run.
 
 ### Invariants of cases 1 to 3
 
@@ -461,8 +508,9 @@ The run on gn100:
 | 3 | One plan at `checkpoint` | none | `instant-payouts` and `tip-jar` |
 
 Jun approves the analytics part for code on main in person. Jun's analytics forms name the cutover
-marker `analytics/retention.py::shopper_id_cutover`, which only Jun's fork holds, so the trial of
-analytics' code on main refuses the form with `evidence_not_found`. The cohort report part is tried
+marker `analytics/retention.py::retention_dashboard`, the dashboard that calls Priya's
+`shopper_id_cutover()`. Only Jun's fork holds it, so the trial of analytics' code on main refuses
+the form with `evidence_not_found`. The cohort report part is tried
 on Priya's limit of one (`newestRevision` in `part-trial.ts`), its form holds and Penguin approves
 it. In case 2, `japan-launch` fails its yen test on its own head, so the facts run leaves it out
 and the plan has no part there, and the block checks of cases 2 and 3 do not count it. In case 3 the agent's `check` reports the dependency diff with the

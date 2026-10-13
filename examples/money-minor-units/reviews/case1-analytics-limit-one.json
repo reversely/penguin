@@ -6,5 +6,5 @@
     {"invariant": "published-day-counts-stable", "verdict": "holds", "evidence": ["analytics/activity.py::daily_active_users"], "storedData": ""}
   ],
   "riskyInputs": [],
-  "storedDataMarker": {"kind": "cutover", "evidence": "analytics/retention.py::shopper_id_cutover"}
+  "storedDataMarker": {"kind": "cutover", "evidence": "analytics/retention.py::retention_dashboard"}
 }

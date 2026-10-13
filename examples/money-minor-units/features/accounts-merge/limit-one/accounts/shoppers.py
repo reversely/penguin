@@ -15,8 +15,16 @@ Two merge rules link identities:
 A shopper's ``shopper_id`` is the key of the shopper's first-observed identity, so a shopper with one
 identity keeps that identity's key. When two shoppers merge, the merged shopper keeps the latest
 value of each attribute.
+
+Code that read shoppers before the merge rules calls two rules from this module:
+
+- ``shopper_id_cutover()`` and ``counted_as()``: a metric counts identities before the first day the
+  shopper map links any. It counts shoppers from that day on, so a published day keeps its count.
+- ``consented()`` and ``withdrawn()``: a consent such as ``email_subscribed`` withdrawn on one
+  identity stays withdrawn after another identity of the same shopper gives it.
 """
 
+from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 
@@ -164,3 +172,53 @@ class ShopperMap:
         self._parent[merge] = keep
         self._shoppers[keep].absorb(self._shoppers.pop(merge))
         return keep
+
+
+def withdrawn(shopper: Shopper, name: str) -> bool:
+    """Return whether any identity of the shopper last set the consent ``name`` to False.
+
+    ``get`` returns the latest value across the identities, so a later consent on one identity
+    hides a withdrawal on another. This reads each identity's own latest value.
+    """
+    return any(
+        values[name][1] is False
+        for values in shopper.by_identity.values()
+        if name in values
+    )
+
+
+def consented(shopper: Shopper, name: str) -> bool:
+    """Return whether the shopper's latest ``name`` is True and no identity withdrew it."""
+    return shopper.get(name) is True and not withdrawn(shopper, name)
+
+
+def shopper_id_cutover(events: Iterable[Event]) -> str | None:
+    """Return the first day on which the shopper map links an event to another identity.
+
+    The map grows one day at a time, so an event on a later day cannot move the cutover earlier.
+    """
+    by_day: dict[str, list[Event]] = defaultdict(list)
+    for event in sorted(events, key=lambda e: e.ts):
+        by_day[event.day].append(event)
+
+    shopper_map = ShopperMap()
+    # One event per identity is enough: every event of an identity resolves to the same shopper.
+    seen: dict[str, Event] = {}
+    for day in sorted(by_day):
+        for event in by_day[day]:
+            shopper_map.observe(event)
+            seen.setdefault(identity_key(event), event)
+        if any(shopper_map.resolve(event) != key for key, event in seen.items()):
+            return day
+    return None
+
+
+def counted_as(event: Event, shopper_map: ShopperMap, cutover: str | None) -> str:
+    """Return the key a metric counts ``event`` under.
+
+    Before ``cutover`` it is the event's own identity, as before the shopper map linked any. From
+    the cutover day on it is the event's ``shopper_id``.
+    """
+    if cutover is not None and event.day >= cutover:
+        return shopper_map.resolve(event)
+    return identity_key(event)

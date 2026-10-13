@@ -1,21 +1,12 @@
 """Sending an instant payout to a store through the payment processor."""
 
-from shared.platform.http import Client, Timeout
+from shared.platform.http import Client, Timeout, idempotency_key
 
 SENT = "sent"
 REFUSED = "refused"
 # The processor did not answer in time. The payout may or may not have gone out; a later
 # reconciliation against the processor's records settles it.
 UNCONFIRMED = "unconfirmed"
-
-
-def idempotency_key(payout_id: str) -> str:
-    """The key that makes the processor send payout ``payout_id`` at most once.
-
-    The key depends only on the payout, so a retried request carries the same key and the
-    processor returns the first payout.
-    """
-    return f"payout-{payout_id}"
 
 
 def send_instant_payout(
@@ -25,7 +16,9 @@ def send_instant_payout(
     body = {"reference": payout_id, "store_id": store_id, "amount_cents": cents}
     try:
         response = client.post(
-            "/v1/payouts", body, {"Idempotency-Key": idempotency_key(payout_id)}
+            "/v1/payouts",
+            body,
+            {"Idempotency-Key": idempotency_key("payout", payout_id)},
         )
     except Timeout:
         return UNCONFIRMED
