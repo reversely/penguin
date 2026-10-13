@@ -86,7 +86,7 @@ import {
 import { buildIdentitiesPage } from "../../services/project-agent/src/identities-page.ts";
 import { IdentityStore } from "../../services/project-agent/src/identity-store.ts";
 import { buildInbox } from "../../services/project-agent/src/inbox-page.ts";
-import { InboxStore } from "../../services/project-agent/src/inbox-store.ts";
+import { InboxStore, parseOverlapRef } from "../../services/project-agent/src/inbox-store.ts";
 import { IssueIndex, type BridgeCaller, type SqlDatabase } from "../../services/project-agent/src/issue-index.ts";
 import { approveOverlap, checkOverlap, OverlapStore, type OverlapDeps } from "../../services/project-agent/src/overlap-lock.ts";
 import { OwnerForkStore } from "../../services/project-agent/src/owner-forks.ts";
@@ -474,7 +474,6 @@ export class PreviewProject {
       overlaps: this.overlaps,
       scopeMap: async () => this.scopeMap,
       sign: (record) => this.#sign(record),
-      policy: () => this.policyInForce(),
       listener: {
         lockOpened: ({ featureId, blockedFeatureId, personId }) => {
           this.inbox.overlapRequested(personId, featureId, blockedFeatureId);
@@ -482,6 +481,10 @@ export class PreviewProject {
         },
         lockSettled: ({ featureId, blockedFeatureId, personId }) => {
           this.inbox.overlapSettled(personId, featureId, blockedFeatureId);
+          this.#notify(personId);
+        },
+        startTold: ({ featureId, blockedFeatureId, personId }) => {
+          this.inbox.overlapTold(personId, featureId, blockedFeatureId);
           this.#notify(personId);
         },
       },
@@ -884,14 +887,6 @@ export class PreviewProject {
     }
     const confirmed = await confirmProtectedChange(this.protectedDeps(), person, { feature: featureId, owner: person, checkpoint: change.checkpoint });
     if (confirmed.status !== "ok") throw new Error(`confirm ${featureId} for ${person}: ${confirmed.message}`);
-  }
-
-  /** The person who owns `blocked`'s covering feature approves its start. */
-  async approveStart(person: string, feature: string, blocked: string): Promise<void> {
-    this.tick();
-    if (this.gate !== undefined) return this.gate.decision({ person, routes: ["/api/overlaps/approve"], fields: { feature, blockedFeature: blocked } });
-    const approved = await approveOverlap(this.overlapDeps(), person, feature, blocked);
-    if (approved.status !== "ok") throw new Error(`approve ${blocked}: ${approved.message}`);
   }
 
   /** The feature's agent asks `whats_near` about its own scopes. */
@@ -1564,11 +1559,14 @@ export class PreviewProject {
       },
       overlapRequests: async (owner) => ({
         requests: this.inbox.items(owner).flatMap((item) => {
-          if (item.reason !== "overlap") return [];
-          const lock = this.overlaps.openFor(owner).find((each) => item.issueId.endsWith(`${each.featureId}/${each.blockedFeatureId}`));
+          const told = item.reason === "overlap_started";
+          if (item.reason !== "overlap" && !told) return [];
+          const ref = parseOverlapRef(item.issueId);
+          const held = ref === undefined ? undefined : this.overlaps.get(ref.featureId, ref.blockedFeatureId);
+          const lock = held?.state === (told ? "approved" : "open") ? held : undefined;
           const blocked = lock === undefined ? undefined : this.features.get(lock.blockedFeatureId);
           if (lock === undefined || blocked === undefined) return [];
-          return [{ feature: lock.featureId, blockedFeature: lock.blockedFeatureId, blockedPerson: blocked.personId, overlap: lock.overlap, read: item.read, raisedAt: item.raisedAt }];
+          return [{ feature: lock.featureId, blockedFeature: lock.blockedFeatureId, blockedPerson: blocked.personId, overlap: lock.overlap, told, read: item.read, raisedAt: item.raisedAt }];
         }),
       }),
       approveOverlap: async (owner, featureId, blockedFeatureId) => {
@@ -1984,12 +1982,12 @@ async function casesOneToThree(preview: PreviewProject, larder: Larder): Promise
     preview.rounds.push({ plan: (await preview.plan(origin.id)) as Plan, toOriginator, raised, routings });
   };
 
-  /** The feature opens; each person whose running feature covers its area approves its start. */
+  /**
+   * The feature opens. Penguin lets it start beside every running feature that covers its area and
+   * tells each one's person (overlap-lock.ts, #177): no one is asked.
+   */
   const open = async (feature: LarderFeature): Promise<void> => {
     await preview.step(`open ${feature.id}`, () => preview.open(builder(feature), feature.id, { scopes: feature.area }));
-    for (const lock of preview.overlaps.locksOn(feature.id).filter((each) => each.state === "open")) {
-      await preview.step(`approve start of ${feature.id} beside ${lock.featureId}`, () => preview.approveStart(lock.personId, lock.featureId, feature.id));
-    }
   };
 
   const originCommit = async (origin: LarderFeature, commit: LarderCommit, index: number): Promise<void> => {
@@ -2101,11 +2099,8 @@ async function larderCases(preview: PreviewProject): Promise<void> {
 async function moneyMinorUnits(preview: PreviewProject, { data: larder, byId, builder, steward, tagOf, sha }: Larder): Promise<void> {
   const origin = byId.get(larder.split.feature) as LarderFeature;
 
-  // Ines opens the split feature; each running feature in its area waits for its person's approval.
+  // Ines opens the split feature; Penguin lets it start and tells the person of each running feature in its area.
   await preview.step(`open ${origin.id}`, () => preview.open(builder(origin), origin.id, { scopes: origin.area }));
-  for (const lock of preview.overlaps.locksOn(origin.id)) {
-    await preview.step(`approve start of ${origin.id} beside ${lock.featureId}`, () => preview.approveStart(lock.personId, lock.featureId, origin.id));
-  }
   const expand = origin.commits[0]?.tag as string;
   await preview.step(`checkpoint ${origin.id} ${expand}`, () => preview.checkpoint(origin.id, tagOf(origin, expand)));
   await preview.step("whats_near", () => preview.whatsNear(origin.id));
@@ -2180,7 +2175,7 @@ async function moneyMinorUnits(preview: PreviewProject, { data: larder, byId, bu
     }
     await migrationTasksSettled(preview.migrationDeps());
     for (const change of preview.protectedChanges.ofFeature(block.id).filter((row) => row.state === "pending")) {
-      await preview.step(`confirm ${block.id}'s protected lines as ${change.ownerId}`, () => preview.confirmProtected(change.ownerId, block.id));
+      await preview.step(`confirm ${block.id}'s custom path rule lines as ${change.ownerId}`, () => preview.confirmProtected(change.ownerId, block.id));
     }
     await preview.step(`land ${block.id}`, async () => {
       await preview.landPenguinFeatures();

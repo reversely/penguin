@@ -281,10 +281,10 @@ def check_scopes(
             check.fail(f"{at}.paths", "must list at least one path")
         scopes[scope["id"]] = scope
         scope_paths[scope["id"]] = [p for p in paths if p]
-        for p in scope.get("protected_paths", []):
-            path = check.path(p, f"{at}.protected_paths")
+        for p in scope.get("custom_paths", []):
+            path = check.path(p, f"{at}.custom_paths")
             if path and not inside(path, scope_paths[scope["id"]]):
-                check.fail(f"{at}.protected_paths", f"{p!r} is outside the scope")
+                check.fail(f"{at}.custom_paths", f"{p!r} is outside the scope")
     for scope_id, scope in scopes.items():
         for provider in scope.get("depends_on", []):
             if provider not in scopes or provider == scope_id:
@@ -564,11 +564,11 @@ def scopes_file(larder: Larder, declared: Declares = NOTHING_DECLARED) -> dict:
                 for provider in scope.get("depends_on", [])
             ],
         }
-        if scope.get("protected_paths"):
-            entry["protected_paths"] = scope["protected_paths"]
+        if scope.get("custom_paths"):
+            entry["custom_paths"] = scope["custom_paths"]
         scopes.append(entry)
     return {
-        "$comment": "Scope map of this repository, generated from larder.json by build.py. Format as in the other fixtures, with 'team', 'dri' and 'fallback' in place of 'owner' (docs/fixture.md, Teams), plus 'contracts' (each scope's public symbols as path::symbol) and 'protected_paths' (files whose DRI confirms the final lines of any change).",
+        "$comment": "Scope map of this repository, generated from larder.json by build.py. Format as in the other fixtures, with 'team', 'dri' and 'fallback' in place of 'owner' (docs/fixture.md, Teams), plus 'contracts' (each scope's public symbols as path::symbol) and 'custom_paths' (custom path rules: files whose DRI confirms the final lines of any change).",
         "scopes": scopes,
     }
 

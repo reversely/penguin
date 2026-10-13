@@ -1978,17 +1978,21 @@ export class ProjectAgent extends Agent {
     return this.#featuresChanging(this.#lockStep(() => approveOverlap(this.#overlapDeps(repos), caller, featureId, blockedFeatureId)));
   }
 
-  /** The dashboard's overlapping starts waiting for `caller`: their overlap inbox items with each lock. */
+  /**
+   * The dashboard's overlapping starts for `caller`: each start that waits for them and each start
+   * Penguin let open beside their feature, from their overlap inbox items with each lock.
+   */
   overlapRequests(caller: string): OverlapRequests {
     const overlaps = this.#overlapStore();
     return {
       requests: this.#inboxStore()
         .items(caller)
         .flatMap((item) => {
-          const ref = item.reason === "overlap" ? parseOverlapRef(item.issueId) : undefined;
+          const told = item.reason === "overlap_started";
+          const ref = item.reason === "overlap" || told ? parseOverlapRef(item.issueId) : undefined;
           const held = ref === undefined ? undefined : overlaps.get(ref.featureId, ref.blockedFeatureId);
           const blocked = held === undefined ? undefined : this.#featureStore().get(held.blockedFeatureId);
-          if (held === undefined || held.state !== "open" || blocked === undefined) return [];
+          if (held === undefined || held.state !== (told ? "approved" : "open") || blocked === undefined) return [];
           return [
             {
               feature: held.featureId,
@@ -2000,6 +2004,7 @@ export class ProjectAgent extends Agent {
                 contracts: [...held.overlap.contracts],
                 omittedPaths: held.overlap.omittedPaths,
               },
+              told,
               read: item.read,
               raisedAt: item.raisedAt,
             },
@@ -2032,7 +2037,6 @@ export class ProjectAgent extends Agent {
       overlaps: this.#overlapStore(),
       scopeMap: () => this.#scopeMap(repos),
       sign: async (record) => signFeatureRecord(record, (await this.#loadServiceKey()).privateKey),
-      policy: () => this.#policyInForce(),
       listener: {
         lockOpened: ({ featureId, blockedFeatureId, personId }) => {
           this.#inboxStore().overlapRequested(personId, featureId, blockedFeatureId);
@@ -2040,6 +2044,10 @@ export class ProjectAgent extends Agent {
         },
         lockSettled: ({ featureId, blockedFeatureId, personId }) => {
           this.#inboxStore().overlapSettled(personId, featureId, blockedFeatureId);
+          notify(personId);
+        },
+        startTold: ({ featureId, blockedFeatureId, personId }) => {
+          this.#inboxStore().overlapTold(personId, featureId, blockedFeatureId);
           notify(personId);
         },
       },

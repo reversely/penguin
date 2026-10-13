@@ -800,7 +800,7 @@ function reasonWords(reason: PartRoutingReason): string {
     case "protected_difference":
       return `${reason.differing} inputs of ${reason.contract} differ on protected ${reason.invariant}`;
     case "protected_path":
-      return `${reason.file} lies under ${reason.owner}'s protected ${reason.path}`;
+      return `${reason.file} lies under ${reason.owner}'s custom path rule ${reason.path}`;
     case "outside_place":
       return `${reason.file ?? "a file"} lies outside the part's scopes`;
     case "stored_data_unmarked":

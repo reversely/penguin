@@ -1,8 +1,8 @@
 // The four use cases of PRD 0.5 section 1, run in order on Larder through Penguin's own code with real
 // git and pytest (scripts/preview/seed.ts). Larder is built once; case 1, 2, 3 and then 4 run on its
 // one main. Each test checks the outcome the PRD states: who is asked, what Penguin approves itself
-// and who is only told. Case 1's plan and each case's start are also routed under the sandbox's review
-// policy (#175). Names and numbers come from the fixture.
+// and who is only told. Case 1's plan is also routed under each stage of the review policy (#175,
+// #177). Each case's start opens with the owners told. Names and numbers come from the fixture.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -12,14 +12,13 @@ import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { DatabaseSync } from "node:sqlite";
-
 import {
   BLOCK_CHECK_NAMES,
   PENGUIN_APPROVER,
   policyInForce,
   policyRoute,
   PRESET_POLICIES,
+  REVIEW_PRESETS,
   VALIDATION_KIND_LABEL,
   VALIDATION_KINDS,
   type FeaturePage,
@@ -29,10 +28,6 @@ import {
   type ReviewPolicy,
 } from "@penguin/protocol";
 import { build } from "esbuild";
-
-import { FeatureStore, signFeatureRecord } from "../../services/project-agent/src/feature-store.ts";
-import type { SqlDatabase } from "../../services/project-agent/src/issue-index.ts";
-import { checkOverlap, OverlapStore, type OverlapDeps } from "../../services/project-agent/src/overlap-lock.ts";
 
 import { seed, type LarderFeature, type MoneyLarder, type PreviewProject } from "../../scripts/preview/seed.ts";
 
@@ -117,7 +112,7 @@ test("case 1, shopper accounts: Sam's parts wait on Priya until the backfill; Ju
   assert.equal(preview.features.get(origin.id)?.state, "landed");
 });
 
-test("case 1 under each review policy: Throwaway lets Penguin approve Jun's part, Dev waits for Jun, Production waits on every part", async () => {
+test("case 1 under each stage: Local development lets Penguin approve Jun's part, Central development and Pre-production wait for Jun, Production waits on every part", async () => {
   const preview = await larder();
   const origin = originOf(1);
   const rounds = preview.rounds.filter((round) => round.plan.featureId === origin.id);
@@ -127,63 +122,43 @@ test("case 1 under each review policy: Throwaway lets Penguin approve Jun's part
   const onMain = backfill!.plan.parts.find((part) => part.owner === jun && part.place.kind === "scope") as PlanPart;
   const inFork = backfill!.plan.parts.find((part) => part.owner === jun && part.place.kind === "feature") as PlanPart;
   const route = (policy: ReviewPolicy, part: PlanPart) => policyRoute(policyInForce(policy, false), backfill!.routings.get(part.partId) as PartRouting);
-  const { throwaway, dev, production } = PRESET_POLICIES;
+  const { local_development: local, central_development: central, pre_production: preProduction, production } = PRESET_POLICIES;
 
   // The review of analytics reports kiosk-shoppers-separate not holding (Logic) and its side-by-side
   // run differs on it (Data matching).
-  assert.deepEqual(route(throwaway, onMain), { ...route(throwaway, onMain), decider: "penguin", rule: "set_to_penguin", types: ["logic", "data_matching"] }, "Throwaway: Penguin approves and tells Jun");
-  assert.deepEqual([route(dev, onMain).decider, route(dev, onMain).types], ["person", ["logic", "data_matching"]], "Dev: it waits for Jun");
+  assert.deepEqual(route(local, onMain), { ...route(local, onMain), decider: "penguin", rule: "set_to_penguin", types: ["logic", "data_matching"] }, "Local development: Penguin approves and tells Jun");
+  assert.deepEqual([route(central, onMain).decider, route(central, onMain).types], ["person", ["logic", "data_matching"]], "Central development: it waits for Jun");
   assert.ok(backfill!.raised.includes(onMain.partId), "today's result: Jun decides it");
-  const dataToPenguin: ReviewPolicy = { preset: "dev", rows: { ...dev.rows, data_matching: "penguin" } };
+  const dataToPenguin: ReviewPolicy = { preset: "central_development", rows: { ...central.rows, data_matching: "penguin" } };
   assert.deepEqual([route(dataToPenguin, onMain).decider, route(dataToPenguin, onMain).types], ["person", ["logic"]], "Logic still flags it");
-  assert.equal(route({ preset: "dev", rows: { ...dataToPenguin.rows, logic: "penguin" } }, onMain).decider, "penguin", "with no flagged type set to person, Penguin approves");
+  assert.equal(route({ preset: "central_development", rows: { ...dataToPenguin.rows, logic: "penguin" } }, onMain).decider, "penguin", "with no flagged type set to person, Penguin approves");
+  assert.deepEqual([route(preProduction, onMain).decider, route(preProduction, onMain).types], ["person", ["logic", "data_matching"]], "Pre-production: it waits for Jun");
+  for (const part of backfill!.plan.parts) assert.equal(route(preProduction, part).decider, route(central, part).decider, `Pre-production routes plan part ${part.partId} as Central development does`);
   assert.ok(backfill!.plan.parts.every((part) => route(production, part).decider === "person"), "Production: every part waits");
-  for (const policy of [throwaway, dev, production]) assert.equal(route(policy, inFork).rule, "tests", "the cohort report part's failing test goes back under every policy");
+  for (const preset of REVIEW_PRESETS) assert.equal(route(PRESET_POLICIES[preset], inFork).rule, "tests", `the cohort report part's failing test goes back under ${preset}`);
 
-  // With no policy set, Dev decides every round of cases 1 to 3 as before: Penguin approves exactly the parts with no reason.
+  // With no policy set, Central development decides every round of cases 1 to 3 as before: Penguin approves exactly the parts with no reason.
   for (const round of [...rounds, ...preview.rounds.filter((each) => each.plan.featureId !== origin.id)]) {
     for (const [partId, routing] of round.routings) assert.equal(policyRoute(policyInForce(undefined, false), routing).decider === "penguin", !routing.inPerson, partId);
   }
 });
 
-test("cases 1 to 3 under Throwaway start with no owner asked; under Dev the same starts ask the people the fixture asks", async () => {
+test("cases 1 to 3 start with no owner asked: Penguin approves each overlapping start and tells the owner of each running feature", async () => {
   const preview = await larder();
-  const promotedAt = (id: string) => Date.parse(LARDER.promotions.find((promotion) => promotion.feature === id)?.date ?? "9999-01-01T00:00:00Z");
+  let told = 0;
   for (const useCase of [1, 2, 3]) {
     const origin = originOf(useCase);
-    const start = Date.parse(origin.commits[0]?.date as string);
-    const running = LARDER.features.filter((feature) => feature.id !== origin.id && Date.parse(feature.commits[0]?.date as string) < start && promotedAt(feature.id) > start);
-    const recorded = recordsOf(preview, origin.id, "approve_overlap").map((record) => record.payload["approved_by"]).sort();
-    for (const policy of [PRESET_POLICIES.throwaway, PRESET_POLICIES.dev]) {
-      const keys = (await crypto.subtle.generateKey("Ed25519", true, ["sign", "verify"])) as CryptoKeyPair;
-      const memory = new DatabaseSync(":memory:");
-      const sql: SqlDatabase = { exec: (query, ...bindings) => memory.prepare(query).all(...(bindings as never[])) as Record<string, string | number | null>[], transaction: (body) => body() };
-      const features = new FeatureStore(sql);
-      const asked: string[] = [];
-      const deps: OverlapDeps = {
-        db: sql,
-        features,
-        overlaps: new OverlapStore(sql),
-        scopeMap: async () => preview.scopeMap,
-        sign: (draft) => signFeatureRecord(draft, keys.privateKey),
-        policy: async () => policyInForce(policy, false),
-        listener: { lockOpened: ({ personId }) => asked.push(personId), lockSettled: () => undefined },
-      };
-      for (const feature of [...running, origin]) {
-        const area = { scopes: [...feature.area], paths: [], contracts: [] };
-        features.insert(feature.id, feature.owner, area, await deps.sign(features.draftRecord(feature.id, "open_feature", { person: feature.owner }, { area })));
-        features.setRepo(feature.id, `feature-${feature.id}`);
-      }
-      await checkOverlap(deps, features.get(origin.id)!);
-      const byPenguin = features.records(origin.id).map((stored) => JSON.parse(stored.file) as { type: string; payload: Record<string, unknown> }).filter((record) => record.type === "approve_overlap");
-      if (policy.preset === "throwaway") {
-        assert.deepEqual(asked, [], `${origin.id}: no owner is asked`);
-        assert.deepEqual(byPenguin.map((record) => record.payload["owner"]).sort(), recorded, `${origin.id}: Penguin approves each start the fixture's people approve`);
-      } else {
-        assert.deepEqual(asked.sort(), recorded, `${origin.id}: Dev asks whom the fixture asks`);
-      }
+    const approvals = recordsOf(preview, origin.id, "approve_overlap");
+    assert.ok(approvals.every((record) => record.payload["approved_by"] === PENGUIN_APPROVER), `${origin.id}: Penguin approves every overlapping start`);
+    assert.deepEqual(preview.overlaps.status(origin.id).waitingOn, [], `${origin.id}: the start waits on no one`);
+    for (const record of approvals) {
+      const owner = record.payload["owner"] as string;
+      const items = preview.inbox.items(owner).filter((item) => item.issueId === `${record.payload["feature"]}/${origin.id}`);
+      assert.deepEqual(items.map((item) => item.reason), ["overlap_started"], `${origin.id}: ${owner} is told, not asked`);
+      told += 1;
     }
   }
+  assert.ok(told > 0, "some case's start overlaps a running feature");
 });
 
 /** The dashboard's feature page and inbox rendered on the server (render.tsx), bundled once for the test. */

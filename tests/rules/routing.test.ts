@@ -11,7 +11,7 @@ const teams = parseTeams({ teams: [{ id: "data", name: "Data", lead: "priya", me
 const map = parseScopeMap(
   {
     scopes: [
-      { id: "ingestion", name: "Ingestion", team: "data", dri: "priya", fallback: ["jun"], paths: ["ingestion/"], protected_paths: ["ingestion/schema/"], contracts: [], test_command: "true", depends_on: [] },
+      { id: "ingestion", name: "Ingestion", team: "data", dri: "priya", fallback: ["jun"], paths: ["ingestion/"], custom_paths: ["ingestion/schema/"], contracts: [], test_command: "true", depends_on: [] },
       { id: "analytics", name: "Analytics", team: "data", dri: "jun", fallback: ["priya"], paths: ["analytics/"], contracts: [], test_command: "true", depends_on: [{ scope: "ingestion", kind: "imports" }] },
       { id: "messaging", name: "Messaging", owner: "sam", paths: ["messaging/"], contracts: [], test_command: "true", depends_on: [] },
     ],
@@ -41,9 +41,13 @@ test("a path belongs to the scope whose paths contain it", () => {
   assert.equal(scopeForPath(map, "docs/readme.md"), undefined);
 });
 
-test("a protected path is found under its scope", () => {
+test("a custom path rule is found under its scope; protected_paths still reads as custom_paths", () => {
   assert.equal(protectedPathFor(map, "ingestion/schema/v2.sql")?.scopeId, "ingestion");
   assert.equal(protectedPathFor(map, "ingestion/batches.py"), undefined);
+  const scope = { id: "ingestion", name: "Ingestion", team: "data", dri: "priya", paths: ["ingestion/"], contracts: [], test_command: "true", depends_on: [] };
+  const aliased = parseScopeMap({ scopes: [{ ...scope, protected_paths: ["ingestion/schema/"] }] }, { teams });
+  assert.deepEqual(protectedPathFor(aliased, "ingestion/schema/v2.sql"), { scopeId: "ingestion", path: "ingestion/schema" });
+  assert.throws(() => parseScopeMap({ scopes: [{ ...scope, custom_paths: ["ingestion/schema/"], protected_paths: ["ingestion/schema/"] }] }, { teams }));
 });
 
 test("a DRI outside the scope's team is refused", () => {

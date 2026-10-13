@@ -1,9 +1,12 @@
 # Review policies
 
-A review policy sets who decides each type of approval in one sandbox: Penguin or a person. A sandbox
-is one Penguin project, its base repo and the forks its agents work in. A team lead picks a preset
-for the sandbox and may change single rows. The kinds of validation behind each row are defined in
-[validation.md](validation.md).
+Code ships through five stages: local development, central development, test, pre-production and
+production. Penguin runs a sandbox where the work coding agents do in local development merges. A
+sandbox is one Penguin project, its base repo and the forks its agents work in. A team can run a
+sandbox at any of the five stages. The review policy names that stage. The stage sets who decides each
+type of approval in the sandbox: Penguin or a person. People decide more at each stage nearer
+production. A team lead picks the stage on the dashboard's Review policy page and may change single
+rows. The kinds of validation behind each row are defined in [validation.md](validation.md).
 
 ## Rows
 
@@ -12,25 +15,39 @@ for the sandbox and may change single rows. The kinds of validation behind each 
 | Logic | Logic | The review form reports an invariant not holding, or the check runner refused the form |
 | Data matching | Data matching | The side-by-side run differs on a protected invariant |
 | Stored data | Stored data | A changed stored shape has no migration or backfill in the plan |
-| Protected paths | Protected paths and place | The fix touches a path a scope's owner protects |
-| Place | Protected paths and place | The fix reaches outside the part's scopes |
-| Overlapping starts | Overlapping starts | A feature's start overlaps another person's running feature |
+| Custom path rules | Custom path rules and place | The fix touches a path under a scope owner's custom path rule (`custom_paths` in `penguin/scopes.json`) |
+| Place | Custom path rules and place | The fix reaches outside the part's scopes |
 
 Tests are no row. A failed test always goes back to the agent. Penguin approves no part whose tests
-have not passed.
+have not passed. Overlapping starts are no row either: at every stage Penguin lets an overlapping
+start open, records the overlap and tells the person who owns the running feature.
 
-## Presets
+## Stages
 
-| Preset | Logic, Data matching, Stored data, Protected paths, Place | Overlapping starts | Every other part |
+The policy's presets are the stages of the release pipeline, from least to most human review. The
+dashboard draws them in one row: Local development, Central development, Test, Pre-production,
+Production. Test has no setting of its own: it shares Pre-production's.
+
+| Stage | Logic, Data matching, Stored data, Custom path rules, Place | A rule-written migration part whose side-by-side run differs | Every other part |
 |---|---|---|---|
-| Throwaway | Penguin, which tells the owners | Penguin | Penguin |
-| Dev, the default | Person | Person | Penguin |
-| Production | Person | Person | Person |
+| Local development | Penguin, which tells the owners | Penguin, which tells the owners | Penguin |
+| Central development, the default | Person | Edit task for an agent | Penguin |
+| Test and Pre-production | Person | Person | Penguin |
+| Production | Person | Edit task for an agent, then a person | Person |
 
-Dev is Penguin's rule from before policies: Penguin approves a part only when every check is clean.
-Production sends every part to a person, as `PENGUIN_PLAN_ADMIN_MODE=on` does. A sandbox that changes
-a row keeps its preset's name with "changed" after it, such as "Dev policy, changed". Under
-Production every part still goes to a person whatever its rows say.
+Central development is Penguin's rule from before policies: Penguin approves a part only when every
+check is clean. On plan parts Pre-production routes exactly as Central development does. The two
+differ in one place: a rule-written migration part whose trial passes its tests but whose
+side-by-side run differs on a protected invariant. Central development sends it back to an agent as
+an edit task. Pre-production sends it to a person (`migrationPolicyRoute` in `validation.ts`).
+Production sends every part to a person whatever its rows say, as `PENGUIN_PLAN_ADMIN_MODE=on` does.
+A sandbox that changes a row keeps its stage's name with "changed" after it, such as "Central
+development policy, changed".
+
+The stored names are `local_development`, `central_development`, `pre_production` and `production`.
+Migration note: a policy or a route stored before #177 under `throwaway` or `dev` reads as
+`local_development` or `central_development` (`readPreset` in `validation.ts`). The
+`overlapping_starts` row such a policy names is ignored.
 
 ## Changing the policy
 
@@ -51,7 +68,7 @@ Production every part still goes to a person whatever its rows say.
 
 The ProjectAgent reads the newest `review_policy_changed` record whose signature verifies with the
 service key and whose `changed_by` is its author. A record that fails either check is refused. The
-record before it stands. With no record, the policy is Dev. The ProjectAgent keeps the policy it
+record before it stands. With no record, the policy is Central development. The ProjectAgent keeps the policy it
 read until a newer record is stored, so each decision costs one lookup of the newest record id.
 
 ## Where Penguin applies it
@@ -59,8 +76,8 @@ read until a newer record is stored, so each decision costs one lookup of the ne
 | Decision | Code | Under the policy |
 |---|---|---|
 | A plan part | `approveCleanParts` in `plan-approval.ts` | Penguin approves a pending part whose route names Penguin |
-| A rule-written migration part after its trial | `migrationTrialReported` in `migration-plans.ts` | A failing trial still becomes an edit task. A type set to Penguin no longer sends the part to a person; Production sends a part whose trial passed to one |
-| An overlapping start | `checkOverlap` in `overlap-lock.ts` | With Overlapping starts set to Penguin, Penguin approves each new lock at once with a signed `approve_overlap` record that names the owner. No one is asked |
+| A rule-written migration part after its trial | `migrationTrialReported` in `migration-plans.ts` | A failing test still makes an edit task. Under Pre-production a side-by-side run that differs goes to a person. A type set to Penguin no longer sends the part to a person. Production sends a part whose trial passed to one |
+| An overlapping start | `checkOverlap` in `overlap-lock.ts` | At every stage Penguin approves each new lock at once with a signed `approve_overlap` record that names the owner. The owner gets an `overlap_started` inbox item. No one is asked |
 
 The break limit counts the parts that fail a check when a plan is proposed, whatever the policy.
 
@@ -68,7 +85,6 @@ The break limit counts the parts that fail a check when a plan is proposed, what
 
 `GET /api/review-policy` answers the policy, whether it is locked, who changed it last and when,
 whether the signed-in person may change it and the split over the last 30 days. The split counts the
-`approve_plan_part`, approved `migration_part_decided` and `approve_overlap` records stored in that
-window: parts and starts Penguin approved and those people approved, overall and per type of approval
-that marked them. `teams` gives the same split for each declared team, counting the parts and starts
-its members own.
+`approve_plan_part` and approved `migration_part_decided` records stored in that
+window: parts Penguin approved and those people approved, overall and per type of approval that
+marked them. `teams` gives the same split for each declared team, counting the parts its members own.

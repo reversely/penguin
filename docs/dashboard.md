@@ -96,7 +96,7 @@ then holds one row per team, declared teams first:
 | Waiting | How many items wait on the team's members, linking to the team page |
 | Health | How many of the team's scopes are clean, such as `27 of 29 scopes clean` |
 
-Below the teams, Review policy names the sandbox's policy, such as `Dev policy`, with `Locked by admin
+Below the teams, Review policy names the sandbox's policy, such as `Central development policy`, with `Locked by admin
 mode` while `PENGUIN_PLAN_ADMIN_MODE` is on and a Settings link to `/review-policy`. Its table holds
 the approvals of the last 30 days by route: one row for every approval, then one per type of approval
 that sent the part there. Each row counts Penguin automatically, Person in the dashboard and Penguin's
@@ -115,9 +115,9 @@ team's name and its lead, the Members table holds the lead first, then each memb
 | Agents | The member's steward with its own queue: `1 of 2 running` against the person's cap, then `3 queued` and `1 asked` (in the attention colour) when any. The queue counts only the tasks routed to the steward. Then the count of builders on features that have not reached main, linking to the person page |
 | Waiting on them | Every item waiting on the member, linking to their page, then the two features holding the most as pills with their counts, then a link such as `2 more` |
 
-What waits on a person is each overlapping start they approve, each plan part routed to them that
-waits or passed the round limit, each protected-path confirmation they owe and each edit task they
-are asked about.
+What waits on a person is each plan part routed to them that waits or passed the round limit, each
+custom path rule confirmation they owe, each edit task they are asked about and each expand
+addition they approve.
 
 The Scopes table holds every scope the team owns, those not clean first:
 
@@ -139,10 +139,27 @@ of the org page, counting only the parts and starts the team's members own.
 
 `/review-policy` (`review-policy.tsx`) is the settings view of the sandbox's review policy
 ([review-policies.md](review-policies.md)), read from `GET /api/review-policy`. It shows who changed
-the policy last and when, or `Dev by default`; `Admin mode sends every part to a person` while admin
-mode locks it; the Preset choice (Throwaway, Dev, Production) with one line on what the preset sends
-to a person; and Types of approval, one row per type with its kind, what sends a part to a person
-and a Penguin or Person choice. A team lead in `penguin/teams.json` changes the preset or single rows
+the policy last and when, or `Central development by default`; `Admin mode sends every part to a
+person` while admin mode locks it; Stage, the release pipeline in one row; and Types of approval, one
+row per type with its kind, what sends a part to a person and a Penguin or Person choice.
+
+Stage draws the pipeline left to right with the feature timeline's bar and stage nodes: Local
+development, Central development, Test, Pre-production, Production. The stage the policy names is
+marked as the current one, with its dot ringed and its name in the heading weight. Under each stage a
+label says what it sends to a person:
+
+| Stage | Label |
+|---|---|
+| Local development | Penguin decides every part |
+| Central development | Person decides flagged parts |
+| Test | Same setting as Pre-production |
+| Pre-production | Person decides flagged parts and migration differences |
+| Production | Person decides every part |
+
+Test shares Pre-production's setting, so choosing Pre-production marks both. Each other stage is a
+radio choice for a team lead. Below 39rem of width the row wraps, one dot and name per line.
+
+A team lead in `penguin/teams.json` changes the stage or single rows
 and saves with Save policy, `POST /api/review-policy`. Anyone else sees the same view with every
 choice disabled and `Please ask a team lead to change the policy`. Last, the approvals of the last
 30 days by route, as on the org page.
@@ -151,9 +168,11 @@ choice disabled and `Please ask a team lead to change the policy`. Last, the app
 
 A folded panel on the org, team, feature, inbox and review policy pages lists the six kinds of
 validation ([validation.md](validation.md)): each kind, what it checks in one line and who decides it
-under the sandbox's policy, such as `Person`, `Penguin` or, when the policy's two rows of Protected
-paths and place differ, `Protected paths: Person` and `Place: Penguin`. Its summary names the policy
-and it links to `/review-policy`.
+under the sandbox's policy, such as `Person`, `Penguin` or, when the policy's two rows of Custom path
+rules and place differ, `Custom path rules: Person` and `Place: Penguin`. Overlapping starts reads
+`Penguin` and `Owner told` at every stage. Its summary names the policy by its stage, such as
+`Central development policy`. Outside the review policy page the open panel starts with the release
+pipeline row, read-only, with that stage marked. It links to `/review-policy`.
 
 ### Kinds and routes on results
 
@@ -169,7 +188,7 @@ Every decision and every write names its route:
 | Route | How it reads |
 |---|---|
 | Agent through MCP | The agent's identity and tool, such as `by @priya/accounts-merge (MCP report_fix_write)` on a written fix and `@priya/accounts-merge (MCP propose_plan)` in the Record view |
-| Penguin automatically | The policy and the kinds checked, such as `Approved by Penguin (Dev policy: Tests, Logic, Data matching, Stored data and Protected paths and place clean)`. A fix the check runner wrote reads `by Penguin (check runner)` |
+| Penguin automatically | The policy and the kinds checked, such as `Approved by Penguin (Central development policy: Tests, Logic, Data matching, Stored data and Custom path rules and place clean)`. A fix the check runner wrote reads `by Penguin (check runner)` |
 | Person in the dashboard | The person and the dashboard, such as `Approved by jun in the dashboard` |
 
 A part still waiting names whom it waits for and the policy's rule, such as `Waiting for jun: Logic
@@ -219,7 +238,7 @@ the latest step first:
 | State | When |
 |---|---|
 | promoting | Every part of the feature's merge plan is approved, or its block run is being checked or moving main (`land_feature`) |
-| waiting on approvals | The feature's start waits for an overlap approval, or a plan part waits for its author |
+| waiting on approvals | A plan part waits for its author, or a start waits on a lock opened before #177 |
 | planning | The facts run of its latest checkpoint shows a place its change reaches and no plan is stored, or a plan is stored and a newer checkpoint's facts run waits or found no plan parts, or the plan was returned over the break limit, or a part waits on the agent's revision |
 | building | Anything else, including a feature whose facts run shows no place or still waits for the runner while no plan is stored |
 | promoted | Main moved to the feature's checkpoint; its fork is read-only |
@@ -255,7 +274,7 @@ feature page shows the last reason on the run's failed job.
 |---|---|
 | Changes | The contract change first: each signature and stored data shape before and after as a diff, the retiring symbols with their replacements and, for each, its own uses in its defining module and its scope's tests, which the contract step removes with it, the incompatible and behaviour entries Penguin sorted, and the callers on main. Then each place the plan fixes: its number and place, owner, state with its route ([Kinds and routes on results](#kinds-and-routes-on-results)) and file count; its kind, revision and rounds; a fix written into another fork with its writer and commit; the latest requested change; each file as a unified diff with both sides' line numbers, cut at 80 lines with a button for the rest; and its breaks, invariants and uses behind a line that counts them. Last, the declared area: contracts, paths and latest checkpoint |
 | Pipeline | Each stage with its status and count, then its jobs: each job's status, label and one fact, with a link to its diff or its results. A failed or person-needed job shows its failing targets or its reviewing agent. Block checks has one check job per check kind. Once the block run a `land` asked for has reported, those jobs come from that run's checks in its signed `block_checked` record, so a promoted feature shows the run that gated its land. Before then they come from the newest `check` run. A block run never has a `retiring` job, since that check runs only on a checkpoint's own changes. A check job from a `check` run lists the findings its passing targets still name, such as the dependency diff's changed library and each place the target imports it; the `block_checked` record keeps no findings. A run the check runner stopped at the failure limit is a failed job with its last reason. The current stage lists each checkpoint the feature's agents reported with the checks run on it. What a stage's jobs ran sits under it: the plan's facts with the tool or read behind each under Plan, the review forms with their side-by-side runs under Review, the newest `check` run's results by tool under Block checks (the failing targets with their findings, each passing target whose check names findings, a count of the rest and one next step per failing check), and each agent tool call under the stage it served |
-| People | Read by: one row per running feature that reads what this feature changes, the one whose part needs a person first, then by stage. Its columns are the feature, its person as a pill, the reading scope and the scope it reads as pills in their owners' hues, the reader's current stage and this plan's part for it, which opens the part's diff. Start: one row per running feature whose person approves this feature's start, with its person, the lock (waiting or approved) and who approved it. Agents: the agents whose sessions joined the feature. Each table scrolls inside itself on a phone |
+| People | Read by: one row per running feature that reads what this feature changes, the one whose part needs a person first, then by stage. Its columns are the feature, its person as a pill, the reading scope and the scope it reads as pills in their owners' hues, the reader's current stage and this plan's part for it, which opens the part's diff. Start: one row per running feature this feature's start overlaps, with its person, the lock (approved, or waiting on a lock opened before #177) and who approved it, `Penguin` for a start since #177. Agents: the agents whose sessions joined the feature. Each table scrolls inside itself on a phone |
 | Record | Each signed record with its type, its route (an agent with its MCP tool, Penguin automatically or a person in the dashboard), the kinds of validation its result belongs to, time and path in the record repo, filtered by type. Once a record is in the record repo its path links to `GET /api/features/<id>/records/<record id>`, which answers the signed file as the repo holds it at the commit that added it. A record still waiting for its push shows its path as plain text. An expand checkpoint promoted on its own shows as its own `Expand promoted` record after its `Expand requested` record. The contract step shows as `Contract step approved` when Penguin approves removing a retiring symbol with no caller left, `Contract step withdrawn` when a caller comes back and `Symbols removed` once the block that removes it reaches main. A feature Penguin opened that main moved past shows `Rebuilt from main` when Penguin forks it again from main and re-applies its parts |
 
 **Rows.** Every fold starts closed except what needs the viewer: a part the viewer decides that
@@ -275,7 +294,7 @@ other request.
 
 A feature opened by someone other than its person is that person's change page (`change-tree.tsx`,
 `banner-view.ts`). Under the header, a line per thing the viewer must do: decide each of their parts
-that waits on them, confirm their protected lines, approve its start. Each line opens the part it
+that waits on them or confirm their custom path rule lines. Each line opens the part it
 concerns, with a link to the inbox where they act. The Changes view then reads, in order:
 
 | Section | Content |
@@ -294,7 +313,8 @@ The top of every page shows one line per colleague's feature that reaches the si
 (`banner.tsx`): the colleague, the feature, linking to its change page, and the feature's current
 stage. A banner that needs the person reads Your decision and links to the first part they decide. A
 feature has a banner while the person's inbox holds an item of it: a part to decide or one Penguin
-approved for them, a protected-path confirmation or an overlapping start. The banner clears once the
+approved for them, a custom path rule confirmation or an overlapping start Penguin told them of. Only
+a part to decide or a confirmation reads Your decision. The banner clears once the
 inbox holds nothing of the feature or its block reaches main. The banners come from the answers the
 shell already reads for the inbox count and the team answer, so they cost no request. The open
 feature's own page shows no banner of it.
@@ -340,20 +360,20 @@ receives no assigned work ([huddle-flow.md](huddle-flow.md#5-fix-delivery-at-saf
 The inbox page holds the approvals that wait on the signed-in person (`approvals.tsx`, read from
 `GET /api/overlaps` and `GET /api/plan-parts`), each a card with the facts behind it. Each part's
 number and place link to the feature's change page at that part (`/features/<id>#part-3`); a
-protected-path card links to its Changes view and a review exception to its review:
+custom path rule card links to its Changes view and a review exception to its review:
 
 | Group | Holds | Controls |
 |---|---|---|
-| Overlapping starts | Each feature whose start waits beside one of the person's running features, its person and the scopes, contracts and paths where the two areas meet. An expand checkpoint that adds to the person's scopes shows here too, with the scopes and paths it adds to ([design.md](design.md#expand-in-the-build)) | Approve start, `POST /api/overlaps/approve`; for an expand, Approve addition with `feature` set to `owner:<person>` |
+| Overlapping starts | Each feature that started beside one of the person's running features, its person and the scopes, contracts and paths where the two areas meet, tagged Approved by Penguin. An expand checkpoint that adds to the person's scopes shows here too, with the scopes and paths it adds to ([design.md](design.md#expand-in-the-build)) | None for a start Penguin approved. For an expand, Approve addition, `POST /api/overlaps/approve` with `feature` set to `owner:<person>`. A start on a lock opened before #177 that still waits carries Approve start |
 | Plans | One card per merge plan with parts for the person: the originating feature and person, why the plan needs the person in person, each review the parts carry and then each of the person's parts. A part Penguin approved for the person is listed too, until its block reaches main | Per part waiting on the person: Approve revision, `POST /api/plan-parts/approve`; Request change, which opens a field whose text posts `POST /api/plan-parts/request-change`. Per part Penguin approved: Reverse approval, `POST /api/plan-parts/reverse` |
-| Protected paths | Each feature whose own change, since its merge base with main, writes a path the person protects in `penguin/scopes.json`: the feature and its person, the checkpoint, each protected path and the changed lines of each file under it | Confirm lines, `POST /api/plan-parts/confirm-protected` with `{ feature, owner, checkpoint }`. A confirmed card stays, marked Confirmed, until a later checkpoint changes the lines |
+| Custom path rules | Each feature whose own change, since its merge base with main, writes a path under one of the person's custom path rules (`custom_paths` in `penguin/scopes.json`): the feature and its person, the checkpoint, each custom path and the changed lines of each file under it | Confirm lines, `POST /api/plan-parts/confirm-protected` with `{ feature, owner, checkpoint }`. A confirmed card stays, marked Confirmed, until a later checkpoint changes the lines |
 | Review exceptions | Each review of the person's scopes whose record raised an exception | None |
 | Returned plans | Each plan of the person's returned over the break limit, with the places of its parts that need a person | None |
 
 A plan card shows each review and each reason once, however many of its parts carry them
 (`planGroups` in `feature-view.ts`). The parts follow one per row: the part number and place, the
 kind, the revision and the rounds, then the part's state. A part the person approves carries its
-decision at the end of that row. A part that writes a path the person protects reads Protected path.
+decision at the end of that row. A part that writes a path under the person's custom path rule reads Custom path rule.
 A part of the person's own plan past the round limit reads Past the round limit. Neither carries
 controls. A part of the person's own plan can wait on them because their change reshapes stored
 data the part's scope only reads. Its tag says Stored data needs a migration or backfill. It
@@ -366,9 +386,9 @@ The inbox reads the routing from `GET /api/plan-parts` alone, with no further re
 fix's changed lines open from a line that counts them, such as "4 breaks, 3 changed files". A review
 exception whose review a plan card already shows lists its exceptions with a link to that review.
 
-A feature cannot land while a Protected paths card of its own waits. The card lists for the person
-who protects the path and for their delegate; its lines follow the plan patches' rule, so only the
-feature's person, the protecting person and that person's delegate read them. The approvals count
+A feature cannot reach main while a Custom path rules card of its own waits. The card lists for the
+person whose custom path rule covers the path and for their delegate; its lines follow the plan
+patches' rule, so only the feature's person, that rule's person and that person's delegate read them. The approvals count
 leaves out a confirmed card.
 
 A review shows the form row by row: each invariant's statement, the verdict and the evidence, the
@@ -541,10 +561,11 @@ soon as the project exists, before the first step, so a recording shows each ste
   steps run so far plus the next one. `next` is the index of the next one. The seed decides its steps
   as it runs, so the list ends at the next step.
 - A step whose action is a person's decision waits for that person to make it on the dashboard. The
-  decisions are a start's approval, a plan part's approval or change request and a confirmation of
-  protected lines. `POST /preview/step` answers with `waitingFor` naming the person and the decision's
-  route: `/api/overlaps/approve`, `/api/plan-parts/approve` or `/api/plan-parts/request-change`, or
-  `/api/plan-parts/confirm-protected`. Once that person's request succeeds, the seed continues.
+  decisions are a plan part's approval or change request and a confirmation of custom path rule
+  lines. `POST /preview/step` answers with `waitingFor` naming the person and the decision's route:
+  `/api/plan-parts/approve` or `/api/plan-parts/request-change`, or
+  `/api/plan-parts/confirm-protected`. No step waits on a start: Penguin approves each overlapping
+  start and tells the owner. Once that person's request succeeds, the seed continues.
 
 On identity unification the plan is stored with four parts: Priya's fix commits for analytics' and
 messaging's code on main, and the patches for Jun's and Sam's forks. Jun's and Sam's agents submit
@@ -560,7 +581,8 @@ that adds `start_of_local_day`, and the plan holds the patches for Jun's weekly 
 reminders. Each feature's tests pass on its trial tree and both reviews hold, with no difference on
 the 2 recorded examples each fork declares. Penguin approves both parts, and Jun and Sam each get a
 `penguin_approved` item. On money in minor units the seed runs Ines's split as
-[case-study-money.md](case-study-money.md) tells it. Hugo and Tomas approve Ines's start. The expand
+[case-study-money.md](case-study-money.md) tells it. Ines's start opens at once. Penguin tells
+Hugo and Tomas. The expand
 reaches main with a plan of no place. Penguin then proposes ten migration plans, one per owner.
 Each reader's builder reports its migration. Each owner's steward writes the block Penguin
 opened for that owner's code on main, and Penguin lands each block. Rahul's tax review raises the broken

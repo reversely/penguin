@@ -259,7 +259,7 @@ export function protectedRefusal(deps: Pick<LandDeps, "unconfirmedProtected">, f
   const list = unconfirmed.map(({ ownerId, files }) => `${ownerId} (${[...new Set(files.map((file) => file.protectedPath))].join(", ")})`).join("; ");
   return rejected(
     "protected_path_unconfirmed",
-    `the feature's own change touches paths other people protect; each confirms the lines on the dashboard before it lands: ${list}`,
+    `the feature's own change touches paths under other people's custom path rules; each confirms the lines on the dashboard before it reaches main: ${list}`,
   );
 }
 

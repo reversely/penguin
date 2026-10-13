@@ -9,7 +9,7 @@
       "fallback": ["jun"],
       "paths": ["ingestion/"],
       "contracts": ["ingestion/identity_map.py::IdentityMap"],
-      "protected_paths": ["ingestion/identity_map.py"],
+      "custom_paths": ["ingestion/identity_map.py"],
       "test_command": "python -m pytest ingestion",
       "depends_on": []
     },

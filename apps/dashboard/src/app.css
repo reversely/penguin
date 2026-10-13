@@ -6210,6 +6210,28 @@ button.pill:focus-visible {
   margin: 0;
 }
 
+/* The release pipeline (#177): the feature timeline's bar and stage nodes, one per pipeline stage,
+   with the stage the policy sets marked as the current one. A stage that is no choice keeps the
+   default cursor. */
+.validation-panel > .release-pipeline {
+  margin-bottom: var(--space-3);
+}
+
+.release-pipeline span.stage-node {
+  cursor: default;
+}
+
+/* On a narrow page the stages stack one per line, in pipeline order. */
+@container (max-width: 39rem) {
+  .release-pipeline .timeline-bar {
+    flex-direction: column;
+  }
+}
+
+.release-pipeline button.stage-node:hover .stage-name {
+  text-decoration: underline;
+}
+
 .policy-section > p {
   margin: 0;
 }

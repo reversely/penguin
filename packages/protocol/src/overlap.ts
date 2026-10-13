@@ -1,6 +1,7 @@
-// What GET /api/overlaps returns to the dashboard: the overlapping starts that wait for the signed-in
-// person's approval (PRD 0.4 section 4.1 step 3). Each names the person's own running feature, the
-// feature whose start waits and where the two areas meet. An expand checkpoint that adds to a scope the
+// What GET /api/overlaps returns to the dashboard: the overlapping starts the signed-in person is told
+// of or asked about (PRD 0.4 section 4.1 step 3). Each names the person's own running feature, the
+// feature that started beside it and where the two areas meet. Since #177 Penguin lets every
+// overlapping start open and tells the owner (`told`); only a lock opened before #177 still waits. An expand checkpoint that adds to a scope the
 // person owns (PRD 0.5 section 4.2 step 2) waits the same way: its `feature` is then `owner:<person>`,
 // since no feature of the person's need be running, and only the expand promotion waits. The ProjectAgent builds it from the
 // person's overlap inbox items and the stored locks (services/project-agent/src/overlap-lock.ts); the
@@ -23,6 +24,8 @@ export interface OverlapRequest {
     readonly contracts: readonly string[];
     readonly omittedPaths: number;
   };
+  /** Penguin let the start open and the person is told; false while it waits for their approval. */
+  readonly told: boolean;
   readonly read: boolean;
   /** When the request was raised, as an ISO 8601 time. */
   readonly raisedAt: string;
@@ -63,7 +66,7 @@ export const OVERLAP_REQUESTS_SCHEMA: JsonSchema = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["feature", "blockedFeature", "blockedPerson", "overlap", "read", "raisedAt"],
+        required: ["feature", "blockedFeature", "blockedPerson", "overlap", "told", "read", "raisedAt"],
         properties: {
           feature: { anyOf: [FEATURE_ID_SCHEMA, { type: "string", pattern: OWNER_LOCK_PATTERN, maxLength: PERSON_ID_MAX_LENGTH + 6 }] },
           blockedFeature: FEATURE_ID_SCHEMA,
@@ -79,6 +82,7 @@ export const OVERLAP_REQUESTS_SCHEMA: JsonSchema = {
               omittedPaths: { type: "integer", minimum: 0 },
             },
           },
+          told: { type: "boolean" },
           read: { type: "boolean" },
           raisedAt: { type: "string" },
         },

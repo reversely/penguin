@@ -7,6 +7,13 @@ the current build open with a note naming the section here that changes them.
 
 ## Model
 
+Code ships through five stages: local development, central development, test, pre-production and
+production. Penguin runs a sandbox where the work coding agents do in local development merges. A
+sandbox is one Penguin project: its base repo and the forks its agents work in. A team can run a
+sandbox at any of the five stages. The sandbox's review policy names its stage, which sets how much of
+the review Penguin does and how much people do. People decide more at each stage nearer production
+([review-policies.md](review-policies.md)).
+
 Penguin serves a team whose members each own parts of one codebase and each run several coding
 agents. Owners and their agents coordinate through typed records in shared state: feature
 declarations, merge plans, approvals, check results and promotions. Each person and each session
@@ -17,7 +24,7 @@ reads only the records that concern their own features and scopes.
 | Concept | Meaning |
 |---|---|
 | Team | A group of people with a lead, usually the engineering manager. A team owns scopes. The lead sees every exception in the team's scopes and decides none of them |
-| Person | A member of one or more teams. A person runs features and is the DRI (directly responsible individual) for some of the team's scopes. A person approves an overlapping start in their area and the part of a plan that touches a scope they answer for |
+| Person | A member of one or more teams. A person runs features and is the DRI (directly responsible individual) for some of the team's scopes. A person is told of an overlapping start in their area and approves the part of a plan that touches a scope they answer for |
 | Scope | A part of the codebase owned by one team, with one DRI and a fallback order of other team members: paths, contracts and declared invariants. One scope depends on another when it reads the other's data or calls its contracts. Penguin reads these dependencies from the code at each promotion of main and keeps the declared ones beside them ([Scope dependencies from the code](#scope-dependencies-from-the-code)) |
 | Feature | One unit of work heading to main. Each feature is a fork of main in Cloudflare Artifacts, created when the feature opens. A feature declares its area: the scopes, paths and contracts it expects to touch |
 | Agent identity | A named agent a person creates, such as `@ines/money`, with a job and a charter. The charter lists the scopes and paths the identity may change. Identities follow the model of Grok Bot ([Grok Bot](https://docs.x.ai/grok-bot/bots)) |
@@ -50,7 +57,7 @@ The hierarchy runs org, team, person, feature, part, file. Each level answers to
   one-person team, `person:<owner>`, with the owner as DRI and no fallback. A repo written before
   teams therefore routes as it did. A scope names either `owner` or `team` and `dri`. The format is
   in [fixture.md](fixture.md#teams).
-- **Routing.** Parts needing a person, review exceptions, protected-path confirmations and check
+- **Routing.** Parts needing a person, review exceptions, custom path rule confirmations and check
   failures go to the scope's DRI or the DRI's delegate. When the DRI has no bridge online and no
   session, they go to the first person in the fallback order who has one. When nobody in the order
   has one, they stay with the DRI. A bridge counts as online when it polled in the last two minutes.
@@ -77,7 +84,7 @@ Where each rule lives in the build:
 | Loading both files from the base repo | `services/project-agent/src/scope-file.ts` |
 | Who can take work now | `availability` in `services/project-agent/src/edit-work.ts` |
 | Plan parts on a scope | `affectedPlaces` in `services/project-agent/src/propose-plan.ts` |
-| Protected paths | `checkProtectedChanges` and `announcePlan`. A person already asked keeps the row while they still answer for the scope. The feature's own person is never asked |
+| Custom path rules | `checkProtectedChanges` and `announcePlan`. A person already asked keeps the row while they still answer for the scope. The feature's own person is never asked |
 | Review exceptions | `personFor` in `review-record.ts` and `part-trial.ts` |
 | Check failures and review forms | `editRouting` in `edit-work.ts` |
 | Who may submit a scope's review form | The DRI or a member of the fallback order (`review-submit.ts`) |
@@ -89,7 +96,7 @@ The API the org, team and person pages read ([dashboard.md](dashboard.md#org-tea
 | Field | Where | Holds |
 |---|---|---|
 | `teams` | `GET /api/team` (`TeamView`) | Every team that owns a scope, sorted by id: `id`, `name`, `lead`, `members`, `implicit` (true for a one-person team) and `scopes`, each with `id`, `name`, `dri` and `fallback`. Each scope also carries `reads` and `readBy`, the counts of other scopes it reads and that read it in the code at main's last promotion or declared in `depends_on`. Its `health` holds `waiting` (its plan parts waiting on a person, its edit tasks a person is asked about and each running feature whose newest review of it raised an exception) and `notInCode` (its declared dependencies the last derivation found no use of) |
-| `waiting` | `GET /api/team` (`TeamPerson`) | What waits on the person across every feature, as `{ feature, kind, count }` with `kind` one of `part` (a plan part routed to them, waiting or past the round limit), `start` (an overlapping start they approve), `confirmation` (a protected-path confirmation they owe) or `task` (an edit task they are asked about); most first. The ProjectAgent tallies it in the same pass over the features that builds each strip, from its own SQLite (`tallyWaiting` in `dashboard-views.ts`) |
+| `waiting` | `GET /api/team` (`TeamPerson`) | What waits on the person across every feature, as `{ feature, kind, count }` with `kind` one of `part` (a plan part routed to them, waiting or past the round limit), `start` (an overlapping start on a lock opened before #177 that still waits on them), `confirmation` (a custom path rule confirmation they owe) or `task` (an edit task they are asked about); most first. The ProjectAgent tallies it in the same pass over the features that builds each strip, from its own SQLite (`tallyWaiting` in `dashboard-views.ts`) |
 | `builderTasks` | `GET /api/team` (`TeamFeature`) | The open edit tasks routed to the feature's builder, by state |
 | `role` | `GET /api/team` (`TeamPerson`) | The person's top three scopes by call sites in each of `scopes` (DRI for), `dependencies` (reads) and `dependents` (read by), with `counts` of each full list and the `derivation` they come from ([Scope dependencies from the code](#scope-dependencies-from-the-code)) |
 | `role` | `GET /api/people/<id>/scopes` (`PersonScopes`) | The same role with every list in full, for the person page's tables |
@@ -120,11 +127,11 @@ The procedure moves conflict handling to the start of the work. Each step below 
 2. The feature declares its area. The agent writes the declaration. The person may edit it. Each
    checkpoint updates the declaration with what the feature actually touched.
 3. Penguin checks the declaration against every running feature:
-   - **Same area.** Another running feature already works in that area. Penguin blocks the new
-     feature from starting until the person whose agent works there approves. That person approves
-     when the two pieces of work are far enough apart. Penguin's tools then resolve routine merge
-     conflicts between them. A sandbox whose review policy sets Overlapping starts to Penguin lets
-     Penguin approve the start itself ([review-policies.md](review-policies.md)).
+   - **Same area.** Another running feature already works in that area. Penguin records where the
+     two areas meet, approves the start itself and tells the person whose agent works there. The
+     new feature starts at once at every stage of the review policy
+     ([review-policies.md](review-policies.md)). Penguin's tools then resolve routine merge
+     conflicts between them. The merge plan carries any change one makes to the other.
    - **Depends on it.** Running features read what the new feature will change. Penguin lists them.
      They leave the start unblocked. They go into the merge plan.
 4. If a merge plan touching this area is already announced, Penguin hands it to the new feature at
@@ -581,7 +588,7 @@ Penguin proposes the migrate step's plans itself (`services/project-agent/src/mi
   |---|---|
   | Its scopes' tests pass and no protected invariant differs | Penguin approves it and asks the check runner to write it |
   | A failing test, a trial tree that does not hold the patch, or a protected invariant that differs | Becomes a `migration` edit task for the target's builder or the steward of the scope's DRI, with each failing check, failing test and differing input attached as evidence |
-  | A protected path, a file outside the place, admin mode or another check no edit settles | Goes to its owner in person, unless the review policy sets that check's type to Penguin; under Production a part whose trial passed goes to its owner too |
+  | A custom path rule, a file outside the place, admin mode or another check no edit settles | Goes to its owner in person, unless the review policy sets that check's type to Penguin; under Production a part whose trial passed goes to its owner too. Under Pre-production a part whose only failure is a protected invariant that differs goes to its owner in place of an edit task |
 
   Each decision is a signed `migration_part_decided` record. Load: the side-by-side runs are part
   of the trial the part already had; no run is added.
@@ -617,9 +624,9 @@ Penguin proposes the migrate step's plans itself (`services/project-agent/src/mi
   authored by Penguin, owned by the DRI it works for, forked from main through the Artifacts binding
   with the same name and `PENGUIN_FEATURE_FORK_DEFAULT_BRANCH_ONLY` setting as the Worker's forks.
   It goes through the overlap lock ([Steps 1 and 2 in the build](#steps-1-and-2-in-the-build)) like any other feature, at its
-  opening and at each wider area: a running feature of another person that covers its area holds
-  its start until that person approves. While a lock holds, no bridge claims an edit task into its
-  fork and the check runner writes nothing there.
+  opening and at each wider area: Penguin approves each lock at once and tells the person of the
+  running feature that covers its area. While a lock opened before #177 still holds, no bridge
+  claims an edit task into its fork and the check runner writes nothing there.
 - **The view.** `contract.migration` in `get_work` and on the feature page lists each plan:
   `planId`, `feature`, `owner`, `seq`, `state` (`open`, `approved`, `closed`, `landed`), `block`,
   `promotion`, `recordId` and its `parts`. Each part has `partId`, `place`, `scopes`, `uses`,
@@ -637,7 +644,7 @@ Penguin proposes the migrate step's plans itself (`services/project-agent/src/mi
    - the part's tests pass on the merged tree;
    - its review form reports every invariant holding;
    - the side-by-side run shows no difference on a protected invariant;
-   - it touches no path the author protects;
+   - it touches no path under the author's custom path rules;
    - its diff stays inside its place: the part's files and the contract's symbols.
 
    Penguin tells the author, who may reverse the approval until the block reaches main. Each check
@@ -647,13 +654,13 @@ Penguin proposes the migrate step's plans itself (`services/project-agent/src/mi
 4. Any other part goes to its author in person, who approves it once or asks for a change. A
    requested change goes back to the originating agent, which revises that part of the plan.
 5. **Admin mode:** a project can require a person's approval for every part. The review policy's
-   Production preset does the same from the dashboard.
+   Production stage does the same from the dashboard.
 
 #### Penguin's approval in the build
 
 `partRouting` (`packages/protocol/src/plan-approval.ts`) checks a part against six conditions
 from facts Penguin already holds. Each condition that is not clean is a reason. The dashboard
-shows each reason as one line. Under the Dev review policy, the default, Penguin approves the part
+shows each reason as one line. Under the Central development review policy, the default, Penguin approves the part
 only with no reason. `policyRoute` (`packages/protocol/src/validation.ts`) applies the sandbox's
 policy to the reasons: a failing test always keeps the part from Penguin. Each other reason
 marks its type of approval, which the policy sets to Penguin or a person
@@ -664,8 +671,8 @@ marks its type of approval, which the policy sets to Penguin or a person
 | Tests (Tests) | Each of the part's scopes is `passed` on the merged tree of the part's place. That tree holds the fix | The part revision's recorded [trial](#part-trials); without one, `PlanPart.tests`, kept from the facts run when the plan is proposed |
 | Review (Logic) | The newest review of each of the part's scopes was submitted on the plan's checkpoint. The check runner accepted it. Every row says the invariant holds. A verify part needs no form, so this check and the side-by-side and stored data checks are left out for it | The feature's reviews (`review-submit.ts`), each form the part's trial ran read from that trial |
 | Side by side (Data matching) | That review's run shows no difference on a protected invariant | The review's exceptions |
-| Protected paths (Protected paths and place) | No file of the diff lies under a path a scope's owner protects in `penguin/scopes.json` | The scope map |
-| Place (Protected paths and place) | Every changed file lies in the part's scopes, and a fix commit changes no file outside them. For code on main the place is the scope's paths, tests included: a fix that moves the scope's own tests onto the new API stays inside the scope. For a running feature it is the scopes its own changes reach, where its patch must lie. The place never widens beyond the part's scopes | `PlanPart.diff.files`, `diff.outside` and `scopes` |
+| Custom path rules (Custom path rules and place) | No file of the diff lies under a custom path rule a scope's owner lists in `custom_paths` of `penguin/scopes.json` | The scope map |
+| Place (Custom path rules and place) | Every changed file lies in the part's scopes, and a fix commit changes no file outside them. For code on main the place is the scope's paths, tests included: a fix that moves the scope's own tests onto the new API stays inside the scope. For a running feature it is the scopes its own changes reach, where its patch must lie. The place never widens beyond the part's scopes | `PlanPart.diff.files`, `diff.outside` and `scopes` |
 | Stored data (Stored data) | The newest review on the plan's checkpoint records no changed stored shape that its scope only reads, or the plan declares a `storeMarker` | The review record's `storedShapes` with their owning scopes |
 
 A part whose one failing check is stored data (`stored_data_unmarked`) routes to the originating
@@ -686,7 +693,7 @@ that also fails another check stays with its author. Its stored data reason is l
 - **When Penguin looks.** `approveCleanParts` (`services/project-agent/src/plan-approval.ts`) runs
   after a plan is stored and announced, after the check runner records a review of the feature or a
   part trial, after the originating agent revises a part and after a team lead changes the review
-  policy. It approves each pending part whose policy route names Penguin: under Dev, each part with
+  policy. It approves each pending part whose policy route names Penguin: under Central development, each part with
   no reason. A verify part also needs a recorded trial of its current revision.
 - **The approval.** Each approval is a signed `approve_plan_part` record authored by Penguin, with
   `approved_by: "penguin"` and a `checks` field naming the checkpoint, the run its tests came from
@@ -756,24 +763,26 @@ that also fails another check stays with its author. Its stored data reason is l
 - **Routing.** `partRouting` (`packages/protocol`) lists every reason a part needs its author in
   person ([Penguin's approval in the build](#penguins-approval-in-the-build)). The dashboard lists
   each reason beside the part. With no reason, Penguin approves the part.
-- **Protected paths.** A scope in `penguin/scopes.json` may list `protected_paths`, each inside the
-  scope's own paths. A path protects itself and everything under it. A part whose fix writes such a
-  path gives the scope's owner a `protected_path` item to confirm its lines.
+- **Custom path rules.** A scope in `penguin/scopes.json` may list `custom_paths`, each inside the
+  scope's own paths. A custom path covers itself and everything under it. A part whose fix writes
+  such a path gives the scope's owner a `protected_path` item to confirm its lines. The scope map
+  reads `protected_paths`, the key's earlier name, as `custom_paths`. The item, record and route
+  names keep the earlier word so that signed records still read.
 - **The feature's own change.** The plan includes the originating feature's own change, so its
-  protected paths are checked too, at each checkpoint of the feature
+  custom path rules are checked too, at each checkpoint of the feature
   (`services/project-agent/src/protected-change.ts`). Penguin reads the files that differ between
   the checkpoint and its merge base with main: the newest commit of main's history that the
   checkpoint reaches through any parent. A file main brought in by a merge is not the feature's own.
-  Each changed file is matched once against the protected paths. A path the feature's own person
-  protects raises nothing, as the overlap lock makes no lock between one person's features. Each
-  other person who protects a touched path gets a `protected_path` item naming the feature, with the
+  Each changed file is matched once against the custom path rules. A rule of the feature's own
+  person raises nothing, as the overlap lock makes no lock between one person's features. Each
+  other person whose rule covers a touched path gets a `protected_path` item naming the feature, with the
   changed lines of those files. Only that person or their delegate confirms the lines, on the
   dashboard, at the checkpoint they saw (`POST /api/plan-parts/confirm-protected`). A confirmation is
   a signed `confirm_protected_change` record on the feature. A later checkpoint that leaves those
   files as confirmed keeps the confirmation. One that changes them asks again, and one that no longer
   touches the person's paths withdraws the item. The feature cannot land while a confirmation waits
   (`protected_path_unconfirmed`). The lines follow the plan patches' rule: the feature's person, the
-  protecting person and that person's delegate read them. A project whose protected paths all belong
+  rule's person and that person's delegate read them. A project whose custom path rules all belong
   to the feature's own person reads nothing more at a checkpoint.
 - **Review verdicts.** The session that submitted a review hears the check runner's verdict at its
   next safe checkpoint under `reviewResults`: accepted or refused, the refusal codes and the
@@ -781,7 +790,7 @@ that also fails another check stays with its author. Its stored data reason is l
 - **Dashboard.** `GET /api/plan-parts` lists the parts waiting on the signed-in person as owner or
   delegate with their changed lines and routing reasons. It lists the parts Penguin approved for them
   until the block reaches main, each with `approvedBy: "penguin"`. It also lists the parts that write
-  a path the person protects, the features whose own change writes one, the parts of their plans past
+  a path under the person's custom path rules, the features whose own change writes one, the parts of their plans past
   the round limit and the reviews of their scopes that raised an exception.
 - **Storage.** The parts with their revisions and states live in the feature's own Durable Object,
   which takes a change only while the part still stands where the decision read it.
@@ -952,7 +961,7 @@ steward or the builder.
   A mechanical part asks for no task: the check runner writes it. A feature Penguin opened from main
   (a migration plan's block or a contract carrier) has no builder in routing, so its edits reach the
   steward of the scope's DRI. The next steps of such a feature's failed block go to the steward of
-  its person the same way. While an overlap lock holds such a feature's start, the bridge's
+  its person the same way. While a lock opened before #177 holds such a feature's start, the bridge's
   claim leaves an edit into its fork in the queue. The FeatureAgent reports each
   block run's decisions through `blockReported` on the ProjectAgent.
 - **One routing decision per task.** `EditTaskStore.open` routes a source once and keeps one row
@@ -1011,7 +1020,7 @@ No view carries an agent's transcript. A task's `outcome` is one line the bridge
 - **Ready to land.** The feature's agent calls `land_feature`. Penguin refuses the land with a reason
   and opens no run in six cases. The latest checkpoint does not yet hold main's head (`behind_main`):
   the agent merges main into its fork and reports the merge as a checkpoint. A part of the plan is not
-  approved (`plan_not_approved`). A person whose protected path the feature's own change writes has
+  approved (`plan_not_approved`). A person whose custom path rule the feature's own change writes under has
   not confirmed the lines (`protected_path_unconfirmed`). A part for a running feature has no fix
   written at its current revision (`fix_not_written`). A fix for code on main is not in the
   checkpoint (`fix_not_in_block`). A written fix is no longer under its fork's head
@@ -1057,7 +1066,7 @@ No view carries an agent's transcript. A task's `outcome` is one line the bridge
   part of its plan whose place is a scope on main is `written`. A carrier is ready when its `contract`
   edit task is done and none of its tasks is open. Penguin then reads the head of the feature's fork.
   It records that head as the feature's checkpoint under a signed `checkpoint_area` record of its own,
-  with the protected-path confirmations and the contract diff's facts run an agent's checkpoint asks
+  with the custom path rule confirmations and the contract diff's facts run an agent's checkpoint asks
   for (`recordPenguinCheckpoint`). A carrier waits for that facts run to report, because the promotion
   closes the removed symbols from it. Penguin then asks for the land with no session
   (`requestPenguinLand`): the same readiness checks, block run and promotion with Penguin's own write
@@ -1114,7 +1123,7 @@ main on its own, from the feature's fork, while the feature keeps building on to
 
 - **Asking.** The feature's agent calls `land_feature` with `expand: true`. Penguin checks what a land
   checks first: the latest checkpoint is in the fork and holds main's head (`behind_main` otherwise).
-  A change to a path another person protects waits for that person's confirmation
+  A change to a path under another person's custom path rule waits for that person's confirmation
   (`protected_path_unconfirmed`), as a land does. A feature that is landing answers `busy`.
 - **The impact run.** The Only adds check reuses the facts run a merge plan reads
   ([Steps 1 to 5 in the build](#steps-1-to-5-in-the-build)): the checkpoint's impact report and test
@@ -1670,9 +1679,8 @@ People see only the exceptions in this table. Everything else proceeds without t
 
 | Exception | Goes to |
 |---|---|
-| A new feature starts in an area another running feature covers | The person whose agent works in that area; the start waits for their approval |
 | A plan part fails a check of [Advance notice](#advance-notice) step 3 | That part's author, once |
-| A plan touches a protected path | The scope's DRI, who confirms the final lines |
+| A plan touches a path under a custom path rule | The scope's DRI, who confirms the final lines |
 | A review form reports a broken invariant, or a side-by-side run shows a difference on a protected invariant | That scope's DRI |
 | A check fails in an area with no tests and no type coverage | That scope's DRI |
 | Agents pass a fix back and forth past the project's round limit (default 3) | The originating feature's person |
@@ -1695,19 +1703,21 @@ fails, so a land returns the feature to building.
 Each exception that goes to a scope's DRI goes down the scope's fallback order while the DRI has no
 bridge online and no session ([Teams, DRIs and routing](#teams-dris-and-routing)). The team's lead
 sees each of them, read-only. A plan part that needs its owner goes to them as a `plan_part` item. A part Penguin approved goes
-to its owner as a `penguin_approved` item the owner may reverse. A protected path a part or the
-feature's own change writes goes to the person who answers for that path's scope as a
+to its owner as a `penguin_approved` item the owner may reverse. A custom path rule a part or the
+feature's own change writes under goes to the person who answers for that path's scope as a
 `protected_path` item. A part past
 the round limit goes to the originating person as a `round_limit` item
 ([Advance notice in the build](#advance-notice-in-the-build)). A review exception goes to the
 person who answers for the scope as a `review_exception` item. The dashboard inbox shows the plan parts in one card per
-merge plan with each shared review once. It lists a feature's own protected changes under Protected
-paths and review exceptions under their own heading ([dashboard.md](dashboard.md#inbox)).
+merge plan with each shared review once. It lists a feature's own changes under custom path rules
+under Custom path rules and review exceptions under their own heading ([dashboard.md](dashboard.md#inbox)).
 
-The overlapping start is built for features of two different people. The ProjectAgent puts it in
-the covering person's inbox and tells that person's running sessions at their next safe checkpoint
-([Step 3 in the build](#step-3-in-the-build)). The dashboard inbox lists it under Overlapping starts
-with an Approve start control.
+An overlapping start is no exception: at every stage of the review policy Penguin approves it at
+once. It is built for features of two different people. The ProjectAgent writes a signed
+`approve_overlap` record that names the covering person, puts an `overlap_started` item in that
+person's inbox and tells the new feature's sessions at their next safe checkpoint
+([Step 3 in the build](#step-3-in-the-build)). The dashboard inbox lists it under Overlapping starts,
+tagged Approved by Penguin, with no control.
 
 ## Interface
 
@@ -1718,10 +1728,10 @@ with an Approve start control.
 | Org | Each team with its lead, its members' features counted by stage, what waits on its members and how many of its scopes are clean |
 | Team | The engineering manager's home and the landing page: each member with their features as stage pills with counts, their steward's own queue with their builders and what waits on them. Then the team's scopes with their DRIs, the counts of scopes each reads and is read by and its health. Only exceptions are highlighted |
 | Person | What waits on the person, their features with their timeline strips grouped as needing a person, in progress and on main, the scopes they are DRI for and their agents |
-| Approvals inbox | Overlapping starts, plan parts touching the person's code, protected-path confirmations and exceptions. Each item shows the facts behind it: the changed lines in the person's scope, the side-by-side differences and the review form |
+| Approvals inbox | Overlapping starts Penguin told the person of, plan parts touching the person's code, custom path rule confirmations and exceptions. Each item shows the facts behind it: the changed lines in the person's scope, the side-by-side differences and the review form |
 | Feature page | The feature's merge as a timeline of stages with the work that reached other people and at most three summary lines, over four views: Changes (the contract change, each place the plan fixes, its files and their hunks), Pipeline (each stage with its jobs and what they ran), People (the features that read this one and the starts it waited on) and Record |
 | Identities | Creating and editing agent identities with their charters |
-| Review policy | The sandbox's review policy: its preset, who decides each type of approval, the last change and the split of approvals by route. A team lead changes it ([review-policies.md](review-policies.md)) |
+| Review policy | The sandbox's review policy: its stage in the release pipeline, drawn as one row, who decides each type of approval, the last change and the split of approvals by route. A team lead changes it ([review-policies.md](review-policies.md)) |
 
 Every page that shows a check carries a How Penguin validates panel with the six kinds of validation
 and who decides each under the policy ([validation.md](validation.md)). Each check result names its
@@ -1736,7 +1746,7 @@ The ProjectAgent derives each feature's pipeline on every read of the team view 
 (`featurePipeline` in `packages/protocol/src/pipeline.ts`, called from
 `services/project-agent/src/dashboard-views.ts`). Nothing is stored for it. It reads the feature's
 signed records, its overlap locks, its plan's parts as the routing keeps them, the reviews, the fix
-writes, the `check` tool runs, the protected-path confirmations and the split. Every read is the
+writes, the `check` tool runs, the custom path rule confirmations and the split. Every read is the
 ProjectAgent's own SQLite, so the team view derives every feature's strip without reading a plan from a
 feature's Durable Object.
 
@@ -1745,16 +1755,16 @@ split in the split store) or it asked for an expand promotion. Any other feature
 
 | Path | Stage | Jobs |
 |---|---|---|
-| Both | Open | One per overlapping start: passed once approved, needing a person while open |
+| Both | Open | One per overlapping start: passed once approved, which Penguin does at once; needing a person only while a lock opened before #177 is open |
 | Split | Expand | One per expand promotion asked for: running, passed once promoted, failed once returned. Before the first request, one job waits for the expand checkpoint. Each owner's-scope lock the expand opened is a job too |
 | Split | Migrate | One per owner group of the plan's parts: passed once every part of the group is approved |
 | Split | Contract | The retiring symbols: running once Penguin approves the contract step (`contract_proposed`) or the last land asks for its run, waiting again when Penguin withdraws the step, passed once the symbols are removed (`symbols_removed`) or main moved |
-| Split | Done | Main's move, with each protected-path confirmation |
+| Split | Done | Main's move, with each custom path rule confirmation |
 | Plan | Plan | The facts run (running while the check runner holds it) and the newest plan (failed when returned over the break limit). With no plan stored, one plan job waits for it while the reported facts show a place, or passes as No plan needed when they show none. A land asked without a plan needs no plan job |
 | Plan | Review | One per part: waiting with no review yet, running while the runner holds the review or the originating agent revises, needing a person once a review is in, passed once approved, failed past the round limit |
 | Plan | Fixes written | One per part whose fix goes into a running feature's fork: waiting while it waits for the fork's turn, running while queued or granted, passed once written, failed when Penguin refused the pushed commit |
 | Plan | Block checks | A running job while the runner holds a `check` run, then one job per check kind with its target count, and the block run a `land` asked for. Before that block run reports, the kinds come from the newest `check` run with the findings its passing targets still name (the dependency diff's changed library and each place the target imports it). Once it reports, they come from its signed `block_checked` record, which keeps no findings |
-| Plan | Promoted | Each protected-path confirmation and main's move: waiting, running while the block moves main, failed when refused or returned, passed once main moved to the feature's checkpoint |
+| Plan | Promoted | Each custom path rule confirmation and main's move: waiting, running while the block moves main, failed when refused or returned, passed once main moved to the feature's checkpoint |
 
 A run the check runner stopped at the failure limit is a failed job of the stage it served: Plan for a
 facts run, Review for a review or a part trial, Fixes written for a fix write and Block checks for the
@@ -1777,9 +1787,9 @@ feature is building until its agent asks to land. Its pipeline carries `building
 wait even after a `check` run of its own. The dashboard reads its current stage as Building. Once the
 land is asked, its Block checks and Promoted run as for any feature.
 
-A branch is the feature's work reaching another person or their agent: an overlapping start waiting on
-them, a part sent to them, a fix written into their fork, a migration group of theirs or a confirmation
-of their protected path. Its label is one of sent, reviewing, waiting, fix written, approved or needs a
+A branch is the feature's work reaching another person or their agent: an overlapping start on a lock
+opened before #177 that waits on them, a part sent to them, a fix written into their fork, a migration
+group of theirs or a confirmation of their custom path rule. Its label is one of sent, reviewing, waiting, fix written, approved or needs a
 person. A fix waiting for its turn on another person's fork is a `waiting` branch on both features'
 timelines ([Step 4 in the build](#step-4-in-the-build)).
 It names the reviewing agent once a review is in. A branch settles once approved, written or confirmed.

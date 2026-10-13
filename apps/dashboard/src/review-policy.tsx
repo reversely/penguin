@@ -1,6 +1,7 @@
-// The sandbox's review policy on the dashboard (#175, docs/review-policies.md and docs/validation.md):
-// the How Penguin validates panel, the settings view a team lead changes it from and the measured split
-// of approvals on the org and team pages. The shell reads GET /api/review-policy once and hands it down
+// The sandbox's review policy on the dashboard (#175, #177, docs/review-policies.md and
+// docs/validation.md): the release pipeline row whose stage sets the policy, the How Penguin validates
+// panel, the settings view a team lead changes it from and the measured split of approvals on the org
+// and team pages. The shell reads GET /api/review-policy once and hands it down
 // through PolicyContext. Every value renders as React text.
 
 import {
@@ -10,10 +11,9 @@ import {
   APPROVAL_TYPES,
   DEFAULT_REVIEW_POLICY,
   penguinPercent,
+  PIPELINE_STAGES,
   policyName,
   PRESET_POLICIES,
-  REVIEW_PRESET_LABEL,
-  REVIEW_PRESETS,
   VALIDATION_KIND_CHECKS,
   VALIDATION_KIND_LABEL,
   VALIDATION_KINDS,
@@ -21,6 +21,7 @@ import {
   type Decider,
   type ReviewPolicy,
   type ReviewPolicyView,
+  type ReviewPreset,
   type ReviewSplit,
   type ValidationKind,
 } from "@penguin/protocol";
@@ -39,15 +40,61 @@ const DECIDER_LABEL: Readonly<Record<Decider, string>> = { penguin: "Penguin", p
 
 /**
  * Who decides a result of each kind under the policy, as bare labels: one label, or one per policy row
- * when the kind's rows differ, such as `Protected paths: Person` and `Place: Penguin`.
+ * when the kind's rows differ, such as `Custom path rules: Person` and `Place: Penguin`. An
+ * overlapping start opens at every stage and its owner is told.
  */
 export function kindDeciders(policy: ReviewPolicy, kind: ValidationKind): string[] {
   if (kind === "tests") return ["Agent fixes a failure"];
-  if (policy.preset === "production" && kind !== "overlapping_starts") return ["Person"];
+  if (kind === "overlapping_starts") return ["Penguin", "Owner told"];
+  if (policy.preset === "production") return ["Person"];
   const rows = APPROVAL_TYPES.filter((type) => APPROVAL_TYPE_KIND[type] === kind);
   const deciders = new Set(rows.map((type) => policy.rows[type]));
   if (deciders.size === 1) return [DECIDER_LABEL[[...deciders][0] as Decider]];
   return rows.map((type) => `${APPROVAL_TYPE_LABEL[type]}: ${DECIDER_LABEL[policy.rows[type]]}`);
+}
+
+/** What each stage's preset sends to a person, as the label under the stage. */
+const STAGE_SENDS: Readonly<Record<ReviewPreset, string>> = {
+  local_development: "Penguin decides every part",
+  central_development: "Person decides flagged parts",
+  pre_production: "Person decides flagged parts and migration differences",
+  production: "Person decides every part",
+};
+
+/**
+ * The release pipeline in one row, left to right, with the stage the policy sets marked. Test shares
+ * Pre-production's setting. With `onSelect` each stage with its own setting is a choice.
+ */
+export function ReleasePipeline({ preset, onSelect }: { readonly preset: ReviewPreset; readonly onSelect?: (preset: ReviewPreset) => void }) {
+  return (
+    <div className="timeline release-pipeline" role={onSelect === undefined ? undefined : "radiogroup"} aria-label="Release pipeline">
+      <ol className="timeline-bar cols-5">
+        {PIPELINE_STAGES.map((stage, index) => {
+          const current = stage.preset === preset;
+          // Test sits before Pre-production and takes its setting.
+          const shared = PIPELINE_STAGES[index + 1]?.preset === stage.preset;
+          const body = (
+            <>
+              <span className="stage-dot" aria-hidden="true" />
+              <span className="stage-name">{stage.label}</span>
+              <span className="stage-meta">{shared ? "Same setting as Pre-production" : STAGE_SENDS[stage.preset]}</span>
+            </>
+          );
+          return (
+            <li key={stage.label} className="stage" data-current={current ? true : undefined} aria-current={onSelect === undefined && current ? "step" : undefined}>
+              {onSelect === undefined || shared ? (
+                <span className="stage-node">{body}</span>
+              ) : (
+                <button type="button" role="radio" aria-checked={current} className="stage-node" onClick={() => onSelect(stage.preset)}>
+                  {body}
+                </button>
+              )}
+            </li>
+          );
+        })}
+      </ol>
+    </div>
+  );
 }
 
 /** The panel's anchor: a link to it opens the panel. */
@@ -70,6 +117,7 @@ export function ValidationPanel({ navigate, link = true }: { readonly navigate: 
       {/* The body renders only while the panel is open, as a fold's does (fold.tsx). */}
       {open ? (
         <>
+          {link ? <ReleasePipeline preset={policy.preset} /> : null}
           <div className="table-scroll">
             <table className="people-table hierarchy-table validation-table">
               <thead>
@@ -218,7 +266,7 @@ export function PolicyView({ view, navigate, onSignedOut, onChanged }: PolicyVie
       <ValidationPanel navigate={navigate} link={false} />
       <p className="policy-change muted">
         {view.changedBy === null || view.changedAt === null ? (
-          "Dev by default"
+          "Central development by default"
         ) : (
           <>
             Changed by <PersonPill id={view.changedBy} navigate={navigate} /> <time dateTime={view.changedAt}>{TIME.format(Date.parse(view.changedAt))}</time>
@@ -229,24 +277,9 @@ export function PolicyView({ view, navigate, onSignedOut, onChanged }: PolicyVie
       {!editable && !view.locked ? <p className="muted">Please ask a team lead to change the policy</p> : null}
       <section className="team-section" aria-labelledby="policy-preset">
         <h2 id="policy-preset" className="team-section-heading">
-          Preset
+          Stage
         </h2>
-        <div className="record-filter" role="radiogroup" aria-label="Preset">
-          {REVIEW_PRESETS.map((preset) => (
-            <button
-              key={preset}
-              type="button"
-              role="radio"
-              className="pill pill-filter"
-              aria-checked={draft.preset === preset}
-              disabled={!editable}
-              onClick={() => setDraft(PRESET_POLICIES[preset])}
-            >
-              {REVIEW_PRESET_LABEL[preset]}
-            </button>
-          ))}
-        </div>
-        <p className="muted">{PRESET_LINE[draft.preset]}</p>
+        <ReleasePipeline preset={draft.preset} {...(editable ? { onSelect: (preset: ReviewPreset) => setDraft(PRESET_POLICIES[preset]) } : {})} />
       </section>
       <section className="team-section" aria-labelledby="policy-rows">
         <h2 id="policy-rows" className="team-section-heading">
@@ -266,7 +299,7 @@ export function PolicyView({ view, navigate, onSignedOut, onChanged }: PolicyVie
                 <tr key={type}>
                   <th scope="row">
                     {APPROVAL_TYPE_LABEL[type]}
-                    {/* Protected paths and Place are two rows of one kind, which their sub-line names. */}
+                    {/* Custom path rules and Place are two rows of one kind, which their sub-line names. */}
                     {VALIDATION_KIND_LABEL[APPROVAL_TYPE_KIND[type]] === APPROVAL_TYPE_LABEL[type] ? null : (
                       <span className="muted hierarchy-sub">{VALIDATION_KIND_LABEL[APPROVAL_TYPE_KIND[type]]}</span>
                     )}
@@ -317,10 +350,3 @@ export function PolicyView({ view, navigate, onSignedOut, onChanged }: PolicyVie
     </article>
   );
 }
-
-/** What each preset sends to a person, in one clause. */
-const PRESET_LINE: Readonly<Record<ReviewPolicy["preset"], string>> = {
-  throwaway: "Penguin decides every part whose tests pass and tells the owners",
-  dev: "A person decides every part a check sends to them",
-  production: "A person decides every part",
-};

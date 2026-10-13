@@ -10,7 +10,7 @@
 // beside its block runs (block-store.ts). Nothing here signs or checks a plan: propose-plan.ts does
 // both on the ProjectAgent, which holds the service key.
 
-import type { Plan, PlanPart, PlanPartState } from "@penguin/protocol";
+import { readPreset, type Plan, type PlanPart, type PlanPartState } from "@penguin/protocol";
 
 export type { Plan, PlanPart };
 
@@ -206,9 +206,11 @@ export class PlanStore implements PlanKeeper {
 
 /**
  * A part as its row holds it. A row kept before advance notice (#90) has no revision or round count:
- * it is the proposed revision with no change asked for.
+ * it is the proposed revision with no change asked for. A route approved before #177 names its
+ * preset by an old name, which reads as the new one.
  */
 function storedPart(json: string): PlanPart {
   const part = JSON.parse(json) as Partial<PlanPart> & Omit<PlanPart, "revision" | "changeRequests" | "changeRequest">;
-  return { ...part, revision: part.revision ?? 1, changeRequests: part.changeRequests ?? 0, changeRequest: part.changeRequest ?? null };
+  const route = part.route ? { ...part.route, preset: readPreset(part.route.preset) ?? part.route.preset } : part.route;
+  return { ...part, route, revision: part.revision ?? 1, changeRequests: part.changeRequests ?? 0, changeRequest: part.changeRequest ?? null };
 }

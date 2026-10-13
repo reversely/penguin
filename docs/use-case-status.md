@@ -30,7 +30,7 @@ the preview seed's run of the four cases (`scripts/preview/seed.ts`), checked by
 
 | Step | State | Evidence or ticket |
 |---|---|---|
-| Open: Hugo's `structured-logs` starts from main after case 1 | works | Larder run. Noor's `pagination` declares `platform`, so Noor approves the start |
+| Open: Hugo's `structured-logs` starts from main after case 1 | works | Larder run. Noor's `pagination` declares `platform`, so Penguin approves the start and tells Noor |
 | Plan proposed at `local-day`, once `start_of_local_day()` exists | works | Larder run: parts for `holiday-closures` and `weekly-digest` |
 | A test a fork already fails is not charged to the change | works | Larder run: `japan-launch` fails its yen test on its own head, so the facts run leaves it out and the plan has no part there (#170) |
 | Elif's and Sam's parts approved by Penguin; no one asked; both told | works | Larder run: both trials pass and both forms hold |
@@ -41,7 +41,7 @@ the preview seed's run of the four cases (`scripts/preview/seed.ts`), checked by
 
 | Step | State | Evidence or ticket |
 |---|---|---|
-| Open: Hugo's `dependency-audit` starts from main after case 2 | works | Larder run. Noor approves the start beside `pagination` |
+| Open: Hugo's `dependency-audit` starts from main after case 2 | works | Larder run. Penguin approves the start beside `pagination` and tells Noor |
 | Dependency diff names `instant-payouts` and `tip-jar` | works | Larder run: the agent's `check` names the places those two forks import the upgraded client. It also names Hugo's own `retry-budget` and `rounding-mode` in platform |
 | Kofi's and Priya's parts approved by Penguin; no one asked; both told | works | Larder run |
 | Fixes written and land as one block | works | Larder run, as in case 1. `japan-launch`'s own yen failure fails no block check (#171) |
@@ -53,7 +53,7 @@ The Larder run carries the fixture's one split feature from open to contract aft
 
 | Step | State | Evidence or ticket |
 |---|---|---|
-| Overlapping start approved | works | Ines's start waits on Hugo's rounding-mode and Tomas's three orders features; each approves (preview seed). The decline is #88 on the fixture |
+| Overlapping start approved | works | Ines's start overlaps Hugo's rounding-mode and Tomas's three orders features; Penguin approves each start at once and tells Hugo and Tomas (preview seed, #177) |
 | Fixture modelled as one split feature | works | `money-minor-units` holds the expand and the contract; nine blocks hold each owner's code on main (#118) |
 | Sort of the first checkpoint | works | The first checkpoint is the expand, so Penguin sorts 25 additive entries. The plan Ines's agent proposes there declares the six float functions retiring. Penguin checks that each exists on main, has callers outside Ines's scopes and has its replacement in the checkpoint, then records the split from the declaration at that checkpoint; the retiring contracts are that split's, retired with the plan's rules when the expand reaches main (`tests/cases/cases.test.ts`, `money-split.test.ts`, #149). The `Expand first` answer for an incompatible checkpoint is #116's own test |
 | Expand promoted on its own | partial | The preview seed moves main to the expand; the walkthrough lands it with `land_feature` and `expand: true`, which asks Tomas once for orders. #115 live proof on helpful-fix data |

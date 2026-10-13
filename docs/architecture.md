@@ -7,6 +7,12 @@
 > ([Landing a feature](#landing-a-feature)). The owner forks still carry the Huddle flow. The
 > `record` repo takes over from `issues`.
 
+Code ships through five stages: local development, central development, test, pre-production and
+production. Penguin runs a sandbox where the work coding agents do in local development merges. A
+sandbox is one Penguin project: its `base` repo and the forks its agents work in. A team can run a
+sandbox at any of the five stages. The sandbox's review policy names its stage, which sets how much of
+the review Penguin does and how much people do ([review-policies.md](review-policies.md)).
+
 Penguin gives a team whose members each run their own coding agents one shared place to coordinate:
 issues that people and agents both read and write, plus a check that runs one owner's unfinished
 work against every other owner's before either reaches the main branch. This page names each piece,
@@ -152,9 +158,9 @@ The sandbox's review policy (`review-policy.ts`, [review-policies.md](review-pol
 table of its own: it is the newest `review_policy_changed` record in `FeatureRecord` under the
 project folder `_project` whose signature verifies. The ProjectAgent keeps the policy it read in
 memory until a newer record is stored.
-`ProtectedChange` (`protected-change.ts`) holds, per feature and protecting person, the lines the
-feature's own change writes under a protected path at its latest checkpoint and whether that person
-confirmed them.
+`ProtectedChange` (`protected-change.ts`) holds, per feature and person, the lines the feature's
+own change writes under that person's custom path rules at its latest checkpoint and whether that
+person confirmed them.
 `FixWriteGrant` (`fix-write.ts`) holds each write asked for, one per part revision, with its writer,
 the fork head it must fast-forward and the commit once kept. `AnnouncedPlan` and `PlanCoverage`
 (`plan-coverage.ts`) hold each feature's newest plan with its area and the running features the plan
@@ -198,16 +204,18 @@ matches a pending operation clears its `PendingOp` row.
    checks the scopes and contracts against `penguin/scopes.json` on main. It stores the feature with a
    signed `open_feature` record and makes the session an agent of the feature. It then compares the
    area with every running feature. Each feature that covers part of the area gets an
-   `OverlapLock` and an inbox item for its person. Each feature that reads the area through a scope
-   dependency is stored as a dependent. A signed `overlap_check` record states both.
+   `OverlapLock`, which Penguin approves at once with a signed `approve_overlap` record that names
+   the feature's person. That person gets an `overlap_started` inbox item. Each feature that reads
+   the area through a scope dependency is stored as a dependent. A signed `overlap_check` record
+   states both.
 2. While the feature has no fork, the Worker forks the `base` repo into `feature-<id>` and records
    the fork. An existing repo counts as forked, so a second open makes no second fork.
 3. For a session, the Worker asks the ProjectAgent for a grant and mints a `write` token on
-   `feature-<id>`. The token goes back in the tool's answer and nowhere else. While a lock is open
-   the ProjectAgent grants nothing. The covering person approves on the dashboard through
+   `feature-<id>`. The token goes back in the tool's answer and nowhere else. No overlapping start
+   waits, so the first `feature_token` call gets its token. A lock opened before #177 that is still
+   open holds the token until the covering person approves on the dashboard through
    `POST /api/overlaps/approve`. The Worker names the approver from the session. The ProjectAgent
-   checks that this person owns the covering feature and writes a signed `approve_overlap`
-   record. The session's next `feature_token` call then gets its token.
+   checks that this person owns the covering feature and writes a signed `approve_overlap` record.
 4. Each checkpoint on the fork, from `report_checkpoint` or the bridge's `POST /checkpoints`, must be
    in the fork. The ProjectAgent diffs it against its baseline on main and adds the changed paths
    and their scopes to the declared area.
@@ -235,7 +243,7 @@ matches a pending operation clears its `PendingOp` row.
 
 1. The feature's agent calls `land_feature`. The ProjectAgent checks that the feature's latest
    checkpoint already holds main's head, that every part of its plan is approved and that every
-   person whose protected path the feature's own change writes confirmed the lines. Each fix for a
+   person whose custom path rule the feature's own change writes under confirmed the lines. Each fix for a
    running feature must be written and still under that fork's head. Each fix for code on main must be
    in the checkpoint. It then asks the FeatureAgent to open a block run: the checkpoint merged onto
    main and onto every other running feature's fork head. The feature is `landing`.

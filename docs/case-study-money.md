@@ -161,14 +161,14 @@ with no caller. The feature lands and Penguin closes the six retiring records un
 
 | | Count |
 |---|---|
-| Starts approved beside a running feature | 4: Hugo once and Tomas three times |
+| Starts Penguin approved beside a running feature | 4: Hugo told once and Tomas three times |
 | Plans with places proposed by Ines's agent | 0: the expand's plan has none |
 | Migration plans Penguin proposed | 10, one per owner. One more for Ade held a part that the next count dropped |
 | Migration parts | 33: 23 readers' own changes, Noor's pagination and 9 owners' code on main |
 | Parts written by the runner, by the rules | 10: Penguin approved Kofi's `instant-payouts`; 9 failed their trial |
 | Edit tasks for builders and stewards | 32 |
 | Review exceptions | 1: Rahul's broken `tax-per-line` invariant on the whole-order step |
-| Protected-path confirmations | 0: Jun's own steward writes the analytics block |
+| Custom path rule confirmations | 0: Jun's own steward writes the analytics block |
 | Times main moved | 12: Lena's stacking, the expand, 9 blocks and the contract |
 | Callers of the float API on main at the end | 0 |
 

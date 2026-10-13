@@ -36,9 +36,10 @@ export interface Scope {
    */
   readonly contracts: readonly string[];
   /**
-   * Paths inside the scope whose owner confirms the final lines of any merge plan that touches them
-   * (PRD 0.4 sections 7 and 9), each normalized; a path protects itself and everything under it.
-   * Empty when the scope file lists none.
+   * The scope's custom path rules, `custom_paths` in the scope file: paths inside the scope whose
+   * owner confirms the final lines of any merge plan that touches them (PRD 0.4 sections 7 and 9),
+   * each normalized; a path covers itself and everything under it. Empty when the scope file lists
+   * none. The field keeps the earlier name `protectedPaths`, as do the records that cite it.
    */
   readonly protectedPaths: readonly string[];
 }
@@ -193,7 +194,7 @@ export function parseScopeMap(json: unknown, options: ParseScopeMapOptions = {})
       report(at, "must be an object");
       return;
     }
-    const { id, name, paths, test_command, depends_on, contracts, protected_paths } = raw;
+    const { id, name, paths, test_command, depends_on, contracts, custom_paths, protected_paths } = raw;
     if (!isNonEmptyString(id)) report(`${at}.id`, "is missing or empty");
     if (!isNonEmptyString(name)) report(`${at}.name`, "is missing or empty");
     const responsibility = scopeResponsibility(raw, at, report, knownOwners, options.teams);
@@ -275,13 +276,18 @@ export function parseScopeMap(json: unknown, options: ParseScopeMapOptions = {})
       });
     }
 
-    // Whether each protected path falls inside this scope is checked once every path is claimed.
+    // Custom path rules: `custom_paths`, or `protected_paths`, the key's earlier name, read as an alias
+    // (#177). Whether each path falls inside this scope is checked once every path is claimed.
+    const customKey = custom_paths !== undefined ? "custom_paths" : "protected_paths";
+    const customPaths = custom_paths ?? protected_paths;
     const scopeProtected: string[] = [];
-    if (protected_paths !== undefined && !Array.isArray(protected_paths)) {
-      report(`${at}.protected_paths`, "must be an array of paths inside the scope when present");
+    if (custom_paths !== undefined && protected_paths !== undefined) {
+      report(`${at}.protected_paths`, "repeats custom_paths under its earlier name; please keep custom_paths only");
+    } else if (customPaths !== undefined && !Array.isArray(customPaths)) {
+      report(`${at}.${customKey}`, "must be an array of paths inside the scope when present");
     } else {
-      (protected_paths ?? []).forEach((rawPath: unknown, protectedIndex: number) => {
-        const field = `${at}.protected_paths[${protectedIndex}]`;
+      ((customPaths as unknown[] | undefined) ?? []).forEach((rawPath: unknown, protectedIndex: number) => {
+        const field = `${at}.${customKey}[${protectedIndex}]`;
         if (typeof rawPath !== "string") {
           report(field, "must be a string");
           return;
@@ -514,8 +520,8 @@ export function scopeForPath(map: ScopeMap, path: string): string | undefined {
 }
 
 /**
- * The protected path of `map` that covers repository path `path`, with the scope that protects it,
- * or undefined. A protected path covers itself and everything under it.
+ * The custom path rule of `map` that covers repository path `path`, with the scope that sets it,
+ * or undefined. A custom path covers itself and everything under it.
  *
  * Raises:
  *   InvalidPathError: when the path is absolute, empty or contains `..`.

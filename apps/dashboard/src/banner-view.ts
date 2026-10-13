@@ -4,7 +4,7 @@
 //
 // A banner comes from the person's own approvals inbox, which the shell already reads: a colleague's
 // feature has a banner while the inbox holds an item of it for the person (a part to decide or one
-// Penguin approved for them, a protected-path confirmation, an overlapping start), and its block has
+// Penguin approved for them, a custom path rule confirmation, an overlapping start), and its block has
 // not reached main. Once the person approved their last part, confirmed their lines and approved the
 // start, the inbox holds nothing of the feature and the banner clears.
 
@@ -46,7 +46,7 @@ export function colleagueBanners(inbox: { readonly overlaps: readonly OverlapReq
   for (const change of inbox.plan.protectedChanges) {
     if (change.state === "pending") add(change.feature, change.person, true, "changes");
   }
-  for (const request of inbox.overlaps) add(request.blockedFeature, request.blockedPerson, true, null);
+  for (const request of inbox.overlaps) add(request.blockedFeature, request.blockedPerson, !request.told, null);
   return [...banners.entries()]
     .map(([feature, banner]) => ({ feature, person: banner.person, needsYou: banner.needsYou, path: changePath(feature, banner.anchor) }))
     .sort((a, b) => Number(b.needsYou) - Number(a.needsYou) || (a.feature < b.feature ? -1 : a.feature > b.feature ? 1 : 0));
@@ -68,7 +68,7 @@ export function viewerToDos(page: Pick<FeaturePage, "feature" | "plan" | "pipeli
   }
   for (const stage of page.pipeline.stages) {
     for (const job of stage.jobs) {
-      if (job.fact.kind === "protected" && job.fact.owner === viewer && job.fact.state === "pending") todos.push({ text: "Confirm your protected lines", anchor: null });
+      if (job.fact.kind === "protected" && job.fact.owner === viewer && job.fact.state === "pending") todos.push({ text: "Confirm your custom path rule lines", anchor: null });
     }
   }
   for (const lock of page.waitingOn) if (lock.person === viewer && lock.state === "open") todos.push({ text: `Approve its start beside ${lock.feature}`, anchor: null });

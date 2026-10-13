@@ -925,7 +925,7 @@ export function createPenguinMcpServer(
         "it or asks for a change on the dashboard; you never approve. `plan` is your feature's newest merge plan " +
         "with where each part stands: answer each `change_requested` part with revise_plan_part. `reviewPolicy` names the " +
         "sandbox's review policy. Each part's `routing` says who decides it and why, with the kinds of validation " +
-        "(Tests, Logic, Data matching, Stored data, Protected paths and place, Overlapping starts) whose checks marked it; " +
+        "(Tests, Logic, Data matching, Stored data, Custom path rules and place, Overlapping starts) whose checks marked it; " +
         "`approvedVia` says whether Penguin approved it under the policy or a person on the dashboard. `reviewResults` " +
         "gives the check runner's verdict on each review you submitted. `landing` says where your feature's " +
         "landing stands: each block run with its state, the failing checks and one next step per failure, and " +
@@ -1293,7 +1293,7 @@ function registerFeatureTools(server: McpServer, features: McpFeatures): void {
         "reports; call again later. `missing` lists every place without a part and every part Penguin cannot " +
         "read or apply, and every name a patch imports that neither your checkpoint nor the patch defines: check that name in " +
         "first, then propose. A part needs a person when a check fails: its tests on the merged tree with the fix, its review form, " +
-        "the side-by-side run, a protected path, or a change outside its place. A plan with more such parts than the project's " +
+        "the side-by-side run, a custom path rule, or a change outside its place. A plan with more such parts than the project's " +
         "break limit is `returned` with them under `inPerson`: split it. A complete plan is `stored` as a signed record, and " +
         "Penguin approves each part whose checks are all clean; its `approvedBy` is then `penguin`.",
       inputSchema: proposePlanInput,

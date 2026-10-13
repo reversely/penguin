@@ -115,7 +115,7 @@ export function jobText(fact: JobFact): { readonly label: string; readonly fact:
     case "promotion":
       return { label: "Main", fact: PROMOTION_FACT[fact.state] + (fact.mainAfter === null ? "" : ` to ${shortSha(fact.mainAfter)}`) };
     case "protected":
-      return { label: `Protected lines of ${fact.owner}`, fact: fact.state === "confirmed" ? "Confirmed" : `Waits for ${fact.owner}` };
+      return { label: `Custom path rule lines of ${fact.owner}`, fact: fact.state === "confirmed" ? "Confirmed" : `Waits for ${fact.owner}` };
     case "expand":
       return { label: fact.checkpoint === null ? "Expand" : `Expand ${shortSha(fact.checkpoint)}`, fact: EXPAND_FACT[fact.state] };
     case "group":

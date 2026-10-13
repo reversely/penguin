@@ -1,17 +1,22 @@
 // The six kinds of validation and the review policy that says who decides each (#175, docs/validation.md
 // and docs/review-policies.md).
 //
-// Every check Penguin runs falls under one kind: Tests, Logic, Data matching, Stored data, Protected
-// paths and place, Overlapping starts. The dashboard, `get_work`, the signed records and the docs use
-// these names.
+// Every check Penguin runs falls under one kind: Tests, Logic, Data matching, Stored data, Custom
+// path rules and place, Overlapping starts. The dashboard, `get_work`, the signed records and the docs
+// use these names. A custom path rule is a path a scope's owner lists under `custom_paths` in
+// `penguin/scopes.json` (#177): a change to a file under it gives that owner its lines to confirm. The
+// wire and record identifiers keep the earlier name `protected_paths` so that signed records still read.
 //
-// A review policy is one per sandbox, a Penguin project: its base repo and the forks agents work in.
-// For each type of approval it says who decides a part the type's check flags: Penguin, or the person
-// the part routes to (`partRouting`). Tests are no type: a failed test always goes back to the agent,
-// and Penguin never approves a part whose tests have not passed. A part flagged by several types goes
-// to a person when any of them is set to person. Three presets fill the table; a sandbox may change
-// single rows after picking one. Production sends every part to a person whatever its rows say, as
-// PENGUIN_PLAN_ADMIN_MODE does; that setting locks the policy to Production.
+// Code ships through local development, central development, test, pre-production and production. A
+// team can use Penguin at any of these stages. Where it is used sets how much review is machine
+// and how much is human (#177). The review policy is that dial: one per sandbox, a Penguin project,
+// its base repo and the forks agents work in. Its presets are the stages. For each type of approval
+// it says who decides a part the type's check flags: Penguin, or the person the part routes to
+// (`partRouting`). Tests are no type: a failed test always goes back to the agent, and Penguin never
+// approves a part whose tests have not passed. A part flagged by several types goes to a person when
+// any of them is set to person. A sandbox may change single rows after picking a preset. Production
+// sends every part to a person whatever its rows say, as PENGUIN_PLAN_ADMIN_MODE does; that setting
+// locks the policy to Production.
 
 import type { PartRouting, PartRoutingReason } from "./plan-approval.ts";
 import type { BlockCheckName } from "./block-check.ts";
@@ -28,7 +33,7 @@ export const VALIDATION_KIND_LABEL: Readonly<Record<ValidationKind, string>> = {
   logic: "Logic",
   data_matching: "Data matching",
   stored_data: "Stored data",
-  protected_paths_and_place: "Protected paths and place",
+  protected_paths_and_place: "Custom path rules and place",
   overlapping_starts: "Overlapping starts",
 };
 
@@ -38,21 +43,24 @@ export const VALIDATION_KIND_CHECKS: Readonly<Record<ValidationKind, string>> = 
   logic: "The owner's agent fills in a review form saying each declared invariant still holds",
   data_matching: "A side-by-side run of main and the fork gives the same output on each protected invariant's examples",
   stored_data: "A changed stored shape that another scope reads comes with a migration or backfill",
-  protected_paths_and_place: "The fix writes no protected path and no file outside the part's scopes",
-  overlapping_starts: "A new feature's area does not overlap another person's running feature",
+  protected_paths_and_place: "The fix touches no path under an owner's custom path rule and no file outside the part's scopes",
+  overlapping_starts: "Where a new feature's area overlaps another person's running feature",
 };
 
-/** The policy's rows: one per type of approval. Protected paths and Place are two rows of one kind. */
-export const APPROVAL_TYPES = ["logic", "data_matching", "stored_data", "protected_paths", "place", "overlapping_starts"] as const;
+/**
+ * The policy's rows: one per type of approval. Custom path rules and Place are two rows of one kind.
+ * Overlapping starts is a kind and no row: Penguin lets every overlapping start open, records the
+ * overlap and tells the owner of the running feature, at every stage (#177).
+ */
+export const APPROVAL_TYPES = ["logic", "data_matching", "stored_data", "protected_paths", "place"] as const;
 export type ApprovalType = (typeof APPROVAL_TYPES)[number];
 
 export const APPROVAL_TYPE_LABEL: Readonly<Record<ApprovalType, string>> = {
   logic: "Logic",
   data_matching: "Data matching",
   stored_data: "Stored data",
-  protected_paths: "Protected paths",
+  protected_paths: "Custom path rules",
   place: "Place",
-  overlapping_starts: "Overlapping starts",
 };
 
 export const APPROVAL_TYPE_KIND: Readonly<Record<ApprovalType, ValidationKind>> = {
@@ -61,30 +69,61 @@ export const APPROVAL_TYPE_KIND: Readonly<Record<ApprovalType, ValidationKind>> 
   stored_data: "stored_data",
   protected_paths: "protected_paths_and_place",
   place: "protected_paths_and_place",
-  overlapping_starts: "overlapping_starts",
 };
 
-/** What flags a part or a start under each row, in one line. */
+/** What flags a part under each row, in one line. */
 export const APPROVAL_TYPE_FLAG: Readonly<Record<ApprovalType, string>> = {
   logic: "The review form reports an invariant not holding",
   data_matching: "The side-by-side run differs on a protected invariant",
   stored_data: "A changed stored shape has no migration or backfill",
-  protected_paths: "The fix touches a path a scope's owner protects",
+  protected_paths: "The fix touches a path under a scope owner's custom path rule",
   place: "The fix reaches outside the part's scopes",
-  overlapping_starts: "A feature's start overlaps another person's running feature",
 };
 
 export const DECIDERS = ["penguin", "person"] as const;
 export type Decider = (typeof DECIDERS)[number];
 
-export const REVIEW_PRESETS = ["throwaway", "dev", "production"] as const;
+/** The presets, one per stage of the release pipeline Penguin can sit at, from least to most human review. */
+export const REVIEW_PRESETS = ["local_development", "central_development", "pre_production", "production"] as const;
 export type ReviewPreset = (typeof REVIEW_PRESETS)[number];
 
 export const REVIEW_PRESET_LABEL: Readonly<Record<ReviewPreset, string>> = {
-  throwaway: "Throwaway",
-  dev: "Dev",
+  local_development: "Local development",
+  central_development: "Central development",
+  pre_production: "Pre-production",
   production: "Production",
 };
+
+/**
+ * Migration note (#177): the preset names #175 stored before the presets took the pipeline's stage
+ * names. A policy or a route saved under one reads as its new name.
+ */
+const RENAMED_PRESETS: Readonly<Record<string, ReviewPreset>> = { throwaway: "local_development", dev: "central_development" };
+
+/** A stored preset name as a preset: a current name, an old name read as its new one, or undefined. */
+export function readPreset(value: unknown): ReviewPreset | undefined {
+  if (typeof value !== "string") return undefined;
+  if ((REVIEW_PRESETS as readonly string[]).includes(value)) return value as ReviewPreset;
+  return Object.hasOwn(RENAMED_PRESETS, value) ? RENAMED_PRESETS[value] : undefined;
+}
+
+/** The preset's name, for a preset read from storage under an old name too. */
+function presetLabel(preset: string): string {
+  const read = readPreset(preset);
+  return read === undefined ? preset : REVIEW_PRESET_LABEL[read];
+}
+
+/**
+ * The release pipeline as the dashboard draws it, left to right. Test has no preset of its own: it
+ * shares Pre-production's.
+ */
+export const PIPELINE_STAGES: readonly { readonly label: string; readonly preset: ReviewPreset }[] = [
+  { label: "Local development", preset: "local_development" },
+  { label: "Central development", preset: "central_development" },
+  { label: "Test", preset: "pre_production" },
+  { label: "Pre-production", preset: "pre_production" },
+  { label: "Production", preset: "production" },
+];
 
 /** A sandbox's review policy: the preset it started from and who decides each type. */
 export interface ReviewPolicy {
@@ -96,17 +135,20 @@ const every = (decider: Decider): Record<ApprovalType, Decider> =>
   Object.fromEntries(APPROVAL_TYPES.map((type) => [type, decider])) as Record<ApprovalType, Decider>;
 
 /**
- * Throwaway: Penguin decides every type and the owners are told. Dev: today's rule, a person decides
- * every flagged part and every overlapping start. Production: a person decides every part.
+ * Local development: Penguin decides every type and the owners are told. Central development: today's
+ * rule, a person decides every flagged part. Pre-production: the same rows,
+ * and a rule-written migration part whose only failure is a Data matching difference goes to a person
+ * rather than back to an agent. Production: a person decides every part.
  */
 export const PRESET_POLICIES: Readonly<Record<ReviewPreset, ReviewPolicy>> = {
-  throwaway: { preset: "throwaway", rows: every("penguin") },
-  dev: { preset: "dev", rows: every("person") },
+  local_development: { preset: "local_development", rows: every("penguin") },
+  central_development: { preset: "central_development", rows: every("person") },
+  pre_production: { preset: "pre_production", rows: every("person") },
   production: { preset: "production", rows: every("person") },
 };
 
-/** The policy of a sandbox no one has set: Dev, Penguin's rule before policies existed. */
-export const DEFAULT_REVIEW_POLICY: ReviewPolicy = PRESET_POLICIES.dev;
+/** The policy of a sandbox no one has set: Central development, Penguin's rule before policies existed. */
+export const DEFAULT_REVIEW_POLICY: ReviewPolicy = PRESET_POLICIES.central_development;
 
 /** Whether a row differs from the policy's preset. */
 export function policyChanged(policy: ReviewPolicy): boolean {
@@ -114,7 +156,7 @@ export function policyChanged(policy: ReviewPolicy): boolean {
   return APPROVAL_TYPES.some((type) => policy.rows[type] !== preset[type]);
 }
 
-/** The policy's name: `Dev policy`, or `Dev policy, changed` when a row differs from Dev's. */
+/** The policy's name: `Central development policy`, with `, changed` when a row differs from its preset's. */
 export function policyName(policy: ReviewPolicy): string {
   return `${REVIEW_PRESET_LABEL[policy.preset]} policy${policyChanged(policy) ? ", changed" : ""}`;
 }
@@ -127,10 +169,12 @@ export function parseReviewPolicy(value: unknown): ReviewPolicy | string {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return "the policy must be an object with preset and rows";
   const { preset, rows, ...rest } = value as Record<string, unknown>;
   if (Object.keys(rest).length > 0) return "the policy takes only preset and rows";
-  if (typeof preset !== "string" || !(REVIEW_PRESETS as readonly string[]).includes(preset)) return `preset must be one of ${REVIEW_PRESETS.join(", ")}`;
+  const read = readPreset(preset);
+  if (read === undefined) return `preset must be one of ${REVIEW_PRESETS.join(", ")}`;
   if (typeof rows !== "object" || rows === null || Array.isArray(rows)) return "rows must name penguin or person for each type of approval";
   const named = rows as Record<string, unknown>;
-  const unknownRow = Object.keys(named).find((key) => !(APPROVAL_TYPES as readonly string[]).includes(key));
+  // Migration note (#177): a policy #175 stored names an overlapping_starts row, which no longer exists.
+  const unknownRow = Object.keys(named).find((key) => key !== "overlapping_starts" && !(APPROVAL_TYPES as readonly string[]).includes(key));
   if (unknownRow !== undefined) return `rows name no type ${unknownRow.slice(0, 40)}`;
   const parsed: Partial<Record<ApprovalType, Decider>> = {};
   for (const type of APPROVAL_TYPES) {
@@ -138,7 +182,7 @@ export function parseReviewPolicy(value: unknown): ReviewPolicy | string {
     if (decider !== "penguin" && decider !== "person") return `rows.${type} must be penguin or person`;
     parsed[type] = decider;
   }
-  return { preset: preset as ReviewPreset, rows: parsed as Record<ApprovalType, Decider> };
+  return { preset: read, rows: parsed as Record<ApprovalType, Decider> };
 }
 
 /** The policy in force: the stored one, or Production locked while PENGUIN_PLAN_ADMIN_MODE is on. */
@@ -244,8 +288,8 @@ function typesOf(reasons: readonly PartRoutingReason[]): ApprovalType[] {
 }
 
 /**
- * Who decides a plan part under the policy in force, from its routing (`partRouting`). Under Dev it
- * gives today's rule: Penguin approves exactly the parts with no reason.
+ * Who decides a plan part under the policy in force, from its routing (`partRouting`). Under Central
+ * development it gives today's rule: Penguin approves exactly the parts with no reason.
  */
 export function policyRoute(inForce: PolicyInForce, routing: PartRouting): PolicyRoute {
   const { policy, locked } = inForce;
@@ -267,8 +311,9 @@ export function policyRoute(inForce: PolicyInForce, routing: PartRouting): Polic
 /**
  * Who decides a rule-written migration part after its trial (`ruleWrittenRouting`). A failing test or
  * a protected invariant that differs goes back to an agent as an edit task, as today. A flagged type
- * set to Penguin no longer stops Penguin. Production and admin mode send a part whose trial passed to
- * a person.
+ * set to Penguin no longer stops Penguin. Pre-production sends a part whose only failure is a Data
+ * matching difference to a person. Production and admin mode send a part whose trial passed to a
+ * person.
  */
 export function migrationPolicyRoute(
   inForce: PolicyInForce,
@@ -283,6 +328,10 @@ export function migrationPolicyRoute(
   const decided = ruleWrittenRouting(counted);
   const base = { preset: policy.preset, changed: policyChanged(policy), locked, kinds: kindsOf(reasons) };
   const flagged = typesOf(reasons);
+  // Pre-production: a part whose only failure is a Data matching difference goes to a person, not to an edit task.
+  if (decided.route === "task" && !locked && policy.preset === "pre_production" && decided.reasons.every((reason) => reason.kind === "protected_difference")) {
+    return { route: "person", reasons: decided.reasons, policy: { decider: "person", rule: "set_to_person", types: typesOf(decided.reasons), ...base } };
+  }
   if (decided.route === "task") return { ...decided, policy: { decider: "person", rule: "tests", types: [], ...base } };
   if (locked || policy.preset === "production") {
     return { route: "person", reasons: decided.reasons, policy: { decider: "person", rule: locked ? "admin_mode" : "every_part", types: [], ...base } };
@@ -291,20 +340,15 @@ export function migrationPolicyRoute(
   return { ...decided, policy: { decider: "penguin", rule: flagged.length > 0 ? "set_to_penguin" : "checks_clean", types: flagged, ...base } };
 }
 
-/** Who decides an overlapping start under the policy: Penguin approves it at once when the row says so. */
-export function startDecider(inForce: PolicyInForce): Decider {
-  return inForce.locked || inForce.policy.preset === "production" ? "person" : inForce.policy.rows.overlapping_starts;
-}
-
 const joinLabels = (labels: readonly string[]): string =>
   labels.length <= 1 ? (labels[0] ?? "") : `${labels.slice(0, -1).join(", ")} and ${labels.at(-1)}`;
 
 /**
- * The rule as words after the state, as every part shows it: `Dev policy, checks clean`, `Data matching
+ * The rule as words after the state, as every part shows it: `Central development policy, checks clean`, `Data matching
  * is set to person`.
  */
 export function policyRuleText(route: PolicyRoute, owner?: string): string {
-  const name = `${REVIEW_PRESET_LABEL[route.preset]} policy${route.changed ? ", changed" : ""}`;
+  const name = `${presetLabel(route.preset)} policy${route.changed ? ", changed" : ""}`;
   const types = joinLabels(route.types.map((type) => APPROVAL_TYPE_LABEL[type]));
   const verb = route.types.length > 1 ? "are" : "is";
   switch (route.rule) {
@@ -504,17 +548,18 @@ export function decisionRouteText(route: DecisionRoute): string {
   return "Penguin";
 }
 
-/** The kinds a part's checks covered: Tests and Protected paths and place always, the form's kinds unless a verify part. */
+/** The kinds a part's checks covered: Tests and Custom path rules and place always, the form's kinds unless a verify part. */
 export function checkedKinds(partKind: string): ValidationKind[] {
   return partKind === "verify" ? ["tests", "protected_paths_and_place"] : ["tests", "logic", "data_matching", "stored_data", "protected_paths_and_place"];
 }
 
 /**
- * Penguin's approval in words: `Approved by Penguin (Dev policy: Tests, Logic clean)`, or with the
- * kinds the policy let Penguin decide: `Approved by Penguin (Throwaway policy: Tests clean; Logic set to Penguin)`.
+ * Penguin's approval in words: `Approved by Penguin (Central development policy: Tests, Logic clean)`, or with the
+ * kinds the policy let Penguin decide: `Approved by Penguin (Local development policy: Tests clean; Logic set to
+ * Penguin)`.
  */
 export function penguinApprovalText(route: PolicyRoute, partKind: string): string {
-  const name = `${REVIEW_PRESET_LABEL[route.preset]} policy${route.changed ? ", changed" : ""}`;
+  const name = `${presetLabel(route.preset)} policy${route.changed ? ", changed" : ""}`;
   const set = route.rule === "set_to_penguin" ? new Set(route.types.map((type) => APPROVAL_TYPE_KIND[type])) : new Set<ValidationKind>();
   const clean = checkedKinds(partKind).filter((kind) => !set.has(kind)).map((kind) => VALIDATION_KIND_LABEL[kind]);
   const parts = [`${joinLabels(clean)} clean`, ...(set.size === 0 ? [] : [`${joinLabels([...set].map((kind) => VALIDATION_KIND_LABEL[kind]))} set to Penguin`])];

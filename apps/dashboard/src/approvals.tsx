@@ -1,11 +1,12 @@
 // The approvals inbox (PRD section 10): what waits on the signed-in person, each item with the facts
-// behind it. Overlapping starts show where the two areas meet. Each merge plan is one card: why it
+// behind it. Overlapping starts show where the two areas meet: Penguin lets each one open and the
+// person is told, with no control. Each merge plan is one card: why it
 // needs the person, each review its parts carry (once, however many parts share it) and then the
 // person's parts, each with its rounds, its breaks and changed lines behind a line counting them, and
 // Approve and Request change on a part that waits on them. A part Penguin approved because every check
-// was clean shows who approved it and Reverse approval until its block reaches main. Protected-path confirmations and parts past
+// was clean shows who approved it and Reverse approval until its block reaches main. Custom path rule confirmations and parts past
 // the round limit sit in their plan's card without controls. A feature's own change to a path the
-// person protects is its own card, with the changed lines and Confirm lines while it waits; a
+// person covers with a custom path rule is its own card, with the changed lines and Confirm lines while it waits; a
 // confirmed one stays, marked confirmed, until a later checkpoint changes the lines. Review exceptions
 // and plans returned over the break limit follow; an exception whose review a plan card already shows
 // links to it. The server names the approver, the decider and the confirmer from the session; an
@@ -201,7 +202,7 @@ export function ApprovalsView({ approvals, busy, failed, unread = false, navigat
       {plan.protectedChanges.length === 0 ? null : (
         <section className="approval-group" aria-labelledby="approvals-protected">
           <h2 id="approvals-protected" className="approval-group-heading">
-            Protected paths <span className="tab-count">{plan.protectedChanges.length}</span>
+            Custom path rules <span className="tab-count">{plan.protectedChanges.length}</span>
           </h2>
           {plan.protectedChanges.map((change) => (
             <ProtectedChangeCard key={changeKey(change)} change={change} sending={busy === changeKey(change)} navigate={navigate} onConfirm={() => onConfirm(change)} />
@@ -267,8 +268,9 @@ interface OverlapProps {
 }
 
 /**
- * A start that waits beside the person's own feature, with where the two areas meet; or an expand
- * checkpoint that adds to the person's scopes and waits to reach main ahead of the rest of its feature.
+ * A start Penguin let open beside the person's own feature, with where the two areas meet; a start
+ * from before #177 that still waits on the person; or an expand checkpoint that adds to the person's
+ * scopes and waits to reach main ahead of the rest of its feature.
  */
 function OverlapCard({ request, sending, navigate, onApprove }: OverlapProps) {
   const expand = isOwnerLockId(request.feature);
@@ -301,12 +303,18 @@ function OverlapCard({ request, sending, navigate, onApprove }: OverlapProps) {
         ))}
         {request.overlap.omittedPaths > 0 ? <li className="muted">{counted(request.overlap.omittedPaths, "more path")}</li> : null}
       </ul>
-      <div className="approval-actions">
-        {/* While the approval sends the button keeps focus and refuses presses through aria-disabled. */}
-        <button type="button" className="button primary progressive" aria-disabled={sending} onClick={() => sending || onApprove()}>
-          {sending ? "Approving" : expand ? "Approve addition" : "Approve start"}
-        </button>
-      </div>
+      {request.told ? (
+        <p className="approval-line">
+          <span className="tag tag-data">Approved by Penguin</span>
+        </p>
+      ) : (
+        <div className="approval-actions">
+          {/* While the approval sends the button keeps focus and refuses presses through aria-disabled. */}
+          <button type="button" className="button primary progressive" aria-disabled={sending} onClick={() => sending || onApprove()}>
+            {sending ? "Approving" : expand ? "Approve addition" : "Approve start"}
+          </button>
+        </div>
+      )}
     </article>
   );
 }
@@ -323,7 +331,7 @@ interface PlanProps {
 /**
  * One merge plan: the feature and its person, why the plan needs the person, each review its parts
  * carry, then the person's parts with their decisions. A part is listed once per reason it reaches the
- * person, so a part they approve and also confirm a protected path for shows twice.
+ * person, so a part they approve and also confirm a custom path rule for shows twice.
  */
 function PlanCard({ group, busy, navigate, onDecide, onReverse }: PlanProps) {
   const inPerson = group.parts.some((part) => part.routing.inPerson);
@@ -361,7 +369,7 @@ function PlanCard({ group, busy, navigate, onDecide, onReverse }: PlanProps) {
 
 /** The tag beside a part: its state with who approved it, or why it reaches the person when they only confirm it. */
 function partTag(part: PlanPartRequest): { readonly text: string; readonly attention: boolean } {
-  if (part.ask === "protected_path") return { text: "Protected path", attention: false };
+  if (part.ask === "protected_path") return { text: "Custom path rule", attention: false };
   if (part.ask === "stored_data") return { text: "Stored data needs a migration or backfill", attention: true };
   return { text: partRouteText(part, part.person), attention: part.ask === "approve" && part.state === "pending" };
 }
@@ -489,8 +497,8 @@ interface ProtectedChangeProps {
 }
 
 /**
- * A feature's own change to paths the person protects: the feature and its person, each file with the
- * protected path that covers it and its changed lines, and Confirm lines while it waits. The feature
+ * A feature's own change to paths under the person's custom path rules: the feature and its person,
+ * each file with the custom path that covers it and its changed lines, and Confirm lines while it waits. The feature
  * does not land until the lines are confirmed.
  */
 function ProtectedChangeCard({ change, sending, navigate, onConfirm }: ProtectedChangeProps) {
@@ -510,10 +518,10 @@ function ProtectedChangeCard({ change, sending, navigate, onConfirm }: Protected
       </header>
       <p className="approval-line">
         {waiting
-          ? `${counted(change.files.length, "file")} under protected paths at checkpoint ${shortSha(change.checkpoint)}`
+          ? `${counted(change.files.length, "file")} under custom path rules at checkpoint ${shortSha(change.checkpoint)}`
           : `${change.confirmedBy ?? change.owner} confirmed the lines at checkpoint ${shortSha(change.checkpoint)}`}
       </p>
-      <ul className="chip-list" aria-label="Protected paths">
+      <ul className="chip-list" aria-label="Custom path rules">
         {covering.map((path) => (
           <li key={path} className="code-chip">
             {path}

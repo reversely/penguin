@@ -424,9 +424,9 @@ A session of a feature asks Penguin to move main to the feature's latest checkpo
 
 The answer carries no token: Penguin moves main itself. A refusal names what is missing:
 `behind_main` (merge main into your fork, report the merge with `report_checkpoint` and land again),
-`plan_not_approved`, `protected_path_unconfirmed` (the feature's own change writes a path another
-person protects, and that person has not confirmed the lines on the dashboard; the message names
-each person with the protected paths), `fix_not_written`, `fix_not_in_block`, `fix_not_in_place`,
+`plan_not_approved`, `protected_path_unconfirmed` (the feature's own change writes a path under
+another person's custom path rule, and that person has not confirmed the lines on the dashboard; the
+message names each person with the custom paths), `fix_not_written`, `fix_not_in_block`, `fix_not_in_place`,
 `not_ready` (no checkpoint, or nothing past main) or `busy` (a land or expand of the feature is
 already being checked).
 

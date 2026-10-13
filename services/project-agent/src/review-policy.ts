@@ -1,5 +1,7 @@
-// The sandbox's review policy (#175, docs/review-policies.md): who decides each type of approval,
-// Penguin or a person, for this project, its base repo and the forks agents work in.
+// The sandbox's review policy (#175, #177, docs/review-policies.md): who decides each type of
+// approval, Penguin or a person, for this project, its base repo and the forks agents work in. Its
+// presets are the stages of the release pipeline a team uses Penguin at: Local development, Central
+// development, Pre-production and Production.
 //
 // - Changing it. Only a lead of a team declared in `penguin/teams.json` changes it, from the dashboard
 //   (`POST /api/review-policy`). While PENGUIN_PLAN_ADMIN_MODE is on the policy is Production, locked,
@@ -8,12 +10,14 @@
 //   applies to the parts and starts decided after it.
 // - Reading it. The policy in force is the newest `review_policy_changed` record whose signature
 //   verifies with the service key and whose author is the person it names; a record that fails either
-//   check is refused and the one before it stands. With none, the policy is Dev, Penguin's rule
-//   before policies existed.
+//   check is refused and the one before it stands. With none, the policy is Central development,
+//   Penguin's rule before policies existed. A record stored under a preset's old name reads as its
+//   new name (validation.ts readPreset).
 // - The split. Each approval record names who approved and, from #175 on, the policy route that sent
-//   the part there. The last 30 days of `approve_plan_part`, approved `migration_part_decided` and
-//   `approve_overlap` records give the split: parts Penguin approved and parts people approved,
-//   overall and per type of approval that flagged them.
+//   the part there. The last 30 days of `approve_plan_part` and approved `migration_part_decided`
+//   records give the split: parts Penguin approved and parts people approved, overall and per type
+//   of approval that flagged them. Overlapping starts are no approval anyone makes (#177), so the
+//   split leaves out `approve_overlap`.
 //
 // Every value reaches SQL as a bound parameter.
 
@@ -119,7 +123,7 @@ export async function changeReviewPolicy(deps: PolicyChangeDeps, caller: string,
   return { status: "ok", policy, recordId: record.record_id };
 }
 
-const RECORD_TYPES = ["approve_plan_part", "migration_part_decided", "approve_overlap"] as const;
+const RECORD_TYPES = ["approve_plan_part", "migration_part_decided"] as const;
 
 function emptySplit(): { overall: SplitCount; byType: Record<ApprovalType, SplitCount> } {
   return {
@@ -135,7 +139,7 @@ function emptySplit(): { overall: SplitCount; byType: Record<ApprovalType, Split
 export function reviewSplit(db: SqlDatabase, since: number, people?: ReadonlySet<string>): ReviewSplit {
   const split = emptySplit();
   const rows = db.exec(
-    `SELECT file FROM FeatureRecord WHERE created_at >= ? AND json_extract(file, '$.type') IN (?, ?, ?)`,
+    `SELECT file FROM FeatureRecord WHERE created_at >= ? AND json_extract(file, '$.type') IN (?, ?)`,
     since,
     ...RECORD_TYPES,
   );
@@ -144,22 +148,17 @@ export function reviewSplit(db: SqlDatabase, since: number, people?: ReadonlySet
     const payload = record.payload;
     let byPenguin: boolean;
     let owner: unknown;
-    let types: readonly ApprovalType[] = [];
     const route = payload["review_policy"] as { readonly types?: readonly ApprovalType[] } | undefined;
     if (record.type === "migration_part_decided") {
       if (payload["decision"] !== "approved") continue;
       byPenguin = true;
       owner = payload["owner"];
-    } else if (record.type === "approve_overlap") {
-      byPenguin = payload["approved_by"] === PENGUIN_APPROVER;
-      owner = payload["owner"] ?? payload["approved_by"];
-      types = ["overlapping_starts"];
     } else {
       byPenguin = payload["approved_by"] === PENGUIN_APPROVER;
       owner = payload["owner"];
     }
     if (people !== undefined && (typeof owner !== "string" || !people.has(owner))) continue;
-    for (const type of route?.types ?? types) {
+    for (const type of route?.types ?? []) {
       const count = split.byType[type];
       if (count === undefined) continue;
       split.byType[type] = byPenguin ? { ...count, penguin: count.penguin + 1 } : { ...count, people: count.people + 1 };

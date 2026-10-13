@@ -505,7 +505,7 @@
         "orders",
         "accounts"
       ],
-      "protected_paths": [
+      "custom_paths": [
         "analytics/revenue_report.py"
       ]
     },

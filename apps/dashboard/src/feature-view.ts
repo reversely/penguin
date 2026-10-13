@@ -152,7 +152,7 @@ function reasonLine(reason: PartRoutingReason): string {
     case "protected_difference":
       return `${reason.differing} inputs of ${reason.contract} differ on protected ${reason.invariant}`;
     case "protected_path":
-      return `Writes ${reason.file} under ${reason.path} of ${reason.owner}`;
+      return `Writes ${reason.file} under ${reason.owner}'s custom path rule ${reason.path}`;
     case "stored_data_unmarked":
       return `${reason.scope} reads ${reason.symbol} reshaped with no backfill`;
   }
@@ -192,7 +192,7 @@ const RECORD_LABEL: Readonly<Record<string, string>> = {
   request_plan_change: "Change requested",
   revise_plan_part: "Part revised",
   plan_round_limit: "Past the round limit",
-  confirm_protected_change: "Protected lines confirmed",
+  confirm_protected_change: "Custom path rule lines confirmed",
   expand_requested: "Expand requested",
   expand_promotion: "Expand promoted",
 };

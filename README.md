@@ -1,21 +1,36 @@
 # Penguin
 
-Penguin lets many people commit to one codebase continuously through their coding agents without
-breaking main. Each person owns features. Each feature is a fork of main in Cloudflare Artifacts,
+Code ships through five stages: local development, central development, test, pre-production and
+production. Penguin runs a sandbox where the work many people's coding agents do in local development
+merges into one codebase continuously without breaking main. A sandbox is one Penguin project: its
+base repo and the forks its agents work in. A team can run a sandbox at any of the five stages. The
+stage sets how much of the review Penguin does and how much people do: people decide more of it at
+each stage nearer production.
+
+Each person owns features. Each feature is a fork of main in Cloudflare Artifacts,
 worked by one or more of that person's agents. When a feature changes something other running
 features depend on, the agent making the change plans the merge first. It proposes the fix for each
 affected feature and tells those authors in advance. It writes each approved fix straight into the
 affected feature's fork. Penguin then promotes everything to main together as one block. Penguin
-checks every step with deterministic tools. People step in only to approve an overlapping start, to
-approve a plan that touches their code, or for an exception.
+checks every step with deterministic tools. A feature that starts in another running feature's area
+opens at once. Penguin tells that feature's person. People step in to approve a plan that
+touches their code or for an exception, as often as the sandbox's stage sets.
 
 ## How Penguin decides
 
 Penguin decides whether a change may reach main with six kinds of validation: Tests, Logic, Data
-matching, Stored data, Protected paths and place, Overlapping starts. Each kind has its own
-check and its own tool. A failed test always goes back to the agent. For the other kinds, each
-project's review policy sets whether Penguin or a person decides, from Throwaway (Penguin decides,
-owners are told) through Dev to Production (a person decides every part).
+matching, Stored data, Custom path rules and place, Overlapping starts. Each kind has its own check
+and its own tool. A failed test always goes back to the agent. An overlapping start always opens
+with its owner told. For the other kinds, the sandbox's review policy names its stage, which sets
+whether Penguin or a person decides:
+
+| Stage | Who decides a part a check marks |
+|---|---|
+| Local development | Penguin, which tells the owners |
+| Central development, the default | The person the part routes to |
+| Test and Pre-production | The person the part routes to, also for a rule-written migration part whose side-by-side run differs |
+| Production | A person, for every part |
+
 [docs/validation.md](docs/validation.md) defines each kind and
 [docs/review-policies.md](docs/review-policies.md) the policies.
 
@@ -34,8 +49,8 @@ questions.
 
 ## Procedure
 
-1. **Open.** A feature declares its area. Starting in an area another running feature covers waits
-   until that feature's person approves.
+1. **Open.** A feature declares its area. Penguin records where it overlaps another running feature
+   and tells that feature's person. The feature starts at once.
 2. **Plan.** A feature that changes something others depend on carries a merge plan written by its
    agent. Penguin supplies the contract diff, the callers and each affected scope's invariants.
 3. **Advance notice.** Each affected author's agent reviews its part through a validated review form

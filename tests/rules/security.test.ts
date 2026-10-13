@@ -80,13 +80,13 @@ async function policyDeps(adminMode = false) {
 
 test("only a team lead changes the review policy; admin mode refuses every change and stays Production", async () => {
   const { deps, current } = await policyDeps();
-  const throwaway = PRESET_POLICIES.throwaway;
-  assert.equal((await changeReviewPolicy(deps, "jun", throwaway)).status, "rejected", "jun is a member, not the lead");
-  assert.equal((await current()).policy.preset, "dev");
-  assert.equal((await changeReviewPolicy(deps, "priya", { ...throwaway, changed_by: "jun" })).status, "rejected", "a field beyond preset and rows is refused");
-  assert.equal((await changeReviewPolicy(deps, "priya", throwaway)).status, "ok");
-  assert.equal((await current()).policy.preset, "throwaway");
-  const locked = await changeReviewPolicy({ ...deps, adminMode: true }, "priya", PRESET_POLICIES.dev);
+  const localDevelopment = PRESET_POLICIES.local_development;
+  assert.equal((await changeReviewPolicy(deps, "jun", localDevelopment)).status, "rejected", "jun is a member, not the lead");
+  assert.equal((await current()).policy.preset, "central_development");
+  assert.equal((await changeReviewPolicy(deps, "priya", { ...localDevelopment, changed_by: "jun" })).status, "rejected", "a field beyond preset and rows is refused");
+  assert.equal((await changeReviewPolicy(deps, "priya", localDevelopment)).status, "ok");
+  assert.equal((await current()).policy.preset, "local_development");
+  const locked = await changeReviewPolicy({ ...deps, adminMode: true }, "priya", PRESET_POLICIES.central_development);
   assert.deepEqual([locked.status, locked.status === "rejected" ? locked.reason : null], ["rejected", "locked"]);
   assert.deepEqual(policyInForce((await current()).policy, true), { policy: PRESET_POLICIES.production, locked: true });
 });
@@ -95,10 +95,10 @@ test("a forged review_policy_changed record, or one naming someone other than it
   const { keys, features, current } = await policyDeps();
   const forger = (await crypto.subtle.generateKey("Ed25519", true, ["sign", "verify"])) as CryptoKeyPair;
   const draft = (payload: Record<string, unknown>, person: string) => features.draftRecord(PROJECT_RECORDS, "review_policy_changed", { person }, payload);
-  features.addRecord(await signFeatureRecord(draft({ old: PRESET_POLICIES.dev, new: PRESET_POLICIES.throwaway, changed_by: "priya" }, "priya"), forger.privateKey));
-  assert.equal((await current()).policy.preset, "dev", "a record signed with another key is refused");
-  features.addRecord(await signFeatureRecord(draft({ old: PRESET_POLICIES.dev, new: PRESET_POLICIES.throwaway, changed_by: "jun" }, "priya"), keys.privateKey));
-  assert.equal((await current()).policy.preset, "dev", "a record naming another person than its author is refused");
+  features.addRecord(await signFeatureRecord(draft({ old: PRESET_POLICIES.central_development, new: PRESET_POLICIES.local_development, changed_by: "priya" }, "priya"), forger.privateKey));
+  assert.equal((await current()).policy.preset, "central_development", "a record signed with another key is refused");
+  features.addRecord(await signFeatureRecord(draft({ old: PRESET_POLICIES.central_development, new: PRESET_POLICIES.local_development, changed_by: "jun" }, "priya"), keys.privateKey));
+  assert.equal((await current()).policy.preset, "central_development", "a record naming another person than its author is refused");
 });
 
 test("no review policy lets Penguin approve a part whose tests have not passed", () => {
@@ -108,5 +108,17 @@ test("no review policy lets Penguin approve a part whose tests have not passed",
       const rows = Object.fromEntries(APPROVAL_TYPES.map((type, index) => [type, bits & (1 << index) ? "penguin" : "person"])) as ReviewPolicy["rows"];
       assert.notEqual(policyRoute(policyInForce({ preset, rows }, false), failing).decider, "penguin", `${preset} ${bits}`);
     }
+  }
+});
+
+// Issue #177: the presets took the release pipeline's stage names. A policy #175 signed under an old
+// name, with its overlapping_starts row, reads as the new name.
+test("a review_policy_changed record signed under an old preset name reads as its new name", async () => {
+  const { keys, features, current } = await policyDeps();
+  const rows = (decider: string) => ({ ...Object.fromEntries(APPROVAL_TYPES.map((type) => [type, decider])), overlapping_starts: decider });
+  for (const [old, renamed, decider] of [["throwaway", "local_development", "penguin"], ["dev", "central_development", "person"], ["production", "production", "person"]] as const) {
+    const draft = features.draftRecord(PROJECT_RECORDS, "review_policy_changed", { person: "priya" }, { old: null, new: { preset: old, rows: rows(decider) }, changed_by: "priya" });
+    features.addRecord(await signFeatureRecord(draft, keys.privateKey));
+    assert.deepEqual((await current()).policy, PRESET_POLICIES[renamed], old);
   }
 });

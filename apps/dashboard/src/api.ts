@@ -138,7 +138,7 @@ export async function decidePlanPart({ kind, ...decision }: PlanPartDecision): P
 }
 
 /**
- * Confirms the lines a feature's own change writes under paths `owner` protects, at the checkpoint
+ * Confirms the lines a feature's own change writes under `owner`'s custom path rules, at the checkpoint
  * read; the server names the confirmer from the session. Resolves false when the change moved on.
  */
 export async function confirmProtectedChange(change: { readonly feature: string; readonly owner: string; readonly checkpoint: string }): Promise<boolean> {

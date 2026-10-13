@@ -1,14 +1,14 @@
 // The overlap lock (PRD 0.4 section 4.1 step 3, section 9 OverlapLock): when a feature declares its
 // area, Penguin compares it with the area of every other running feature.
 //
-// - Same area: another running feature covers part of the declared area. The declaring feature is
-//   blocked from starting, which means no write token on its fork, until the person who owns the
-//   covering feature approves. Each such pair is one OverlapLock, keyed by the covering feature and
-//   the blocked one. Only that person approves, and only once. When the lock is approved or
-//   withdrawn, an OverlapSettled row tells the blocked feature's sessions at their next safe
-//   checkpoint (session-store.ts). Under a review policy that sets Overlapping starts to Penguin
-//   (#175, review-policy.ts), Penguin approves each new lock at once with a signed record and asks
-//   no one.
+// - Same area: another running feature covers part of the declared area. Each such pair is one
+//   OverlapLock, keyed by the covering feature and the blocked one, which records where the two
+//   meet. Overlapping starts are what Penguin is for, so no start waits on a person at any stage of
+//   the review policy (#177): Penguin approves each new lock at once with a signed `approve_overlap`
+//   record that names the owner. It tells the person who owns the covering feature. A lock opened
+//   before #177 and still open waits for that person's approval, as it did. When a lock is approved
+//   or withdrawn, an OverlapSettled row tells the blocked feature's sessions at their next safe
+//   checkpoint (session-store.ts).
 // - Same person: a covering feature of the declaring feature's own person makes no lock, since that
 //   person already knows both pieces of work. The overlap is kept as an OwnOverlap and recorded.
 // - Depends on it: a running feature works in a scope that declares a dependency (`depends_on` in
@@ -28,7 +28,7 @@
 // map; this module names none. Each check and each approval is a signed record on the declaring
 // feature (feature-store.ts).
 
-import { ownerLockId, PENGUIN_APPROVER, policyChanged, policyRoutePayload, startDecider, type Author, type PolicyInForce } from "@penguin/protocol";
+import { ownerLockId, PENGUIN_APPROVER, type Author } from "@penguin/protocol";
 import type { ScopeMap } from "@penguin/scope-map";
 
 import type { Feature, FeatureArea, FeatureRecord, FeatureStore, UnsignedFeatureRecord } from "./feature-store.ts";
@@ -488,6 +488,8 @@ export interface OverlapListener {
   lockOpened(lock: Pick<OverlapLock, "featureId" | "blockedFeatureId" | "personId">): void;
   /** The lock was approved or withdrawn: it no longer asks its person anything. */
   lockSettled(lock: Pick<OverlapLock, "featureId" | "blockedFeatureId" | "personId">): void;
+  /** Penguin let a start open beside the person's running feature: the person is told, not asked. */
+  startTold?(lock: Pick<OverlapLock, "featureId" | "blockedFeatureId" | "personId">): void;
 }
 
 export interface OverlapDeps {
@@ -499,11 +501,6 @@ export interface OverlapDeps {
   /** Signs a record with the service key, which never leaves the ProjectAgent. */
   readonly sign: (record: UnsignedFeatureRecord) => Promise<FeatureRecord>;
   readonly listener?: OverlapListener;
-  /**
-   * The sandbox's review policy in force (review-policy.ts, #175). When it sets Overlapping starts to
-   * Penguin, Penguin approves each lock a check opens at once and no owner is asked. Absent, Dev.
-   */
-  readonly policy?: () => Promise<PolicyInForce>;
 }
 
 const PENGUIN: Author = { penguin: true };
@@ -536,25 +533,18 @@ export async function checkOverlap(deps: OverlapDeps, feature: Feature): Promise
     deps.overlaps.apply(feature.id, plan);
     deps.features.addRecord(record);
   });
-  const inForce = plan.open.length > 0 && deps.policy !== undefined ? await deps.policy() : undefined;
-  if (inForce !== undefined && startDecider(inForce) === "penguin") {
-    for (const { featureId, personId } of plan.open) await approveByPenguin(deps, inForce, featureId, feature.id, personId);
-  } else {
-    for (const { featureId, personId } of plan.open) deps.listener?.lockOpened({ featureId, blockedFeatureId: feature.id, personId });
-  }
+  for (const { featureId, personId } of plan.open) await approveByPenguin(deps, featureId, feature.id, personId);
   for (const each of withdrawn) deps.listener?.lockSettled(each);
   return deps.overlaps.status(feature.id);
 }
 
 /**
- * Penguin approves the start of `blockedFeatureId` beside `featureId` under a policy that sets
- * Overlapping starts to Penguin: a signed `approve_overlap` record authored by Penguin that names the
- * owner it did not ask and the policy's rule.
+ * Penguin approves the start of `blockedFeatureId` beside `featureId`: a signed `approve_overlap`
+ * record authored by Penguin that names the owner it tells, then tells them.
  */
-async function approveByPenguin(deps: OverlapDeps, inForce: PolicyInForce, featureId: string, blockedFeatureId: string, owner: string): Promise<void> {
+async function approveByPenguin(deps: OverlapDeps, featureId: string, blockedFeatureId: string, owner: string): Promise<void> {
   const held = deps.overlaps.get(featureId, blockedFeatureId);
   if (held === undefined || held.state !== "open") return;
-  const route = { decider: "penguin", rule: "set_to_penguin", types: ["overlapping_starts"], kinds: ["overlapping_starts"], preset: inForce.policy.preset, changed: policyChanged(inForce.policy), locked: inForce.locked } as const;
   const record = await deps.sign(
     deps.features.draftRecord(blockedFeatureId, "approve_overlap", PENGUIN, {
       feature: featureId,
@@ -562,7 +552,6 @@ async function approveByPenguin(deps: OverlapDeps, inForce: PolicyInForce, featu
       approved_by: PENGUIN_APPROVER,
       owner,
       overlap: { ...held.overlap },
-      review_policy: policyRoutePayload(route),
     }),
   );
   const approved = deps.db.transaction(() => {
@@ -570,7 +559,9 @@ async function approveByPenguin(deps: OverlapDeps, inForce: PolicyInForce, featu
     if (done !== undefined) deps.features.addRecord(record);
     return done;
   });
-  if (approved !== undefined) deps.listener?.lockSettled(approved);
+  if (approved === undefined) return;
+  deps.listener?.lockSettled(approved);
+  deps.listener?.startTold?.(approved);
 }
 
 export type ApproveOutcome =

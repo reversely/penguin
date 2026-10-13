@@ -18,7 +18,11 @@
 // - "overlap": a feature's start waits for the person to approve it beside their running feature
 //   (overlap-lock.ts, PRD 4.1 step 3). The item names no issue: its `issue_id` holds the lock as
 //   `<covering feature>/<blocked feature>`, which no issue id can be. It goes once the lock is
-//   approved or withdrawn.
+//   approved or withdrawn. Since #177 a check opens no lock that waits: only an owner's-scope lock
+//   and a lock opened before #177 raise it.
+// - "overlap_started": a feature started beside the person's running feature. Penguin let it open
+//   and recorded where the two meet (overlap-lock.ts, #177). The person is told, not asked. Its
+//   `issue_id` holds the lock as `overlap` does.
 // - "review_exception": the check runner's record of a review of the person's scope raised an
 //   exception (review-record.ts, PRD 4.3 step 4): the form reports a broken invariant, or the
 //   side-by-side run differs on a protected invariant. Its `issue_id` holds `<feature>/<scope>`. A
@@ -70,6 +74,7 @@ export const INBOX_REASONS = [
   "review_requested",
   "thread",
   "overlap",
+  "overlap_started",
   "review_exception",
   "plan_returned",
   "plan_part",
@@ -205,6 +210,11 @@ export class InboxStore implements StartRequestListener {
   /** Asks `personId` to approve the start of `blockedFeatureId` beside their feature `featureId`. */
   overlapRequested(personId: string, featureId: string, blockedFeatureId: string): void {
     this.#raise(personId, overlapRef(featureId, blockedFeatureId), "overlap");
+  }
+
+  /** Tells `personId` that `blockedFeatureId` started beside their feature `featureId`. */
+  overlapTold(personId: string, featureId: string, blockedFeatureId: string): void {
+    this.#raise(personId, overlapRef(featureId, blockedFeatureId), "overlap_started");
   }
 
   /** Puts a review of `personId`'s scope `scopeId` on feature `featureId` before them in person. */

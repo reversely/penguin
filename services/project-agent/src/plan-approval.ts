@@ -568,8 +568,8 @@ export async function requestPlanChange(deps: PlanApprovalDeps, caller: string, 
 
 /**
  * Penguin approves each pending part of feature `featureId`'s newest plan that the review policy routes
- * to Penguin (PRD 4.3 step 3, #175): under Dev every check clean, under Throwaway every part whose tests
- * passed. Never in admin mode or once the block has landed. Each approval is a signed record authored
+ * to Penguin (PRD 4.3 step 3, #175, #177): under Central development every check clean, under Local
+ * development every part whose tests passed. Never in admin mode or once the block has landed. Each approval is a signed record authored
  * by Penguin that names the evidence and the policy's rule. The author gets a `penguin_approved` item
  * in place of the `plan_part` one. Returns the parts approved.
  */
