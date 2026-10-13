@@ -465,7 +465,7 @@ session transcript; Penguin holds none.
 
 ## Local preview
 
-`node scripts/preview/dashboard.ts [--example identity-unification|helpful-fix|money-minor-units] [--port <port>] [--as <owner>]`
+`node scripts/preview/dashboard.ts [--example identity-unification|helpful-fix|money-minor-units] [--port <port>] [--as <owner>] [--step]`
 serves the built dashboard (`npm run build -w @penguin/dashboard`) on the Worker's own routes over a
 project seeded from one fixture under `examples/` (`scripts/preview/seed.ts`). The seed builds the
 fixture's repository with its own `build.py` and goes through the modules the ProjectAgent calls:
@@ -474,6 +474,21 @@ and overlap check, each checkpoint, `whats_near`, `impact` and `check` run by th
 programs, the merge plan with a real facts run, each review with the review harness, Penguin's
 approval of each part whose checks are clean and each person's decision on the rest. A request signs in as the owner its `X-Preview-Owner` header names, or as the
 `--as` owner, or as the originating person; `/preview/as/<owner>` switches a browser's seat.
+
+By default the seed runs to the end before the server listens. With `--step` the server listens as
+soon as the project exists, before the first step, so a recording shows each step happen:
+
+- `POST /preview/step` runs the next step and answers once it has run. After each step the preview
+  sends every open dashboard the live feed's `penguin.inbox-changed` and `penguin.features-changed`
+  messages. Each dashboard then reads its inbox and team view again.
+- `GET /preview/steps` answers `{ steps, next, waitingFor, finished }`. `steps` lists the names of the
+  steps run so far plus the next one. `next` is the index of the next one. The seed decides its steps
+  as it runs, so the list ends at the next step.
+- A step whose action is a person's decision waits for that person to make it on the dashboard. The
+  decisions are a start's approval, a plan part's approval or change request and a confirmation of
+  protected lines. `POST /preview/step` answers with `waitingFor` naming the person and the decision's
+  route: `/api/overlaps/approve`, `/api/plan-parts/approve` or `/api/plan-parts/request-change`, or
+  `/api/plan-parts/confirm-protected`. Once that person's request succeeds, the seed continues.
 
 On identity unification the plan is stored with four parts: Priya's fix commits for analytics' and
 messaging's code on main, and the patches for Jun's and Sam's forks. Jun's and Sam's agents submit

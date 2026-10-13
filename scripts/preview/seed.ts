@@ -167,6 +167,97 @@ export interface SeedStep {
   readonly ms: number;
 }
 
+/** A person's decision the seed waits for in step mode: the dashboard routes it may arrive on and the body fields that name it. */
+export interface AwaitedDecision {
+  readonly person: string;
+  readonly routes: readonly string[];
+  readonly fields: Readonly<Record<string, string>>;
+}
+
+/**
+ * Step mode for a preview a person watches: the seed waits before each step until `advance` is
+ * called, and a step whose action is a person's decision waits for that decision to arrive through
+ * the dashboard's API instead of making it in code.
+ */
+export class StepGate {
+  /** The name of the step waiting to run, or running, if any. */
+  next: string | undefined;
+  /** The decision the running step waits for, if any. */
+  waitingFor: AwaitedDecision | undefined;
+  finished = false;
+  failed: string | undefined;
+  /** Called after each step runs. */
+  onStep: (step: SeedStep) => void = () => undefined;
+  readonly #project = Promise.withResolvers<PreviewProject>();
+  /** The project, once it exists and before its first step. */
+  readonly project = this.#project.promise;
+  #go: (() => void) | undefined;
+  #decided: (() => void) | undefined;
+  #settled: (() => void) | undefined;
+
+  attach(preview: PreviewProject): void {
+    preview.gate = this;
+    this.#project.resolve(preview);
+  }
+
+  /** Waits until `advance` lets step `name` run. */
+  async before(name: string): Promise<void> {
+    this.next = name;
+    const { promise, resolve } = Promise.withResolvers<void>();
+    this.#go = resolve;
+    await promise;
+  }
+
+  after(step: SeedStep): void {
+    this.next = undefined;
+    this.onStep(step);
+    this.#settle();
+  }
+
+  /**
+   * Lets the waiting step run. Answers once it has run, waits for a person, or the seed stops; answers
+   * undefined when no step is waiting.
+   */
+  advance(): Promise<void> | undefined {
+    const go = this.#go;
+    if (go === undefined) return undefined;
+    this.#go = undefined;
+    const { promise, resolve } = Promise.withResolvers<void>();
+    this.#settled = resolve;
+    go();
+    return promise;
+  }
+
+  /** Waits until `decision` arrives through the dashboard's API. */
+  async decision(decision: AwaitedDecision): Promise<void> {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    this.#decided = resolve;
+    this.waitingFor = decision;
+    this.#settle();
+    await promise;
+    this.waitingFor = undefined;
+  }
+
+  /** The dashboard reports each request it answered with success: `person` posted `body` to `route`. */
+  arrived(route: string, person: string, body: Readonly<Record<string, unknown>>): void {
+    const awaited = this.waitingFor;
+    if (awaited === undefined || awaited.person !== person || !awaited.routes.includes(route)) return;
+    if (Object.entries(awaited.fields).every(([name, value]) => body[name] === value)) this.#decided?.();
+  }
+
+  finish(error?: unknown): void {
+    this.finished = true;
+    this.next = undefined;
+    if (error !== undefined) this.failed = error instanceof Error ? error.message : String(error);
+    this.#settle();
+  }
+
+  #settle(): void {
+    this.#settled?.();
+    this.#settled = undefined;
+  }
+}
+
 /**
  * The project's stores and the fixture's built repository. The repository stands in for main and every
  * feature's fork in Artifacts, as the Worker's own tests do.
@@ -210,6 +301,8 @@ export class PreviewProject {
   /** True to sort each checkpoint's contract diff, as the ProjectAgent does; each sort is a facts run. */
   sortContracts = false;
   readonly steps: SeedStep[] = [];
+  /** Step mode: each step waits for the gate, and each person's decision for the dashboard. */
+  gate: StepGate | undefined;
   /** Each person whose inbox changed, in order, as the live feed would tell them. */
   readonly notified: string[] = [];
   readonly sessionOf = new Map<string, string>();
@@ -294,9 +387,12 @@ export class PreviewProject {
   }
 
   async step<T>(step: string, run: () => Promise<T>): Promise<T> {
+    await this.gate?.before(step);
     const started = performance.now();
     const value = await run();
-    this.steps.push({ step, ms: Math.round(performance.now() - started) });
+    const done = { step, ms: Math.round(performance.now() - started) };
+    this.steps.push(done);
+    this.gate?.after(done);
     return value;
   }
 
@@ -603,6 +699,9 @@ export class PreviewProject {
     this.tick();
     const change = this.protectedChanges.get(featureId, person);
     if (change === undefined) throw new Error(`no protected change of ${featureId} for ${person}`);
+    if (this.gate !== undefined) {
+      return this.gate.decision({ person, routes: ["/api/plan-parts/confirm-protected"], fields: { feature: featureId, owner: person } });
+    }
     const confirmed = await confirmProtectedChange(this.protectedDeps(), person, { feature: featureId, owner: person, checkpoint: change.checkpoint });
     if (confirmed.status !== "ok") throw new Error(`confirm ${featureId} for ${person}: ${confirmed.message}`);
   }
@@ -610,6 +709,7 @@ export class PreviewProject {
   /** The person who owns `blocked`'s covering feature approves its start. */
   async approveStart(person: string, feature: string, blocked: string): Promise<void> {
     this.tick();
+    if (this.gate !== undefined) return this.gate.decision({ person, routes: ["/api/overlaps/approve"], fields: { feature, blockedFeature: blocked } });
     const approved = await approveOverlap(this.overlapDeps(), person, feature, blocked);
     if (approved.status !== "ok") throw new Error(`approve ${blocked}: ${approved.message}`);
   }
@@ -1095,6 +1195,10 @@ export class PreviewProject {
     this.tick();
     const part = (await this.plan(featureId))?.parts.find((each) => each.partId === partId);
     if (part === undefined) throw new Error(`no part ${partId}`);
+    if (this.gate !== undefined) {
+      const routes = ["/api/plan-parts/approve", "/api/plan-parts/request-change"];
+      return this.gate.decision({ person, routes, fields: { feature: featureId, part: partId } });
+    }
     const input = { feature: featureId, part: partId, revision: part.revision };
     const decided =
       text === undefined ? await approvePlanPart(this.approvalDeps(), person, input) : await requestPlanChange(this.approvalDeps(), person, { ...input, text });
@@ -1604,12 +1708,22 @@ async function moneyMinorUnits(preview: PreviewProject): Promise<void> {
   }
 }
 
-/** Seeds `fixture`'s project through the ProjectAgent's modules and the check runner's programs. */
-export async function seed(fixture: ExampleName, options: { readonly runnerTools?: boolean } = {}): Promise<PreviewProject> {
+/**
+ * Seeds `fixture`'s project through the ProjectAgent's modules and the check runner's programs. With
+ * `gate`, the gate gets the project before the first step, and each step waits for it.
+ */
+export async function seed(fixture: ExampleName, options: { readonly runnerTools?: boolean; readonly gate?: StepGate } = {}): Promise<PreviewProject> {
   const preview = await project(fixture);
   preview.runnerTools = options.runnerTools ?? true;
-  if (fixture === "money-minor-units") await moneyMinorUnits(preview);
-  else await featuresFixture(preview);
-  await preview.step("read main's scope dependencies", () => preview.deriveMain());
+  options.gate?.attach(preview);
+  try {
+    if (fixture === "money-minor-units") await moneyMinorUnits(preview);
+    else await featuresFixture(preview);
+    await preview.step("read main's scope dependencies", () => preview.deriveMain());
+  } catch (error) {
+    options.gate?.finish(error);
+    throw error;
+  }
+  options.gate?.finish();
   return preview;
 }

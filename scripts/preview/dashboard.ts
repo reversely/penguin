@@ -3,11 +3,15 @@
 // (handleDashboardRoute) with the seeded stores behind them. Nothing leaves the machine.
 //
 //   npm run build -w @penguin/dashboard
-//   node scripts/preview/dashboard.ts [--example identity-unification|helpful-fix|money-minor-units] [--port 8792] [--as <owner>]
+//   node scripts/preview/dashboard.ts [--example identity-unification|helpful-fix|money-minor-units] [--port 8792] [--as <owner>] [--step]
 //
 // A request signs in as the owner its X-Preview-Owner header names, or else as the person the
 // `preview-owner` cookie names, or else as the --as owner or the fixture's originating person. Opening
 // /preview/as/<owner> sets that cookie and opens the team view, so a browser can switch seats.
+//
+// With --step the server listens before the seed's first step, for a demo a person watches. Each
+// step waits for POST /preview/step; GET /preview/steps lists the steps run and the next one. A step
+// whose action is a person's decision waits for that person to make it on the dashboard.
 
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -21,27 +25,48 @@ import { featuresChangedMessage, inboxChangedMessage } from "@penguin/protocol";
 import { handleDashboardRoute } from "../../apps/worker/src/dashboard.ts";
 import { parseOwnerMap } from "../../apps/worker/src/github-oauth.ts";
 import { encodeSession, SESSION_COOKIE, sessionKey } from "../../apps/worker/src/session.ts";
-import { FIXTURES, seed, type FixtureName } from "./seed.ts";
+import { FIXTURES, seed, StepGate, type FixtureName, type PreviewProject, type SeedStep } from "./seed.ts";
 
 const ROOT = join(import.meta.dirname, "../..");
 const { values: args } = parseArgs({
-  options: { example: { type: "string", default: "identity-unification" }, port: { type: "string", default: "8792" }, as: { type: "string" } },
+  options: {
+    example: { type: "string", default: "identity-unification" },
+    port: { type: "string", default: "8792" },
+    as: { type: "string" },
+    step: { type: "boolean", default: false },
+  },
 });
 const fixture = args.example as FixtureName;
 if (!FIXTURES.includes(fixture)) throw new Error(`--example must be one of ${FIXTURES.join(", ")}`);
 const port = Number(args.port);
 
 const started = performance.now();
-const preview = await seed(fixture);
-for (const step of preview.steps) console.log(`${String(step.ms).padStart(6)} ms  ${step.step}`);
-console.log(`${fixture}: seeded in ${Math.round(performance.now() - started)} ms`);
+const logStep = (step: SeedStep) => console.log(`${String(step.ms).padStart(6)} ms  ${step.step}`);
+const seeded = () => console.log(`${fixture}: seeded in ${Math.round(performance.now() - started)} ms`);
+const gate = args.step ? new StepGate() : undefined;
+/** The whole seed, logged once it is done. */
+async function seedAll(): Promise<PreviewProject> {
+  const project = await seed(fixture);
+  for (const step of project.steps) logStep(step);
+  seeded();
+  return project;
+}
+// In step mode the seed runs on behind the server; each step waits for POST /preview/step.
+if (gate !== undefined) seed(fixture, { gate }).then(seeded, (error: unknown) => console.error(error));
+const preview = gate === undefined ? await seedAll() : await gate.project;
 
 const people = [...new Set([...preview.scopeMap.scopes.values()].map((scope) => scope.driId))];
 // The originating person: the one whose agent called the tools, as the demo story's seat.
-const defaultOwner = args.as ?? preview.features.list().find((feature) => preview.tools.list(feature.id).length > 0)?.personId ?? people[0] ?? "";
+const defaultOwner = () =>
+  args.as ?? preview.features.list().find((feature) => preview.tools.list(feature.id).length > 0)?.personId ?? people[0] ?? "";
 
 /** Each open live socket. */
 const sockets = new Set<Socket>();
+
+/** Tells every open dashboard to read its inbox and its team view again, as the ProjectAgent's two messages ask. */
+function broadcast(): void {
+  for (const socket of sockets) socket.write(Buffer.concat([frame(inboxChangedMessage()), frame(featuresChangedMessage())]));
+}
 
 /** One unmasked WebSocket text frame. */
 function frame(text: string): Buffer {
@@ -78,7 +103,7 @@ const ownerOf = (req: IncomingMessage): string => {
   const header = req.headers["x-preview-owner"];
   if (typeof header === "string" && people.includes(header)) return header;
   const cookie = /(?:^|;\s*)preview-owner=([a-z0-9-]+)/.exec(req.headers.cookie ?? "")?.[1];
-  return cookie !== undefined && people.includes(cookie) ? cookie : defaultOwner;
+  return cookie !== undefined && people.includes(cookie) ? cookie : defaultOwner();
 };
 
 /** The Node request as a fetch Request, signed in as the preview's owner. */
@@ -95,19 +120,51 @@ async function toRequest(req: IncomingMessage): Promise<Request> {
   return new Request(url, { method: req.method, headers, body });
 }
 
+/** The steps run so far and the next one, with the index of the next and the decision it waits for. */
+function stepState(stepGate: StepGate) {
+  const ran = preview.steps.map((step) => step.step);
+  return {
+    steps: stepGate.next === undefined ? ran : [...ran, stepGate.next],
+    next: ran.length,
+    waitingFor: stepGate.waitingFor ?? null,
+    finished: stepGate.finished,
+    ...(stepGate.failed === undefined ? {} : { failed: stepGate.failed }),
+  };
+}
+
+/** GET /preview/steps and POST /preview/step in step mode; undefined for any other request. */
+async function stepRoute(req: IncomingMessage, stepGate: StepGate): Promise<{ status: number; body: unknown } | undefined> {
+  if (req.url === "/preview/steps" && req.method === "GET") return { status: 200, body: stepState(stepGate) };
+  if (req.url !== "/preview/step" || req.method !== "POST") return undefined;
+  const ran = stepGate.advance();
+  if (ran === undefined) {
+    const why = stepGate.finished ? "the seed has finished" : stepGate.waitingFor !== undefined ? "the step waits for a person's decision" : "a step is running";
+    return { status: 409, body: { error: why, ...stepState(stepGate) } };
+  }
+  await ran;
+  return { status: 200, body: stepState(stepGate) };
+}
+
 const server = createServer(async (req, res) => {
   try {
+    const stepped = gate === undefined ? undefined : await stepRoute(req, gate);
+    if (stepped !== undefined) {
+      res.writeHead(stepped.status, { "Content-Type": "application/json" }).end(JSON.stringify(stepped.body));
+      return;
+    }
     const seat = /^\/preview\/as\/([a-z0-9-]+)$/.exec(req.url ?? "")?.[1];
     if (seat !== undefined && people.includes(seat)) {
       res.writeHead(303, { Location: "/", "Set-Cookie": `preview-owner=${seat}; Path=/; SameSite=Lax` }).end();
       return;
     }
     const request = await toRequest(req);
+    const sent = gate !== undefined && request.method === "POST" ? await request.clone().text() : "";
     const response = (await handleDashboardRoute(request, new URL(request.url), options, handlers as never)) ?? new Response("not found", { status: 404 });
     // A decision or an approval changes someone's inbox and a feature's state: every open dashboard
-    // reads its inbox and its team view again, as the ProjectAgent's two messages ask.
+    // reads its inbox and its team view again. In step mode it may be the decision the seed waits for.
     if (request.method === "POST" && response.ok) {
-      for (const socket of sockets) socket.write(Buffer.concat([frame(inboxChangedMessage()), frame(featuresChangedMessage())]));
+      broadcast();
+      gate?.arrived(new URL(request.url).pathname, ownerOf(req), JSON.parse(sent || "{}") as Record<string, unknown>);
     }
     const headers: Record<string, string> = {};
     response.headers.forEach((value, name) => {
@@ -132,4 +189,13 @@ server.on("upgrade", (req, socket: Socket) => {
   socket.on("error", () => sockets.delete(socket));
 });
 
-server.listen(port, "127.0.0.1", () => console.log(`preview of ${fixture} on http://127.0.0.1:${port} as ${defaultOwner}`));
+if (gate !== undefined) {
+  gate.onStep = (step) => {
+    logStep(step);
+    broadcast();
+  };
+}
+
+server.listen(port, "127.0.0.1", () =>
+  console.log(`preview of ${fixture} on http://127.0.0.1:${port} as ${defaultOwner()}${gate === undefined ? "" : ", one step per POST /preview/step"}`),
+);
