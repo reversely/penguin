@@ -534,12 +534,15 @@ v1 failed for 7 of the 20 forks with `bad band #78`, on both passes.
 ### Fix writes
 
 Once an author approves a part of a merge plan, its fix becomes one commit on the affected feature's
-fork ([design.md](design.md#steps-1-and-3-in-the-build)). Two writers use the same code
-(`fix-write.ts`):
+fork ([design.md](design.md#steps-1-and-3-in-the-build)). The originating agent wrote the patch.
+Three writers commit it, all with the same code (`fix-write.ts`):
 
 - The originating agent pipes the answer of the `fix_token` MCP tool to `penguin-bridge fix-write`.
   The command fetches the fork into `<state-dir>/fix-writes`, or `--repo <path>`, writes the fix and
   prints the commit as JSON for `report_fix_write`.
+- The affected feature's builder takes the part's fix task ([Edit tasks](#edit-tasks)). When the
+  person's bridge claims that task, the bridge commits the approved patch itself, with no agent run
+  (`edit-run.ts`).
 - Runner mode claims the writes of approved mechanical parts at `POST /fix-writes/claim` under a
   10-minute lease. An approved rule-written part of a split's migration plan comes the same way,
   onto its running feature's fork or its plan's block feature

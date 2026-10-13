@@ -110,8 +110,9 @@ a feature's fork to run its submitted reviews. A runner bridge also holds `write
 for `PENGUIN_FEATURE_TOKEN_TTL_MINUTES`. It gets the token from `open_feature` or `feature_token`.
 The Worker mints it only after the ProjectAgent confirms that the session is running and has joined
 that feature. A `write` token on another person's feature fork comes only with an approved merge plan
-part, for `PENGUIN_FIX_TOKEN_TTL_MINUTES`: to the plan's originating agent through `fix_token`, or to
-the runner's claim of a mechanical part ([Writing an approved fix](#writing-an-approved-fix)).
+part, for `PENGUIN_FIX_TOKEN_TTL_MINUTES`: through `fix_token` to the plan's originating agent or to
+the session holding the part's fix task, or to the runner's claim of a mechanical part
+([Writing an approved fix](#writing-an-approved-fix)).
 Write on `base` is minted only by a FeatureAgent, for one promotion, for
 `PENGUIN_PROMOTION_TOKEN_TTL_MINUTES`. It never leaves the FeatureAgent: `/tokens` holds every bridge
 to `read` on `base`. No MCP tool or dashboard route mints a token on it. Once a feature's block
@@ -211,8 +212,9 @@ matches a pending operation clears its `PendingOp` row.
 
 1. An author approves a part of a merge plan on their running feature on the dashboard. A mechanical
    part's approval queues a write for the runner.
-2. The plan's originating agent calls `fix_token`, or the runner claims the queued write at
-   `POST /fix-writes/claim`. The ProjectAgent checks that the part's current revision is approved and
+2. The plan's originating agent calls `fix_token`, or the affected feature's builder does through
+   the part's fix task, or the runner claims the queued write at `POST /fix-writes/claim`. A fix task
+   commits the originating agent's approved patch unchanged. The ProjectAgent checks that the part's current revision is approved and
    unwritten and that the patch writes only paths inside the part. It reads the affected fork's head
    through the Artifacts binding. A head that moved past the patch's base still takes the write when
    the patch applies there unchanged. Otherwise the part goes back to the originating agent to revise.
