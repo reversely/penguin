@@ -13,8 +13,10 @@
 // - Newest revision. The originating change merged into a trial is the originating fork's newest
 //   revision of the part: when the originating agent revised a part for code on main covering one of
 //   the part's scopes, the fix commit of the most revised such part, which holds the plan's
-//   checkpoint; otherwise the plan's checkpoint. A revision gets a new trial, which supersedes the
-//   part's older trials.
+//   checkpoint; otherwise the plan's checkpoint. A verify part counts the first revision too: its
+//   place takes the change with the fixes for code on main of its scopes, so its trial merges such a
+//   fix commit before any revision (`trialCheckpoint`). A revision gets a new trial, which supersedes
+//   the part's older trials.
 // - Reviews. Each trial carries the newest form of each of the part's scopes submitted on the plan's
 //   checkpoint, whichever revision it merges. The runner runs the review harness for it on the trial tree against the target, so the
 //   evidence check, the stored data rule and the side-by-side run read the affected code with the fix
@@ -218,14 +220,23 @@ export function trialForms(reviews: readonly StoredReview[], scopes: readonly st
  * on main covering one of its scopes, once the originating agent revised one, or else the plan's
  * checkpoint. A revision commit is written on top of the checkpoint, so it holds it.
  */
-export function newestRevision(plan: Plan, part: Pick<PlanPart, "scopes">): string {
+export function newestRevision(plan: Plan, part: Pick<PlanPart, "scopes">, fromRevision = 2): string {
   const scopes = new Set(part.scopes);
   let newest: PlanPart | undefined;
   for (const each of plan.parts) {
-    if (each.revision < 2 || each.diff.source !== "commit" || each.diff.commit === null || !each.scopes.some((scope) => scopes.has(scope))) continue;
+    if (each.revision < fromRevision || each.diff.source !== "commit" || each.diff.commit === null || !each.scopes.some((scope) => scopes.has(scope))) continue;
     if (newest === undefined || each.revision > newest.revision) newest = each;
   }
   return newest?.diff.commit ?? plan.facts.change.checkpoint;
+}
+
+/**
+ * The originating commit a part's trial merges. A verify part's place takes the change together with
+ * its fixes for code on main, so its trial merges the fix commit of a part for code on main covering
+ * one of its scopes from the first revision; any other part merges `newestRevision`.
+ */
+export function trialCheckpoint(plan: Plan, part: Pick<PlanPart, "scopes" | "kind">): string {
+  return newestRevision(plan, part, part.kind === "verify" ? 1 : 2);
 }
 
 /**
@@ -260,7 +271,7 @@ export function trialSpec(plan: Plan, part: PlanPart, reviews: readonly StoredRe
     partId: part.partId,
     revision: part.revision,
     fork: `feature-${plan.featureId}`,
-    checkpoint: newestRevision(plan, part),
+    checkpoint: trialCheckpoint(plan, part),
     target,
     fix,
     commandIds: [...part.scopes].sort().map((scope) => `test:${scope}`),
@@ -287,7 +298,7 @@ export function queueTrials(deps: TrialQueueDeps, plan: Plan, parts: readonly Pl
   const asked = new Set(parts.map((part) => part.partId));
   const behind = plan.parts.filter((part) => {
     const current = asked.has(part.partId) ? undefined : deps.trials.ofPart(plan.featureId, part.partId);
-    return current !== undefined && current.planId === plan.planId && current.request.checkpoint !== newestRevision(plan, part);
+    return current !== undefined && current.planId === plan.planId && current.request.checkpoint !== trialCheckpoint(plan, part);
   });
   return [...parts, ...behind].flatMap((part) => {
     const spec = trialSpec(plan, part, reviews);

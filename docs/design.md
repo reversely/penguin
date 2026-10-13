@@ -1672,8 +1672,10 @@ tree from Git objects alone, with no checkout and no ref (`trial-tree.ts`):
 4. A fix commit in the originating fork is applied on top as its own change against its base, with
    `git merge-tree --merge-base`: a cherry-pick of the fix without the rest of the fork.
 
-A verify part's trial names no fix (`fix: { kind: "none" }`) and no form: its tree is steps 1 and 3,
-the checkpoint merged onto the target.
+A verify part's trial names no fix (`fix: { kind: "none" }`) and no form: its tree is steps 1 and 3.
+Its place takes the change together with the fixes for code on main of its scopes, so step 3 merges
+the fix commit of a part for code on main covering one of its scopes from the first revision, not
+only once it is revised (`trialCheckpoint`). With no such part it merges the plan's checkpoint.
 
 Each commit is written with fixed identities and dates, so one trial gives one tree commit. A step
 that does not apply makes the trial a `conflict`, with the reason and no tree. On a built tree the

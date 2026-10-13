@@ -15,7 +15,7 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { changedPathsBetween, runGit } from "@penguin/git-analysis";
+import { changedPathsBetween, runGit, splitNul } from "@penguin/git-analysis";
 import {
   BLOCK_CHECK_LIMITS,
   CHECK_COMMAND_IDS,
@@ -222,7 +222,11 @@ export class BlockChecker {
       const mergeBase = (await runGit(repoPath, ["merge-base", "--end-of-options", origin, target.commit])).trim();
       const ours = await changedPathsBetween(repoPath, mergeBase, origin);
       const theirs = new Set(await changedPathsBetween(repoPath, mergeBase, target.commit));
-      const shared = ours.filter((path) => theirs.has(path));
+      const both = ours.filter((path) => theirs.has(path));
+      // A path both sides changed to the same bytes merges trivially: a fork that holds a copy of
+      // the originating change's module did not change that module on its own.
+      const [ourBlobs, theirBlobs] = await Promise.all([blobIds(repoPath, origin, both), blobIds(repoPath, target.commit, both)]);
+      const shared = both.filter((path) => ourBlobs.get(path) !== theirBlobs.get(path));
       const findings: BlockCheckFinding[] = [];
       let sameHunks = 0;
       for (const path of shared) {
@@ -372,6 +376,33 @@ function formatCheck(check: BlockCheck): string[] {
   }
   if (check.findingCount > check.findings.length) lines.push(`    ... ${check.findingCount - check.findings.length} more`);
   return lines;
+}
+
+/**
+ * The blob id of each of `paths` at `commit`; a path absent there has none. The paths are literal
+ * pathspecs, never pattern magic.
+ */
+async function blobIds(repoPath: string, commit: string, paths: readonly string[]): Promise<Map<string, string>> {
+  if (paths.length === 0) return new Map();
+  const listing = await runGit(repoPath, [
+    "--literal-pathspecs",
+    "ls-tree",
+    "-r",
+    "-z",
+    "--full-tree",
+    "--end-of-options",
+    commit,
+    "--",
+    ...paths,
+  ]);
+  const ids = new Map<string, string>();
+  // Each entry is `<mode> <type> <object>\t<path>`.
+  for (const entry of splitNul(listing)) {
+    const tab = entry.indexOf("\t");
+    const object = entry.slice(0, tab).split(" ")[2];
+    if (tab > 0 && object !== undefined) ids.set(entry.slice(tab + 1), object);
+  }
+  return ids;
 }
 
 // `@@ -<start>[,<count>] +... @@`: the merge base's side of each hunk.

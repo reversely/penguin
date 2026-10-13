@@ -72,7 +72,12 @@ test("case 1, shopper accounts: Sam's parts wait on Priya until the backfill; Ju
   const marker = backfill?.declares?.contracts?.[backfill.fix?.scope as string]?.[0];
   const first = rounds[0]!;
   assert.equal(first.plan.storeMarker ?? null, null);
-  assert.ok(owned(first, sam).length > 0 && owned(first, sam).every((part) => first.toOriginator.includes(part.partId)), "Sam's parts wait on Priya");
+  // The digest's verify part asks no form, so no read of the stored shape sends it to Priya: its
+  // trial passes and Penguin approves it in every round.
+  const [samVerify, samReviewed] = [owned(first, sam).filter((part) => part.kind === "verify"), owned(first, sam).filter((part) => part.kind !== "verify")];
+  const samParts = JSON.stringify(owned(first, sam).map((part) => [part.partId, part.kind, part.approvalState, part.approvedBy]));
+  assert.ok(samReviewed.length > 0 && samReviewed.every((part) => first.toOriginator.includes(part.partId)), `Sam's parts wait on Priya: ${samParts}`);
+  assert.ok(samVerify.length > 0 && samVerify.every((part) => part.approvedBy === PENGUIN_APPROVER), `Penguin approves the digest's verify part: ${samParts}`);
   const decided = recordsOf(preview, origin.id, "approve_plan_part").filter((record) => record.payload["plan_id"] === first.plan.planId && record.payload["approved_by"] !== PENGUIN_APPROVER);
   assert.deepEqual(decided, [], "no one decides the plan Priya proposes again");
   for (const round of rounds.slice(1)) {
@@ -109,6 +114,11 @@ test("case 1, shopper accounts: Sam's parts wait on Priya until the backfill; Ju
   const verify = owned(last, lena);
   assert.ok(verify.length > 0 && verify.every((part) => part.kind === "verify" && part.approvedBy === PENGUIN_APPROVER), "Penguin approves loyalty's verify part");
   assert.ok(toldOf(preview, lena).includes("penguin_approved"), "Lena is told");
+  // The digest's verify part is trialled with messaging's fix for code on main, so its consent test
+  // passes and Penguin approves it.
+  const digest = last.plan.parts.find((part) => part.kind === "verify" && part.owner === sam);
+  assert.equal(preview.trials.ofPart(origin.id, digest?.partId as string)?.request.checkpoint, tagSha(preview, origin, "fix-messaging"));
+  assert.equal(digest?.approvedBy, PENGUIN_APPROVER, "Penguin approves the digest's verify part");
   assert.deepEqual(forksOf(last.plan.parts), forksFixedBy(origin));
   assert.equal(preview.features.get(origin.id)?.state, "landed");
 });
@@ -194,7 +204,7 @@ test("case 1's feature page names each kind of validation on its results and eac
   for (const kind of VALIDATION_KINDS) assert.ok(shown.includes(VALIDATION_KIND_LABEL[kind]), `${VALIDATION_KIND_LABEL[kind]} on the feature page`);
   const jun = preview.scopeMap.scopes.get("analytics")?.driId as string;
   assert.ok(shown.includes("by Penguin (check runner)"), "an update Penguin's check runner wrote into an affected fork");
-  assert.match(shown, /Approved by Penguin \(Dev policy: Tests/u, "a part Penguin approved under the policy");
+  assert.match(shown, /Approved by Penguin \(Central development policy: Tests/u, "a part Penguin approved under the policy");
   assert.ok(shown.includes(`Approved by ${jun} in the dashboard`), "a part a person approved in the dashboard");
   assert.match(shown, /@[a-z0-9-]+\/[a-z0-9.-]+ \(MCP propose_plan\)/u, "the record view names the agent's tool");
   assert.ok(shown.includes("Penguin automatically") && shown.includes(`${jun} in the dashboard`), "the record view names Penguin and the person");

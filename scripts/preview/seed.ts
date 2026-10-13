@@ -1985,8 +1985,9 @@ async function casesOneToThree(preview: PreviewProject, larder: Larder): Promise
     const plan = (await preview.plan(origin.id)) as Plan;
     const tags = origin.commits.slice(0, index + 1).map((commit) => commit.tag as string).reverse();
     const at = origin.commits[index]?.tag as string;
-    // A verify part asks for no review form.
-    for (const place of plan.parts.filter((part) => part.kind !== "verify").map((part) => part.place)) {
+    // A verify part asks for no review form, but its feature's agent still reviews the scope: the
+    // form decides the plan's parts for that scope's code on main.
+    for (const place of plan.parts.map((part) => part.place)) {
       if (place.kind !== "feature") continue;
       const reviewer = byId.get(place.feature) as LarderFeature;
       for (const scope of reviewer.area) {

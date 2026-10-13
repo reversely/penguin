@@ -17,7 +17,7 @@ the preview seed's run of the four cases (`scripts/preview/seed.ts`), checked by
 |---|---|---|
 | Open: Priya's `accounts-merge` starts from `base` with no start to approve | works | Larder run |
 | Plan: five parts, analytics' and messaging's code on main, Jun's `cohort-ltv`, Sam's `weekly-digest` and loyalty's verify part | works | Larder run: the plan's feature places are the two forks Priya's agent writes into |
-| Sam's parts go to Priya while the plan names no backfill | works | Larder run: the plan at `checkpoint` routes both of Sam's parts to Priya as `stored_data`; no one decides that plan |
+| Sam's part for messaging's code on main goes to Priya while the plan names no backfill | works | Larder run: the plan at `checkpoint` routes it to Priya as `stored_data`; no one decides that plan. The digest's verify part asks no form: its trial merges `fix-messaging` onto Sam's fork, passes, and Penguin approves it in every round (#182) |
 | Priya's agent adds the backfill and proposes again; Penguin approves Sam's parts; Sam is told | works | Larder run: the plan at `backfill` names `accounts/backfill.py::backfill_shopper` as its store marker (#168) |
 | Jun's kiosk invariant routes to Jun; Jun asks for a limit, then a lower one | works | Larder run: two `request_plan_change` records by Jun, answered by `limit-five` and `limit-one` |
 | Jun's cohort report part approved by Penguin once the second revision passes | works | Larder run: the part is trialled on `limit-one` and its form holds (#169) |

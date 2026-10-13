@@ -59,7 +59,7 @@ export interface RoutedPart {
 }
 
 /**
- * A part's state with the route and the rule that sent it there: `Approved by Penguin (Dev policy:
+ * A part's state with the route and the rule that sent it there: `Approved by Penguin (Central development policy:
  * Tests clean)`, `Approved by jun in the dashboard`, `Waiting for jun: Data matching is set to worktree owner review`.
  */
 export function partRouteText(part: RoutedPart, originator?: string): string {

@@ -802,7 +802,7 @@ maps to a fixed program in the bridge. No program or argument comes from the rep
 
 | Check | Command ID | What runs | Fails when |
 |---|---|---|---|
-| Overlap | `git:diff-hunks` | `git diff -U0` from the merge base to each side, per file both sides change, with `--literal-pathspecs` | Both sides change the same hunk of one file |
+| Overlap | `git:diff-hunks` | `git diff -U0` from the merge base to each side, per file both sides change to different blobs, with `--literal-pathspecs`. `git ls-tree` reads each side's blob; a file both sides hold at the same bytes, such as a module Penguin copied into the fork, is not counted | Both sides change the same hunk of one file |
 | Merge | `git:merge-tree` | `git merge-tree --write-tree` | A path conflicts. Lint, format, type check and tests then report `not-run` |
 | Dependency diff | `analysis:python-dependencies` | `python3 -I python_dependencies.py`, reading Git objects only | Never. It names each changed library and each place the target's scopes import it. It gives `error` when the analysis cannot run |
 | Lint | `check:ruff-lint` | `ruff check --output-format json` on the Python files the merge changes | The merged tree has a finding the target's own tree lacks |

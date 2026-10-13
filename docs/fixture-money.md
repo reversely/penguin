@@ -275,10 +275,14 @@ analytics review has one form per round: `reviews/case1-analytics-checkpoint.jso
 | Analytics | `cohort-ltv-checkpoint` with the rule's rewrite | `accounts-merge-limit-five` merged onto it | Accepted. Six shoppers on one kiosk: 6 and 2. A `protected_difference` goes to Jun |
 | Analytics | `cohort-ltv-checkpoint` with the rule's rewrite | `accounts-merge-limit-one` merged onto it | Accepted with `case1-analytics-limit-one.json`. No example differs and no exception is raised |
 
-The digest's place needs no rewrite, so it is a verify part: its trial asks no form, so
-`reviews/case1-messaging.json` is read by no round. The stored `Shopper` shape changed and messaging
-only reads it, so the owning change covers it: Sam's parts go to Priya until the plan names
-`accounts/backfill.py::backfill_shopper` as its store marker.
+The digest's place needs no rewrite, so it is a verify part: its trial asks no form. The trial merges
+`accounts-merge-fix-messaging`, the fix for messaging's code on main, onto Sam's fork, so
+`test_unsubscribe_survives` passes and Penguin approves the part. Sam's agent still reviews
+messaging with `reviews/case1-messaging.json` each round, which decides the part for messaging's
+code on main. The stored `Shopper` shape changed and messaging
+only reads it, so the owning change covers it: Sam's part for messaging's code on main goes to Priya
+until the plan names `accounts/backfill.py::backfill_shopper` as its store marker. The digest's
+verify part reads no form, so it does not wait for the marker.
 
 ### Case 2: the helpful fix
 
@@ -516,7 +520,7 @@ date order up to the split's first commit:
   mechanical. An update with nothing left to rewrite is a verify part. A commit the originating
   person wrote is the patch as it stands. The backfill's declared contract is the store marker once
   the fork holds it. Each place Penguin answers is affected with no part gets a verify part.
-- Each running feature with a part other than a verify part reviews its scope with the case's form for the round:
+- Each running feature with a part, a verify part included, reviews its scope with the case's form for the round:
   `reviews/case<N>-<scope>-<tag>.json` of the newest commit up to the round, or else
   `reviews/case<N>-<scope>.json`.
 - When the agent proposes again at a later `plan` commit, no one decides the earlier plan. Otherwise
@@ -556,7 +560,7 @@ The run on gn100:
 
 | Case | Rounds | People asked | Approved by Penguin |
 |---|---|---|---|
-| 1 | Plan at `checkpoint`: Sam's two parts wait on Priya, no one decides. Plan at `backfill`: Jun asks for a device limit. `limit-five`: Jun asks for a lower one. `limit-one`: every part approved | Jun: two requests, then the analytics part for code on main in person | Sam's two parts, Jun's cohort report part, loyalty's verify part |
+| 1 | Plan at `checkpoint`: Sam's part for messaging's code on main waits on Priya, no one decides. Plan at `backfill`: Jun asks for a device limit. `limit-five`: Jun asks for a lower one. `limit-one`: every part approved | Jun: two requests, then the analytics part for code on main in person | Sam's two parts, Jun's cohort report part, loyalty's verify part |
 | 2 | One plan at `local-day` | none | `holiday-closures` and `weekly-digest` |
 | 3 | One plan at `checkpoint` | none | `instant-payouts` and `tip-jar` |
 
