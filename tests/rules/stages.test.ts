@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { featurePipeline, pipelineStrip, type PipelineFacts } from "@penguin/protocol";
+import { featurePipeline, pipelineStrip, type BlockCheck, type PipelineFacts } from "@penguin/protocol";
 
 function facts(overrides: Partial<PipelineFacts> = {}): PipelineFacts {
   return {
@@ -59,4 +59,28 @@ test("a feature Penguin split follows the split stages", () => {
 test("a landed feature is Promoted and nothing earlier is current", () => {
   const strip = pipelineStrip(featurePipeline(facts({ state: "landed" })));
   assert.equal(strip.stages.at(-1)?.key, "promoted");
+});
+
+test("Block checks shows the block run that gated the land, not an earlier failing check run", () => {
+  const ran = (check: BlockCheck["check"], result: BlockCheck["result"]) => ({ target: "main", check, result, findings: [], findingCount: 0 }) as unknown as BlockCheck;
+  const block = ["overlap", "merge", "lint", "format", "dependencies", "typecheck", "tests", "retiring"].flatMap((check) =>
+    ["main", "pay-fix"].map((target) => ({ target, check, result: "passed" })),
+  );
+  const pipeline = featurePipeline(
+    facts({
+      state: "landed",
+      checks: { checks: [ran("tests", "failed"), ran("retiring", "passed")], waiting: false, checkpoint: "c1" },
+      records: [
+        { type: "land_requested", author: "jun", at: "t1", payload: { run_id: "r1" } },
+        { type: "block_checked", author: "penguin", at: "t2", payload: { run_id: "r1", passed: true, checks: block } },
+      ],
+    }),
+  );
+  const jobs = pipeline.stages.find((stage) => stage.key === "checks")?.jobs ?? [];
+  assert.deepEqual(
+    jobs.map((job) => job.key),
+    ["check:overlap", "check:merge", "check:lint", "check:format", "check:dependencies", "check:typecheck", "check:tests", "block"],
+  );
+  assert.ok(jobs.every((job) => job.status === "passed"));
+  assert.ok(jobs.every((job) => job.fact.kind !== "check" || (job.fact.failed === 0 && job.fact.targets === 2)));
 });

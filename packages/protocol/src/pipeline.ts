@@ -228,7 +228,7 @@ const ACTIVITY_LIMIT = 5;
 /** Findings of passing checks a check job carries. */
 export const CHECK_FINDINGS_SHOWN = 5;
 
-const failing = (check: BlockCheck) => check.result === "failed" || check.result === "error";
+const failing = (check: Pick<BlockCheck, "result">) => check.result === "failed" || check.result === "error";
 
 /** A stage's status from its jobs. */
 export function stageStatus(jobs: readonly PipelineJob[]): JobStatus {
@@ -348,12 +348,38 @@ function writeJobs(facts: PipelineFacts): PipelineJob[] {
   });
 }
 
-/** One job per check kind of the newest block checks, then the block run `land` asked for. */
+/** A check as a check job reads it: a `check` run's in full, or a block run's from its signed record. */
+type JobCheck = Pick<BlockCheck, "target" | "check" | "result"> & { readonly findings: BlockCheck["findings"] };
+
+/**
+ * The checks of the block run the newest land asked for, from its signed `block_checked` record, or
+ * null before that run reported. The record keeps each check's target and result, not its findings.
+ * `retiring` runs on a checkpoint's own changes, never on a block, so it is left out.
+ */
+function blockRunChecks(facts: PipelineFacts): JobCheck[] | null {
+  const land = last(facts.records, (record) => record.type === "land_requested");
+  if (land === undefined) return null;
+  const checked = last(facts.records, (record) => record.type === "block_checked" && record.payload["run_id"] === land.payload["run_id"]);
+  const checks = checked?.payload["checks"];
+  if (!Array.isArray(checks) || checks.length === 0) return null;
+  return (checks as readonly Record<string, unknown>[]).flatMap((each): JobCheck[] => {
+    const target = text(each["target"]);
+    const check = text(each["check"]);
+    const result = text(each["result"]);
+    if (target === null || check === null || result === null || check === "retiring") return [];
+    return [{ target, check: check as BlockCheck["check"], result: result as BlockCheck["result"], findings: [] }];
+  });
+}
+
+/**
+ * One job per check kind of the block run that gated the land, or of the newest `check` run before any
+ * block run reported, then the block run `land` asked for.
+ */
 function checkJobs(facts: PipelineFacts): PipelineJob[] {
   const jobs: PipelineJob[] = [];
   if (facts.checks !== null && facts.checks.waiting) jobs.push({ key: "check-run", status: "running", fact: { kind: "check-run" } });
-  const kinds = new Map<string, BlockCheck[]>();
-  for (const check of facts.checks?.checks ?? []) kinds.set(check.check, [...(kinds.get(check.check) ?? []), check]);
+  const kinds = new Map<string, JobCheck[]>();
+  for (const check of blockRunChecks(facts) ?? facts.checks?.checks ?? []) kinds.set(check.check, [...(kinds.get(check.check) ?? []), check]);
   for (const [check, checks] of kinds) {
     const failed = checks.filter(failing).length;
     const findings = checks
