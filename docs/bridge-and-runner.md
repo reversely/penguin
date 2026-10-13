@@ -800,7 +800,13 @@ maps to a fixed program in the bridge. No program or argument comes from the rep
 | Lint | `check:ruff-lint` | `ruff check --output-format json` on the Python files the merge changes | The merged tree has a finding the target's own tree lacks |
 | Format | `check:ruff-format` | `ruff format --check` on the same files | A file would be reformatted that the target's own tree leaves alone |
 | Type check | `check:pyright` | pyright 1.1.414 with `--outputjson` on the whole merged tree | The merged tree has an error the target's own tree lacks |
-| Tests | `test:<scope id>` | The scope's test command (`test-runner.ts`) | The command exits other than 0 |
+| Tests | `test:<scope id>` | The scope's test command (`test-runner.ts`) | The command exits other than 0. On a running feature's fork, only a failing test the fork head does not already fail on its own counts |
+
+On a running feature's fork, a tests check whose command fails runs the same command again on the
+fork head without the change (`discountForkFailures` in `combined-run.ts`). A test that fails there
+too is the fork's own failure, not the block's: it leaves the check's findings, and a check left with
+no failing test passes, its summary naming how many fail on the fork alone. Main's tests count in
+full. On Larder, `japan-launch` fails its yen test on its own head, so cases 2 and 3 land past it.
 
 Lint, format and the type check run twice: once in a throwaway worktree of the merged commit, once
 in one of the target's own commit. A finding counts when the merged tree has it and the target's

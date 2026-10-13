@@ -23,8 +23,8 @@ the preview seed's run of the four cases (`scripts/preview/seed.ts`), checked by
 | Jun's cohort report part approved by Penguin once the second revision passes | works | Larder run: the part is trialled on `limit-one` and its form holds (#169) |
 | Jun's analytics part for code on main | partial | Jun approves it in person after `limit-one`. Jun's form names the cutover marker in Jun's fork, which the trial of analytics' code on main does not hold, so the review is refused with `evidence_not_found`. PRD case 1 counts Jun twice |
 | Loyalty's verify part approved by Penguin; Lena is told | works | Larder run |
-| Fixes written into Jun's and Sam's forks | partial | The seed reports the fixture's commits as checkpoints of those forks once their parts are approved; it makes no `fix_write` record (#171) |
-| Land as one block | partial | The seed moves main to the feature's head once every part is approved, with no block check (#171) |
+| Fixes written into Jun's and Sam's forks | works | Larder run: Priya's agent writes each approved patch with `fix_token` and `report_fix_write`; two `fix_write` records (#171) |
+| Land as one block | works | Larder run: `land_requested`, a passing `block_checked` on main and every running fork, then one `promotion` (#171) |
 
 ## Case 2: the helpful fix (merge plan)
 
@@ -35,7 +35,7 @@ the preview seed's run of the four cases (`scripts/preview/seed.ts`), checked by
 | A test a fork already fails is not charged to the change | works | Larder run: `japan-launch` fails its yen test on its own head, so the facts run leaves it out and the plan has no part there (#170) |
 | Elif's and Sam's parts approved by Penguin; no one asked; both told | works | Larder run: both trials pass and both forms hold |
 | Forms filled in headless | works | Live check `tests/e2e/review-task-run.test.ts` (#138), on the helpful-fix fixture |
-| Fixes written and land as one block | partial | As in case 1 (#171) |
+| Fixes written and land as one block | works | Larder run, as in case 1. `japan-launch`'s own yen failure fails no block check (#171) |
 
 ## Case 3: the dependency bump (merge plan)
 
@@ -44,7 +44,7 @@ the preview seed's run of the four cases (`scripts/preview/seed.ts`), checked by
 | Open: Hugo's `dependency-audit` starts from main after case 2 | works | Larder run. Noor approves the start beside `pagination` |
 | Dependency diff names `instant-payouts` and `tip-jar` | works | Larder run: the agent's `check` names the places those two forks import the upgraded client. It also names Hugo's own `retry-budget` and `rounding-mode` in platform |
 | Kofi's and Priya's parts approved by Penguin; no one asked; both told | works | Larder run |
-| Fixes written and land as one block | partial | As in case 1 (#171) |
+| Fixes written and land as one block | works | Larder run, as in case 1. `japan-launch`'s own yen failure fails no block check (#171) |
 
 ## Case 4: money in minor units (split)
 

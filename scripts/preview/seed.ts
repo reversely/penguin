@@ -17,6 +17,7 @@ import { delimiter, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { promisify } from "node:util";
 
+import { runGit } from "@penguin/git-analysis";
 import { generateSigningKeyPair } from "@penguin/issues";
 import {
   BlockChecker,
@@ -34,18 +35,23 @@ import {
   runSideBySide,
   TestRunner,
   toolPass,
+  writeFix,
+  type GitRemote,
 } from "@penguin/local-bridge";
 import {
   BACKGROUND_RUN_CAP_DEFAULT,
   boundReviewRecord,
   EDIT_RUN_MINUTES_DEFAULT,
+  FIX_WRITE_BRANCH,
   isMigrationPlanId,
   routesToOriginator,
   type ContractWorkView,
   type LadderDecision,
   needsPerson,
   PLAN_STORE_MARKERS,
+  type FixWriteSpec,
   type Plan,
+  type PlanPart,
   type PlanStoreMarker,
   type RetiringSymbol,
   type ReviewForm,
@@ -64,7 +70,15 @@ import { contractWork, ContractSplitStore, recordSplit, retireSplit, scheduleSor
 import { buildFeaturePage, buildFeaturePlan, buildPersonScopes, buildTeamView, type DashboardViewDeps } from "../../services/project-agent/src/dashboard-views.ts";
 import { openFeature, recordFeatureRepo, recordPenguinCheckpoint, reportFeatureCheckpoint, type FeatureDeps } from "../../services/project-agent/src/feature-open.ts";
 import { FeatureStore, signFeatureRecord } from "../../services/project-agent/src/feature-store.ts";
-import { FixGrantStore } from "../../services/project-agent/src/fix-write.ts";
+import {
+  agentFixGrant,
+  agentFixReport,
+  claimRunnerWrites,
+  FixGrantStore,
+  openFixWrite,
+  runnerFixReport,
+  type FixWriteDeps,
+} from "../../services/project-agent/src/fix-write.ts";
 import { buildIdentitiesPage } from "../../services/project-agent/src/identities-page.ts";
 import { IdentityStore } from "../../services/project-agent/src/identity-store.ts";
 import { buildInbox } from "../../services/project-agent/src/inbox-page.ts";
@@ -460,6 +474,8 @@ export class PreviewProject {
       sign: (record) => this.#sign(record),
       roundLimit: this.roundLimit,
       notify: this.#notify,
+      // An approved part on a running feature takes its place in its fork's order of writes.
+      approved: (featureId, plan, part) => openFixWrite(this.fixGrants, featureId, plan, part),
       checks: {
         reviews: (featureId) => this.reviews.list(featureId),
         scopeMap: async () => this.scopeMap,
@@ -577,23 +593,110 @@ export class PreviewProject {
   }
 
   /**
-   * Main moves to the feature's latest checkpoint and the feature lands, as a passing land run's
-   * promotion does (block-land.ts featureLanded): every part of its newest plan must be approved, and
-   * each start it held is checked again. The preview runs no block check here, since it writes the
-   * fixture's own commits into forks rather than Penguin's fix commits (fix-write.ts).
+   * What writing approved fixes reads and writes, as the ProjectAgent wires it (fix-write.ts). The
+   * fixture's repository stands in for Artifacts: a fork's `main` is the feature's branch.
    */
-  async promoteLanded(featureId: string): Promise<void> {
+  fixWriteDeps(): FixWriteDeps {
+    const approval = this.approvalDeps();
+    return {
+      features: this.features,
+      routes: this.routes,
+      keeper: approval.keeper,
+      sign: approval.sign,
+      notify: this.#notify,
+      grants: this.fixGrants,
+      scopeMap: async () => this.scopeMap,
+      readFork: async (repo, use) => use({ ...gitReader(this.repo), log: async ({ limit }) => this.#branchLog(repo, limit) }),
+      locked: (featureId) => this.overlaps.status(featureId).waitingOn.length > 0,
+    };
+  }
+
+  /** The newest `limit` commits of a branch's first-parent history: `base` reads main, a fork its own branch. */
+  #branchLog(repo: string, limit: number): { readonly hash: string }[] {
+    return this.git("log", "--first-parent", "--format=%H", `-n${limit}`, repo === "base" ? "main" : repo)
+      .split("\n")
+      .filter(Boolean)
+      .map((hash) => ({ hash }));
+  }
+
+  /** A fork as a writer's remote: the fixture's repository, with the fork's `main` read as the feature's branch. */
+  #forkRemote(fork: string): GitRemote {
+    const branch = `refs/heads/${FIX_WRITE_BRANCH}`;
+    return {
+      name: fork,
+      artifacts: false,
+      git: (cwd, args) => runGit(cwd, args(this.repo).map((arg) => arg.replace(branch, `refs/heads/${fork}`))),
+    };
+  }
+
+  /**
+   * Writes the approved fix of `partId` into its running feature's fork and reports the commit, as
+   * the originating agent does with `fix_token` and `report_fix_write`, or the check runner for a
+   * mechanical part with its claim. The commit is the approved patch on the fork head, written with
+   * the bridge's `writeFix`. Answers the commit kept as the `fix_write` record.
+   */
+  async writeApprovedFix(featureId: string, partId: string): Promise<string> {
+    this.tick();
     const feature = this.features.get(featureId);
-    if (feature?.latestCheckpointSha == null) throw new Error(`no checkpoint of ${featureId} to promote`);
-    const unapproved = (await this.plan(featureId))?.parts.filter((part) => part.approvalState !== "approved") ?? [];
-    if (unapproved.length > 0) throw new Error(`${featureId} may not land: ${unapproved.map((part) => `${part.partId} is ${part.approvalState}`).join(", ")}`);
-    if (!this.features.setState(featureId, ["building"], "landed")) throw new Error(`${featureId} is ${feature.state}, not building`);
-    await this.promoted(featureId, feature.latestCheckpointSha, true);
-    this.#notify(feature.personId);
-    for (const blocked of this.overlaps.heldBy(featureId)) {
-      const waiting = this.features.get(blocked);
-      if (waiting !== undefined) await checkOverlap(this.overlapDeps(), waiting);
+    const part = (await this.plan(featureId))?.parts.find((each) => each.partId === partId);
+    if (feature === undefined || part === undefined) throw new Error(`no part ${partId}`);
+    const deps = this.fixWriteDeps();
+    const sessionId = this.sessionOf.get(featureId) as string;
+    const heartbeat = (caller: string, session: string) => this.sessions.heartbeat(caller, session);
+    const input = { feature: featureId, part: partId, revision: part.revision };
+    let spec: FixWriteSpec;
+    if (part.kind === "mechanical") {
+      const claimed = await claimRunnerWrites(deps, RUNNER);
+      const found = claimed.status === "ok" ? claimed.writes.find((write) => write.spec.partId === partId) : undefined;
+      if (found === undefined) throw new Error(`the check runner claimed no write of ${partId}`);
+      spec = found.spec;
+    } else {
+      const granted = await agentFixGrant(deps, heartbeat, feature.personId, sessionId, input);
+      if (granted.status !== "ok") throw new Error(`fix_token ${partId}: ${granted.message}`);
+      spec = granted.spec;
     }
+    const written = await writeFix({ repoPath: await this.#runner(), remote: this.#forkRemote(spec.fork) }, spec);
+    if (written.status !== "written") throw new Error(`writing ${partId} into ${spec.fork}: ${written.status === "moved" ? `the fork moved to ${written.head}` : written.reason}`);
+    const reported =
+      part.kind === "mechanical"
+        ? await runnerFixReport(deps, RUNNER, spec.writeId, { commit: written.commit })
+        : await agentFixReport(deps, heartbeat, feature.personId, sessionId, { ...input, commit: written.commit });
+    if (reported.status !== "ok") throw new Error(`report_fix_write ${partId}: ${reported.message}`);
+    return written.commit;
+  }
+
+  /** The originating agent asks to land its feature (`land_feature`): a signed `land_requested` record names the block run. */
+  async requestLand(featureId: string): Promise<void> {
+    this.tick();
+    const feature = this.features.get(featureId);
+    if (feature === undefined) throw new Error(`no feature ${featureId}`);
+    const asked = await requestLand(this.landDeps(), feature.personId, this.sessionOf.get(featureId) as string, { feature: featureId });
+    if (asked.status === "rejected") throw new Error(`land ${featureId}: ${asked.message}`);
+  }
+
+  /** The promotion of the block `checkBlocks` held, once the next step lets it go. */
+  #heldPromotion: { readonly go: () => void; readonly pass: Promise<BlockReportResult[]> } | undefined;
+
+  /**
+   * The check runner checks each waiting block run on its merged trees and reports it; the report is
+   * a signed `block_checked` record. A passing land's promotion waits for `promoteChecked`, so the
+   * checks and the promotion are two steps.
+   */
+  async checkBlocks(): Promise<void> {
+    const hold = Promise.withResolvers<void>();
+    const checked = Promise.withResolvers<void>();
+    const pass = this.blockPass({ checked: checked.resolve, hold: hold.promise });
+    this.#heldPromotion = { go: hold.resolve, pass };
+    await Promise.race([checked.promise, pass]);
+  }
+
+  /** Lets the promotion `checkBlocks` held move main; answers each report's outcome. */
+  async promoteChecked(): Promise<BlockReportResult[]> {
+    const held = this.#heldPromotion;
+    if (held === undefined) throw new Error("no block was checked");
+    this.#heldPromotion = undefined;
+    held.go();
+    return held.pass;
   }
 
   /**
@@ -668,10 +771,15 @@ export class PreviewProject {
     recordFeatureRepo(this.features, featureId, `feature-${featureId}`);
   }
 
-  /** The feature's agent reports checkpoint `ref` of its fork. */
+  /**
+   * The feature's agent pushes commit `ref` to its fork and reports it as a checkpoint. The fixture's
+   * repository stands in for the fork: the feature's branch moves to the commit, so the branch is the
+   * fork head a fix write or a block run reads.
+   */
   async checkpoint(featureId: string, ref: string): Promise<string> {
     this.tick();
     const sha = this.git("rev-parse", `${ref}^{commit}`);
+    this.git("update-ref", `refs/heads/feature-${featureId}`, sha);
     const feature = this.features.get(featureId);
     const sessionId = this.sessionOf.get(featureId);
     if (feature === undefined || sessionId === undefined) throw new Error(`no feature ${featureId}`);
@@ -1085,7 +1193,7 @@ export class PreviewProject {
    * failed check's agent steps become next-step edit tasks, a feature Penguin opened's for the steward
    * of its person. Answers each report's outcome.
    */
-  async blockPass(): Promise<BlockReportResult[]> {
+  async blockPass(step: { readonly checked?: () => void; readonly hold?: Promise<void> } = {}): Promise<BlockReportResult[]> {
     const repo = await this.#runner();
     const scratch = `${repo}-scratch`;
     const impact = pythonImpactAnalyzer({ repoPath: repo, python: PYTHON, env: ENV });
@@ -1110,14 +1218,30 @@ export class PreviewProject {
               signBlockRecord: async (featureId, type, payload) => {
                 const record = await this.#sign(this.features.draftRecord(featureId, type, { penguin: true }, payload));
                 this.features.addRecord(record);
+                if (type === "block_checked") step.checked?.();
                 return record.record_id;
               },
-              acquirePromotion: async (featureId, runId) => this.blockQueue.acquire(featureId, runId),
+              acquirePromotion: async (featureId, runId) => {
+                await step.hold;
+                return this.blockQueue.acquire(featureId, runId);
+              },
               releasePromotion: async (runId) => this.blockQueue.release(runId),
               featureLanded: async (featureId, promotion) => {
                 await migrationBlockLanded(this.migrationDeps(), featureId, promotion.mainAfter);
                 await featureLanded(
-                  { features: this.features, queue: this.blockQueue, retirePlan: () => undefined, recheckLocks: async () => undefined, notify },
+                  {
+                    features: this.features,
+                    queue: this.blockQueue,
+                    retirePlan: () => undefined,
+                    // Each start the landed feature held is checked again, as the ProjectAgent does.
+                    recheckLocks: async (id) => {
+                      for (const blocked of this.overlaps.heldBy(id)) {
+                        const waiting = this.features.get(blocked);
+                        if (waiting !== undefined) await checkOverlap(this.overlapDeps(), waiting);
+                      }
+                    },
+                    notify,
+                  },
                   featureId,
                   promotion,
                 );
@@ -1296,8 +1420,12 @@ export class PreviewProject {
       delegates: async () => new Map(),
       plan: async (featureId) => this.plans.latestPlan(featureId),
       roundLimit: this.roundLimit,
-      // The preview's runner writes no fix into a fork, so no part has a write.
-      fixWrite: () => undefined,
+      fixWrite: (partId, revision) => {
+        const grant = this.fixGrants.get(partId, revision);
+        if (grant === undefined) return undefined;
+        const open = grant.state === "queued" || grant.state === "granted";
+        return { ...grant, waitsFor: open ? this.fixGrants.waitsFor(grant) : null };
+      },
       contract: (feature) => contractWork(this.splitDeps(), feature, this.scopeMap),
       protectedChanges: (featureId) => this.protectedChanges.ofFeature(featureId),
       split: (featureId) => this.splits.get(featureId),
@@ -1857,7 +1985,19 @@ async function casesOneToThree(preview: PreviewProject, larder: Larder): Promise
       if (preview.features.get(feature.id)?.latestCheckpointSha !== headSha) {
         await preview.step(`checkpoint ${feature.id} ${head.tag}`, () => preview.checkpoint(feature.id, tagOf(feature, head.tag as string)));
       }
-      await preview.step(`promote ${event.promote}`, () => preview.promoteLanded(event.promote));
+      // The agent asks to land; the check runner checks the block on main and every running fork;
+      // the passing block's promotion moves main.
+      await preview.step(`land_feature ${feature.id}`, () => preview.requestLand(feature.id));
+      await preview.step(`block checks of ${feature.id}`, () => preview.checkBlocks());
+      await preview.step(`promote ${feature.id}`, async () => {
+        await preview.promoteChecked();
+        if (preview.features.get(feature.id)?.state !== "landed") {
+          const records = preview.features.records(feature.id).map((kept) => JSON.parse(kept.file) as { type: string; payload: Record<string, unknown> });
+          const checked = records.filter((record) => record.type === "block_checked").at(-1)?.payload;
+          const failing = preview.blocks.get(String(checked?.["run_id"]))?.failing;
+          throw new Error(`${feature.id} did not land: ${JSON.stringify({ failing, last: records.at(-1)?.type }).slice(0, 4_000)}`);
+        }
+      });
       continue;
     }
     const { feature, commit, index } = event;
@@ -1868,11 +2008,12 @@ async function casesOneToThree(preview: PreviewProject, larder: Larder): Promise
       await open(feature);
       await preview.step(`checkpoint ${feature.id}`, () => preview.checkpoint(feature.id, tagOf(feature, tag)));
     } else if (origins.some((origin) => origin.owner === commit.author)) {
-      // The originating agent writes the approved fix into this fork; the fork's agent reports it.
+      // The fixture's commit is the approved fix of the originating plan's part on this fork. The
+      // originating agent writes that part's approved patch into the fork (fix_token), unchanged.
       const origin = originAt(event.at) as LarderFeature;
       const part = (await preview.plan(origin.id))?.parts.find((each) => each.place.kind === "feature" && each.place.feature === feature.id);
       if (part?.approvalState !== "approved") throw new Error(`${feature.id} ${tag}: ${origin.id}'s part there is ${part?.approvalState ?? "missing"}, not approved`);
-      await preview.step(`write ${origin.id}'s fix into ${feature.id}`, () => preview.checkpoint(feature.id, tagOf(feature, tag)));
+      await preview.step(`fix_write ${part.partId} into ${feature.id}`, () => preview.writeApprovedFix(origin.id, part.partId));
     } else if (commit.merge === "main") {
       await preview.step(`${feature.id} takes main`, () => preview.checkpoint(feature.id, tagOf(feature, tag)));
     } else {

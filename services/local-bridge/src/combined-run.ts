@@ -128,6 +128,11 @@ export interface TestedResult extends DependentTarget {
   readonly signal: NodeJS.Signals | null;
   /** Tests the log names as failed; empty for a pass or for a runner whose log has no pytest summary. */
   readonly failingTests: readonly FailingTest[];
+  /**
+   * On a fork target: failing tests left out of `failingTests` because the fork fails them on its own
+   * head without the change. Absent when none was left out.
+   */
+  readonly failingAlone?: number;
   readonly log: string;
   /** Wall time of the test run, from adding its worktree to removing it. */
   readonly durationMs: number;
@@ -250,6 +255,25 @@ export function combinedRunEvent(report: CombinedRunReport, triggerOwner: string
   };
 }
 
+/**
+ * The failing tests on a fork's merged tree that the change breaks: those the fork head without the
+ * change does not already fail (`failingAlone`, by pytest node ID).
+ */
+export function withoutForkFailures<T extends { readonly nodeId: string }>(failing: readonly T[], failingAlone: ReadonlySet<string>): T[] {
+  return failing.filter(({ nodeId }) => !failingAlone.has(nodeId));
+}
+
+/**
+ * A failed result on a fork's merged tree with the tests the fork fails alone left out. When none is
+ * left, the change breaks nothing there and the result passes.
+ */
+export function discountForkFailures(result: TestedResult, failingAlone: ReadonlySet<string>): TestedResult {
+  const failingTests = withoutForkFailures(result.failingTests, failingAlone);
+  const left = result.failingTests.length - failingTests.length;
+  if (left === 0) return result;
+  return { ...result, status: failingTests.length === 0 ? "passed" : "failed", failingTests, failingAlone: left };
+}
+
 /** One `tests` check per dependent scope with a checkpoint, from the combined run's results. */
 export function testChecks(results: readonly CombinedResult[], origin: string): BlockCheck[] {
   const checks: BlockCheck[] = [];
@@ -292,7 +316,9 @@ export function testChecks(results: readonly CombinedResult[], origin: string): 
         result: result.status,
         findings: findings.slice(0, BLOCK_CHECK_LIMITS.findingsPerCheck),
         findingCount: findings.length,
-        summary: result.status === "passed" ? "tests pass" : `${failed} failing test${failed === 1 ? "" : "s"}; the command ${ended}`,
+        summary:
+          (result.status === "passed" ? "tests pass" : `${failed} failing test${failed === 1 ? "" : "s"}; the command ${ended}`) +
+          (result.failingAlone === undefined ? "" : `; ${result.failingAlone} more fail on the fork alone`),
         fingerprint: { ...result.fingerprint },
         logRef: `sha256:${createHash("sha256").update(result.log).digest("hex")}`,
         durationMs: Math.round(result.durationMs),
@@ -501,6 +527,15 @@ export class CombinedRunner {
   }
 
   async #test(target: DependentTarget, ownerCheckpoint: string, merge: CleanOutcome): Promise<TestedResult> {
+    const result = await this.#run(target, ownerCheckpoint, merge);
+    // On a fork's merged tree, a test the fork already fails on its own head is not the change's break.
+    if (result.status !== "failed" || result.failingTests.length === 0 || target.target === MAIN_TARGET || merge.commit === ownerCheckpoint) return result;
+    const alone = await this.#options.runner.run({ commandId: target.commandId, sha: ownerCheckpoint });
+    const failingAlone = alone.exitCode === 0 && alone.signal === null ? [] : parseFailingTests(alone.log).map((test) => test.nodeId);
+    return discountForkFailures(result, new Set(failingAlone));
+  }
+
+  async #run(target: DependentTarget, ownerCheckpoint: string, merge: CleanOutcome): Promise<TestedResult> {
     const { repoPath, runner } = this.#options;
     const started = performance.now();
     const outcome = await runner.run({ commandId: target.commandId, sha: merge.commit });

@@ -434,9 +434,23 @@ date order up to the split's first commit:
   a review that raised an exception gets its author's request for the change the next `revision`
   commit makes, and the agent answers with `revise_plan_part`. Any other part that needs a person
   is approved by its author.
-- Each fix the originating person wrote into another fork is reported there as a checkpoint once
-  its part is approved. A `merge` commit takes main. At each promotion the feature reports its head
-  and main moves to it once every part of its newest plan is approved.
+- Each checkpoint a feature reports moves its branch, which stands in for its fork head.
+- At the fixture's commit that holds an approved fix in another person's fork, the originating
+  agent writes that part's approved patch into the fork unchanged: `fix_token`, a commit made with
+  the bridge's `writeFix` on the fork head, then `report_fix_write`, which keeps a `fix_write`
+  record. The check runner writes a mechanical part instead, through its claim. Later fixture
+  commits of that fork stand on the fixture's own copy of the fix, whose tree is the same. A
+  `merge` commit takes main.
+- At each promotion the feature reports its head as a checkpoint and lands in three steps:
+  `land_feature` (a `land_requested` record), `block checks of` (the check runner checks the block
+  on main and every running fork: overlap, merge, dependency diff, lint, format, type check and
+  tests, one `block_checked` record), and `promote` (main moves to the checkpoint, a `promotion`
+  record). Lena's promotion stacking lands the same way.
+
+In step mode (`node scripts/preview/dashboard.ts --example money-minor-units --step`) each of these is
+its own step in `GET /preview/steps`, and each case's feature page reaches its last stage: Promoted
+for cases 1 to 3, Done for the split. A run that made every decision through the dashboard's API
+took 581 seconds on gn100.
 
 The run on gn100:
 
@@ -451,7 +465,7 @@ marker `analytics/retention.py::shopper_id_cutover`, which only Jun's fork holds
 analytics' code on main refuses the form with `evidence_not_found`. The cohort report part is tried
 on Priya's limit of one (`newestRevision` in `part-trial.ts`), its form holds and Penguin approves
 it. In case 2, `japan-launch` fails its yen test on its own head, so the facts run leaves it out
-and the plan has no part there. In case 3 the agent's `check` reports the dependency diff with the
+and the plan has no part there, and the block checks of cases 2 and 3 do not count it. In case 3 the agent's `check` reports the dependency diff with the
 places `instant-payouts` and `tip-jar` import the client, and Hugo's own `retry-budget` and
 `rounding-mode`.
 
@@ -459,7 +473,7 @@ places `instant-payouts` and `tip-jar` import the client, and Hugo's own `retry-
 
 The split runs on main as cases 1 to 3 and Lena's stacking left it. `tests/cases/cases.test.ts`
 checks each step below. A whole seed run of the four cases without the originating agents' `impact`
-took about 320 seconds on gn100.
+took about 480 seconds on gn100.
 
 1. **Open.** Ines's feature declares money and orders. Four running features work there, so its
    start waits on Hugo (`rounding-mode`) and on Tomas (`reorder`, `split-shipments`,

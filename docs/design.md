@@ -1256,7 +1256,9 @@ selects. A target left out gets a `not-affected` result, which completes that ta
 [bridge-and-runner.md](bridge-and-runner.md#block-checks) describes each command and its limits.
 
 Lint, format and type findings count only when the merged tree has them and the target's own tree
-does not. A finding already on the target before the merge never fails the block. The dependency
+does not. A finding already on the target before the merge never fails the block. Tests follow the
+same rule on a running feature's fork: a test the fork head fails without the change fails no block,
+as in the facts run. Main's tests count in full. The dependency
 diff reads versions from `pyproject.toml`, `requirements*.txt`, `uv.lock` and vendored modules that
 state `__version__`. Its result is a fact for the plan: the library that changed version and each
 place the target's scopes import it. It passes whatever it finds. It gives `error` only when the

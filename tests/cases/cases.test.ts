@@ -9,7 +9,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { PENGUIN_APPROVER, type PlanPart } from "@penguin/protocol";
+import { BLOCK_CHECK_NAMES, PENGUIN_APPROVER, type PlanPart } from "@penguin/protocol";
 
 import { seed, type LarderFeature, type MoneyLarder, type PreviewProject } from "../../scripts/preview/seed.ts";
 
@@ -121,6 +121,31 @@ test("case 3: the dependency diff names the two other people's running features 
   // Hugo's own platform features import the client too; the other people's are the two the PRD names.
   const others = targets.filter((target) => preview.features.get(target)?.personId !== origin.owner).sort();
   assert.deepEqual(others, forksFixedBy(origin));
+});
+
+test("cases 1 to 3 each write their approved fixes, pass the block checks and reach promotion, in order", async () => {
+  const preview = await larder();
+  // The retiring-calls check runs on a checkpoint, not on a block.
+  const blockChecks = BLOCK_CHECK_NAMES.filter((name) => name !== "retiring");
+  const promotedAt: string[] = [];
+  for (const useCase of [1, 2, 3]) {
+    const origin = originOf(useCase);
+    const plan = (await preview.plan(origin.id))!;
+    const written = recordsOf(preview, origin.id, "fix_write").map((record) => record.payload["part_id"]);
+    const fixes = plan.parts.filter((part) => part.place.kind === "feature" && part.kind !== "verify").map((part) => part.partId);
+    assert.deepEqual([...written].sort(), [...fixes].sort(), `${origin.id} writes each approved fix into its fork`);
+    assert.equal(recordsOf(preview, origin.id, "land_requested").length, 1);
+    const checked = recordsOf(preview, origin.id, "block_checked");
+    assert.equal(checked.length, 1);
+    assert.equal(checked[0]!.payload["passed"], true);
+    const ran = new Set((checked[0]!.payload["checks"] as { check: string }[]).map((check) => check.check));
+    assert.deepEqual([...ran].sort(), [...blockChecks].sort(), `${origin.id}'s block runs every block check`);
+    const promotions = preview.features.records(origin.id).filter((stored) => (JSON.parse(stored.file) as { type: string }).type === "promotion");
+    assert.equal(promotions.length, 1, `${origin.id} is promoted once`);
+    promotedAt.push((JSON.parse(promotions[0]!.file) as { created_at: string }).created_at);
+    assert.equal(preview.features.get(origin.id)?.state, "landed");
+  }
+  assert.deepEqual([...promotedAt].sort(), promotedAt, "main moves case 1, then 2, then 3");
 });
 
 test("case 4, money in minor units: the split runs from expand to contract with main moving block by block", async () => {

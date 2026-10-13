@@ -46,7 +46,7 @@ import {
 import { InvalidPathError, normalizeRepoPath } from "@penguin/scope-map";
 
 import type { FixApplier } from "./apply-fix.ts";
-import { parseFailingTests } from "./combined-run.ts";
+import { parseFailingTests, withoutForkFailures } from "./combined-run.ts";
 import { resolveCommand } from "./command-allowlist.ts";
 import { fingerprint } from "./fingerprint.ts";
 import type { ImpactAnalyzer } from "./impact-analysis.ts";
@@ -288,14 +288,6 @@ export class PlanFactsRunner {
     const passed = outcome.exitCode === 0 && outcome.signal === null;
     return new Set(passed ? [] : parseFailingTests(outcome.log).map((test) => test.nodeId));
   }
-}
-
-/**
- * The failing tests on a running feature's merged tree that the change breaks: those the fork head
- * without the change does not already fail (`failingAlone`, by pytest node ID).
- */
-export function withoutForkFailures<T extends { readonly nodeId: string }>(failing: readonly T[], failingAlone: ReadonlySet<string>): T[] {
-  return failing.filter(({ nodeId }) => !failingAlone.has(nodeId));
 }
 
 /** Fetches the originating fork and every target's fork into `repoPath` with read tokens. */
