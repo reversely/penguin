@@ -19,13 +19,14 @@ one Cloudflare primitive. A test whose subject leaves the product is deleted wit
 
 | File | PRD rule |
 |---|---|
-| `approval.test.ts` | 4.3: Penguin approves a part only when every check is clean; each failing condition sends it to a person |
+| `approval.test.ts` | 4.3: Penguin approves a part only when every check is clean; each failing condition sends it to a person; a part's trial runs on the originating fork's newest revision |
 | `split.test.ts` | 4.2 step 1: the contract-diff sort and the split, plan or nothing decision |
 | `routing.test.ts` | Core concepts and 4.4a: teams, DRIs, the fallback order and protected paths |
 | `stages.test.ts` | Section 10: the stage a feature counts under (Building, Plan, the split stages, Promoted) |
 | `review.test.ts` | Section 6: the review form's refusals |
 | `migration.test.ts` | 4.2 step 2: callers grouped by owner; the defining scope's own uses are not callers |
 | `fixes.test.ts` | 4.2 and 4.4: patches apply exactly; rewrite rules are well formed |
+| `facts.test.ts` | 4.2 step 2: a test a running feature's fork already fails without the change is no break |
 | `security.test.ts` | Section 8: signed records, token scopes, line visibility, dashboard sessions |
 | `fork-writes.test.ts` | 4.4: writes into one fork take turns in approval order, each tried again on the head the last one moved |
 | `run-failures.test.ts` | Section 7: a failed run is freed at once and stops at the project's failure limit |

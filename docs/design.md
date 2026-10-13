@@ -301,6 +301,8 @@ The procedure moves conflict handling to the start of the work. Each step below 
   feature changed is its break, and so is one whose traceback passes through a file holding the
   feature's own callers. A failing test in a file it carries unchanged is main's break, listed on
   main's part and not repeated on the feature's. The `breaks` source counts those carried tests. A
+  failing test the feature's fork head already fails without the change is no break at all: the
+  check runner runs the scope's tests on the fork head too and leaves such a test out. A
   feature whose own changes call nothing in the contract diff is no place.
   Its tests do not run. The `affected_features` source names each such feature with the reason. A
   part proposed for it is `not_affected` with the same reason. The scope's owner or the feature's

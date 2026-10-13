@@ -13,7 +13,9 @@
 //    error lines pytest printed. On a running feature a break is a failing test in a file the feature
 //    changed since its merge base with the baseline, or one whose traceback passes through a file
 //    holding the feature's own callers. Any other failing test sits in a file the feature carries
-//    unchanged from main: it is main's break, counted as `carried`;
+//    unchanged from main: it is main's break, counted as `carried`. On a running feature the same
+//    command then runs on the fork head without the change, once a test is left; a test that fails
+//    there too is the fork's own failure, not a break the change makes, and is not reported;
 // 5. when the plan declares rewrite rules, applies them in each listed place with Penguin's codemod,
 //    lint autofix and formatter (FixApplier.rewrite), and reports each file they change by its blob
 //    before and after, so the Worker can compare the rules' output with each part's proposed fix;
@@ -223,13 +225,13 @@ export class PlanFactsRunner {
         results.push({ ...base(commandId), status: "not-run", merged, reason });
         continue;
       }
-      results.push(await this.#test(target.id, commandId, merged, ownTests));
+      results.push(await this.#test(target, commandId, merged, ownTests));
     }
     return results;
   }
 
   async #test(
-    target: string,
+    { id: target, sha: forkHead }: PlanFactsTarget,
     commandId: string,
     merged: string,
     own: { readonly callers: ReadonlySet<string>; readonly changed: () => Promise<ReadonlySet<string>> } | null,
@@ -247,6 +249,7 @@ export class PlanFactsRunner {
       carried = failing.length - owned.length;
       failing = owned;
     }
+    if (target !== PLAN_MAIN_TARGET && failing.length > 0) failing = withoutForkFailures(failing, await this.#failingAlone(commandId, forkHead));
     const breaks: PlanBreak[] = [];
     for (const { nodeId } of failing.slice(0, PLAN_LIMITS.breaksPerResult)) {
       const file = testFile(nodeId);
@@ -272,6 +275,27 @@ export class PlanFactsRunner {
       durationMs: Math.round(performance.now() - started),
     };
   }
+
+  /** The tests `commandId` fails on a running feature's fork head without the change; none when it does not run there. */
+  async #failingAlone(commandId: string, forkHead: string): Promise<Set<string>> {
+    const { repoPath, runner } = this.#options;
+    try {
+      await resolveCommand(repoPath, forkHead, commandId);
+    } catch {
+      return new Set();
+    }
+    const outcome = await runner.run({ commandId, sha: forkHead });
+    const passed = outcome.exitCode === 0 && outcome.signal === null;
+    return new Set(passed ? [] : parseFailingTests(outcome.log).map((test) => test.nodeId));
+  }
+}
+
+/**
+ * The failing tests on a running feature's merged tree that the change breaks: those the fork head
+ * without the change does not already fail (`failingAlone`, by pytest node ID).
+ */
+export function withoutForkFailures<T extends { readonly nodeId: string }>(failing: readonly T[], failingAlone: ReadonlySet<string>): T[] {
+  return failing.filter(({ nodeId }) => !failingAlone.has(nodeId));
 }
 
 /** Fetches the originating fork and every target's fork into `repoPath` with read tokens. */

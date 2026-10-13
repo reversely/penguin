@@ -598,7 +598,11 @@ its latest checkpoint, keyed by its feature id and naming its person. Every targ
    feature's own callers. Any other failing test sits in a file the feature carries unchanged from
    main. It is main's break, listed on main's part. The result counts those as `carried`. The
    changed files come from one local `git diff` of the merge base and the feature's commit, with no
-   fetch;
+   fetch. When a running feature's command still has a failing test, the runner runs the same
+   command on the feature's fork head without the change. A test that fails there too is the
+   fork's own failure: it is not a break and the report leaves it out (`withoutForkFailures`). On
+   Larder, `japan-launch` fails its yen test on its own head, so case 2's change is not charged
+   with it;
 6. applies the plan's rewrite rules when the listing carries them
    ([design.md](design.md#steps-1-to-5-in-the-build)). In each listed place the runner runs the
    codemod with the rules in a throwaway worktree, then `ruff check --fix` and `ruff format` on the
