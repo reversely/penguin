@@ -1,5 +1,5 @@
 // Pills: a person in their hue, a scope in its owner's hue, and a status in one fixed colour per tone.
-// The person hues are the team's (assignPersonHues in character.ts); the tones reuse the signal hues.
+// The person hues are the team's (assignPersonHues in person-hue.ts); the tones reuse the signal hues.
 
 import type { ReactNode } from "react";
 

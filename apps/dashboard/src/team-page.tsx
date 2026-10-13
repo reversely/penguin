@@ -16,7 +16,7 @@ import { useMemo, type ReactNode } from "react";
 import { AgentDirectory } from "./agent-directory.tsx";
 import { fetchBoard, fetchIdentities, fetchTeam } from "./api.ts";
 import { PersonHuesProvider } from "./avatar.tsx";
-import { assignPersonHues } from "./character.ts";
+import { assignPersonHues } from "./person-hue.ts";
 import { Breadcrumb, hierarchyCrumbs, StagePills, StewardCell, viewTeams, WaitingCell } from "./hierarchy-parts.tsx";
 import { healthTags, homeTeam, orderScopes, personAgents, stageBuckets, teamMembers, teamName, waitingTotal } from "./hierarchy-view.ts";
 import { useRead, type Read } from "./inbox-page.tsx";

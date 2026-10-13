@@ -7,6 +7,7 @@ import { createContext, useContext, useMemo, type ReactNode } from "react";
 
 import { AgentLabel } from "./agent-label.tsx";
 import { linkHandler } from "./links.ts";
+import { handleOwner } from "./penguin-face.ts";
 import { identityPath } from "./routes.ts";
 
 export interface AgentInfo {
@@ -26,15 +27,9 @@ export function AgentDirectory({ page, children }: { readonly page: IdentitiesPa
   return <Directory.Provider value={known}>{children}</Directory.Provider>;
 }
 
-/** The person a handle's "@owner/" half names, or "" for a handle without one. */
-export function handlePerson(handle: string): string {
-  const slash = handle.indexOf("/");
-  return slash === -1 ? "" : handle.slice(1, slash);
-}
-
 export function useAgentInfo(handle: string, person?: string): AgentInfo {
   const known = useContext(Directory).get(handle);
-  return { id: known?.id ?? null, image: known?.image ?? null, person: person ?? known?.person ?? handlePerson(handle) };
+  return { id: known?.id ?? null, image: known?.image ?? null, person: person ?? known?.person ?? handleOwner(handle) };
 }
 
 interface AgentProps {

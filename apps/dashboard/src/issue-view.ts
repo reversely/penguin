@@ -1,4 +1,4 @@
-// What the issue page derives from GET /api/issues/<id>: the Penguin character's state, the signal
+// What the issue page derives from GET /api/issues/<id>: Penguin's state, the signal
 // treatment of each timeline entry and check, and the one-line text of each operation. Pure, so the
 // rules are tested without a browser (test/issue-view.test.ts).
 //
@@ -129,7 +129,7 @@ function approved(reviews: readonly IssuePageReview[]): boolean {
 }
 
 /**
- * The Penguin character's state. An open or closed issue is observed; a detected one is being
+ * Penguin's state. An open or closed issue is observed; a detected one is being
  * coordinated; in verification, a latest failing check means verification failed; in review, the
  * issue is ready to approve once every fix (or the issue itself, without sub-issues) holds only
  * approvals, no thread is open and no latest check fails.
@@ -286,7 +286,7 @@ export function assigneeSegment(assignee: { readonly kind: "person" | "identity"
   return assignee.kind === "identity" ? assignee.id.replace(/^@/, "").replace("/", ".") : assignee.id;
 }
 
-/** Who wrote an operation, as the thread draws them: Penguin's mark, an identity's character or a person's initial. */
+/** Who wrote an operation, as the thread draws them: Penguin's mark, an identity's avatar or a person's initial. */
 export type AuthorKind = "penguin" | "identity" | "person" | "unknown";
 
 export function authorKind(segment: string | null): AuthorKind {

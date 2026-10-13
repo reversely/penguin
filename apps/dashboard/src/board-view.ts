@@ -1,5 +1,5 @@
 // What the dashboard derives from GET /api/board for each assignment: an identity's session status,
-// what its issue waits on, and the Penguin character's state across every issue. The team map
+// what its issue waits on and Penguin's state across every issue. The team map
 // (team-view.ts) and the agent card build on these. Pure, so the rules are tested without a browser
 // (test/board-view.test.ts).
 //
@@ -85,7 +85,7 @@ const ATTENTION: readonly PenguinState[] = [
   "observing",
 ];
 
-/** The Penguin character's state for the whole project: the most pressing state of any issue. */
+/** Penguin's state for the whole project: the most pressing state of any issue. */
 export function boardPenguinState(board: Board): PenguinState {
   const states = new Set(board.issues.map((issue) => penguinState(issue)));
   return ATTENTION.find((state) => states.has(state)) ?? "observing";

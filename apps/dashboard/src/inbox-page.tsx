@@ -281,7 +281,7 @@ interface RowProps {
 const RAISED_FULL = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
 
 /**
- * One item as a sidebar row (identity plan section 5): the first assignee's character, the issue
+ * One item as a sidebar row (identity plan section 5): the first assignee's avatar, the issue
  * title, then the issue number, the state or what the item waits on the person for and the raised
  * time. The dot at the right is the Mark read control on an unread item; it takes the attention
  * colour while the item waits on the person, whose preview then says so in words.
@@ -324,7 +324,7 @@ function InboxRow({ item, facts, viewer, now, open, arrival, marking, onMarkRead
             </time>
           </span>
         </span>
-        {/* The character and the dots are drawn, so their meaning is also given as text. */}
+        {/* The avatar and the dots are drawn, so their meaning is also given as text. */}
         {handle === undefined ? null : <span className="visually-hidden">{online ? `${handle} online` : handle}</span>}
         {item.read ? null : <span className="visually-hidden">Unread</span>}
       </a>

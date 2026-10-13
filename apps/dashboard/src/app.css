@@ -55,10 +55,10 @@
   --surface-raised: #ffffff;
   --selected: #e6e8e8;
   --line: #d6d8d8; /* 1.39:1 on field: a divider, never text */
-  /* A selected list row, raised by --elevation-raised. On it the dots and every character hue keep
-     3:1: light (#ffffff) unread 3.65, attention dot 3.34, online 3.42, hues 3.42 to 4.11; dark
-     (#1e283f) unread 4.02, attention dot 6.81, online 6.71, hues 3.57 to 4.29. On --selected the
-     light dots and the green, teal and blue hues fall to 2.72 to 2.97:1. */
+  /* A selected list row, raised by --elevation-raised. On it the dots and every person hue keep
+     3:1: light (#ffffff) unread 3.65, attention dot 3.34, online 3.42, hues 3.39 to 4.21; dark
+     (#1e283f) unread 4.02, attention dot 6.81, online 6.71, hues 3.49 to 4.33. On --selected the
+     light dots fall below 3:1 and the person hues measure 2.76 to 3.42:1. */
   --row-selected: var(--surface-raised);
 
   /* Text tiers */
@@ -99,23 +99,15 @@
   --alert-tint: color-mix(in oklab, var(--alert) 14%, var(--surface));
   --review-tint: color-mix(in oklab, var(--review) 14%, var(--surface));
 
-  /* Character hues (identity plan section 3), the same in both themes: OKLCH L 0.62 with chroma at
-     85 percent of the sRGB ceiling, on Grok Bot's sampled hues. Light field 3.33 to 4.00:1, light
-     surface 3.08 to 3.70, navy field 4.41 to 5.29, navy surface 3.96 to 4.76. The eye reaches 4.73
-     to 5.68:1 on every body. */
-  --char-red: #eb3843;
-  --char-orange: #d0612c;
-  --char-amber: #b3782c;
-  --char-green: #339d62;
-  --char-teal: #339989;
-  --char-blue: #2e87e8;
-  --char-violet: #8e68ee;
-  --char-pink: #df3697;
-  --char-eye: #0b0d12;
+  /* The initial on a person's badge: 4.62 to 5.73:1 on every person hue. */
+  --person-ink: #0b0d12;
+  /* The logo's white, the second colour of an agent's avatar in both themes: every person hue
+     reaches 3.39:1 or more on it. */
+  --logo-white: #ffffff;
 
-  /* Person hues (PERSON_HUES in character.ts), the same in both themes. Each takes the most chroma,
+  /* Person hues (PERSON_HUES in person-hue.ts), the same in both themes. Each takes the most chroma,
      up to 85 percent of the sRGB ceiling, at which it keeps 3:1 on every field and surface and the
-     --char-eye initial keeps 4.5:1 on it, so lightness runs OKLCH L 0.597 to 0.672. Hues 130 to 354
+     --person-ink initial keeps 4.5:1 on it, so lightness runs OKLCH L 0.597 to 0.672. Hues 130 to 354
      stay clear of failure (27 to 30) and attention and warning (64 to 83). Light field 3.30 to 4.10:1,
      light surface 3.05 to 3.79, navy field 4.30 to 5.34, navy surface 3.86 to 4.80; the initial 4.62
      to 5.73. */
@@ -1088,7 +1080,7 @@ a.row-title {
   color: var(--claim);
 }
 
-/* Penguin character */
+/* Penguin's state indicator */
 
 .penguin {
   display: inline-flex;
@@ -1108,18 +1100,6 @@ a.row-title {
 
 .penguin-body {
   fill: var(--ink);
-}
-
-.penguin-face {
-  fill: var(--field);
-}
-
-.penguin-eye {
-  fill: var(--ink);
-}
-
-.penguin-beak {
-  fill: var(--warning);
 }
 
 .penguin-observing {
@@ -1321,8 +1301,7 @@ a.row-title {
   flex: none;
 }
 
-.system-mark .penguin-body,
-.system-mark .penguin-eye {
+.system-mark .penguin-body {
   fill: var(--alert);
 }
 
@@ -2047,53 +2026,29 @@ a.row-title {
   font-weight: 500;
 }
 
-/* A character draws its own body, so it takes no round clip. */
-.character {
-  border-radius: 0;
+/*
+ * An agent's avatar (penguin-face.ts): the logo's head crop in its owner's hue and white. The circle
+ * clip lives here in CSS, so the avatars on a page share no SVG id. Its `.person-<hue>` class sets
+ * --person.
+ */
+.penguin-face {
+  clip-path: circle(50%);
 }
 
-.character-eye {
-  fill: var(--char-eye);
+.fill-person {
+  fill: var(--person);
 }
 
-.char-red {
-  fill: var(--char-red);
-}
-
-.char-orange {
-  fill: var(--char-orange);
-}
-
-.char-amber {
-  fill: var(--char-amber);
-}
-
-.char-green {
-  fill: var(--char-green);
-}
-
-.char-teal {
-  fill: var(--char-teal);
-}
-
-.char-blue {
-  fill: var(--char-blue);
-}
-
-.char-violet {
-  fill: var(--char-violet);
-}
-
-.char-pink {
-  fill: var(--char-pink);
+.fill-white {
+  fill: var(--logo-white);
 }
 
 /*
- * Person hues (assignPersonHues in character.ts): the team's owner ids, sorted, each take the hue
+ * Person hues (assignPersonHues in person-hue.ts): the team's owner ids, sorted, each take the hue
  * their id hashes to or the next free one, so no two people on a team of up to eight share one. Each
- * class sets --person, which the person's badge fills, their square edges and their agents' boxes
- * tint. Measured in both themes, every hue reaches 3.30:1 or more on the field and 3.19:1 on its own
- * square's fill. The --char-eye initial reaches 4.62:1 on every hue, and text in a square or box
+ * class sets --person, which the person's badge fills, their agents' avatars paint, their square
+ * edges and their agents' boxes tint. Measured in both themes, every hue reaches 3.30:1 or more on the field and 3.19:1 on its own
+ * square's fill. The --person-ink initial reaches 4.62:1 on every hue. Text in a square or box
  * reaches 4.63:1 or more.
  */
 .person-lime {
@@ -2130,7 +2085,7 @@ a.row-title {
 
 .avatar-initial[class*="person-"] {
   background: var(--person);
-  color: var(--char-eye);
+  color: var(--person-ink);
 }
 
 .avatar-header.avatar-initial {
@@ -2678,7 +2633,7 @@ a.row-title {
 }
 
 /* One rule for the selected row of both sidebar lists, the inbox's and the identities': the raised
-   fill and shadow, on which every dot and character hue keeps 3:1 (see --row-selected). */
+   fill and shadow, on which every dot and person hue keeps 3:1 (see --row-selected). */
 .inbox-row:has(> [aria-current="page"]),
 .identity-row[aria-current="page"] {
   --row-fill: var(--row-selected);
@@ -3646,7 +3601,7 @@ label.button:has(input:focus-visible) {
 }
 
 /*
- * Agent label (agent-label.tsx): the character in a 2px ring of its person's hue, the agent's name,
+ * Agent label (agent-label.tsx): the avatar in a 2px ring of its person's hue, the agent's name,
  * then its person on a second line or, compact, after the name. The handle, vendor and branch stay on
  * the agent card.
  */

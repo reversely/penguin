@@ -364,8 +364,8 @@ same reason marks it unread again (`services/project-agent/src/inbox-store.ts`).
 
 Every surface outside the agent card names an agent the same way, through `AgentLabel` in
 `agent-label.tsx`: the agent's name, the part of its handle after `@<owner>/` (`merge-rules` for
-`@priya/merge-rules`), beside its character, then its person. A 2px ring in the person's hue circles
-the character, so two people's agents with the same name read apart. The full label puts the person
+`@priya/merge-rules`), beside its avatar, then its person. A 2px ring in the person's hue circles
+the avatar, so two people's agents with the same name read apart. The full label puts the person
 on a second line; the compact label, on table rows, feature rows and tool runs, puts it after the name. The
 full handle, the vendor and the branch appear only on the agent card.
 
@@ -428,18 +428,21 @@ Rows a live change adds slide in, staggered; boxes whose order changes slide to 
 Nothing moves on first paint, a route change or a theme switch. Every animation has a reduced-motion
 path with none (`motion.tsx`, `arrivals.ts`).
 
-## Person colours and characters
+## Person colours and avatars
 
-People and agents look different at a glance (`character.ts`, `avatar.tsx`):
+People and agents look different at a glance (`person-hue.ts`, `penguin-face.ts`, `avatar.tsx`):
 
 - A person shows a round initial in their hue. The eight person hues (lime, jade, sky, blue, violet,
   purple, magenta, pink) are assigned per team. Owner ids are taken in sorted order; each takes the
   hue its id hashes to, or the next free hue on a clash. A team of up to eight never shares a
   hue. The hues sit apart from the red, amber and orange used for status.
-- An agent identity shows its uploaded avatar, or else a character derived from its handle: the
-  FNV-1a hash of the handle picks one of eight body shapes, one of eight hues and one of three eye
-  poses. Nothing is stored, so a new or duplicated identity gets its own character on every device.
-  The session's vendor never changes it.
+- An agent identity shows its uploaded avatar, or else a crop of Penguin's logo around the head in
+  two colours: its owner's hue and white. A feature's builder shows the logo in the owner's hue on
+  white. The owner's steward, `@<person>/steward`, shows the same crop inverted: a white logo on a
+  disc of the owner's hue. The crop takes the logo's own path (viewBox `110 10 780 780`). A CSS circle
+  clip trims it, so no SVG id repeats on a page. Nothing is stored, so a new or duplicated
+  identity gets its avatar on every device. The session's vendor never changes it.
+- Penguin's own mark, on its state indicator and its posts, is the full logo in ink.
 
 ## Copy
 
