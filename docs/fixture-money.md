@@ -412,12 +412,54 @@ tax as 0.4999… of a cent and round it down. The revision rounds the exact half
 rounding mode (`ROUND_HALF_UP`) states. The revision's tax equals exact decimal arithmetic on all
 5,000 orders, so the 10 differences are float drift on main.
 
+## Cases 1 to 3 on the preview seed
+
+`scripts/preview/seed.ts` builds Larder once and runs its four cases in order on one main, through
+the ProjectAgent's modules and the check runner's programs. `tests/cases/cases.test.ts` checks each
+case on that one run. Main starts at `base`. The seed walks the fixture's commits and promotions in
+date order up to the split's first commit:
+
+- Each running feature opens from `base` and reports its first commit as a checkpoint.
+- Each originating feature opens from main as the case before left it. Each person whose running
+  feature holds its area approves its start: Noor's `pagination` declares `platform`, so Noor
+  approves the starts of cases 2 and 3.
+- At each commit marked `plan` the originating agent proposes its merge plan. Its parts are a commit
+  for code on main per `fix` of kind `fix` in its own fork, and a patch per commit its person wrote
+  into another feature's fork. The backfill's declared contract is the store marker once the fork
+  holds it. Each place Penguin answers is affected with no part gets a verify part.
+- Each running feature with a part reviews its scope with the case's form for the round:
+  `reviews/case<N>-<scope>-<tag>.json` of the newest commit up to the round, or else
+  `reviews/case<N>-<scope>.json`.
+- When the agent proposes again at a later `plan` commit, no one decides the earlier plan. Otherwise
+  a review that raised an exception gets its author's request for the change the next `revision`
+  commit makes, and the agent answers with `revise_plan_part`. Any other part that needs a person
+  is approved by its author.
+- Each fix the originating person wrote into another fork is reported there as a checkpoint once
+  its part is approved. A `merge` commit takes main. At each promotion the feature reports its head
+  and main moves to it once every part of its newest plan is approved.
+
+The run on gn100:
+
+| Case | Rounds | People asked | Approved by Penguin |
+|---|---|---|---|
+| 1 | Plan at `checkpoint`: Sam's two parts wait on Priya, no one decides. Plan at `backfill`: Jun asks for a device limit. `limit-five`: Jun asks for a lower one. `limit-one`: every part approved | Jun: two requests, then the analytics part for code on main in person | Sam's two parts, Jun's cohort report part, loyalty's verify part |
+| 2 | One plan at `local-day` | none | `holiday-closures` and `weekly-digest` |
+| 3 | One plan at `checkpoint` | none | `instant-payouts` and `tip-jar` |
+
+Jun approves the analytics part for code on main in person. Jun's analytics forms name the cutover
+marker `analytics/retention.py::shopper_id_cutover`, which only Jun's fork holds, so the trial of
+analytics' code on main refuses the form with `evidence_not_found`. The cohort report part is tried
+on Priya's limit of one (`newestRevision` in `part-trial.ts`), its form holds and Penguin approves
+it. In case 2, `japan-launch` fails its yen test on its own head, so the facts run leaves it out
+and the plan has no part there. In case 3 the agent's `check` reports the dependency diff with the
+places `instant-payouts` and `tip-jar` import the client, and Hugo's own `retry-budget` and
+`rounding-mode`.
+
 ## The split on the preview seed
 
-`scripts/preview/seed.ts` runs the split on the fixture's data through the ProjectAgent's modules and
-the check runner's programs. `tests/cases/cases.test.ts`, `money-retiring.test.ts` and
-`contract-sort-fixtures.test.ts` check each step below. A seed run without the originating agent's
-`impact` and `check` took 336 seconds on a laptop running other test suites.
+The split runs on main as cases 1 to 3 and Lena's stacking left it. `tests/cases/cases.test.ts`
+checks each step below. A whole seed run of the four cases without the originating agents' `impact`
+took about 320 seconds on gn100.
 
 1. **Open.** Ines's feature declares money and orders. Four running features work there, so its
    start waits on Hugo (`rounding-mode`) and on Tomas (`reorder`, `split-shipments`,

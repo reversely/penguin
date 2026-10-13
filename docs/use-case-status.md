@@ -7,39 +7,48 @@ that touches a step.
 States: **works** (a run or test shows it), **partial** (works with a stated limit), **gap** (does
 not work yet), **rule needed** (the procedure does not yet say what should happen).
 
-## Case 1: identity unification (merge plan)
+Cases 1 to 4 run in order on one build of Larder, the money-minor-units fixture. "Larder run" is
+the preview seed's run of the four cases (`scripts/preview/seed.ts`), checked by
+`tests/cases/cases.test.ts` ([fixture-money.md](fixture-money.md#cases-1-to-3-on-the-preview-seed)).
+
+## Case 1: shopper accounts (merge plan)
 
 | Step | State | Evidence or ticket |
 |---|---|---|
-| Open: Priya's feature starts; Jun's and Sam's features listed as readers | works | Walkthrough case 1 (`docs/progress/100/identity-unification/`) |
-| Sort: `person_id` additive; `resolve()`, `profile()` behaviour changes; merge plan kept | works | #116 fixture test |
-| Plan: four parts stored from the fixture | works | #106 |
-| Sam's parts approved by Penguin | partial | The stored-data rule is decided (#132). Messaging only reads `Profile`, which identity-map owns, so Sam's form needs no marker and is accepted on both of Sam's trials. Priya's change reshapes `Profile` (`attributes` becomes `by_identity`) and the fixture's commits hold no migration or backfill, so the plan declares no `storeMarker`. Both of Sam's parts therefore route to Priya as `stored_data` asks; Sam is not asked. Penguin approves them once Priya's change carries a backfill and the plan names it, or Priya approves them as they stand (`tests/cases/cases.test.ts`, `tests/cases/cases.test.ts`). PRD case 1 step 3 says "Penguin approves both of Sam's parts", which the fixture's data does not support |
-| Jun's tablet invariant routes to Jun; two revisions | works | Walkthrough case 1, frames 05 to 07. In the preview, Jun's form is accepted on the trial of Jun's own part with the cutover marker it names, and the broken invariant routes both of Jun's parts to Jun (#126) |
-| Fixes written into Jun's and Sam's forks | works | #91, walkthrough frame 08 |
-| Land as one block | works | Walkthrough case 1 promoted, main green |
+| Open: Priya's `accounts-merge` starts from `base` with no start to approve | works | Larder run |
+| Plan: five parts, analytics' and messaging's code on main, Jun's `cohort-ltv`, Sam's `weekly-digest` and loyalty's verify part | works | Larder run: the plan's feature places are the two forks Priya's agent writes into |
+| Sam's parts go to Priya while the plan names no backfill | works | Larder run: the plan at `checkpoint` routes both of Sam's parts to Priya as `stored_data`; no one decides that plan |
+| Priya's agent adds the backfill and proposes again; Penguin approves Sam's parts; Sam is told | works | Larder run: the plan at `backfill` names `accounts/backfill.py::backfill_shopper` as its store marker (#168) |
+| Jun's kiosk invariant routes to Jun; Jun asks for a limit, then a lower one | works | Larder run: two `request_plan_change` records by Jun, answered by `limit-five` and `limit-one` |
+| Jun's cohort report part approved by Penguin once the second revision passes | works | Larder run: the part is trialled on `limit-one` and its form holds (#169) |
+| Jun's analytics part for code on main | partial | Jun approves it in person after `limit-one`. Jun's form names the cutover marker in Jun's fork, which the trial of analytics' code on main does not hold, so the review is refused with `evidence_not_found`. PRD case 1 counts Jun twice |
+| Loyalty's verify part approved by Penguin; Lena is told | works | Larder run |
+| Fixes written into Jun's and Sam's forks | partial | The seed reports the fixture's commits as checkpoints of those forks once their parts are approved; it makes no `fix_write` record (#171) |
+| Land as one block | partial | The seed moves main to the feature's head once every part is approved, with no block check (#171) |
 
-## Case 2: helpful fix (merge plan)
-
-| Step | State | Evidence or ticket |
-|---|---|---|
-| Sort: `start_of_day` behaviour change, merge plan kept | works | #116 fixture test |
-| Plan proposed after `start_of_local_day()` exists | works | The plan is proposed at `owner-priya-local-day` (#126, `tests/cases/cases.test.ts`) |
-| Jun's and Sam's parts approved by Penguin | works | Preview: 2 of 2 parts approved by Penguin; both trials pass and both forms hold (#126) |
-| Jun's and Sam's forms filled in headless, with no one asked | works | Live check `tests/e2e/review-task-run.test.ts` (#138): with no steward session running, each author's bridge ran `claude -p` (haiku). Each run sent its form through Penguin's MCP server with its task token. Penguin refused Jun's first form for a line range as evidence. The run fixed it and submitted again. Both forms were accepted, both trials passed and Penguin approved 2 of 2 parts with no author asked |
-| Land as one block | works | Walkthrough case 2 promoted |
-
-## Case 3: dependency bump (merge plan)
+## Case 2: the helpful fix (merge plan)
 
 | Step | State | Evidence or ticket |
 |---|---|---|
-| Dependency diff finds Ana's imports; side-by-side shows the double charge | works | #93, #98 |
-| Ana's part approved by Penguin; Ana told | works | Preview seed of case 3: the trial passes `test:payments` and accepts Ana's form, Penguin approves the part and Ana gets a `penguin_approved` item |
-| Land as one block | works | `tests/cases/cases.test.ts`: with Ana's fix in Ana's fork every check passes; the dependency diff is a passing fact. Without the fix the block fails on Ana's test alone. Not yet run in the walkthrough |
+| Open: Hugo's `structured-logs` starts from main after case 1 | works | Larder run. Noor's `pagination` declares `platform`, so Noor approves the start |
+| Plan proposed at `local-day`, once `start_of_local_day()` exists | works | Larder run: parts for `holiday-closures` and `weekly-digest` |
+| A test a fork already fails is not charged to the change | works | Larder run: `japan-launch` fails its yen test on its own head, so the facts run leaves it out and the plan has no part there (#170) |
+| Elif's and Sam's parts approved by Penguin; no one asked; both told | works | Larder run: both trials pass and both forms hold |
+| Forms filled in headless | works | Live check `tests/e2e/review-task-run.test.ts` (#138), on the helpful-fix fixture |
+| Fixes written and land as one block | partial | As in case 1 (#171) |
+
+## Case 3: the dependency bump (merge plan)
+
+| Step | State | Evidence or ticket |
+|---|---|---|
+| Open: Hugo's `dependency-audit` starts from main after case 2 | works | Larder run. Noor approves the start beside `pagination` |
+| Dependency diff names `instant-payouts` and `tip-jar` | works | Larder run: the agent's `check` names the places those two forks import the upgraded client. It also names Hugo's own `retry-budget` and `rounding-mode` in platform |
+| Kofi's and Priya's parts approved by Penguin; no one asked; both told | works | Larder run |
+| Fixes written and land as one block | partial | As in case 1 (#171) |
 
 ## Case 4: money in minor units (split)
 
-The preview seed runs the fixture's one split feature from open to contract
+The Larder run carries the fixture's one split feature from open to contract after cases 1 to 3
 (`tests/cases/cases.test.ts`, [fixture-money.md](fixture-money.md#the-split-on-the-preview-seed)).
 
 | Step | State | Evidence or ticket |

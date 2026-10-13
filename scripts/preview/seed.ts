@@ -43,7 +43,10 @@ import {
   routesToOriginator,
   type ContractWorkView,
   type LadderDecision,
+  needsPerson,
+  PLAN_STORE_MARKERS,
   type Plan,
+  type PlanStoreMarker,
   type RetiringSymbol,
   type ReviewForm,
   type RewriteRule,
@@ -79,6 +82,7 @@ import {
   PlanRouteStore,
   requestPlanChange,
   reversePenguinApproval,
+  revisePlanPart,
   routePart,
   type PlanApprovalDeps,
 } from "../../services/project-agent/src/plan-approval.ts";
@@ -160,6 +164,15 @@ export interface SeedIdentity {
 
 /** A feature's builder handle, `@<person>/<feature>`, as the fixtures' identities name it. */
 export const builderOf = (feature: { readonly owner: string; readonly id: string }): string => `@${feature.owner}/${feature.id}`;
+
+/** One proposal of a use case's merge plan, read once its reviews and its people's decisions were in. */
+export interface PlanRound {
+  readonly plan: Plan;
+  /** The parts that wait on the originating person for the stored data their change reshapes (#132). */
+  readonly toOriginator: readonly string[];
+  /** The parts whose review raised a broken invariant or a protected difference to their author. */
+  readonly raised: readonly string[];
+}
 
 /** One step a scenario logs, with how long it took, so a run reads as the fixture's story. */
 export interface SeedStep {
@@ -325,6 +338,8 @@ export class PreviewProject {
   planOutcome: ProposePlanOutcome | undefined;
   /** Use case 4: Penguin's answer to the plan Ines's agent proposes at the expand. */
   splitOutcome: ProposePlanOutcome | undefined;
+  /** Each plan of use cases 1 to 3 on Larder as it stood once its reviews and decisions were in. */
+  readonly rounds: PlanRound[] = [];
 
   constructor(fixture: ExampleName, repo: string, scopeMap: ScopeMap) {
     this.fixture = fixture;
@@ -559,6 +574,26 @@ export class PreviewProject {
     const edges = requestScopeEdges({ features: this.features, runs: this.tools }, featureId, sha);
     if (runId !== undefined || edges !== undefined) await this.runnerPass();
     return runId;
+  }
+
+  /**
+   * Main moves to the feature's latest checkpoint and the feature lands, as a passing land run's
+   * promotion does (block-land.ts featureLanded): every part of its newest plan must be approved, and
+   * each start it held is checked again. The preview runs no block check here, since it writes the
+   * fixture's own commits into forks rather than Penguin's fix commits (fix-write.ts).
+   */
+  async promoteLanded(featureId: string): Promise<void> {
+    const feature = this.features.get(featureId);
+    if (feature?.latestCheckpointSha == null) throw new Error(`no checkpoint of ${featureId} to promote`);
+    const unapproved = (await this.plan(featureId))?.parts.filter((part) => part.approvalState !== "approved") ?? [];
+    if (unapproved.length > 0) throw new Error(`${featureId} may not land: ${unapproved.map((part) => `${part.partId} is ${part.approvalState}`).join(", ")}`);
+    if (!this.features.setState(featureId, ["building"], "landed")) throw new Error(`${featureId} is ${feature.state}, not building`);
+    await this.promoted(featureId, feature.latestCheckpointSha, true);
+    this.#notify(feature.personId);
+    for (const blocked of this.overlaps.heldBy(featureId)) {
+      const waiting = this.features.get(blocked);
+      if (waiting !== undefined) await checkOverlap(this.overlapDeps(), waiting);
+    }
   }
 
   /**
@@ -833,11 +868,18 @@ export class PreviewProject {
   }
 
   /**
-   * The originating agent proposes its merge plan with its rewrite rules. The first proposal schedules
-   * the facts run, which the check runner makes, rules included; the second stores the plan and tells
-   * every author.
+   * The originating agent proposes its merge plan with its rewrite rules and, for the stored data its
+   * change owns, its store marker, as the MCP tool passes them. The first proposal schedules the facts
+   * run, which the check runner makes, rules included; the second stores the plan and tells every
+   * author.
    */
-  async propose(featureId: string, parts: readonly unknown[], rules: readonly RewriteRule[] = [], retiring: readonly RetiringSymbol[] = []): Promise<ProposePlanOutcome> {
+  async propose(
+    featureId: string,
+    parts: readonly unknown[],
+    rules: readonly RewriteRule[] = [],
+    retiring: readonly RetiringSymbol[] = [],
+    storeMarker?: PlanStoreMarker,
+  ): Promise<ProposePlanOutcome> {
     this.tick();
     const feature = this.features.get(featureId);
     if (feature === undefined) throw new Error(`no feature ${featureId}`);
@@ -869,7 +911,13 @@ export class PreviewProject {
         },
         feature.personId,
         this.sessionOf.get(featureId) as string,
-        { feature: featureId, parts, ...(rules.length === 0 ? {} : { rules }), ...(retiring.length === 0 ? {} : { retiring }) },
+        {
+          feature: featureId,
+          parts,
+          ...(rules.length === 0 ? {} : { rules }),
+          ...(retiring.length === 0 ? {} : { retiring }),
+          ...(storeMarker === undefined ? {} : { storeMarker }),
+        },
       );
     // The check runner tests each part revision of a stored plan on its trial tree; Penguin then
     // approves each part whose checks are clean.
@@ -1203,6 +1251,35 @@ export class PreviewProject {
     const decided =
       text === undefined ? await approvePlanPart(this.approvalDeps(), person, input) : await requestPlanChange(this.approvalDeps(), person, { ...input, text });
     if (decided.status !== "ok") throw new Error(`decide ${partId}: ${decided.message}`);
+  }
+
+  /**
+   * The originating agent answers a requested change with `revise_plan_part`: the part's next revision
+   * with `fix`, its own trial, then Penguin's approval when every check is clean, as the ProjectAgent's
+   * revisePlanPart does.
+   */
+  async revise(featureId: string, partId: string, fix: { readonly diff?: unknown; readonly patch?: unknown }): Promise<void> {
+    this.tick();
+    const feature = this.features.get(featureId);
+    const part = (await this.plan(featureId))?.parts.find((each) => each.partId === partId);
+    if (feature === undefined || part === undefined) throw new Error(`no part ${partId}`);
+    const revised = await revisePlanPart(
+      {
+        ...this.approvalDeps(),
+        facts: this.facts,
+        scopeMap: async () => this.scopeMap,
+        readRepo: async (_repo, use) => use(gitReader(this.repo)),
+        heartbeat: (caller, session) => this.sessions.heartbeat(caller, session),
+      },
+      feature.personId,
+      this.sessionOf.get(featureId) as string,
+      { feature: featureId, part: partId, revision: part.revision, ...fix },
+    );
+    if (revised.status !== "ok") throw new Error(`revise ${partId}: ${revised.message}`);
+    const plan = await this.plan(featureId);
+    if (plan !== undefined) queueTrials({ trials: this.trials, reviews: this.reviews }, plan, plan.parts.filter((each) => each.partId === partId));
+    await this.trialPass();
+    await this.penguinApproves(featureId);
   }
 
   viewDeps(): DashboardViewDeps {
@@ -1542,31 +1619,292 @@ async function featuresFixture(preview: PreviewProject): Promise<void> {
   }
 }
 
-interface LarderCommit {
+export interface LarderCommit {
   readonly source: string;
   readonly tag?: string;
+  readonly date: string;
+  readonly message: string;
+  /** `owner` when absent; a person when another person's agent wrote the commit into this fork. */
+  readonly author?: string;
+  readonly plan?: boolean;
+  readonly merge?: string;
   readonly fix?: { readonly scope: string; readonly kind: string };
+  readonly declares?: { readonly contracts?: Readonly<Record<string, readonly string[]>> };
 }
-interface LarderFeature {
+export interface LarderFeature {
   readonly id: string;
   readonly owner: string;
   readonly role: string;
   readonly start: string;
+  /** The use case, 1 to 4, of an originating feature. */
+  readonly case?: number;
   /** The scopes the feature declares when it opens. */
   readonly area: readonly string[];
   readonly commits: readonly LarderCommit[];
 }
 
-/** The larder data the money scenario reads. */
+/** The larder data the use cases read. */
 export interface MoneyLarder {
+  readonly base: { readonly tag: string };
   readonly features: readonly LarderFeature[];
-  readonly promotions: readonly { readonly feature: string }[];
+  readonly promotions: readonly { readonly feature: string; readonly date: string }[];
   readonly split: { readonly feature: string; readonly rules: readonly RewriteRule[]; readonly retiring: readonly RetiringSymbol[] };
 }
 
+/** What both halves of the Larder run read: the data file and each feature's agent and tags. */
+interface Larder {
+  readonly data: MoneyLarder;
+  readonly byId: ReadonlyMap<string, LarderFeature>;
+  readonly builder: (feature: LarderFeature) => SeedIdentity;
+  readonly steward: (person: string) => SeedIdentity;
+  /** The fixture's tag of one commit of a feature, `feature-<id>-<tag>`. */
+  readonly tagOf: (feature: LarderFeature, tag: string) => string;
+  readonly sha: (ref: string) => string;
+}
+
+const subjectOf = (commit: LarderCommit): string => commit.message.split("\n")[0] as string;
+
 /**
- * Use case 4 (money in minor units) as docs/case-study-money.md runs it: every running feature at its
- * first checkpoint; Ines's feature opens, its first checkpoint is the expand, and the plan Ines's agent
+ * Use cases 1 to 3 on Larder, then Lena's promotion stacking, in the fixture's date order up to the
+ * split's first commit (docs/fixture-money.md, Cases 1 to 3). Each running feature opens from `base`
+ * at its first commit. Each originating feature (`case`) opens from main as the case before left it,
+ * and each person whose running feature covers its area approves its start. At the commit marked
+ * `plan` its agent proposes the merge plan: a part for code on main per `fix` of kind `fix` in its own
+ * fork, a patch per commit its person wrote into another feature's fork, the backfill's or migration's
+ * declared contract as the store marker once the fork holds it, and a verify part for each place
+ * Penguin answers is affected with no part. Each running feature with a part reviews its scope with
+ * the case's form for the round. When the agent proposes again at a later `plan` commit, no one
+ * decides the earlier plan. A review that raises an exception gets its author's request for the
+ * change the next `revision` commit makes, which the agent answers with `revise_plan_part`. Each fix
+ * written into another fork is reported there as a checkpoint, a `merge` commit takes main, and main
+ * moves at each promotion.
+ */
+async function casesOneToThree(preview: PreviewProject, larder: Larder): Promise<void> {
+  const { data, byId, builder, tagOf, sha } = larder;
+  const split = byId.get(data.split.feature) as LarderFeature;
+  const until = Date.parse(split.commits[0]?.date as string);
+  const origins = data.features.filter((feature) => feature.case !== undefined && feature.id !== split.id);
+  const promotionOf = (feature: LarderFeature) => Date.parse(data.promotions.find((promotion) => promotion.feature === feature.id)?.date as string);
+  const reviewsDir = join(ROOT, "examples", preview.fixture, "reviews");
+
+  type Event = { readonly at: number; readonly feature: LarderFeature; readonly commit: LarderCommit; readonly index: number } | { readonly at: number; readonly promote: string };
+  const events: Event[] = [
+    ...data.features.flatMap((feature) => feature.commits.map((commit, index) => ({ at: Date.parse(commit.date), feature, commit, index }))),
+    ...data.promotions.map((promotion) => ({ at: Date.parse(promotion.date), promote: promotion.feature })),
+  ]
+    .filter((event) => event.at < until)
+    .sort((a, b) => a.at - b.at);
+
+  // The originating feature whose case runs: its commits' fixes written into other forks, by date.
+  const originAt = (at: number) => origins.find((origin) => Date.parse(origin.commits[0]?.date as string) <= at && at < promotionOf(origin));
+  const writtenFixes = (origin: LarderFeature) =>
+    data.features.flatMap((feature) =>
+      feature.commits
+        .filter((commit) => commit.author === origin.owner && feature.id !== origin.id && originAt(Date.parse(commit.date)) === origin)
+        .map((commit) => ({ feature, commit })),
+    );
+
+  /** The parts the originating agent proposes, from the fixture's own commits. */
+  const partsOf = (origin: LarderFeature): unknown[] => {
+    const scopeParts = origin.commits
+      .filter((commit) => commit.fix?.kind === "fix")
+      .map((commit) => ({ place: { scope: commit.fix?.scope }, diff: { commit: sha(tagOf(origin, commit.tag as string)) } }));
+    const featureParts = writtenFixes(origin).map(({ feature, commit }) => {
+      const base = preview.features.get(feature.id)?.latestCheckpointSha as string;
+      const paths = feature.area.flatMap((scope) => preview.scopeMap.scopes.get(scope)?.paths ?? []);
+      return { place: { feature: feature.id }, patch: { base, diff: preview.diff(base, sha(tagOf(feature, commit.tag as string)), paths) } };
+    });
+    return [...scopeParts, ...featureParts];
+  };
+
+  /** The backfill or migration the fork holds at `upTo`, named by the contract its commit declares. */
+  const markerAt = (origin: LarderFeature, upTo: number): PlanStoreMarker | undefined => {
+    for (const commit of origin.commits.slice(0, upTo + 1)) {
+      const kind = PLAN_STORE_MARKERS.find((each) => each === commit.fix?.kind);
+      const evidence = commit.declares?.contracts?.[commit.fix?.scope as string]?.[0];
+      if (kind !== undefined && evidence !== undefined) return { kind, evidence };
+    }
+    return undefined;
+  };
+
+  /**
+   * Each running feature with a part reviews its scope with the case's form for the round at commit
+   * `index`: `reviews/case<N>-<scope>-<tag>.json` of the newest commit up to it that has one, or else
+   * the case's one form, `reviews/case<N>-<scope>.json`.
+   */
+  const reviewRound = async (origin: LarderFeature, index: number): Promise<void> => {
+    const plan = (await preview.plan(origin.id)) as Plan;
+    const tags = origin.commits.slice(0, index + 1).map((commit) => commit.tag as string).reverse();
+    const at = origin.commits[index]?.tag as string;
+    for (const place of plan.parts.map((part) => part.place)) {
+      if (place.kind !== "feature") continue;
+      const reviewer = byId.get(place.feature) as LarderFeature;
+      for (const scope of reviewer.area) {
+        const names = [...tags.map((tag) => `case${origin.case}-${scope}-${tag}.json`), `case${origin.case}-${scope}.json`];
+        const file = names.map((name) => join(reviewsDir, name)).find((path) => existsSync(path));
+        if (file === undefined) continue;
+        const form = JSON.parse(await readFile(file, "utf8")) as ReviewForm;
+        await preview.step(`submit_review ${scope} on ${origin.id} at ${at}`, () => preview.review(reviewer.id, origin.id, scope, form));
+      }
+    }
+  };
+
+  /** The agent proposes at commit `index`, adding a verify part where Penguin answers a scope has none. */
+  const propose = async (origin: LarderFeature, index: number): Promise<void> => {
+    const commit = origin.commits[index] as LarderCommit;
+    const parts = partsOf(origin);
+    const marker = markerAt(origin, index);
+    const outcome = await preview.step(`propose_plan ${origin.id} at ${commit.tag}`, async () => {
+      const first = await preview.propose(origin.id, parts, [], [], marker);
+      // An affected place with no fix of its own, such as loyalty in case 1, gets a verify part.
+      const unclaimed = first.status === "missing" ? first.missing.filter((item) => item.code === "no_part") : [];
+      if (first.status !== "missing" || unclaimed.length !== first.missing.length) return first;
+      const verify = unclaimed.map((item) => ({ place: item.place?.kind === "scope" ? { scope: item.place.scope } : { feature: (item.place as { feature: string }).feature }, verify: true }));
+      return preview.propose(origin.id, [...parts, ...verify], [], [], marker);
+    });
+    if (outcome.status !== "stored") throw new Error(`${origin.id} plan at ${commit.tag}: ${JSON.stringify(outcome).slice(0, 2_000)}`);
+    preview.planOutcome = outcome;
+    await reviewRound(origin, index);
+    await decide(origin, index);
+  };
+
+  /** The part each requested revision commit answers. */
+  const answers = new Map<LarderCommit, string>();
+  /** Whether the originating agent proposes again before its next revision: then no one decides this round. */
+  const proposesAgain = (origin: LarderFeature, index: number): boolean => {
+    const next = origin.commits.slice(index + 1).find((commit) => commit.plan === true || commit.fix?.kind === "revision");
+    return next?.plan === true;
+  };
+
+  /**
+   * Each person decides the parts that wait on them. A review that raised an exception on a part for
+   * code on main gets its author's request for the change the next revision commit of that scope
+   * makes: a revision is a commit in the originating fork, which only such a part names. A part whose
+   * exception no revision is left to answer is approved by its author as it stands, and any other part
+   * waiting on its author is approved. A part waiting on a review, on the originating person or on a
+   * revision still to come is left.
+   */
+  const decide = async (origin: LarderFeature, index: number): Promise<void> => {
+    const plan = (await preview.plan(origin.id)) as Plan;
+    const reviews = preview.reviews.list(origin.id);
+    const raised: string[] = [];
+    const toOriginator: string[] = [];
+    const ahead = origin.commits.slice(index + 1).filter((commit) => commit.fix?.kind === "revision" && !answers.has(commit));
+    const again = proposesAgain(origin, index);
+    for (const part of plan.parts) {
+      if (part.approvalState !== "pending") continue;
+      const routing = routePart(plan, part, reviews, preview.scopeMap, preview.adminMode, trialStanding(preview.trials, preview.reviews, origin.id, part));
+      if (routesToOriginator(routing)) toOriginator.push(part.partId);
+      if (!needsPerson(routing) || routesToOriginator(routing) || again) continue;
+      if (!routing.reasons.some((reason) => reason.kind === "broken_invariant" || reason.kind === "protected_difference")) {
+        await preview.step(`${part.owner} approves ${part.partId}`, () => preview.decide(part.owner, origin.id, part.partId));
+        continue;
+      }
+      raised.push(part.partId);
+      const answer = ahead.find((commit) => part.scopes.includes(commit.fix?.scope as string));
+      if (answer === undefined) {
+        await preview.step(`${part.owner} approves ${part.partId}`, () => preview.decide(part.owner, origin.id, part.partId));
+      } else if (part.place.kind === "scope" && ![...answers.values()].includes(part.partId)) {
+        answers.set(answer, part.partId);
+        await preview.step(`${part.owner} asks for a change to ${part.partId}`, () => preview.decide(part.owner, origin.id, part.partId, subjectOf(answer)));
+      }
+    }
+    preview.rounds.push({ plan: (await preview.plan(origin.id)) as Plan, toOriginator, raised });
+  };
+
+  /** The feature opens; each person whose running feature covers its area approves its start. */
+  const open = async (feature: LarderFeature): Promise<void> => {
+    await preview.step(`open ${feature.id}`, () => preview.open(builder(feature), feature.id, { scopes: feature.area }));
+    for (const lock of preview.overlaps.locksOn(feature.id).filter((each) => each.state === "open")) {
+      await preview.step(`approve start of ${feature.id} beside ${lock.featureId}`, () => preview.approveStart(lock.personId, lock.featureId, feature.id));
+    }
+  };
+
+  const originCommit = async (origin: LarderFeature, commit: LarderCommit, index: number): Promise<void> => {
+    const tag = commit.tag as string;
+    if (index === 0) await open(origin);
+    if (commit.plan === true) {
+      await preview.step(`checkpoint ${origin.id} ${tag}`, () => preview.checkpoint(origin.id, tagOf(origin, tag)));
+      await preview.step(`whats_near ${origin.id}`, () => preview.whatsNear(origin.id));
+      if (preview.runnerTools) await preview.step(`impact ${origin.id}`, () => preview.runnerTool(origin.id, "impact"));
+      // Case 3 opens on the dependency diff `check` shows (PRD section 1), so its agent always checks.
+      if (preview.runnerTools || origin.case === 3) await preview.step(`check ${origin.id}`, () => preview.runnerTool(origin.id, "check"));
+      await propose(origin, index);
+    } else if (commit.fix?.kind === "revision") {
+      // The originating agent answers the request with revise_plan_part, naming the revision commit
+      // against the part's first base; its author's agent reviews the round with the round's form.
+      const partId = answers.get(commit);
+      if (partId === undefined) throw new Error(`${origin.id} ${tag} revises ${commit.fix.scope}, but no one asked for a change there`);
+      answers.delete(commit);
+      const part = (await preview.plan(origin.id))?.parts.find((each) => each.partId === partId);
+      const diff = { commit: sha(tagOf(origin, tag)), ...(part?.diff.base == null ? {} : { base: part.diff.base }) };
+      await preview.step(`revise_plan_part ${partId} with ${tag}`, () => preview.revise(origin.id, partId, { diff }));
+      await reviewRound(origin, index);
+      await decide(origin, index);
+    } else if (index === 0) {
+      await preview.step(`checkpoint ${origin.id} ${tag}`, () => preview.checkpoint(origin.id, tagOf(origin, tag)));
+    }
+    // Any other commit is the agent's work between checkpoints, reported with the next one.
+  };
+
+  for (const event of events) {
+    if ("promote" in event) {
+      // The block lands at the feature's head, which holds every fix for code on main and every
+      // revision: its agent reports that head as a checkpoint first, as land_feature requires.
+      const feature = byId.get(event.promote) as LarderFeature;
+      const head = feature.commits.filter((commit) => Date.parse(commit.date) < event.at).at(-1) as LarderCommit;
+      const headSha = sha(tagOf(feature, head.tag as string));
+      if (preview.features.get(feature.id)?.latestCheckpointSha !== headSha) {
+        await preview.step(`checkpoint ${feature.id} ${head.tag}`, () => preview.checkpoint(feature.id, tagOf(feature, head.tag as string)));
+      }
+      await preview.step(`promote ${event.promote}`, () => preview.promoteLanded(event.promote));
+      continue;
+    }
+    const { feature, commit, index } = event;
+    const tag = commit.tag as string;
+    if (feature.case !== undefined) {
+      await originCommit(feature, commit, index);
+    } else if (index === 0 && feature.start === "base") {
+      await open(feature);
+      await preview.step(`checkpoint ${feature.id}`, () => preview.checkpoint(feature.id, tagOf(feature, tag)));
+    } else if (origins.some((origin) => origin.owner === commit.author)) {
+      // The originating agent writes the approved fix into this fork; the fork's agent reports it.
+      const origin = originAt(event.at) as LarderFeature;
+      const part = (await preview.plan(origin.id))?.parts.find((each) => each.place.kind === "feature" && each.place.feature === feature.id);
+      if (part?.approvalState !== "approved") throw new Error(`${feature.id} ${tag}: ${origin.id}'s part there is ${part?.approvalState ?? "missing"}, not approved`);
+      await preview.step(`write ${origin.id}'s fix into ${feature.id}`, () => preview.checkpoint(feature.id, tagOf(feature, tag)));
+    } else if (commit.merge === "main") {
+      await preview.step(`${feature.id} takes main`, () => preview.checkpoint(feature.id, tagOf(feature, tag)));
+    } else {
+      throw new Error(`no step for ${feature.id} ${tag} before the split`);
+    }
+  }
+}
+
+/** Use cases 1 to 4 on Larder, run in order on one main (PRD section 1). */
+async function larderCases(preview: PreviewProject): Promise<void> {
+  const data = JSON.parse(await readFile(join(ROOT, "examples", preview.fixture, "larder.json"), "utf8")) as MoneyLarder;
+  const identities = identitiesOf(preview);
+  preview.seedIdentities(identities);
+  preview.sortContracts = true;
+  preview.migrationPlans = true;
+  const larder: Larder = {
+    data,
+    byId: new Map(data.features.map((feature) => [feature.id, feature])),
+    builder: (feature) => identities.find((identity) => identity.handle === builderOf(feature)) as SeedIdentity,
+    steward: (person) => identities.find((identity) => identity.handle === `@${person}/steward`) as SeedIdentity,
+    tagOf: (feature, tag) => `feature-${feature.id}-${tag}`,
+    sha: (ref) => preview.git("rev-parse", `${ref}^{commit}`),
+  };
+  // The build leaves main where the last promotion put it; the cases start it at the first commit.
+  preview.moveMain(larder.sha(data.base.tag));
+  await casesOneToThree(preview, larder);
+  await moneyMinorUnits(preview, larder);
+}
+
+/**
+ * Use case 4 (money in minor units) as docs/case-study-money.md runs it, on main as cases 1 to 3 and
+ * Lena's promotion left it: Ines's feature opens, its first checkpoint is the expand, and the plan Ines's agent
  * proposes there names no place and declares the rewrite rules and the retiring float API. Main moves
  * to the expand; Penguin counts the remaining callers and proposes one migration plan per owner
  * group. Noor's pagination adds a float call midway and Sun's currency filter starts after the
@@ -1575,26 +1913,8 @@ export interface MoneyLarder {
  * lands. Rahul's review of the tax block breaks tax-per-line on the whole-order step and holds on the
  * per-line revision. When no caller is left Penguin proposes the contract, and Ines's contract lands.
  */
-async function moneyMinorUnits(preview: PreviewProject): Promise<void> {
-  const larder = JSON.parse(await readFile(join(ROOT, "examples", preview.fixture, "larder.json"), "utf8")) as MoneyLarder;
-  const identities = identitiesOf(preview);
-  preview.seedIdentities(identities);
-  preview.sortContracts = true;
-  preview.migrationPlans = true;
-  const builder = (feature: LarderFeature) => identities.find((identity) => identity.handle === builderOf(feature)) as SeedIdentity;
-  const steward = (person: string) => identities.find((identity) => identity.handle === `@${person}/steward`) as SeedIdentity;
-  const tagOf = (feature: LarderFeature, tag: string) => `feature-${feature.id}-${tag}`;
-  const sha = (ref: string) => preview.git("rev-parse", `${ref}^{commit}`);
-  const byId = new Map(larder.features.map((feature) => [feature.id, feature]));
+async function moneyMinorUnits(preview: PreviewProject, { data: larder, byId, builder, steward, tagOf, sha }: Larder): Promise<void> {
   const origin = byId.get(larder.split.feature) as LarderFeature;
-  // Main as Ines found it: cases 1 to 3 and Lena's stacking promoted, the last of them holding the rest.
-  const before = larder.promotions.slice(0, larder.promotions.findIndex((promotion) => promotion.feature === origin.id)).map((promotion) => promotion.feature);
-  preview.moveMain(sha(`feature-${before.at(-1)}`));
-  const early = larder.features.filter((feature) => feature.start === "base" && !before.includes(feature.id));
-  for (const feature of early) {
-    await preview.step(`open ${feature.id}`, () => preview.open(builder(feature), feature.id, { scopes: feature.area }));
-    await preview.step(`checkpoint ${feature.id}`, () => preview.checkpoint(feature.id, tagOf(feature, feature.commits[0]?.tag as string)));
-  }
 
   // Ines opens the split feature; each running feature in its area waits for its person's approval.
   await preview.step(`open ${origin.id}`, () => preview.open(builder(origin), origin.id, { scopes: origin.area }));
@@ -1717,7 +2037,7 @@ export async function seed(fixture: ExampleName, options: { readonly runnerTools
   preview.runnerTools = options.runnerTools ?? true;
   options.gate?.attach(preview);
   try {
-    if (fixture === "money-minor-units") await moneyMinorUnits(preview);
+    if (fixture === "money-minor-units") await larderCases(preview);
     else await featuresFixture(preview);
     await preview.step("read main's scope dependencies", () => preview.deriveMain());
   } catch (error) {
