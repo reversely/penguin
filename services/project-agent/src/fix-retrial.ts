@@ -12,7 +12,7 @@
 
 import { isMigrationPlanId, type PartTrialReport, type Plan, type PlanPart } from "@penguin/protocol";
 
-import { grantedWrite, isRejection, returnToOriginator, type ApprovedPart, type FixGrant, type FixWriteDeps } from "./fix-write.ts";
+import { copyWriteOf, grantedWrite, isRejection,returnToOriginator, type ApprovedPart, type FixGrant, type FixWriteDeps } from "./fix-write.ts";
 import type { StoredPartTrial } from "./part-trial.ts";
 
 /** The longest problem a request quotes: the change request's text stays under its limit. */
@@ -30,7 +30,8 @@ export interface RetrialDeps extends FixWriteDeps {
 export async function retryWaitingWrites(deps: RetrialDeps, written: FixGrant, commit: string): Promise<FixGrant[]> {
   const waiting: FixGrant[] = [];
   for (const other of deps.grants.openOn(written.targetFeatureId)) {
-    if (other.id === written.id || other.writer === "task") continue;
+    // A copy write reads the new head when it is claimed: it copies modules byte for byte and runs no trial.
+    if (other.id === written.id || other.writer === "task" || copyWriteOf(other) !== undefined) continue;
     const approved = await grantedWrite(deps, other);
     if (isRejection(approved)) {
       deps.grants.withdraw(other.id);

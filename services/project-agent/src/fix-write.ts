@@ -42,6 +42,13 @@
 //   a kept write makes it `written` there in place of a FixWrite row. A target fork whose head no
 //   longer takes the patch makes the part an edit task. A target whose start waits on an overlap lock
 //   gets no write until the lock is approved.
+// - Copy writes (#179). The check runner's write of a mechanical or verify part copies the originating
+//   change's modules the fork imports (module-copy.ts). A copy write does the same for any approved
+//   part on a running feature, behavioural ones included, with no patch: it is keyed
+//   `copy:<revision>:<part id>` and opened at each approval for the originating change's current
+//   revision, and by a land whose affected forks do not hold that revision's modules. A copy write of a
+//   revision the originating change has moved past is withdrawn. A fork that changed a copied module
+//   itself sends the part back to the originating agent with the fork's lines (`copy_conflict`).
 
 import {
   applyPatchFile,
@@ -106,6 +113,7 @@ const GRANT_COLUMNS: readonly (readonly [string, string])[] = [
   ["retrial_head", "retrial_head TEXT"],
   ["retrial_trial", "retrial_trial INTEGER"],
   ["trialled_head", "trialled_head TEXT"],
+  ["copies", "copies TEXT"],
 ];
 
 /** The states in which a write still waits to be made: it holds the fork's order. */
@@ -119,6 +127,20 @@ export type GrantWriter = FixWriter | "task";
 
 /** The part id a migration edit task's write is kept under. */
 export const taskWriteKey = (taskId: number): string => `task:${taskId}`;
+
+const COPY_KEY = /^copy:([0-9a-f]{40}):(.+)$/u;
+
+/** The key a copy write of plan part `partId` is kept under, for the originating change's revision `source`. */
+export const copyWriteKey = (partId: string, source: string): string => `copy:${source}:${partId}`;
+
+/** The part and the originating revision a copy write names, or undefined for any other write. */
+export function copyWriteOf(grant: Pick<FixGrant, "partId">): { readonly partId: string; readonly source: string } | undefined {
+  const match = COPY_KEY.exec(grant.partId);
+  return match === null ? undefined : { source: match[1] as string, partId: match[2] as string };
+}
+
+/** The plan part a write writes: a copy write's part, or the write's own key. */
+export const writtenPart = (grant: Pick<FixGrant, "partId">): string => copyWriteOf(grant)?.partId ?? grant.partId;
 
 /**
  * Where one revision's write stands. `queued`: a mechanical part waits for the runner to claim it.
@@ -152,11 +174,21 @@ export interface FixGrant {
   readonly retrialTrial: number | null;
   /** The head the part's last passing re-trial ran on, or null. */
   readonly trialledHead: string | null;
+  /** Each module a kept write copied, with the blob it wrote; empty when it copied none. */
+  readonly copies: ReadonlyMap<string, string>;
 }
 
 /** A write as a waiting message names it. */
 function writeName(grant: FixGrant): string {
-  return grant.writer === "task" ? `the run of edit task ${grant.partId.slice("task:".length)}` : `the write of part ${grant.partId} revision ${grant.revision}`;
+  if (grant.writer === "task") return `the run of edit task ${grant.partId.slice("task:".length)}`;
+  const copy = copyWriteOf(grant);
+  if (copy !== undefined) return `the copy of the originating change's modules for part ${copy.partId} revision ${grant.revision}`;
+  return `the write of part ${grant.partId} revision ${grant.revision}`;
+}
+
+function copiesOf(json: SqlValue | undefined): ReadonlyMap<string, string> {
+  if (typeof json !== "string") return new Map();
+  return new Map(Object.entries(JSON.parse(json) as Record<string, string>));
 }
 
 function grantOf(row: Row): FixGrant {
@@ -182,6 +214,7 @@ function grantOf(row: Row): FixGrant {
     retrialHead: nullable("retrial_head"),
     retrialTrial: number("retrial_trial"),
     trialledHead: nullable("trialled_head"),
+    copies: copiesOf(row["copies"]),
   };
 }
 
@@ -256,8 +289,31 @@ export class FixGrantStore {
     );
   }
 
-  written(id: number, commit: string, recordId: string): void {
-    this.#db.exec(`UPDATE FixWriteGrant SET state = 'written', commit_sha = ?, record_id = ?, written_at = ? WHERE id = ?`, commit, recordId, this.#now(), id);
+  /** Keeps write `id` as `commit`, with each module it copied and the blob it wrote there. */
+  written(id: number, commit: string, recordId: string, copies: ReadonlyMap<string, string> = new Map()): void {
+    this.#db.exec(
+      `UPDATE FixWriteGrant SET state = 'written', commit_sha = ?, record_id = ?, written_at = ?, copies = ? WHERE id = ?`,
+      commit,
+      recordId,
+      this.#now(),
+      copies.size === 0 ? null : JSON.stringify(Object.fromEntries(copies)),
+      id,
+    );
+  }
+
+  /** Each module's blobs that kept writes of feature `featureId`'s plans copied into `target`'s fork. */
+  copiedInto(featureId: string, target: string): Map<string, Set<string>> {
+    const copied = new Map<string, Set<string>>();
+    const rows = this.#db.exec(
+      `SELECT * FROM FixWriteGrant WHERE feature_id = ? AND target_feature_id = ? AND state = 'written' AND copies IS NOT NULL ORDER BY id`,
+      featureId,
+      target,
+    );
+    for (const [path, hash] of rows.flatMap((row) => [...grantOf(row).copies])) {
+      if (!copied.has(path)) copied.set(path, new Set());
+      copied.get(path)?.add(hash);
+    }
+    return copied;
   }
 
   withdraw(id: number): void {
@@ -406,7 +462,7 @@ export interface MigrationWrites {
   retry?(partId: string, head: string): Promise<number | null>;
 }
 
-export type FixRejectReason = FeatureRejectReason | "not_approved" | "head_moved" | "waiting";
+export type FixRejectReason = FeatureRejectReason | "not_approved" | "head_moved" | "waiting" | "copy_conflict";
 
 export type FixRejection = { readonly status: "rejected"; readonly reason: FixRejectReason; readonly message: string };
 
@@ -444,6 +500,8 @@ export interface ApprovedWrite {
   readonly patch: string;
   readonly base: string;
   readonly target: Feature & { readonly repo: string };
+  /** For a copy write: the originating change's revision its modules come from. It carries no patch. */
+  readonly copiedFrom?: string;
 }
 
 export interface ApprovedPart extends ApprovedWrite {
@@ -504,9 +562,33 @@ export async function approvedPart(deps: FixWriteDeps, input: FixPartInput): Pro
 
 /** The approved write a grant names: a migration part's, or a plan part's current revision. */
 export async function grantedWrite(deps: FixWriteDeps, grant: FixGrant): Promise<ApprovedWrite | FixRejection> {
+  const copy = copyWriteOf(grant);
+  if (copy !== undefined) return copyWrite(deps, grant, copy);
   if (!isMigrationPlanId(grant.planId)) return approvedPart(deps, { feature: grant.featureId, part: grant.partId, revision: grant.revision });
   if (deps.migration === undefined) return rejected("not_found", `part ${grant.partId} of migration plan ${grant.planId} is not known here`);
   return deps.migration.approved(grant.partId);
+}
+
+/**
+ * The originating change's current revision: its newest revision across every scope of its plan
+ * (part-trial.ts `newestRevision`). Each copy comes from it, so a fork holds the bytes main will take.
+ */
+export function originRevision(plan: Plan): string {
+  return newestRevision(plan, { scopes: plan.parts.flatMap((part) => part.scopes) });
+}
+
+/**
+ * The approved part a copy write copies for, written onto the fork's head with no patch, while the
+ * originating change still stands at the revision the write was opened for.
+ */
+async function copyWrite(deps: FixWriteDeps, grant: FixGrant, copy: { readonly partId: string; readonly source: string }): Promise<ApprovedPart | FixRejection> {
+  const approved = await approvedPart(deps, { feature: grant.featureId, part: copy.partId, revision: grant.revision });
+  if (isRejection(approved)) return approved;
+  const source = originRevision(approved.plan);
+  if (source !== copy.source) return rejected("conflict", `the originating change moved from revision ${copy.source} to ${source}`);
+  const head = await forkHead(deps, approved.target.repo);
+  if (head === null) return rejected("not_found", `feature ${approved.target.id}'s fork has no ${FIX_WRITE_BRANCH} branch`);
+  return { ...approved, patch: "", base: head, copiedFrom: source };
 }
 
 /** The fork's head on its `main`, or null when the branch has no commit. */
@@ -622,11 +704,15 @@ async function prepare(
     parent = head;
   }
   // The check runner's write also copies the originating change's modules the fork imports. An
-  // agent's write and a migration part's carry none.
+  // agent's write and a migration part's carry none; a copy write carries them for the agent's part.
   let copy: ModuleCopy | null = null;
   if (grant.writer === "runner" && !isMigrationPlanId(plan.planId)) {
     const read = await copyFor(deps, approved as ApprovedPart, parent, files);
     if (read.status === "refused") return rejected("conflict", read.message);
+    if (read.status === "conflict") {
+      await returnCopyConflict(deps, approved as ApprovedPart, parent, read);
+      return rejected("copy_conflict", `${read.message}; part ${part.partId} went back to the originating agent with the fork's lines`);
+    }
     copy = read.copy;
   }
   const spec: FixWriteSpec = {
@@ -653,6 +739,7 @@ async function prepare(
       approvedBy: part.approvedBy as string,
       writtenBy,
       ref: part.diff.ref,
+      ...(approved.copiedFrom === undefined ? {} : { copiedFrom: approved.copiedFrom }),
     }),
   };
   return { status: "ok", spec, repo: target.repo };
@@ -780,11 +867,96 @@ async function copyFor(deps: FixWriteDeps, approved: ApprovedPart, head: string,
   const scopePaths = approved.part.scopes.flatMap((scope) => scopeMap.scopes.get(scope)?.paths ?? []);
   // The originating change as it now stands: its newest revision, which holds the checkpoint and
   // every revision before it, so the fork's copies are the bytes main will take.
-  const checkpoint = newestRevision(approved.plan, { scopes: approved.plan.parts.flatMap((part) => part.scopes) });
+  const checkpoint = originRevision(approved.plan);
   const { baseline } = approved.plan.facts.change;
+  // A module still at a revision Penguin copied before takes the newer one.
+  const earlier = deps.grants.copiedInto(approved.featureId, approved.target.id);
   return deps.readFork(origin.repo as string, (originReader) =>
-    deps.readFork(approved.target.repo, (fork) => readCopy({ origin: originReader, checkpoint, baseline, fork, head, scopePaths, patch: files })),
+    deps.readFork(approved.target.repo, (fork) => readCopy({ origin: originReader, checkpoint, baseline, fork, head, scopePaths, patch: files, earlier })),
   );
+}
+
+/** The longest diff of the fork's own lines a returned part quotes: the request stays under its limit. */
+const CONFLICT_LINES_LENGTH = 1_400;
+
+/**
+ * Sends a part whose fork changed one of the originating change's modules itself back to the
+ * originating agent as `change_requested`, with the fork's lines, as part of its own change. Its
+ * session reads the request in `get_work` (`ownPlan.parts[].changeRequest`). A signed `copy_conflict`
+ * record names the module and the fork head.
+ */
+export async function returnCopyConflict(deps: FixWriteDeps, approved: ApprovedPart, head: string, conflict: { readonly path: string; readonly lines: string }): Promise<void> {
+  const { featureId, plan, part } = approved;
+  const record = await deps.sign(
+    deps.features.draftRecord(featureId, "copy_conflict", { penguin: true }, {
+      plan_id: plan.planId,
+      part_id: part.partId,
+      revision: part.revision,
+      fork: `feature-${part.place.feature}`,
+      fork_head: head,
+      path: conflict.path,
+    }),
+  );
+  const lines = conflict.lines.length > CONFLICT_LINES_LENGTH ? `${conflict.lines.slice(0, CONFLICT_LINES_LENGTH)}\n...` : conflict.lines;
+  const text = [
+    `Feature ${part.place.feature}'s fork changed ${conflict.path} itself at ${head}, so Penguin does not copy your revision of it there.`,
+    `Fold the fork's lines into ${conflict.path} in your own change; Penguin copies the module once your revision holds them.`,
+    lines,
+  ].join("\n");
+  await returnToOriginator(deps, approved, head, text, record);
+}
+
+/**
+ * On an approval: opens a copy write for each approved part of `plan` on a running feature at the
+ * originating change's current revision, `approvedNow` counted as approved. A mechanical or verify
+ * part whose own write is not yet made copies the modules in that write, so it gets none. The claim
+ * withdraws a copy write whose fork already holds every module.
+ */
+export function openCopyWrites(grants: FixGrantStore, featureId: string, plan: Plan, approvedNow?: PlanPart): void {
+  if (isMigrationPlanId(plan.planId)) return;
+  const source = originRevision(plan);
+  for (const stored of plan.parts) {
+    const part = stored.partId === approvedNow?.partId ? approvedNow : stored;
+    if (part.place.kind !== "feature" || part.approvalState !== "approved") continue;
+    const own = grants.get(part.partId, part.revision);
+    if (part.kind !== "behavioural" && (own === undefined || own.state === "queued" || own.state === "granted")) continue;
+    grants.open(featureId, plan.planId, { partId: copyWriteKey(part.partId, source), revision: part.revision }, part.place.feature, "runner");
+  }
+}
+
+/**
+ * For a land of `plan`: each affected fork, at its head in `targets`, that does not yet hold the
+ * originating change's current revision of every module it imports, with why. Each such fork gets a
+ * copy write of that revision; a fork that changed a module itself sends its part back to the
+ * originating agent. An empty answer lets the land go on.
+ */
+export async function copiesBehind(deps: FixWriteDeps, plan: Plan, targets: readonly { readonly feature: string; readonly sha: string }[]): Promise<string[]> {
+  if (isMigrationPlanId(plan.planId)) return [];
+  const source = originRevision(plan);
+  const behind: string[] = [];
+  for (const part of plan.parts) {
+    if (part.place.kind !== "feature" || part.approvalState !== "approved") continue;
+    const place = part.place.feature;
+    const target = targets.find((each) => each.feature === place);
+    // The affected feature landed or stopped: it takes main like anyone.
+    if (target === undefined) continue;
+    const approved = await approvedPart(deps, { feature: plan.featureId, part: part.partId, revision: part.revision });
+    if (isRejection(approved)) continue;
+    const read = await copyFor(deps, approved, target.sha, []);
+    if (read.status === "ok" && read.copy === null) continue;
+    if (read.status === "conflict") {
+      await returnCopyConflict(deps, approved, target.sha, read);
+      behind.push(`${read.message}; part ${part.partId} went back to the originating agent`);
+      continue;
+    }
+    if (read.status === "refused") {
+      behind.push(read.message);
+      continue;
+    }
+    deps.grants.open(plan.featureId, plan.planId, { partId: copyWriteKey(part.partId, source), revision: part.revision }, place, "runner");
+    behind.push(`feature ${place}'s fork does not yet hold ${read.copy?.paths.join(", ")} at revision ${source.slice(0, 12)}`);
+  }
+  return behind;
 }
 
 /**
@@ -802,7 +974,8 @@ export async function claimRunnerWrites(
     // A fork whose start waits on an overlap lock gets no token yet; the write stays queued.
     if (deps.locked?.(grant.targetFeatureId) === true) continue;
     const approved = await grantedWrite(deps, grant);
-    if (isRejection(approved) || approved.part.kind === "behavioural") {
+    // The runner writes a behavioural part's copies, never its patch.
+    if (isRejection(approved) || (approved.part.kind === "behavioural" && approved.copiedFrom === undefined)) {
       deps.grants.withdraw(grant.id);
       continue;
     }
@@ -818,11 +991,12 @@ export async function claimRunnerWrites(
         : revise(deps, approved as ApprovedPart);
     const prepared = await prepare(deps, approved, grant, RUNNER_WRITER, headMoved);
     if (prepared.status !== "ok") {
-      // A moved head sent the part back for revision; anything else stays queued for the next claim.
-      if (prepared.reason === "head_moved") deps.grants.withdraw(grant.id);
+      // A moved head or a module the fork changed itself sent the part back to the originating agent;
+      // anything else stays queued for the next claim.
+      if (prepared.reason === "head_moved" || prepared.reason === "copy_conflict") deps.grants.withdraw(grant.id);
       continue;
     }
-    // A verify part whose fork already holds every module it imports has nothing to write.
+    // A verify part or a copy write whose fork already holds every module it imports has nothing to write.
     if (prepared.spec.patch === "" && prepared.spec.copy === undefined) {
       deps.grants.withdraw(grant.id);
       continue;
@@ -885,25 +1059,36 @@ async function recordFixWrite(deps: FixWriteDeps, grant: FixGrant, writtenBy: st
   }
   const files = checkedFiles(approved, await deps.scopeMap());
   if (isRejection(files)) return files;
+  const partId = writtenPart(grant);
   const message = fixCommitMessage({
-    partId: grant.partId,
+    partId,
     revision: grant.revision,
     target: approved.target.id,
     approvedBy: approved.part.approvedBy as string,
     writtenBy,
     ref: approved.part.diff.ref,
+    ...(approved.copiedFrom === undefined ? {} : { copiedFrom: approved.copiedFrom }),
   });
   const parent = grant.parent;
   // The runner's commit also holds the copies Penguin worked out for this head, each at the checkpoint's bytes.
   let copies: ReadonlyMap<string, string> = new Map();
   if (grant.writer === "runner" && !isMigrationPlanId(grant.planId)) {
     const read = await copyFor(deps, approved as ApprovedPart, parent, files);
-    if (read.status === "refused") return rejected("conflict", read.message);
+    if (read.status !== "ok") return rejected("conflict", read.message);
     copies = read.copy === null ? new Map() : new Map(read.copy.paths.map((path) => [path, read.hashes.get(path) as string]));
   }
   const problem = await deps.readFork(approved.target.repo, (reader) => commitProblem(reader, { commit, parent, message, files, copies }));
   const targetRepo = `feature-${approved.target.id}`;
-  const fields = { plan_id: approved.plan.planId, part_id: grant.partId, revision: grant.revision, target_repo: targetRepo, commit_sha: commit, parent };
+  const fields = {
+    plan_id: approved.plan.planId,
+    part_id: partId,
+    revision: grant.revision,
+    target_repo: targetRepo,
+    commit_sha: commit,
+    parent,
+    ...(copies.size === 0 ? {} : { copied: [...copies.keys()] }),
+    ...(approved.copiedFrom === undefined ? {} : { copied_from: approved.copiedFrom }),
+  };
   if (problem !== null) {
     const refused = await deps.sign(deps.features.draftRecord(grant.featureId, "fix_write_refused", { penguin: true }, { ...fields, written_by: writtenBy, reason: problem }));
     deps.features.addRecord(refused);
@@ -920,7 +1105,7 @@ async function recordFixWrite(deps: FixWriteDeps, grant: FixGrant, writtenBy: st
   );
   const now = (deps.now ?? Date.now)();
   const write: FixWrite = {
-    partId: grant.partId,
+    partId,
     revision: grant.revision,
     targetRepo,
     commitSha: commit,
@@ -929,11 +1114,12 @@ async function recordFixWrite(deps: FixWriteDeps, grant: FixGrant, writtenBy: st
     writtenAt: new Date(now).toISOString(),
   };
   const migration = isMigrationPlanId(grant.planId) ? deps.migration : undefined;
-  if (migration === undefined && !(await deps.keeper(grant.featureId).keepFixWrite(write))) {
+  // A copy write is kept on its grant alone: the part's FixWrite row is its own write's.
+  if (migration === undefined && approved.copiedFrom === undefined && !(await deps.keeper(grant.featureId).keepFixWrite(write))) {
     return rejected("conflict", `revision ${grant.revision} of part ${grant.partId} is already written`);
   }
   deps.features.addRecord(record);
-  deps.grants.written(grant.id, commit, record.record_id);
+  deps.grants.written(grant.id, commit, record.record_id, copies);
   await migration?.written(grant.partId, commit, record.record_id);
   deps.notify(approved.target.personId);
   deps.notify(approved.plan.person);

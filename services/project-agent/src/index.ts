@@ -143,10 +143,13 @@ import {
   agentFixGrant,
   agentFixReport,
   claimRunnerWrites,
+  copiesBehind,
   FixGrantStore,
+  openCopyWrites,
   openFixWrite,
   parseFixTokenLease,
   runnerFixReport,
+  writtenPart,
   type FixGrantOutcome,
   type FixPartInput,
   type FixWriteDeps,
@@ -555,10 +558,16 @@ export {
   agentFixReport,
   claimRunnerWrites,
   commitProblem,
+  copiesBehind,
+  copyWriteKey,
+  copyWriteOf,
   FIX_GRANT_SCHEMA,
   FIX_WRITE_LEASE_MS,
   FixGrantStore,
+  openCopyWrites,
   openFixWrite,
+  originRevision,
+  returnCopyConflict,
   runnerFixReport,
   type FixGrant,
   type FixGrantOutcome,
@@ -2681,7 +2690,7 @@ export class ProjectAgent extends Agent {
         return grants
           .openOn(featureId)
           .filter((grant) => grant.featureId !== featureId && grants.waitsFor(grant) !== null)
-          .map((grant) => ({ partId: grant.partId, feature: grant.featureId, person: this.#featureStore().get(grant.featureId)?.personId ?? grant.featureId }));
+          .map((grant) => ({ partId: writtenPart(grant), feature: grant.featureId, person: this.#featureStore().get(grant.featureId)?.personId ?? grant.featureId }));
       },
       contract: (feature) => contractWork(this.#splitDeps(), feature, rules.scopeMap),
       stoppedRuns: (featureId) => this.#runFailureStore().stopped(featureId),
@@ -2776,7 +2785,12 @@ export class ProjectAgent extends Agent {
       notify: (personId) => sendToOwner(this.getConnections<{ owner?: string }>(), personId, inboxChangedMessage()),
       // An approved part on a running feature takes its place in its fork's order of writes (fix-write.ts):
       // the check runner writes a mechanical one, the originating agent or its fix task a behavioural one.
-      approved: (featureId, plan, part) => openFixWrite(this.#fixGrantStore(), featureId, plan, part),
+      // Each approval also asks Penguin's copy of the originating change's current modules into every
+      // approved part's fork, a behavioural part's included (#179).
+      approved: (featureId, plan, part) => {
+        openFixWrite(this.#fixGrantStore(), featureId, plan, part);
+        openCopyWrites(this.#fixGrantStore(), featureId, plan, part);
+      },
       // A reversed approval withdraws its revision's write while it has not happened yet.
       reversed: (_featureId, part) => {
         const grant = this.#fixGrantStore().get(part.partId, part.revision);
@@ -3333,6 +3347,8 @@ export class ProjectAgent extends Agent {
       branch: BASE_BRANCH,
       queue: this.#blockQueueStore(),
       unconfirmedProtected: (featureId) => unconfirmedProtected(this.#protectedChangeStore(), featureId),
+      // A land waits until every affected fork holds the originating change's current modules (#179).
+      copiesBehind: (plan, targets) => copiesBehind(this.#fixWriteDeps(repos), plan, targets),
       sign: async (record) => signFeatureRecord(record, (await this.#loadServiceKey()).privateKey),
       notify: (personId) => sendToOwner(this.getConnections<{ owner?: string }>(), personId, inboxChangedMessage()),
     };

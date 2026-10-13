@@ -68,10 +68,22 @@ export interface FixMessageFields {
   readonly writtenBy: string;
   /** The fix's reference in the plan: `feature-<id>@<base>+patch:sha256:<hex>`. */
   readonly ref: string;
+  /** For a write that only copies the originating change's modules: the revision they come from. */
+  readonly copiedFrom?: string;
 }
 
 /** The one commit message a fix may carry. */
 export function fixCommitMessage(fields: FixMessageFields): string {
+  if (fields.copiedFrom !== undefined) {
+    return [
+      `fix(${fields.target}): copy the originating modules of merge plan part ${fields.partId} revision ${fields.revision}`,
+      "",
+      `Part ${fields.partId} revision ${fields.revision}, approved by ${fields.approvedBy}.`,
+      `Modules copied from ${fields.copiedFrom}.`,
+      `Written by ${fields.writtenBy}.`,
+      "",
+    ].join("\n");
+  }
   return [
     `fix(${fields.target}): write merge plan part ${fields.partId} revision ${fields.revision}`,
     "",

@@ -812,7 +812,9 @@ that also fails another check stays with its author. Its stored data reason is l
    with a rule or a new function in its module. Each affected fork then runs its own tests alone.
    Once the originating change reaches main, the fork holds main's bytes of each copied module, so
    taking main conflicts in none of them. A behavioural part the originating agent wrote is written
-   with a short-lived write token on that fork.
+   with a short-lived write token on that fork. Penguin's check runner then copies the modules that
+   part's fork imports. Each later revision of the originating change is copied into every affected
+   fork again. The originating change reaches main only once each fork holds its current revision.
 2. The affected feature's own agents keep working on code that already fits the change, so the merge
    conflict never forms.
 3. A running feature that starts touching the plan's area midway shows up at its next checkpoint.
@@ -850,10 +852,30 @@ that also fails another check stays with its author. Its stored data reason is l
   reads the Python files of the part's scopes at the fork head, with the patch applied, as text. Each
   file of the change that one of them imports is copied. So is each file of the change that a copied
   module imports (`copiedModules`, `packages/protocol/src/module-copy.ts`). A module the fork already
-  holds at the revision's bytes is left out. A module the fork changed itself is never overwritten:
-  the write is refused with that reason. The grant's `copy` names the revision, its baseline and the
-  copied paths. A copy may name only a file the originating change itself added or changed
+  holds at the revision's bytes is left out. The grant's `copy` names the revision, its baseline and
+  the copied paths. A copy may name only a file the originating change itself added or changed
   (`copyProblem`). An agent's write and a migration part's write copy nothing.
+- **Copy writes.** Every approved part on a running feature carries the copies its fork imports. A
+  mechanical or verify part copies them in its own write. Every other part gets a copy write: a runner
+  write with no patch, kept as `copy:<revision>:<part id>` in the fork's order of writes
+  (`openCopyWrites`, `services/project-agent/src/fix-write.ts`). Each approval opens a copy write for
+  every approved part whose own write is made, at the originating change's current revision
+  (`originRevision`). A behavioural part's copy write follows the agent's write into the fork. The
+  claim withdraws a copy write whose fork already holds every module. It also withdraws one whose
+  revision the originating change has moved past. The commit message reads "copy the originating modules of merge
+  plan part ...". A kept copy write is a signed `fix_write` record with `copied_from` and `copied`. It
+  keeps no `FixWrite` row, since the part's row is its own write's.
+- **Refreshing the copies.** A kept runner write keeps each module it copied with the blob it wrote
+  (`FixGrantStore.copiedInto`). A fork that holds a module at a revision Penguin copied earlier takes
+  the current revision byte for byte, so every write of a later revision refreshes the copies.
+- **A fork that changed a copied module.** Penguin overwrites a module the fork changed itself only
+  once the originating change's revision holds the fork's own lines: each block the fork added stands
+  in the revision and each block it removed is gone (`forkLinesKept`). Until then the write is
+  withdrawn and the part goes back to the originating agent as `change_requested`, with Penguin's
+  request quoting the fork's lines as a diff from the baseline (`returnCopyConflict`). The originating
+  agent reads it in `get_work` under `ownPlan.parts[].changeRequest` and folds the lines into the
+  module in its own change. A signed `copy_conflict` record names the part, the module and the fork
+  head.
 - **The fork head.** The commit must fast-forward the affected fork's `main`. When the head is still
   the patch's base, the base is the parent. When the author's own agent moved the head, Penguin
   applies the patch to the new head's files. If every hunk still matches at its line, the new head is
@@ -1049,7 +1071,11 @@ No view carries an agent's transcript. A task's `outcome` is one line the bridge
   written at its current revision (`fix_not_written`). A fix for code on main is not in the
   checkpoint (`fix_not_in_block`). A written fix is no longer under its fork's head
   (`fix_not_in_place`). Ancestry is read through the binding's `log` and `readCommit`; the search
-  stops at main's own history.
+  stops at main's own history. An affected fork whose head does not hold the originating change's
+  current revision of every module it imports refuses the land as `copy_not_written` (`copiesBehind`):
+  Penguin opens that fork's copy write. The agent calls `land_feature` again once it is written. The
+  copies and the change are then checked in one block run. A copy written after the run was asked
+  stops the promotion as any fix does.
 - **The block run.** One run checks the checkpoint merged onto main's head and onto the head of the
   `main` branch of every other running feature's fork. That head carries each fix written into the
   fork. The check runner claims the run at `POST /blocks/claim` and runs the [checks](#checks) on each

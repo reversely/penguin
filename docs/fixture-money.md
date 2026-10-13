@@ -257,6 +257,13 @@ conflict in the copied modules.
 | `accounts-merge-checkpoint` onto `weekly-digest-checkpoint` | `test_consent.py::test_unsubscribe_survives` |
 | `accounts-merge-limit-one` onto `cohort-ltv-cutover` or `weekly-digest-consent` | nothing |
 
+No merged tree puts `accounts-merge-limit-five` onto `cohort-ltv-cutover`. Jun's fork takes
+Penguin's update only at `limit-one`, the revision at which every part of the plan is approved, so no
+fork head holds the copies at `limit-five`'s bytes. The `limit-five` round is checked by the analytics
+review below instead: `accounts-merge-limit-five` merged onto `cohort-ltv-checkpoint` with the rule's
+rewrite. Had Jun's fork taken an update at `limit-five`, the write at `limit-one` would refresh each
+copied module to `limit-one`'s bytes ([design.md](design.md#steps-1-and-3-in-the-build)).
+
 Loyalty's tests pass on every tree of the case, so loyalty's place is a verify part. Jun's
 analytics review has one form per round: `reviews/case1-analytics-checkpoint.json` and
 `case1-analytics-limit-five.json` report `kiosk-shoppers-separate` broken,
@@ -337,8 +344,8 @@ and the reviews `reviews/case3-payouts.json` and `reviews/case3-checkout.json` a
 
 ### Penguin's updates
 
-The builder writes each `update` commit as the check runner writes a mechanical or verify part
-(`penguin_update` in `build.py`). It copies each module in `copies` byte for byte from the tagged
+The builder writes each `update` commit as the check runner writes a mechanical part, a verify part
+or the copy write of a behavioural part (`penguin_update` in `build.py`). It copies each module in `copies` byte for byte from the tagged
 commit of the originating feature. A copy of a file the originating change did not itself add or
 change stops the build. It then applies the originating feature's `rules` with Penguin's codemod
 (`services/local-bridge/analysis/python_codemod.py`) to the fork's own Python files in its scopes,

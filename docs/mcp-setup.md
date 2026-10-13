@@ -427,6 +427,8 @@ The answer carries no token: Penguin moves main itself. A refusal names what is 
 `plan_not_approved`, `protected_path_unconfirmed` (the feature's own change writes a path under
 another person's custom path rule, and that person has not confirmed the lines on the dashboard; the
 message names each person with the custom paths), `fix_not_written`, `fix_not_in_block`, `fix_not_in_place`,
+`copy_not_written` (an affected fork does not yet hold your change's current revision of the modules
+it imports; Penguin's check runner copies them, then land again),
 `not_ready` (no checkpoint, or nothing past main) or `busy` (a land or expand of the feature is
 already being checked).
 

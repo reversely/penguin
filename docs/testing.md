@@ -29,6 +29,7 @@ one Cloudflare primitive. A test whose subject leaves the product is deleted wit
 | `facts.test.ts` | 4.2 step 2 and 4.5: a test a running feature's fork already fails without the change is no break in the facts run and fails no block check |
 | `security.test.ts` | Section 8: signed records, token scopes, line visibility, dashboard sessions; only a team lead changes the review policy, admin mode locks it, a forged policy record is refused, no policy approves a part whose tests failed and a policy signed under an old preset name reads as its new name |
 | `fork-writes.test.ts` | 4.4: writes into one fork take turns in approval order, each tried again on the head the last one moved |
+| `module-copies.test.ts` | 4.4: a behavioural part gets a copy write after its own write; each copy write refreshes a module copied at an earlier revision; a copy write of a revision the change moved past is withdrawn; a land waits until each affected fork holds the current revision; a fork that changed a copied module goes back to the originating agent with its lines; a revision holding those lines is copied over them |
 | `run-failures.test.ts` | Section 7: a failed run is freed at once and stops at the project's failure limit |
 | `tool-runs.test.ts` | 5.2: only the check runner reports a tool result, once, for the request's own checkpoint |
 

@@ -3,13 +3,17 @@
 // main compared with its checkpoint, in the originating fork. The fork's side is the Python files of
 // the part's scopes at the fork head, with the part's patch applied: every module of the change they
 // import, then every module of the change those import (`copiedModules` in packages/protocol), is
-// copied byte for byte. A module the fork already holds at the checkpoint's bytes is left out. A module
-// the fork changed itself is never overwritten: the write is refused with that reason. Nothing here
+// copied byte for byte. A module the fork already holds at the checkpoint's bytes is left out.
+//
+// A module the fork holds at an earlier revision Penguin copied into it (`earlier`) takes the newer
+// revision, so every write refreshes the copies (#179). A module the fork changed itself is overwritten
+// only once the originating change's revision holds the fork's own lines (`forkLinesKept`). Until then
+// the reading is a conflict naming those lines, which goes back to the originating agent. Nothing here
 // runs Git, imports the code or calls a model.
 
-import { applyPatchFile, copiedModules, type ModuleCopy, type PlanFileDiff } from "@penguin/protocol";
+import { applyPatchFile, copiedModules, type ModuleCopy, type PlanFileDiff, type PlanHunk } from "@penguin/protocol";
 
-import { changedFiles, readFileText, type GitObjectReader } from "./repo-diff.ts";
+import { changedFiles, lineHunks, readFileText, splitLines, type GitObjectReader } from "./repo-diff.ts";
 
 /** The most Python files of the part's scopes read to find what the fork imports. */
 const START_FILE_LIMIT = 2_000;
@@ -63,10 +67,48 @@ async function blobText(reader: Pick<GitObjectReader, "readBlob">, hash: string)
   return blob === null ? null : blob.text();
 }
 
-/** What a write copies: the copy and each copied module's blob at the checkpoint, or why it may not. */
+/**
+ * What a write copies: the copy and each copied module's blob at the checkpoint, why it may not, or the
+ * module the fork changed itself with the lines it changed there (a unified diff from the baseline).
+ */
 export type CopyReading =
   | { readonly status: "ok"; readonly copy: ModuleCopy | null; readonly hashes: ReadonlyMap<string, string> }
-  | { readonly status: "refused"; readonly message: string };
+  | { readonly status: "refused"; readonly message: string }
+  | { readonly status: "conflict"; readonly path: string; readonly lines: string; readonly message: string };
+
+// The fork's blocks are looked for with no context: the originating change may itself have changed
+// the lines around them.
+const added = (hunk: PlanHunk): string[] => hunk.lines.filter((line) => line.startsWith("+")).map((line) => line.slice(1));
+const removed = (hunk: PlanHunk): string[] => hunk.lines.filter((line) => line.startsWith("-")).map((line) => line.slice(1));
+
+function holdsBlock(lines: readonly string[], block: readonly string[]): boolean {
+  if (block.length === 0) return true;
+  for (let at = 0; at + block.length <= lines.length; at += 1) {
+    if (block.every((line, index) => lines[at + index] === line)) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether `revision` holds the fork's own change from `base` to `held`. Each block of lines the fork
+ * added stands in the revision, and each block it removed or replaced is gone from it. Where a block
+ * stands does not matter; the order of its lines does. A removed block that still stands elsewhere
+ * counts as kept back, so the answer errs towards a conflict.
+ */
+export function forkLinesKept(base: string, held: string, revision: string): boolean {
+  const lines = splitLines(revision);
+  return lineHunks(splitLines(base), splitLines(held), 0).every((hunk) => {
+    const gone = removed(hunk);
+    return holdsBlock(lines, added(hunk)) && (gone.length === 0 || !holdsBlock(lines, gone));
+  });
+}
+
+/** The fork's own change of `path` from `base` to `held` as a unified diff, for the originating agent to read. */
+export function forkLines(path: string, base: string, held: string): string {
+  const hunks = lineHunks(splitLines(base), splitLines(held));
+  const body = hunks.flatMap((hunk) => [`@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`, ...hunk.lines]);
+  return [`--- a/${path}`, `+++ b/${path}`, ...body].join("\n");
+}
 
 export interface CopyInput {
   /** The originating fork's reader: it holds the checkpoint and the baseline it was built on. */
@@ -80,6 +122,8 @@ export interface CopyInput {
   readonly scopePaths: readonly string[];
   /** The part's patch, applied to the head before its imports are read. */
   readonly patch: readonly PlanFileDiff[];
+  /** Each module's blobs Penguin copied into this fork from this originating change before. */
+  readonly earlier?: ReadonlyMap<string, ReadonlySet<string>>;
 }
 
 /** The originating change's modules the fork needs and does not hold yet. */
@@ -110,8 +154,18 @@ export async function readCopy(input: CopyInput): Promise<CopyReading> {
     if (file === undefined || patched.has(path)) continue;
     const held = await fileHash(fork, head.treeHash, path);
     if (held === file.newHash) continue;
-    if (held !== file.oldHash) {
-      return { status: "refused", message: `the fork changed ${path} itself, so Penguin does not overwrite it with the originating change's copy` };
+    // The baseline's module, or an earlier revision Penguin copied, takes this revision as it stands.
+    if (held !== file.oldHash && (held === null || input.earlier?.get(path)?.has(held) !== true)) {
+      const base = file.oldHash === null ? "" : ((await blobText(origin, file.oldHash)) ?? "");
+      const own = held === null ? "" : ((await blobText(fork, held)) ?? "");
+      if (!forkLinesKept(base, own, texts.get(path) ?? "")) {
+        return {
+          status: "conflict",
+          path,
+          lines: forkLines(path, base, own),
+          message: `the fork changed ${path} itself and the originating change's revision does not hold those lines, so Penguin does not overwrite it with the copy`,
+        };
+      }
     }
     paths.push(path);
     hashes.set(path, file.newHash as string);

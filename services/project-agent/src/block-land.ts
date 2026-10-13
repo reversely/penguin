@@ -149,6 +149,7 @@ export type LandRejectReason =
   | "fix_not_written"
   | "fix_not_in_block"
   | "fix_not_in_place"
+  | "copy_not_written"
   | "busy"
   // An expand checkpoint (expand-promotion.ts): the impact run is not reported, failed, finds more
   // than additions, or an owner of a scope it adds to has not approved yet.
@@ -179,6 +180,12 @@ export interface LandDeps {
    * lines at the latest checkpoint (protected-change.ts). Absent, no land waits on a confirmation.
    */
   readonly unconfirmedProtected?: (featureId: string) => readonly { readonly ownerId: string; readonly files: readonly { readonly protectedPath: string }[] }[];
+  /**
+   * Each affected fork in `targets` that does not yet hold the plan's current revision of the
+   * originating change's modules it imports, with why (fix-write.ts `copiesBehind`). Absent, no land
+   * waits on a copy.
+   */
+  readonly copiesBehind?: (plan: Plan, targets: readonly BlockRunTarget[]) => Promise<readonly string[]>;
   readonly sign: (record: UnsignedFeatureRecord) => Promise<FeatureRecord>;
   readonly notify: (personId: string) => void;
   readonly now?: () => number;
@@ -329,6 +336,12 @@ async function prepareLand(deps: LandDeps, feature: Feature, checkpoint: unknown
     if (!found.has(write.commitSha)) {
       return rejected("fix_not_in_place", `fix ${short(write.commitSha)} of ${part.partId} is no longer under feature ${target.feature}'s fork head ${short(target.sha)}`);
     }
+  }
+  // Each affected fork holds the plan's current revision of the modules it imports, so the copies and
+  // the change are checked and land as one block.
+  const behind = plan === undefined ? [] : ((await deps.copiesBehind?.(plan, targets)) ?? []);
+  if (behind.length > 0) {
+    return rejected("copy_not_written", `the affected forks do not yet hold the originating change's current modules; Penguin's check runner copies them first: ${behind.join("; ")}`);
   }
   return { feature: feature as Prepared["feature"], plan, mainBefore: main.head, targets };
 }

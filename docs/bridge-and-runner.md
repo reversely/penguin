@@ -546,7 +546,9 @@ change's modules the fork imports. Three writers commit it, all with the same co
   person's bridge claims that task, the bridge commits the approved patch itself, with no agent run
   (`edit-run.ts`).
 - Runner mode claims the writes of approved mechanical and verify parts at `POST /fix-writes/claim` under a
-  10-minute lease. An approved rule-written part of a split's migration plan comes the same way,
+  10-minute lease. It also claims the copy writes of any approved part: a spec with an empty patch
+  whose `copy` names the originating change's current revision
+  ([design.md](design.md#steps-1-and-3-in-the-build)). An approved rule-written part of a split's migration plan comes the same way,
   onto its running feature's fork or its plan's block feature
   ([design.md](design.md#migration-plans-in-the-build)); a fork whose start waits on an overlap lock
   is left out of the claim. Each claim carries a `write` token minted for that part on that fork. The runner
