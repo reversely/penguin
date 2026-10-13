@@ -267,7 +267,14 @@ export class CaseRun {
     const asked = await session.call("land_feature", { feature: feature.id });
     let last: unknown;
     const landing = await this.until(() => `${feature.id}'s landing (last read: ${JSON.stringify(last).slice(0, 3_000)})`, async () => {
-      const current = (await session.work())["landing"];
+      // A session that went offline cannot rejoin a landed feature, whose fork is read-only: landed.
+      const current = await session.work().then(
+        (work) => work["landing"],
+        (error: Error) => {
+          if (error.message.includes("has landed")) return { state: "landed" };
+          throw error;
+        },
+      );
       last = current;
       if (current?.state === "landed") return current;
       // Only this land's run counts: an earlier plan check of the same feature may have failed before the fixes were written.
@@ -639,7 +646,14 @@ export class CaseRun {
   async landBlock(block: CaseFeature, onReview?: (commit: CaseCommit, reviewId: number) => Promise<void>): Promise<Record<string, any>> {
     const steward = this.fixture.identities.find((identity) => identity.handle === stewardHandle(block.owner));
     if (steward === undefined) throw new Error(`no steward for ${block.owner}`);
-    await this.until(`Penguin's block ${block.id}`, async () => ((await this.featurePage(block.id, block.owner))?.feature !== undefined ? true : undefined));
+    // Penguin opens a block once the owner's code on main is due to move; until then the page is 404.
+    await this.until(`Penguin's block ${block.id}`, async () => {
+      const page = await this.featurePage(block.id, block.owner).catch((error: Error) => {
+        if (error.message.includes("HTTP 404")) return undefined;
+        throw error;
+      });
+      return page?.feature !== undefined ? true : undefined;
+    });
     const session = await this.person(block.owner).startSession(block, steward);
     await session.open();
     for (const commit of block.commits) {

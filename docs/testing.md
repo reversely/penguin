@@ -58,7 +58,7 @@ run and deletes its repositories at the end.
 | `edit-task-run.test.ts` | `PENGUIN_EDIT_E2E` | A person's bridge runs an edit task with `claude -p` and publishes the result after consent |
 | `review-task-run.test.ts` | `PENGUIN_REVIEW_E2E` | Each author's bridge fills in a review form with `claude -p` through Penguin's MCP server |
 
-The last two need Claude Code logged in on the machine that runs them.
+The last two need Claude Code logged in on the machine that runs them, so they run on a person's laptop; the test machine runs the others. `tests/walkthrough` runs the four use cases through the same stack (docs/walkthrough.md).
 
 Combined runs and Huddles predate PRD 0.5. Their code is still wired into the ProjectAgent until its
 removal and has no tests.

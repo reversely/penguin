@@ -267,7 +267,9 @@ for (const [index, fixture] of CASES.entries()) {
           await run.publish(feature, fixture.checkpointsOf(feature)[0] as CaseCommit);
         }
         // Each running feature's builder writes its own migration; each owner's steward lands the block for code on main.
-        for (const feature of fixture.features.filter((each) => fixture.migrationOf(each) !== undefined)) await run.migrateFeature(feature);
+        // Penguin's blocks for code on main land below; features main already holds run no session.
+        const running = fixture.features.filter((each) => each.role !== "migration" && !fixture.promotions.includes(each.id));
+        for (const feature of running.filter((each) => fixture.migrationOf(each) !== undefined)) await run.migrateFeature(feature);
         for (const block of fixture.blocks) {
           await run.landBlock(block, async (commit) => {
             const revision = commit.revises !== null;
