@@ -7,7 +7,7 @@
 // own places grouped by scope, each file naming the changed symbols its lines use, then the other
 // places folded away. A file the page answer cut reads its whole diff from the plan route on expand.
 
-import type { ContractWorkView, FeaturePage, FeaturePlanView, FixView, PartFileView, PlanHunk, PlanPartView } from "@penguin/protocol";
+import { decisionRouteText, type ContractWorkView, type DecisionRoute, type FeaturePage, type FeaturePlanView, type FixView, type PartFileView, type PlanHunk, type PlanPartView } from "@penguin/protocol";
 import { useState } from "react";
 
 import { PersonAvatar } from "./avatar.tsx";
@@ -16,7 +16,7 @@ import { yourChanges, yourReaders } from "./banner-view.ts";
 import { Icon } from "./icon.tsx";
 import { ScopePill } from "./pills.tsx";
 import { hunkHeader, hunkRows } from "./diff-view.ts";
-import { counted, partNumber, partStateText, roundText, shortSha } from "./feature-view.ts";
+import { counted, partNumber, partRouteText, roundText, shortSha } from "./feature-view.ts";
 import { Fold } from "./fold.tsx";
 import { linkHandler } from "./links.ts";
 import { CONTRACT_FOLD } from "./page-view.ts";
@@ -45,12 +45,14 @@ interface TreeProps {
   readonly dependents: FeaturePage["dependents"];
   readonly owners: ReadonlyMap<string, string>;
   readonly navigate: (path: string) => void;
+  /** Who wrote each part's fix and how, from its `fix_write` record: an agent through MCP or Penguin's check runner. */
+  readonly writes?: ReadonlyMap<string, DecisionRoute>;
 }
 
-export function ChangeTree({ plan, contract, fixes, featureId, person, viewer, dependents, owners, navigate }: TreeProps) {
+export function ChangeTree({ plan, contract, fixes, featureId, person, viewer, dependents, owners, navigate, writes = new Map() }: TreeProps) {
   const hasContract = plan?.contractDiff != null || (contract?.entries.length ?? 0) > 0 || (contract?.split?.retiring.length ?? 0) > 0;
   const node = (part: PlanPartView) =>
-    plan === null ? null : <PartNode part={part} plan={plan} fix={fixes.find((fix) => fix.partId === part.partId)} featureId={featureId} person={person} navigate={navigate} />;
+    plan === null ? null : <PartNode part={part} plan={plan} fix={fixes.find((fix) => fix.partId === part.partId)} write={writes.get(part.partId)} featureId={featureId} person={person} navigate={navigate} />;
   if (viewer !== person) {
     const yours = yourChanges({ plan }, viewer);
     const readers = yourReaders({ dependents }, viewer);
@@ -278,6 +280,8 @@ export function partTagClass(part: Pick<PlanPartView, "state">): string {
 /** One place the plan fixes: its owner and state, then its files, then its facts. */
 interface PartProps {
   readonly part: PlanPartView;
+  /** The route of the part's fix write, from its signed record. */
+  readonly write?: DecisionRoute | undefined;
   readonly plan: FeaturePlanView;
   readonly fix: FixView | undefined;
   readonly featureId: string;
@@ -293,7 +297,13 @@ const WRITE_TEXT: Readonly<Record<string, string>> = {
   withdrawn: "Write withdrawn",
 };
 
-function PartNode({ part, plan, fix, featureId, person, navigate }: PartProps) {
+/** Who wrote a fix: the agent and its MCP tool, or Penguin's check runner, before the record arrives by its writer. */
+function writtenBy(writer: string, route: DecisionRoute | undefined): string {
+  if (route !== undefined) return route.route === "penguin" ? "by Penguin (check runner)" : `by ${decisionRouteText(route)}`;
+  return writer === "runner" ? "by Penguin (check runner)" : "by the originating agent (MCP report_fix_write)";
+}
+
+function PartNode({ part, plan, fix, write, featureId, person, navigate }: PartProps) {
   const anchor = partAnchor(part.partId);
   const ownerPath = personPath(part.owner);
   return (
@@ -309,7 +319,7 @@ function PartNode({ part, plan, fix, featureId, person, navigate }: PartProps) {
             <PersonAvatar id={part.owner} size="card" />
             {part.owner}
           </span>
-          <span className={partTagClass(part)}>{partStateText(part.state, part.approvedBy)}</span>
+          <span className={`${partTagClass(part)} route-tag`}>{partRouteText(part, person)}</span>
           {part.files === null ? null : <span className="muted">{counted(part.files.length, "file")}</span>}
         </span>
       }
@@ -333,7 +343,7 @@ function PartNode({ part, plan, fix, featureId, person, navigate }: PartProps) {
           {fix?.write == null ? null : (
             <span className="fix-write">
               <span className={fix.write.state === "written" ? "verdict-holds" : "muted"}>{WRITE_TEXT[fix.write.waitsFor == null ? fix.write.state : "waiting"] ?? fix.write.state}</span>
-              <span className="muted">by {fix.write.writer === "runner" ? "the check runner" : "the originating agent"}</span>
+              <span className="muted">{writtenBy(fix.write.writer, write)}</span>
               {fix.write.waitsFor == null ? null : <span className="muted">{fix.write.waitsFor}</span>}
               {fix.write.commit === null ? null : <code>{shortSha(fix.write.commit)}</code>}
             </span>

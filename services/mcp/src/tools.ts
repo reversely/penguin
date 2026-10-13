@@ -21,13 +21,19 @@
 import { McpServer, type CallToolResult } from "@modelcontextprotocol/server";
 import type { IssueRecord, Thread } from "@penguin/issues";
 import {
+  APPROVAL_TYPE_LABEL,
   FIX_KINDS,
   IDENTITY_HANDLE_MAX_LENGTH,
   OP_ID_PATTERN,
+  policyName,
+  policyRuleText,
   SEGMENT_PATTERN,
+  VALIDATION_KIND_LABEL,
   type ContractWorkView,
   type EditQueue,
   type EditTaskView,
+  type PolicyInForce,
+  type PolicyRoute,
 } from "@penguin/protocol";
 import * as z from "zod";
 
@@ -125,7 +131,7 @@ export interface McpProject {
   /** The check runner's results delivered to the caller's session, newest first; absent without features. */
   agentToolResults?(caller: string, sessionId: string): MaybePromise<readonly ToolResultView[]>;
   /** Advance notice for the caller's session; absent without merge plans, undefined for another owner's session. */
-  planWork?(caller: string, sessionId: string): MaybePromise<PlanWorkView | undefined>;
+  planWork?(caller: string, sessionId: string, repos: { readonly issues: string; readonly base: string }): MaybePromise<PlanWorkView | undefined>;
   /** Where the caller's session's feature stands in landing; absent without features, undefined without a feature. */
   landWork?(caller: string, sessionId: string): MaybePromise<LandingWorkView | undefined>;
   /** How Penguin sorted the latest checkpoint of the caller's session's feature, with its split and next step; absent without features. */
@@ -204,12 +210,15 @@ export interface ReviewResultView {
 
 /** Advance notice as get_work reads it (the ProjectAgent's `PlanWork`, plan-approval.ts). */
 export interface PlanWorkView {
+  /** The sandbox's review policy in force (@penguin/protocol validation.ts). */
+  readonly policy?: PolicyInForce;
   readonly partsNeedingYou: readonly {
     readonly featureId: string;
     readonly partId: string;
     readonly revision: number;
     readonly place: PlanPlaceView;
     readonly scopes: readonly string[];
+    readonly route?: PolicyRoute;
   }[];
   readonly ownPlan: {
     readonly planId: string;
@@ -225,6 +234,7 @@ export interface PlanWorkView {
       readonly approvedBy: string | null;
       readonly changeRequests: number;
       readonly changeRequest: { readonly by: string; readonly revision: number; readonly text: string } | null;
+      readonly route?: PolicyRoute;
     }[];
   } | null;
   readonly reviews: readonly ReviewResultView[];
@@ -913,7 +923,10 @@ export function createPenguinMcpServer(
         "this session's impact, check and apply_fix calls that reached it at a safe checkpoint. `planPartsNeedingYou` lists the merge plan parts that touch your " +
         "developer's code: review each with submit_review for its scopes and tell your developer, who approves " +
         "it or asks for a change on the dashboard; you never approve. `plan` is your feature's newest merge plan " +
-        "with where each part stands: answer each `change_requested` part with revise_plan_part. `reviewResults` " +
+        "with where each part stands: answer each `change_requested` part with revise_plan_part. `reviewPolicy` names the " +
+        "sandbox's review policy. Each part's `routing` says who decides it and why, with the kinds of validation " +
+        "(Tests, Logic, Data matching, Stored data, Protected paths and place, Overlapping starts) whose checks marked it; " +
+        "`approvedVia` says whether Penguin approved it under the policy or a person on the dashboard. `reviewResults` " +
         "gives the check runner's verdict on each review you submitted. `landing` says where your feature's " +
         "landing stands: each block run with its state, the failing checks and one next step per failure, and " +
         "the promotion once main moved to your checkpoint; `expansions` lists each expand checkpoint promoted on its own. " +
@@ -945,7 +958,7 @@ export function createPenguinMcpServer(
       const feature = await project.featureWork?.(owner, id);
       const overlaps = (await project.overlapsNeeding?.(owner)) ?? [];
       const toolResults = (await project.agentToolResults?.(owner, id)) ?? [];
-      const plan = await project.planWork?.(owner, id);
+      const plan = await project.planWork?.(owner, id, { issues: repos.issues, base: repos.base });
       const landing = await project.landWork?.(owner, id);
       const contract = await project.contractWork?.(owner, id, { issues: repos.issues, base: repos.base });
       const edits = await project.editTaskWork?.(owner, id, { issues: repos.issues, base: repos.base });
@@ -1518,12 +1531,14 @@ export function landingFields(landing: LandingWorkView): Record<string, unknown>
 /** Advance notice as get_work reports it. An author's requested change is their words, inside `personWritten`. */
 function planWorkFields(work: PlanWorkView): Record<string, unknown> {
   return {
-    planPartsNeedingYou: work.partsNeedingYou.map(({ featureId, partId, revision, place, scopes }) => ({
+    ...(work.policy === undefined ? {} : { reviewPolicy: { name: policyName(work.policy.policy), preset: work.policy.policy.preset, locked: work.policy.locked } }),
+    planPartsNeedingYou: work.partsNeedingYou.map(({ featureId, partId, revision, place, scopes, route }) => ({
       feature: featureId,
       part: partId,
       revision,
       place: { ...place },
       scopes: [...scopes],
+      ...routingFields(route),
     })),
     plan:
       work.ownPlan === null
@@ -1531,7 +1546,7 @@ function planWorkFields(work: PlanWorkView): Record<string, unknown> {
         : {
             planId: work.ownPlan.planId,
             roundLimit: work.ownPlan.roundLimit,
-            parts: work.ownPlan.parts.map(({ partId, revision, place, owner, kind, state, approvedBy, changeRequests, changeRequest }) => ({
+            parts: work.ownPlan.parts.map(({ partId, revision, place, owner, kind, state, approvedBy, changeRequests, changeRequest, route }) => ({
               part: partId,
               revision,
               place: { ...place },
@@ -1539,13 +1554,33 @@ function planWorkFields(work: PlanWorkView): Record<string, unknown> {
               kind,
               state,
               approvedBy,
+              // Penguin approves on its own under the policy; a person approves only on the dashboard.
+              ...(approvedBy === null ? {} : { approvedVia: approvedBy === "penguin" ? "penguin" : "dashboard" }),
               changeRequests,
+              ...routingFields(route, owner),
               personWritten: {
                 changeRequest: changeRequest === null ? null : { by: changeRequest.by, revision: changeRequest.revision, text: changeRequest.text },
               },
             })),
           },
     reviewResults: work.reviews.map(reviewResultFields),
+  };
+}
+
+/**
+ * Why the review policy sends a part to Penguin or a person, named with the kinds of validation
+ * (validation.ts): who decides, the rule as the dashboard words it and the kinds whose checks flagged it.
+ */
+function routingFields(route: PolicyRoute | undefined, owner?: string): Record<string, unknown> {
+  if (route === undefined) return {};
+  return {
+    routing: {
+      decider: route.decider,
+      rule: route.rule,
+      reason: policyRuleText(route, owner),
+      kinds: route.kinds.map((kind) => VALIDATION_KIND_LABEL[kind]),
+      types: route.types.map((type) => APPROVAL_TYPE_LABEL[type]),
+    },
   };
 }
 

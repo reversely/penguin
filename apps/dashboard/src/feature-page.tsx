@@ -12,7 +12,7 @@
 // A part's changed lines show only to the people the server sends them to. The page reads again on
 // every live message. Every value renders as React text.
 
-import type { BlockCheck, FeaturePage, PipelineStageKey, PipelineStrip, TeamView, ToolRunView } from "@penguin/protocol";
+import { blockCheckKind, BLOCK_CHECK_NAMES, decisionRouteText, VALIDATION_KIND_LABEL, type BlockCheck, type BlockCheckName, type DecisionRoute, type FeaturePage, type PipelineStageKey, type PipelineStrip, type TeamView, type ToolRunView } from "@penguin/protocol";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { Agent } from "./agent-directory.tsx";
@@ -43,6 +43,7 @@ import {
 import { PersonPill, ScopePill, TonePill } from "./pills.tsx";
 import { partAnchor, STAGE_LABEL, stageCount, STATUS_LABEL } from "./pipeline-view.ts";
 import { ReviewCard } from "./review-card.tsx";
+import { ValidationPanel } from "./review-policy.tsx";
 import { Breadcrumb, hierarchyCrumbs, type Crumb } from "./hierarchy-parts.tsx";
 import { partCrumbs } from "./hierarchy-view.ts";
 import { featurePath } from "./routes.ts";
@@ -155,6 +156,7 @@ export function FeatureView({ page, viewer, team, navigate, open = [], view: fir
         <Timeline pipeline={page.pipeline} feature={feature.id} tasks={page.editTasks ?? []} reveal={reveal} />
         {todos.length === 0 ? null : <ToDos todos={todos} reveal={reveal} navigate={navigate} />}
         {lines.length === 0 ? null : <Summary lines={lines} reveal={reveal} />}
+        <ValidationPanel navigate={navigate} />
         <div className="tabs" role="tablist" aria-label="Views">
           {VIEWS.map((each) => (
             <a
@@ -259,6 +261,7 @@ function ChangesView({ page, viewer, owners, navigate }: ChangesProps) {
   return (
     <div className="view-body">
       <ChangeTree
+        writes={fixWrites(page)}
         plan={page.plan}
         contract={page.contract ?? null}
         fixes={page.fixes}
@@ -294,6 +297,13 @@ function ChangesView({ page, viewer, owners, navigate }: ChangesProps) {
       </Fold>
     </div>
   );
+}
+
+/** Each part's fix write route, from the newest `fix_write` record naming the part. */
+function fixWrites(page: FeaturePage): Map<string, DecisionRoute> {
+  const writes = new Map<string, DecisionRoute>();
+  for (const record of page.records) if (record.type === "fix_write" && record.partId && record.route) writes.set(record.partId, record.route);
+  return writes;
 }
 
 /** Which stage holds what a job ran: reviews, tool runs and the block checks. */
@@ -549,7 +559,12 @@ function RecordView({ page }: { readonly page: FeaturePage }) {
         {shown.map((record) => (
           <li key={record.recordId} className="record-row">
             <span className="record-type">{recordLabel(record.type)}</span>
-            <span className="muted">{record.author}</span>
+            <span className="muted record-route">{record.route === undefined ? record.author : routeWords(record.route)}</span>
+            {(record.kinds ?? []).map((kind) => (
+              <span key={kind} className="tag tag-data kind-tag">
+                {VALIDATION_KIND_LABEL[kind]}
+              </span>
+            ))}
             <time dateTime={record.createdAt}>{timeText(record.createdAt)}</time>
             {record.commit ? (
               // The signed file as the record repo holds it, read at the commit that added it.
@@ -564,6 +579,11 @@ function RecordView({ page }: { readonly page: FeaturePage }) {
       </ol>
     </div>
   );
+}
+
+/** A record's route as the record view names it: an agent through MCP, Penguin automatically or a person in the dashboard. */
+function routeWords(route: DecisionRoute): string {
+  return route.route === "penguin" ? "Penguin automatically" : decisionRouteText(route);
 }
 
 const LIST_CAP = 8;
@@ -635,6 +655,7 @@ function ChecksView({ run }: { readonly run: ToolRunView }) {
               <code className="tool-name">{group.tool}</code>
               <code className="muted">{group.commandId}</code>
               <span className="tool-check">{group.check}</span>
+              {checkKind(group.check)}
               {group.failing > 0 ? <span className="tag tag-failure">{counted(group.failing, "failing", "failing")}</span> : null}
             </p>
             <ul className="target-rows">
@@ -666,6 +687,12 @@ function ChecksView({ run }: { readonly run: ToolRunView }) {
       )}
     </div>
   );
+}
+
+/** The kind of validation a block check belongs to, as a tag. */
+function checkKind(check: string): React.ReactNode {
+  if (!(BLOCK_CHECK_NAMES as readonly string[]).includes(check)) return null;
+  return <span className="tag tag-data kind-tag">{VALIDATION_KIND_LABEL[blockCheckKind(check as BlockCheckName)]}</span>;
 }
 
 /**

@@ -20,7 +20,11 @@ import {
   pipelineStrip,
   PLAN_MAIN_TARGET,
   PLAN_ROUND_LIMIT_DEFAULT,
+  recordRoute,
+  recordValidationKinds,
   withoutWatched,
+  type PlanPart,
+  type PolicyRoute,
   type PartFileView,
   type PlanFileDiff,
   type PlanHunk,
@@ -104,6 +108,8 @@ export interface DashboardViewDeps {
   readonly scopeEdges?: () => ScopeEdgeSnapshot;
   /** Each of a feature's records in the record repo: record id to the commit that added it (RecordRepoStore.commits). */
   readonly recordCommits?: (featureId: string) => ReadonlyMap<string, string>;
+  /** A part's rule under the review policy in force (validation.ts policyRoute); absent, the page names none. */
+  readonly routeOf?: (plan: Plan, part: PlanPart) => Promise<PolicyRoute>;
   /** The feature a builder identity was made for (EditRoster.roleOf); undefined for any other identity or when absent. */
   readonly builderFeature?: (identityId: string) => string | undefined;
 }
@@ -514,7 +520,14 @@ export async function buildFeaturePlan(
   };
 }
 
-function planView(plan: Plan, viewer: string, delegates: ReadonlyMap<string, string>, scopeMap: ScopeMap, roundLimit: number): FeaturePlanView {
+function planView(
+  plan: Plan,
+  viewer: string,
+  delegates: ReadonlyMap<string, string>,
+  scopeMap: ScopeMap,
+  roundLimit: number,
+  routes: ReadonlyMap<string, PolicyRoute> = new Map(),
+): FeaturePlanView {
   const diff = plan.facts.contractDiff;
   return {
     planId: plan.planId,
@@ -556,6 +569,7 @@ function planView(plan: Plan, viewer: string, delegates: ReadonlyMap<string, str
       files: mayReadPartLines(plan, part, viewer, delegates, scopeMap)
         ? part.diff.files.map((file) => pageFile(file))
         : null,
+      route: routes.get(part.partId) ?? null,
     })),
   };
 }
@@ -588,6 +602,12 @@ export function pageFile(file: PlanFileDiff, limit: number = FEATURE_PAGE_LIMITS
   return { path: file.path, scope: file.scopeId, status: file.status, hunks, omitted: file.omitted, omittedLines, added, removed };
 }
 
+/** The plan part a record names: `part_id` on a plan record, `part` on a migration record; null for none. */
+function recordPart(record: FeatureRecord): string | null {
+  const part = record.payload["part_id"] ?? record.payload["part"];
+  return typeof part === "string" ? part : null;
+}
+
 /** A record's author as its record path names it: a person, an identity's handle or Penguin. */
 function authorLabel(record: FeatureRecord): string {
   const { author } = record;
@@ -610,6 +630,12 @@ export async function buildFeaturePage(deps: DashboardViewDeps, featureId: strin
   const latest = latestFacts(deps, feature, scopeMap);
   const scope = (id: string): DashboardScope => dashboardScope(scopeMap, id);
   const commits = deps.recordCommits?.(featureId);
+  // Each part's rule under the review policy: an approved revision's own, else the policy in force now.
+  const routes = new Map<string, PolicyRoute>();
+  for (const part of plan?.parts ?? []) {
+    const route = part.approvalState === "approved" && part.route ? part.route : await deps.routeOf?.(plan as Plan, part);
+    if (route !== undefined) routes.set(part.partId, route);
+  }
   return {
     feature: {
       id: feature.id,
@@ -641,7 +667,7 @@ export async function buildFeaturePage(deps: DashboardViewDeps, featureId: strin
       consumerScope: dependent.consumerScopeId,
       providerScope: dependent.providerScopeId,
     })),
-    plan: plan === undefined ? null : planView(plan, viewer, delegates, scopeMap, deps.roundLimit ?? PLAN_ROUND_LIMIT_DEFAULT),
+    plan: plan === undefined ? null : planView(plan, viewer, delegates, scopeMap, deps.roundLimit ?? PLAN_ROUND_LIMIT_DEFAULT, routes),
     reviews: deps.reviews.list(featureId).map(reviewView),
     fixes: (plan?.parts ?? []).flatMap((part) => {
       if (part.place.kind !== "feature") return [];
@@ -669,6 +695,8 @@ export async function buildFeaturePage(deps: DashboardViewDeps, featureId: strin
       createdAt: records[index]?.created_at ?? "",
       path: stored.path,
       commit: commits?.get(stored.recordId) ?? null,
+      kinds: records[index] === undefined ? [] : recordValidationKinds(records[index]),
+      ...(records[index] === undefined ? {} : { route: recordRoute(records[index]), partId: recordPart(records[index]) }),
     })),
   };
 }

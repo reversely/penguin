@@ -19,7 +19,7 @@ import { approveOverlap, confirmProtectedChange, decidePlanPart, fetchOverlapReq
 import {
   counted,
   partNumber,
-  partStateText,
+  partRouteText,
   placeText,
   planGroups,
   reviewAnchor,
@@ -363,7 +363,7 @@ function PlanCard({ group, busy, navigate, onDecide, onReverse }: PlanProps) {
 function partTag(part: PlanPartRequest): { readonly text: string; readonly attention: boolean } {
   if (part.ask === "protected_path") return { text: "Protected path", attention: false };
   if (part.ask === "stored_data") return { text: "Stored data needs a migration or backfill", attention: true };
-  return { text: partStateText(part.state, part.approvedBy), attention: part.ask === "approve" && part.state === "pending" };
+  return { text: partRouteText(part, part.person), attention: part.ask === "approve" && part.state === "pending" };
 }
 
 interface PartProps {

@@ -6118,3 +6118,118 @@ button.pill:focus-visible {
   gap: var(--space-1) var(--space-3);
   min-width: 0;
 }
+
+/* The review policy (#175): the How Penguin validates panel on every page that shows a check, the
+   settings view and the split of approvals on the org and team pages. Each kind of validation names
+   its results with a data tag; a part's route line wraps instead of widening its row. */
+.validation-panel {
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+}
+
+.validation-panel > summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 2.75rem;
+  cursor: pointer;
+  font: var(--text-ui);
+}
+
+.validation-panel[open] > summary {
+  margin-bottom: var(--space-2);
+}
+
+.validation-panel > .role-more {
+  display: inline-block;
+  margin-top: var(--space-2);
+}
+
+.validation-table td,
+.policy-table td,
+.policy-table th[scope="row"],
+.validation-table th[scope="row"] {
+  white-space: normal;
+}
+
+.validation-table th[scope="row"],
+.policy-table th[scope="row"],
+.split-table th[scope="row"] {
+  padding-right: var(--space-3);
+  color: var(--ink);
+  font-weight: 500;
+  text-align: left;
+}
+
+.policy-table th[scope="row"] .hierarchy-sub {
+  display: block;
+}
+
+.decider-choice {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.pill-filter[aria-checked="true"] {
+  background: var(--ink);
+  color: var(--field);
+}
+
+.pill-filter:disabled {
+  cursor: default;
+}
+
+.pill-filter:disabled:not([aria-checked="true"]) {
+  color: var(--ink-muted);
+}
+
+.policy-page {
+  display: grid;
+  gap: var(--space-5);
+  min-width: 0;
+}
+
+.policy-change {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+}
+
+.policy-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  margin: 0;
+}
+
+.policy-section > p {
+  margin: 0;
+}
+
+.route-tag {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.kind-tag,
+.validation-table .tag {
+  white-space: nowrap;
+}
+
+.record-route {
+  overflow-wrap: anywhere;
+}
+
+@media (pointer: coarse), (max-width: 759.98px) {
+  .pill-filter {
+    min-height: 2.75rem;
+  }
+}

@@ -50,6 +50,10 @@ import {
   needsPerson,
   PLAN_STORE_MARKERS,
   type FixWriteSpec,
+  type PartRouting,
+  policyInForce,
+  policyRoute,
+  type PolicyInForce,
   type Plan,
   type PlanPart,
   type PlanStoreMarker,
@@ -69,7 +73,7 @@ import { checkpointBaseline, checkpointChange, type RepoHistoryReader } from "..
 import { contractWork, ContractSplitStore, recordSplit, retireSplit, scheduleSort, type ContractSplitDeps } from "../../services/project-agent/src/contract-split.ts";
 import { buildFeaturePage, buildFeaturePlan, buildPersonScopes, buildTeamView, type DashboardViewDeps } from "../../services/project-agent/src/dashboard-views.ts";
 import { openFeature, recordFeatureRepo, recordPenguinCheckpoint, reportFeatureCheckpoint, type FeatureDeps } from "../../services/project-agent/src/feature-open.ts";
-import { FeatureStore, signFeatureRecord } from "../../services/project-agent/src/feature-store.ts";
+import { FeatureStore, signFeatureRecord, verifyFeatureRecord } from "../../services/project-agent/src/feature-store.ts";
 import {
   agentFixGrant,
   agentFixReport,
@@ -147,6 +151,14 @@ import {
 import { RetiringStore } from "../../services/project-agent/src/retiring-store.ts";
 import { claimReviews, recordReview } from "../../services/project-agent/src/review-record.ts";
 import { ReviewStore, submitReview } from "../../services/project-agent/src/review-submit.ts";
+import {
+  changeReviewPolicy,
+  PROJECT_RECORDS,
+  readReviewPolicy,
+  reviewPolicyView,
+  type PolicyChangeOutcome,
+  type StoredPolicy,
+} from "../../services/project-agent/src/review-policy.ts";
 import { reviewDifferences } from "../../services/project-agent/src/review-view.ts";
 import { SessionStore } from "../../services/project-agent/src/session-store.ts";
 import { flushRecords, RecordRepoStore } from "../../services/project-agent/src/record-repo.ts";
@@ -186,6 +198,8 @@ export interface PlanRound {
   readonly toOriginator: readonly string[];
   /** The parts whose review raised a broken invariant or a protected difference to their author. */
   readonly raised: readonly string[];
+  /** Each part's routing when its people decided, which the review policy reads (review-policy.ts). */
+  readonly routings: ReadonlyMap<string, PartRouting>;
 }
 
 /** One step a scenario logs, with how long it took, so a run reads as the fixture's story. */
@@ -433,6 +447,26 @@ export class PreviewProject {
     this.notified.push(person);
   };
 
+  /** The review policy as the ProjectAgent reads it: the newest verified record, or Dev. */
+  async storedPolicy(): Promise<StoredPolicy> {
+    const { publicKey } = await this.#key;
+    return readReviewPolicy(this.features.records(PROJECT_RECORDS), (record) => verifyFeatureRecord(record, publicKey));
+  }
+
+  /** The policy every decision of the preview reads, as the ProjectAgent wires it. */
+  async policyInForce(): Promise<PolicyInForce> {
+    return policyInForce((await this.storedPolicy()).policy, this.adminMode);
+  }
+
+  /** A team lead sets the review policy, as POST /api/review-policy does (review-policy.ts). */
+  changePolicy(person: string, policy: unknown): Promise<PolicyChangeOutcome> {
+    return changeReviewPolicy(
+      { features: this.features, scopeMap: async () => this.scopeMap, sign: (record) => this.#sign(record), current: () => this.storedPolicy(), adminMode: this.adminMode },
+      person,
+      policy,
+    );
+  }
+
   overlapDeps(): OverlapDeps {
     return {
       db: this.sql,
@@ -440,6 +474,7 @@ export class PreviewProject {
       overlaps: this.overlaps,
       scopeMap: async () => this.scopeMap,
       sign: (record) => this.#sign(record),
+      policy: () => this.policyInForce(),
       listener: {
         lockOpened: ({ featureId, blockedFeatureId, personId }) => {
           this.inbox.overlapRequested(personId, featureId, blockedFeatureId);
@@ -481,6 +516,7 @@ export class PreviewProject {
         scopeMap: async () => this.scopeMap,
         adminMode: this.adminMode,
         trial: (featureId, part) => trialStanding(this.trials, this.reviews, featureId, part),
+        policy: () => this.policyInForce(),
       },
     };
   }
@@ -542,6 +578,7 @@ export class PreviewProject {
       // A feature Penguin opens goes through the overlap lock, as the ProjectAgent wires it.
       checkOverlap: (feature) => checkOverlap(this.overlapDeps(), this.features.get(feature.id) ?? feature),
       adminMode: this.adminMode,
+      policy: () => this.policyInForce(),
       // The fixture's repository stands in for Artifacts: a fork of main is a branch at main's head.
       fork: async (featureId) => {
         this.git("update-ref", `refs/heads/feature-${featureId}`, this.git("rev-parse", "main"));
@@ -1437,6 +1474,8 @@ export class PreviewProject {
       },
       scopeEdges: () => this.scopeEdges.snapshot(),
       recordCommits: (featureId) => this.recordRepo.commits(featureId),
+      routeOf: async (plan, part) =>
+        policyRoute(await this.policyInForce(), routePart(plan, part, this.reviews.list(plan.featureId), this.scopeMap, false, trialStanding(this.trials, this.reviews, plan.featureId, part))),
     };
   }
 
@@ -1547,6 +1586,7 @@ export class PreviewProject {
             delegates: async () => new Map(),
             roundLimit: this.roundLimit,
             adminMode: this.adminMode,
+            policy: () => this.policyInForce(),
             landed: (featureId) => this.features.get(featureId)?.state === "landed",
             trial: (featureId, part) => trialStanding(this.trials, this.reviews, featureId, part),
             records: (featureId) => this.features.records(featureId),
@@ -1568,6 +1608,8 @@ export class PreviewProject {
         const confirmed = await confirmProtectedChange(this.protectedDeps(), owner, input);
         return confirmed.status === "ok" ? { status: "ok", recordId: confirmed.recordId } : confirmed;
       },
+      reviewPolicy: async (owner) => reviewPolicyView(await this.storedPolicy(), this.adminMode, this.scopeMap, owner, this.sql, this.#clock),
+      changeReviewPolicy: (owner, policy) => this.changePolicy(owner, policy),
     };
   }
 }
@@ -1919,9 +1961,11 @@ async function casesOneToThree(preview: PreviewProject, larder: Larder): Promise
     const toOriginator: string[] = [];
     const ahead = origin.commits.slice(index + 1).filter((commit) => commit.fix?.kind === "revision" && !answers.has(commit));
     const again = proposesAgain(origin, index);
+    const routings = new Map<string, PartRouting>();
     for (const part of plan.parts) {
-      if (part.approvalState !== "pending") continue;
       const routing = routePart(plan, part, reviews, preview.scopeMap, preview.adminMode, trialStanding(preview.trials, preview.reviews, origin.id, part));
+      routings.set(part.partId, routing);
+      if (part.approvalState !== "pending") continue;
       if (routesToOriginator(routing)) toOriginator.push(part.partId);
       if (!needsPerson(routing) || routesToOriginator(routing) || again) continue;
       if (!routing.reasons.some((reason) => reason.kind === "broken_invariant" || reason.kind === "protected_difference")) {
@@ -1937,7 +1981,7 @@ async function casesOneToThree(preview: PreviewProject, larder: Larder): Promise
         await preview.step(`${part.owner} asks for a change to ${part.partId}`, () => preview.decide(part.owner, origin.id, part.partId, subjectOf(answer)));
       }
     }
-    preview.rounds.push({ plan: (await preview.plan(origin.id)) as Plan, toOriginator, raised });
+    preview.rounds.push({ plan: (await preview.plan(origin.id)) as Plan, toOriginator, raised, routings });
   };
 
   /** The feature opens; each person whose running feature covers its area approves its start. */

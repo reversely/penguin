@@ -16,6 +16,7 @@ import { IMPACT_REPORT_SCHEMA, type ImpactReport, type ImpactUse } from "./impac
 import { FINGERPRINT_PATTERN } from "./operation-schema.ts";
 import type { RetiringSymbol } from "./retiring.ts";
 import type { RewriteRule } from "./rewrite-rule.ts";
+import type { PolicyRoute } from "./validation.ts";
 import { checkSchema, type JsonSchema, type SchemaError } from "./schema-check.ts";
 
 export const PLAN_SCHEMA_VERSION = 1;
@@ -435,6 +436,11 @@ export interface PlanPart {
   readonly tests?: PartTestEvidence | null;
   /** The author's reversal of Penguin's approval; the reversed revision then waits on them in person. */
   readonly reversal?: PlanPartReversal | null;
+  /**
+   * The review policy's route when the current revision was approved (validation.ts): which rule sent
+   * it to Penguin or a person. Absent before an approval and on a part approved before #175.
+   */
+  readonly route?: PolicyRoute | null;
 }
 
 /** One test command's outcome on the merged tree of a part's place, as the facts run reported it. */

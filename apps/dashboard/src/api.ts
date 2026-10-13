@@ -13,6 +13,8 @@ import type {
   PersonScopes,
   PlanInbox,
   ReviewDifferences,
+  ReviewPolicy,
+  ReviewPolicyView,
   TeamView,
   ViewerPlan,
 } from "@penguin/protocol";
@@ -177,6 +179,30 @@ export async function writeIdentity(path: string, body: Readonly<Record<string, 
   const answer: unknown = await response.json().catch(() => undefined);
   if (typeof answer === "object" && answer !== null && "status" in answer) return answer as IdentityWriteOutcome;
   throw new Error(`${path} answered ${response.status}`);
+}
+
+/** The sandbox's review policy, who changed it, whether the signed-in person may and the split of approvals. */
+export async function fetchReviewPolicy(): Promise<ReviewPolicyView> {
+  return getJson<ReviewPolicyView>("/api/review-policy");
+}
+
+/**
+ * Sets the review policy as the signed-in person, a team lead. Resolves false when the ProjectAgent
+ * refuses it: the person leads no team, or admin mode locks the policy.
+ */
+export async function changeReviewPolicy(policy: ReviewPolicy): Promise<boolean> {
+  const path = "/api/review-policy";
+  const response = await fetch(path, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ preset: policy.preset, rows: policy.rows }),
+  });
+  await response.arrayBuffer();
+  if (response.status === 401) throw new SignedOut();
+  if (response.status === 403 || response.status === 422) return false;
+  if (!response.ok) throw new Error(`${path} answered ${response.status}`);
+  return true;
 }
 
 /** Every person with their role, their features with each state and agents, and their idle agents. */

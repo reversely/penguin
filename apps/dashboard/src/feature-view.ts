@@ -2,9 +2,10 @@
 // pure functions so the rules are tested without a browser (test/feature-view.test.ts). Labels here
 // are bare data labels: a state, a count, a place, a tool and what it found.
 
-import { PENGUIN_APPROVER } from "@penguin/protocol";
+import { PENGUIN_APPROVER, penguinApprovalText, policyRuleText, reasonKind, VALIDATION_KIND_LABEL } from "@penguin/protocol";
 import type {
   BlockCheck,
+  PolicyRoute,
   FeatureException,
   FeatureStateWord,
   PartRoutingReason,
@@ -46,6 +47,33 @@ export const PENGUIN_NAME = "Penguin";
 export function partStateText(state: PlanPartState, approvedBy: string | null): string {
   if (state !== "approved" || approvedBy === null) return PART_STATE_LABEL[state];
   return `Approved by ${approvedBy === PENGUIN_APPROVER ? PENGUIN_NAME : approvedBy}`;
+}
+
+/** A part as its state line reads it: who owns it, its kind and the review policy's route. */
+export interface RoutedPart {
+  readonly state: PlanPartState;
+  readonly approvedBy: string | null;
+  readonly owner: string;
+  readonly kind: string;
+  readonly route?: PolicyRoute | null;
+}
+
+/**
+ * A part's state with the route and the rule that sent it there: `Approved by Penguin (Dev policy:
+ * Tests clean)`, `Approved by jun in the dashboard`, `Waiting for jun: Data matching is set to person`.
+ */
+export function partRouteText(part: RoutedPart, originator?: string): string {
+  const { state, approvedBy, kind } = part;
+  // A part sent to a person for stored data alone waits on the originating person, who adds the backfill (#132).
+  const storedOnly = part.route?.rule === "set_to_person" && part.route.types.every((type) => type === "stored_data");
+  const owner = storedOnly && originator !== undefined ? originator : part.owner;
+  const route = part.route ?? null;
+  if (state === "approved" && approvedBy === PENGUIN_APPROVER) return route === null ? `Approved by ${PENGUIN_NAME}` : penguinApprovalText(route, kind);
+  if (state === "approved" && approvedBy !== null) return `Approved by ${approvedBy} in the dashboard`;
+  if (state !== "pending" || route === null) return PART_STATE_LABEL[state];
+  if (route.decider === "penguin") return `Waiting for ${PENGUIN_NAME}: ${policyRuleText(route, owner)}`;
+  if (route.decider === "waiting") return `Waiting for the review form: ${policyRuleText(route, owner)}`;
+  return `Waiting for ${owner}: ${policyRuleText(route, owner)}`;
 }
 
 /** A run the check runner claims, as its job and its exception line name it. */
@@ -98,8 +126,14 @@ const REVIEW_STATE_TEXT: Readonly<Record<Exclude<ReviewCheckState, "not_holding"
   refused: "Review was refused",
 };
 
-/** Why a part needs its author in person, as one line. */
+/** Why a part needs its author in person, as one line led by the kind of validation the check belongs to. */
 export function reasonText(reason: PartRoutingReason): string {
+  const kind = reasonKind(reason);
+  const text = reasonLine(reason);
+  return kind === null ? text : `${VALIDATION_KIND_LABEL[kind]}: ${text}`;
+}
+
+function reasonLine(reason: PartRoutingReason): string {
   switch (reason.kind) {
     case "admin_mode":
       return "Admin mode needs a person for every part";

@@ -9,6 +9,7 @@ import { Breadcrumb, StagePills } from "./hierarchy-parts.tsx";
 import { orgRows, teamName } from "./hierarchy-view.ts";
 import { linkHandler } from "./links.ts";
 import { PersonPill } from "./pills.tsx";
+import { PolicySplitSection, ValidationPanel } from "./review-policy.tsx";
 import { teamPath } from "./routes.ts";
 
 export function OrgView({ view, navigate }: { readonly view: TeamView; readonly navigate: (path: string) => void }) {
@@ -19,6 +20,7 @@ export function OrgView({ view, navigate }: { readonly view: TeamView; readonly 
       <header className="page-header">
         <h1 id="org-heading">Org</h1>
       </header>
+      <ValidationPanel navigate={navigate} />
       <section className="team-section" aria-labelledby="org-teams">
         <h2 id="org-teams" className="team-section-heading">
           Teams <span className="tab-count">{rows.length}</span>
@@ -74,6 +76,7 @@ export function OrgView({ view, navigate }: { readonly view: TeamView; readonly 
           </div>
         )}
       </section>
+      <PolicySplitSection navigate={navigate} />
     </article>
   );
 }

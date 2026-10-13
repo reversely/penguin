@@ -1,15 +1,38 @@
 // The four use cases of PRD 0.5 section 1, run in order on Larder through Penguin's own code with real
 // git and pytest (scripts/preview/seed.ts). Larder is built once; case 1, 2, 3 and then 4 run on its
 // one main. Each test checks the outcome the PRD states: who is asked, what Penguin approves itself
-// and who is only told. Names and numbers come from the fixture.
+// and who is only told. Case 1's plan and each case's start are also routed under the sandbox's review
+// policy (#175). Names and numbers come from the fixture.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { BLOCK_CHECK_NAMES, PENGUIN_APPROVER, type PlanPart } from "@penguin/protocol";
+import { DatabaseSync } from "node:sqlite";
+
+import {
+  BLOCK_CHECK_NAMES,
+  PENGUIN_APPROVER,
+  policyInForce,
+  policyRoute,
+  PRESET_POLICIES,
+  VALIDATION_KIND_LABEL,
+  VALIDATION_KINDS,
+  type FeaturePage,
+  type PartRouting,
+  type PlanInbox,
+  type PlanPart,
+  type ReviewPolicy,
+} from "@penguin/protocol";
+import { build } from "esbuild";
+
+import { FeatureStore, signFeatureRecord } from "../../services/project-agent/src/feature-store.ts";
+import type { SqlDatabase } from "../../services/project-agent/src/issue-index.ts";
+import { checkOverlap, OverlapStore, type OverlapDeps } from "../../services/project-agent/src/overlap-lock.ts";
 
 import { seed, type LarderFeature, type MoneyLarder, type PreviewProject } from "../../scripts/preview/seed.ts";
 
@@ -92,6 +115,116 @@ test("case 1, shopper accounts: Sam's parts wait on Priya until the backfill; Ju
   assert.ok(toldOf(preview, lena).includes("penguin_approved"), "Lena is told");
   assert.deepEqual(forksOf(last.plan.parts), forksFixedBy(origin));
   assert.equal(preview.features.get(origin.id)?.state, "landed");
+});
+
+test("case 1 under each review policy: Throwaway lets Penguin approve Jun's part, Dev waits for Jun, Production waits on every part", async () => {
+  const preview = await larder();
+  const origin = originOf(1);
+  const rounds = preview.rounds.filter((round) => round.plan.featureId === origin.id);
+  // The round of the backfill, where Jun first decides the part in person.
+  const backfill = rounds[1];
+  const jun = preview.scopeMap.scopes.get("analytics")?.driId as string;
+  const onMain = backfill!.plan.parts.find((part) => part.owner === jun && part.place.kind === "scope") as PlanPart;
+  const inFork = backfill!.plan.parts.find((part) => part.owner === jun && part.place.kind === "feature") as PlanPart;
+  const route = (policy: ReviewPolicy, part: PlanPart) => policyRoute(policyInForce(policy, false), backfill!.routings.get(part.partId) as PartRouting);
+  const { throwaway, dev, production } = PRESET_POLICIES;
+
+  // The review of analytics reports kiosk-shoppers-separate not holding (Logic) and its side-by-side
+  // run differs on it (Data matching).
+  assert.deepEqual(route(throwaway, onMain), { ...route(throwaway, onMain), decider: "penguin", rule: "set_to_penguin", types: ["logic", "data_matching"] }, "Throwaway: Penguin approves and tells Jun");
+  assert.deepEqual([route(dev, onMain).decider, route(dev, onMain).types], ["person", ["logic", "data_matching"]], "Dev: it waits for Jun");
+  assert.ok(backfill!.raised.includes(onMain.partId), "today's result: Jun decides it");
+  const dataToPenguin: ReviewPolicy = { preset: "dev", rows: { ...dev.rows, data_matching: "penguin" } };
+  assert.deepEqual([route(dataToPenguin, onMain).decider, route(dataToPenguin, onMain).types], ["person", ["logic"]], "Logic still flags it");
+  assert.equal(route({ preset: "dev", rows: { ...dataToPenguin.rows, logic: "penguin" } }, onMain).decider, "penguin", "with no flagged type set to person, Penguin approves");
+  assert.ok(backfill!.plan.parts.every((part) => route(production, part).decider === "person"), "Production: every part waits");
+  for (const policy of [throwaway, dev, production]) assert.equal(route(policy, inFork).rule, "tests", "the cohort report part's failing test goes back under every policy");
+
+  // With no policy set, Dev decides every round of cases 1 to 3 as before: Penguin approves exactly the parts with no reason.
+  for (const round of [...rounds, ...preview.rounds.filter((each) => each.plan.featureId !== origin.id)]) {
+    for (const [partId, routing] of round.routings) assert.equal(policyRoute(policyInForce(undefined, false), routing).decider === "penguin", !routing.inPerson, partId);
+  }
+});
+
+test("cases 1 to 3 under Throwaway start with no owner asked; under Dev the same starts ask the people the fixture asks", async () => {
+  const preview = await larder();
+  const promotedAt = (id: string) => Date.parse(LARDER.promotions.find((promotion) => promotion.feature === id)?.date ?? "9999-01-01T00:00:00Z");
+  for (const useCase of [1, 2, 3]) {
+    const origin = originOf(useCase);
+    const start = Date.parse(origin.commits[0]?.date as string);
+    const running = LARDER.features.filter((feature) => feature.id !== origin.id && Date.parse(feature.commits[0]?.date as string) < start && promotedAt(feature.id) > start);
+    const recorded = recordsOf(preview, origin.id, "approve_overlap").map((record) => record.payload["approved_by"]).sort();
+    for (const policy of [PRESET_POLICIES.throwaway, PRESET_POLICIES.dev]) {
+      const keys = (await crypto.subtle.generateKey("Ed25519", true, ["sign", "verify"])) as CryptoKeyPair;
+      const memory = new DatabaseSync(":memory:");
+      const sql: SqlDatabase = { exec: (query, ...bindings) => memory.prepare(query).all(...(bindings as never[])) as Record<string, string | number | null>[], transaction: (body) => body() };
+      const features = new FeatureStore(sql);
+      const asked: string[] = [];
+      const deps: OverlapDeps = {
+        db: sql,
+        features,
+        overlaps: new OverlapStore(sql),
+        scopeMap: async () => preview.scopeMap,
+        sign: (draft) => signFeatureRecord(draft, keys.privateKey),
+        policy: async () => policyInForce(policy, false),
+        listener: { lockOpened: ({ personId }) => asked.push(personId), lockSettled: () => undefined },
+      };
+      for (const feature of [...running, origin]) {
+        const area = { scopes: [...feature.area], paths: [], contracts: [] };
+        features.insert(feature.id, feature.owner, area, await deps.sign(features.draftRecord(feature.id, "open_feature", { person: feature.owner }, { area })));
+        features.setRepo(feature.id, `feature-${feature.id}`);
+      }
+      await checkOverlap(deps, features.get(origin.id)!);
+      const byPenguin = features.records(origin.id).map((stored) => JSON.parse(stored.file) as { type: string; payload: Record<string, unknown> }).filter((record) => record.type === "approve_overlap");
+      if (policy.preset === "throwaway") {
+        assert.deepEqual(asked, [], `${origin.id}: no owner is asked`);
+        assert.deepEqual(byPenguin.map((record) => record.payload["owner"]).sort(), recorded, `${origin.id}: Penguin approves each start the fixture's people approve`);
+      } else {
+        assert.deepEqual(asked.sort(), recorded, `${origin.id}: Dev asks whom the fixture asks`);
+      }
+    }
+  }
+});
+
+/** The dashboard's feature page and inbox rendered on the server (render.tsx), bundled once for the test. */
+async function dashboardRenderer(): Promise<{ featureHtml: (page: FeaturePage, viewer: string, view: string) => string; inboxHtml: (plan: PlanInbox) => string }> {
+  const bundled = await build({
+    entryPoints: [join(ROOT, "tests", "cases", "render.tsx")],
+    bundle: true,
+    platform: "node",
+    format: "esm",
+    jsx: "automatic",
+    write: false,
+    logLevel: "silent",
+    define: { "process.env.NODE_ENV": '"production"' },
+    // React's server renderer requires Node's built-ins, which an ES module bundle reaches through require.
+    banner: { js: 'import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' },
+  });
+  const file = join(await mkdtemp(join(tmpdir(), "penguin-render-")), "render.mjs");
+  await writeFile(file, bundled.outputFiles[0]!.text);
+  return import(file);
+}
+
+/** A page's text without the How Penguin validates panel, which names every kind whatever the results. */
+const results = (html: string) => html.replace(/<details[^>]*class="validation-panel"[^>]*>[\s\S]*?<\/details>/u, "").replace(/<[^>]+>/gu, " ").replaceAll("&#x27;", "'");
+
+test("case 1's feature page names each kind of validation on its results and each route of its decisions and writes; Jun's inbox names its kinds", async () => {
+  const preview = await larder();
+  const origin = originOf(1);
+  const render = await dashboardRenderer();
+  const backend = preview.backend();
+  const page = (await backend.featurePage(origin.owner, origin.id)) as FeaturePage;
+  const shown = ["changes", "pipeline", "record"].map((view) => results(render.featureHtml(page, origin.owner, view))).join(" ");
+  for (const kind of VALIDATION_KINDS) assert.ok(shown.includes(VALIDATION_KIND_LABEL[kind]), `${VALIDATION_KIND_LABEL[kind]} on the feature page`);
+  const jun = preview.scopeMap.scopes.get("analytics")?.driId as string;
+  assert.match(shown, /by @[a-z0-9-]+\/[a-z0-9.-]+ \(MCP report_fix_write\)/u, "a fix an agent wrote through MCP");
+  assert.match(shown, /Approved by Penguin \(Dev policy: Tests/u, "a part Penguin approved under the policy");
+  assert.ok(shown.includes(`Approved by ${jun} in the dashboard`), "a part a person approved in the dashboard");
+  assert.match(shown, /@[a-z0-9-]+\/[a-z0-9.-]+ \(MCP propose_plan\)/u, "the record view names the agent's tool");
+  assert.ok(shown.includes("Penguin automatically") && shown.includes(`${jun} in the dashboard`), "the record view names Penguin and the person");
+
+  const inbox = results(render.inboxHtml((await backend.planParts(jun)) as PlanInbox));
+  for (const kind of ["logic", "data_matching"] as const) assert.ok(inbox.includes(VALIDATION_KIND_LABEL[kind]), `${VALIDATION_KIND_LABEL[kind]} in ${jun}'s inbox`);
 });
 
 for (const useCase of [2, 3]) {

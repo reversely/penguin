@@ -10,7 +10,7 @@ one Cloudflare primitive. A test whose subject leaves the product is deleted wit
 |---|---|---|---|
 | Rules | `tests/rules/` | One decision rule per test, run as a pure function with no I/O | under a second |
 | Copy | `apps/dashboard/test/copy-style.test.ts` | No dashboard string uses a house-style banned word or pattern | under a second |
-| Use cases | `tests/cases/cases.test.ts` | The four PRD use cases run in order on one build of Larder (`examples/money-minor-units`), through Penguin's own code with real git and pytest: who is asked, what Penguin approves, who is told, case 3's dependency diff, that cases 1 to 3 each write their approved fixes, pass every block check and are promoted in order, and for case 4 that main moves block by block until no caller is left | about 7 minutes on gn100 |
+| Use cases | `tests/cases/cases.test.ts` | The four PRD use cases run in order on one build of Larder (`examples/money-minor-units`), through Penguin's own code with real git and pytest: who is asked, what Penguin approves, who is told, case 3's dependency diff, that cases 1 to 3 each write their approved fixes, pass every block check and are promoted in order, and for case 4 that main moves block by block until no caller is left. Case 1's plan is also routed under each review policy, and the starts of cases 1 to 3 under Throwaway and Dev ([review-policies.md](review-policies.md)). Case 1's feature page and Jun's inbox are rendered on the server (`tests/cases/render.tsx`, bundled with esbuild) and must name each kind of validation on its results and each route of a decision or write | about 7 minutes on gn100 |
 | Analysis tools | `tests/test_analysis.py` | Each deterministic tool on a small real repository: the impact graph and contract diff, the codemod, the dependency diff and side-by-side runs | about 2 seconds |
 | Fixtures | `tests/test_fixtures.py` | Each fixture builds to its pinned commits; each scope's DRI is on its team; each agent changes only its person's scopes; on Larder, each merged tree of cases 1 to 3 fails exactly its case's tests and passes once the case's fix is in | about 4 seconds |
 | Live | `tests/e2e/` | Cloudflare primitives against real Artifacts: forks and tokens, fixes written into a fork, promotion of main, the record repo, fetches over Git protocol v2 | minutes; needs Cloudflare login |
@@ -27,7 +27,7 @@ one Cloudflare primitive. A test whose subject leaves the product is deleted wit
 | `migration.test.ts` | 4.2 step 2: callers grouped by owner; the defining scope's own uses are not callers |
 | `fixes.test.ts` | 4.2 and 4.4: patches apply exactly; rewrite rules are well formed |
 | `facts.test.ts` | 4.2 step 2 and 4.5: a test a running feature's fork already fails without the change is no break in the facts run and fails no block check |
-| `security.test.ts` | Section 8: signed records, token scopes, line visibility, dashboard sessions |
+| `security.test.ts` | Section 8: signed records, token scopes, line visibility, dashboard sessions; only a team lead changes the review policy, admin mode locks it, a forged policy record is refused and no policy approves a part whose tests failed |
 | `fork-writes.test.ts` | 4.4: writes into one fork take turns in approval order, each tried again on the head the last one moved |
 | `run-failures.test.ts` | Section 7: a failed run is freed at once and stops at the project's failure limit |
 | `tool-runs.test.ts` | 5.2: only the check runner reports a tool result, once, for the request's own checkpoint |

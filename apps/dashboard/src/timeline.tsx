@@ -8,7 +8,7 @@
 // GitHub Actions draws a run the same way: "An icon to the left of the job name indicates the status
 // of the job" (docs/research/github-actions-visualization-graph.md). Every value renders as text.
 
-import type { EditTaskView, FeaturePipeline, PipelineJob, PipelineStage, PipelineStageKey, PipelineStrip } from "@penguin/protocol";
+import { VALIDATION_KIND_LABEL, type EditTaskView, type FeaturePipeline, type PipelineJob, type PipelineStage, type PipelineStageKey, type PipelineStrip } from "@penguin/protocol";
 import { useState } from "react";
 
 import { Agent } from "./agent-directory.tsx";
@@ -25,6 +25,7 @@ import {
   partAnchor,
   settledAt,
   STAGE_LABEL,
+  jobKind,
   stageCount,
   STATUS_LABEL,
   taskText,
@@ -305,12 +306,14 @@ export function StageBody({ stage, current, pipeline, reveal, children }: StageB
 
 function JobRow({ job, reveal }: { readonly job: PipelineJob; readonly reveal: (id: string) => void }) {
   const text = jobText(job.fact);
+  const kind = jobKind(job.fact);
   const target = jobTarget(job);
   const open = job.status === "failed" || job.status === "person";
   return (
     <li className="job" data-status={job.status}>
       <span className="stage-dot" aria-hidden="true" />
       <span className="job-label">{text.label}</span>
+      {kind === null ? null : <span className="tag tag-data kind-tag">{VALIDATION_KIND_LABEL[kind]}</span>}
       <span className="job-fact">
         <span className="visually-hidden">{STATUS_LABEL[job.status]} </span>
         {text.fact}

@@ -17,6 +17,7 @@ import type { Plan, PlanFactSource, PlanFileDiff, PlanHunk, PlanInvariantFact, P
 import type { RunKind } from "./run-failure.ts";
 import { REVIEW_REFUSAL_CODES, REVIEW_VERDICTS, type ReviewException, type ReviewRefusalCode, type ReviewVerdict } from "./review.ts";
 import { checkSchema, type JsonSchema, type SchemaError } from "./schema-check.ts";
+import type { DecisionRoute, PolicyRoute, ValidationKind } from "./validation.ts";
 
 /**
  * A feature's one-word state on the team view (PRD section 10). `building`: its agents work on the
@@ -406,6 +407,11 @@ export interface PlanPartView {
    * that owner's delegate; null for anyone else, who sees the part's place, state and facts only.
    */
   readonly files: readonly PartFileView[] | null;
+  /**
+   * The review policy's rule for the part (validation.ts): the stored route of an approved revision,
+   * else the route under the policy in force. Absent from an older Worker.
+   */
+  readonly route?: PolicyRoute | null;
 }
 
 /** One file of a part's fix as the feature page shows it: its scope and its unified diff hunks. */
@@ -537,6 +543,12 @@ export interface FeatureRecordView {
   readonly path: string;
   /** The record repo commit that added the record, or null while it waits for the next push. Absent from an older Worker. */
   readonly commit?: string | null;
+  /** The kinds of validation the record's result belongs to (validation.ts); absent or empty for none. */
+  readonly kinds?: readonly ValidationKind[];
+  /** How the decision or write reached Penguin, from the record's author (validation.ts). Absent from an older Worker. */
+  readonly route?: DecisionRoute;
+  /** The plan part the record concerns, or null. Absent from an older Worker. */
+  readonly partId?: string | null;
 }
 
 /** GET /api/features/<id>/page: the feature page (PRD section 10). */

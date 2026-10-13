@@ -2,15 +2,16 @@ import { useCallback, useEffect, useState } from "react";
 
 import { AccountMenu } from "./account-menu.tsx";
 import { Banners } from "./banner.tsx";
-import { fetchSession, type Session } from "./api.ts";
+import { fetchReviewPolicy, fetchSession, type Session } from "./api.ts";
 import { DetailsPane, DetailsProvider, useDetails } from "./details-pane.tsx";
 import { FeaturePageView } from "./feature-page.tsx";
 import { IdentitiesPageView } from "./identities-page.tsx";
 import { approvalCount, useApprovals, type ApprovalsState } from "./approvals.tsx";
-import { InboxPage, InboxSidebar, useInbox } from "./inbox-page.tsx";
+import { InboxPage, InboxSidebar, useInbox, useRead } from "./inbox-page.tsx";
 import { IssuePageView } from "./issue-page.tsx";
 import { linkHandler } from "./links.ts";
 import { NewIssuePage } from "./new-issue-page.tsx";
+import { PolicyContext, PolicyPage } from "./review-policy.tsx";
 import { NAVIGATION, parseRoute, signInProblem, type Route, type SignInProblem } from "./routes.ts";
 import { SidebarSlotProvider } from "./sidebar-slot.tsx";
 import { TeamHues, TeamPage, useTeam, type Team } from "./team-page.tsx";
@@ -90,6 +91,10 @@ function Shell({ session, onSignedOut }: { session: Session; onSignedOut: () => 
   const inbox = useInbox(live, onSignedOut);
   // The shell holds the team too, so the team map and every person's hue on any page come from one read.
   const team = useTeam(live, onSignedOut);
+  // The review policy every page's How Penguin validates panel and the org and team pages read; a save reads it again.
+  const [policySaved, setPolicySaved] = useState(0);
+  const policy = useRead(fetchReviewPolicy, `${live.featuresRevision}:${live.status === "live"}:${policySaved}`, onSignedOut);
+  const policyChanged = useCallback(() => setPolicySaved((count) => count + 1), []);
   const waiting = approvals.loaded ? approvalCount(approvals.approvals) : 0;
   const details = useDetails(route?.page === "issue" ? `issue:${route.issueId}` : (route?.page ?? ""));
   const covered = details.shown && !details.docked;
@@ -98,6 +103,7 @@ function Shell({ session, onSignedOut }: { session: Session; onSignedOut: () => 
 
   return (
     <DetailsProvider value={details}>
+      <PolicyContext.Provider value={policy.kind === "ready" ? policy.value : undefined}>
       <TeamHues team={team}>
         <SidebarSlotProvider value={slot}>
           <div className="shell" data-details={details.shown && details.docked ? "docked" : undefined}>
@@ -131,7 +137,7 @@ function Shell({ session, onSignedOut }: { session: Session; onSignedOut: () => 
               <AccountMenu session={session} status={live.status} />
             </header>
             <main className="centre" inert={covered}>
-              <div className={route?.page === "org" || route?.page === "team" || route?.page === "person" ? "page page-wide" : "page"} data-audit-center>
+              <div className={route?.page === "org" || route?.page === "team" || route?.page === "person" || route?.page === "policy" ? "page page-wide" : "page"} data-audit-center>
                 {approvals.loaded ? (
                   <Banners
                     approvals={approvals.approvals}
@@ -141,13 +147,14 @@ function Shell({ session, onSignedOut }: { session: Session; onSignedOut: () => 
                     navigate={navigate}
                   />
                 ) : null}
-                <Page route={route} session={session} live={live} approvals={approvals} team={team} navigate={navigate} onSignedOut={onSignedOut} />
+                <Page route={route} session={session} live={live} approvals={approvals} team={team} navigate={navigate} onSignedOut={onSignedOut} onPolicyChanged={policyChanged} />
               </div>
             </main>
             <DetailsPane details={details} />
           </div>
         </SidebarSlotProvider>
       </TeamHues>
+      </PolicyContext.Provider>
     </DetailsProvider>
   );
 }
@@ -160,9 +167,10 @@ interface PageProps {
   readonly team: Team;
   readonly navigate: (path: string) => void;
   readonly onSignedOut: () => void;
+  readonly onPolicyChanged: () => void;
 }
 
-function Page({ route, session, live, approvals, team, navigate, onSignedOut }: PageProps) {
+function Page({ route, session, live, approvals, team, navigate, onSignedOut, onPolicyChanged }: PageProps) {
   if (route?.page === "issue") {
     return <IssuePageView key={route.issueId} issueId={route.issueId} viewer={session.owner} live={live} navigate={navigate} onSignedOut={onSignedOut} />;
   }
@@ -175,6 +183,7 @@ function Page({ route, session, live, approvals, team, navigate, onSignedOut }: 
   if (route?.page === "inbox") {
     return <InboxPage approvals={approvals} navigate={navigate} onSignedOut={onSignedOut} />;
   }
+  if (route?.page === "policy") return <PolicyPage navigate={navigate} onSignedOut={onSignedOut} onChanged={onPolicyChanged} />;
   if (route?.page === "new-issue") return <NewIssuePage live={live} navigate={navigate} onSignedOut={onSignedOut} />;
   if (route?.page === "identities") {
     return <IdentitiesPageView viewer={session.owner} live={live} navigate={navigate} onSignedOut={onSignedOut} />;
@@ -184,6 +193,7 @@ function Page({ route, session, live, approvals, team, navigate, onSignedOut }: 
 
 /** The navigation entry a route sits under: a person's page sits under Team. */
 function navPage(route: Route | undefined): Route["page"] | undefined {
+  if (route?.page === "policy") return "org";
   return route?.page === "person" ? "team" : route?.page;
 }
 

@@ -2,7 +2,7 @@
  * The dashboard's routes: the built React app, GitHub sign-in (K6), the dashboard API and the live
  * connection to the ProjectAgent.
  *
- * - GET /, /inbox, /identities, /features/<id> and /issues/<id>: the app's page, with the team view at /. GET /board
+ * - GET /, /inbox, /identities, /review-policy, /features/<id> and /issues/<id>: the app's page, with the team view at /. GET /board
  *   redirects to /, which replaced the board. GET /app.js and /app.css: its bundle; GET /fonts/<name>.woff2: the self-hosted Inter and Piazzolla files;
  *   GET /fonts/<name>.txt: their OFL texts. These carry no data, so they need no session: an
  *   unauthenticated visit shows sign-in.
@@ -70,6 +70,12 @@
  *     paths a person protects, `{ feature, owner, checkpoint }`, as the signed-in person. The
  *     ProjectAgent refuses anyone but `owner` or their delegate, a checkpoint other than the
  *     feature's latest and lines already confirmed.
+ *   - GET /api/review-policy: the sandbox's review policy (docs/review-policies.md): its preset and
+ *     rows, whether admin mode locks it, who changed it last, whether the signed-in person may change
+ *     it and the split of approvals over the last 30 days, checked against REVIEW_POLICY_VIEW_SCHEMA.
+ *   - POST /api/review-policy: sets it, `{ preset, rows }`, as the signed-in person. A body with any
+ *     other field is refused. The ProjectAgent refuses anyone who leads no team in penguin/teams.json
+ *     and every change while PENGUIN_PLAN_ADMIN_MODE is on.
  *   - POST /api/operations: one issue operation, applied with the signed-in person as author. An
  *     operation that carries `author` is refused: only the session names the author.
  *   - GET /api/live: the WebSocket to the ProjectAgent, which sends a message on each index change
@@ -80,7 +86,15 @@
  * `Origin` header, on top of the SameSite=Lax session cookie.
  */
 
-import { checkInbox, checkOverlapRequests, checkPlanInbox, checkReviewDifferences, isOwnerLockId, SEGMENT_PATTERN } from "@penguin/protocol";
+import {
+  checkInbox,
+  checkOverlapRequests,
+  checkPlanInbox,
+  checkReviewDifferences,
+  checkReviewPolicyView,
+  isOwnerLockId,
+  SEGMENT_PATTERN,
+} from "@penguin/protocol";
 
 import type { FeatureOpenResult, FeatureView } from "./features.ts";
 import {
@@ -167,7 +181,15 @@ export interface DashboardBackend {
   decidePlanPart(owner: string, decision: PlanPartDecision): Promise<PlanPartDecisionResult>;
   /** Confirms a feature's own protected lines as `owner`; the ProjectAgent checks who may. */
   confirmProtectedChange(owner: string, input: ProtectedChangeConfirmation): Promise<ProtectedChangeConfirmResult>;
+  /** The sandbox's review policy as `owner` sees it (ReviewPolicyView in @penguin/protocol). */
+  reviewPolicy(owner: string): Promise<unknown>;
+  /** Sets the review policy as `owner`; the ProjectAgent checks that they lead a team. */
+  changeReviewPolicy(owner: string, policy: { readonly preset: unknown; readonly rows: unknown }): Promise<ReviewPolicyChangeResult>;
 }
+
+export type ReviewPolicyChangeResult =
+  | { readonly status: "ok"; readonly policy: unknown; readonly recordId: string }
+  | { readonly status: "rejected"; readonly reason: string; readonly message: string };
 
 /**
  * A confirmation of the lines a feature's own change writes under paths `owner` protects, at the
@@ -237,7 +259,7 @@ export const CONTENT_SECURITY_POLICY = [
 const OAUTH_COOKIE = "__Host-penguin_oauth";
 const OAUTH_TTL_SECONDS = 600;
 const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]"]);
-const PAGE_PATH = /^\/(?:|org|inbox|identities|teams\/(?:person:)?[a-z0-9-]{1,64}|people\/[a-z0-9-]{1,64}|issues\/[A-Za-z0-9_-]+|features\/[a-z0-9.-]{1,63})$/;
+const PAGE_PATH = /^\/(?:|org|review-policy|inbox|identities|teams\/(?:person:)?[a-z0-9-]{1,64}|people\/[a-z0-9-]{1,64}|issues\/[A-Za-z0-9_-]+|features\/[a-z0-9.-]{1,63})$/;
 const ASSET_PATH = /^\/(?:app\.(?:js|css)|fonts\/[a-z0-9-]+\.(?:woff2|txt))$/;
 const FONT_PATH = /^\/fonts\/[a-z0-9-]+\.woff2$/;
 /**
@@ -639,6 +661,34 @@ async function confirmProtectedRoute(request: Request, url: URL, session: Dashbo
   return json(confirmed, confirmed.status === "ok" ? 200 : (FEATURE_REJECTION_STATUS[confirmed.reason] ?? 422));
 }
 
+/** The largest review policy body the route reads: six rows and a preset fit well under it. */
+const MAX_POLICY_BYTES = 4 * 1024;
+
+/**
+ * GET /api/review-policy reads the sandbox's review policy; POST sets it, `{ preset, rows }`, as the
+ * session's person. The ProjectAgent checks the rows and who may change them.
+ */
+async function reviewPolicyRoute(request: Request, url: URL, session: DashboardSession, handlers: DashboardHandlers): Promise<Response> {
+  if (request.method === "GET") {
+    const view = await (await handlers.dashboard()).reviewPolicy(session.owner);
+    return checkReviewPolicyView(view).length === 0 ? json(view) : json({ error: "invalid review policy" }, 500);
+  }
+  if (request.method !== "POST") return methodNotAllowed("GET, POST");
+  if (!isSameOrigin(request, url)) return json({ error: "cross-origin request" }, 403);
+  if (Number(request.headers.get("Content-Length") ?? 0) > MAX_POLICY_BYTES) {
+    return json({ error: "invalid request", message: "the request is too large" }, 413);
+  }
+  const body = await readJsonObject(request);
+  if (body === undefined) return json({ error: "invalid request", message: "the body must be a JSON object" }, 400);
+  const { preset, rows, ...rest } = body;
+  if (Object.keys(rest).length > 0) {
+    return json({ error: "invalid", message: "the body takes only preset and rows; the person changing it is the signed-in person" }, 400);
+  }
+  const changed = await (await handlers.dashboard()).changeReviewPolicy(session.owner, { preset, rows });
+  const status = changed.status === "ok" ? 200 : changed.reason === "forbidden" || changed.reason === "locked" ? 403 : 422;
+  return json(changed, status);
+}
+
 async function handleApi(
   request: Request,
   url: URL,
@@ -673,6 +723,7 @@ async function handleApi(
   if (url.pathname === "/api/plan-parts" || url.pathname.startsWith("/api/plan-parts/")) {
     return planPartRoute(request, url, session, handlers);
   }
+  if (url.pathname === "/api/review-policy") return reviewPolicyRoute(request, url, session, handlers);
   if (url.pathname === "/api/team") {
     if (request.method !== "GET") return methodNotAllowed("GET");
     return json(await (await handlers.dashboard()).team(session.owner));

@@ -148,6 +148,10 @@ form that passed waits as `pending` until the check runner claims it and attache
 `check` or `apply_fix` request waits until the check runner claims it and reports its result
 (`agent-tool-runner.ts`). The row records when the requesting session's safe checkpoint delivered it.
 `PlanPartRoute` (`plan-approval.ts`) keeps which revision of which plan part waits on whom.
+The sandbox's review policy (`review-policy.ts`, [review-policies.md](review-policies.md)) has no
+table of its own: it is the newest `review_policy_changed` record in `FeatureRecord` under the
+project folder `_project` whose signature verifies. The ProjectAgent keeps the policy it read in
+memory until a newer record is stored.
 `ProtectedChange` (`protected-change.ts`) holds, per feature and protecting person, the lines the
 feature's own change writes under a protected path at its latest checkpoint and whether that person
 confirmed them.

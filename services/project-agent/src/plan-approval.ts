@@ -9,8 +9,10 @@
 //   in `penguin/scopes.json` also gives that owner a `protected_path` item. A newer plan of the feature
 //   withdraws the older plan's items. The originating feature's own change to a protected path is
 //   checked at each of its checkpoints instead (protected-change.ts).
-// - Penguin's approval (PRD 0.5 section 4.3 step 3). Penguin approves a pending part when every check
-//   of partRouting (@penguin/protocol) is clean and the project is not in admin mode
+// - Penguin's approval (PRD 0.5 section 4.3 step 3, #175). Penguin approves a pending part when the
+//   sandbox's review policy routes it to Penguin (`policyRoute`, @penguin/protocol validation.ts): its
+//   tests passed and every check of partRouting that flags it is a type the policy sets to Penguin.
+//   Under Dev, the default, that is every check clean; admin mode sends every part to a person
 //   (approveCleanParts). It looks after the plan is announced, after a review of the feature is
 //   recorded and after a revision. The approval is a signed `approve_plan_part` record authored by
 //   Penguin, naming each check's evidence. The author's `plan_part` item gives way to a
@@ -39,6 +41,9 @@
 
 import {
   partRouting,
+  policyInForce,
+  policyRoute,
+  policyRoutePayload,
   routesToOriginator,
   PENGUIN_APPROVER,
   PLAN_LIMITS,
@@ -54,6 +59,8 @@ import {
   type PlanPartRequest,
   type PlanPartState,
   type PlanPlace,
+  type PolicyInForce,
+  type PolicyRoute,
   type ProtectedChangeRequest,
   type ProtectedPathHit,
   type ReturnedPlanRequest,
@@ -190,6 +197,11 @@ export class PlanRouteStore {
       .map(route);
   }
 
+  /** The features with a part of their newest plan waiting on a decision, in the order they were announced. */
+  pendingFeatures(): string[] {
+    return this.#db.exec(`SELECT feature_id FROM PlanPartRoute WHERE state = 'pending' GROUP BY feature_id ORDER BY MIN(rowid)`).map((row) => row["feature_id"] as string);
+  }
+
   /** The parts of feature `featureId`'s newest plan, in part order. */
   ofFeature(featureId: string): PartRoute[] {
     return this.#db.exec(`SELECT * FROM PlanPartRoute WHERE feature_id = ? ORDER BY rowid`, featureId).map(route);
@@ -264,6 +276,13 @@ export interface PartCheckDeps {
   readonly adminMode: boolean;
   /** The trial of a part's current revision (part-trial.ts `trialStanding`); absent, none is read. */
   readonly trial?: (featureId: string, part: PlanPart) => PartTrialStanding | undefined;
+  /** The sandbox's review policy in force (review-policy.ts); absent, Dev, or Production locked in admin mode. */
+  readonly policy?: () => Promise<PolicyInForce>;
+}
+
+/** The policy in force for `checks`: their own, or the default under their admin mode. */
+export async function checksPolicy(checks: Pick<PartCheckDeps, "adminMode" | "policy">): Promise<PolicyInForce> {
+  return checks.policy === undefined ? policyInForce(undefined, checks.adminMode) : checks.policy();
 }
 
 export interface ReviseDeps extends PlanApprovalDeps {
@@ -448,6 +467,7 @@ export async function approvePlanPart(deps: PlanApprovalDeps, caller: string, in
   const byOriginator = await originatorDecides(deps, caller, featureId, plan, part);
   const refusal = (byOriginator ? undefined : await decider(deps, caller, part)) ?? undecidable(part, true);
   if (refusal !== undefined) return refusal;
+  const route = await currentRoute(deps.checks, featureId, plan, part);
   const record = await deps.sign(
     deps.features.draftRecord(featureId, "approve_plan_part", { person: caller }, {
       plan_id: plan.planId,
@@ -459,9 +479,10 @@ export async function approvePlanPart(deps: PlanApprovalDeps, caller: string, in
       approved_by: caller,
       // The originating person approved a part whose one failing check is their own change's stored data.
       ...(byOriginator ? { routed_to: "originating_person" } : {}),
+      ...(route === undefined ? {} : { review_policy: policyRoutePayload(route) }),
     }),
   );
-  const next: PlanPart = { ...part, approvalState: "approved", approvedBy: caller };
+  const next: PlanPart = { ...part, approvalState: "approved", approvedBy: caller, route: route ?? null };
   if (!(await deps.keeper(featureId).replacePart(featureId, next, { revision: part.revision, state: part.approvalState }))) {
     return rejected("conflict", `part ${part.partId} changed while it was approved; read it again`);
   }
@@ -471,6 +492,13 @@ export async function approvePlanPart(deps: PlanApprovalDeps, caller: string, in
   deps.notify(part.owner);
   deps.approved?.(featureId, plan, next);
   return { status: "ok", part: next, recordId: record.record_id, roundLimitRecordId: null };
+}
+
+/** The policy's route for a part as it stands now, or undefined without the checks to read it. */
+async function currentRoute(checks: PartCheckDeps | undefined, featureId: string, plan: Plan, part: PlanPart): Promise<PolicyRoute | undefined> {
+  if (checks === undefined) return undefined;
+  const routing = routePart(plan, part, checks.reviews(featureId), await checks.scopeMap(), false, checks.trial?.(featureId, part));
+  return policyRoute(await checksPolicy(checks), routing);
 }
 
 /**
@@ -507,6 +535,7 @@ export async function requestPlanChange(deps: PlanApprovalDeps, caller: string, 
     ...part,
     approvalState: pastLimit ? "round_limit" : "change_requested",
     approvedBy: null,
+    route: null,
     changeRequests: round,
     changeRequest: { by: caller, revision: part.revision, text, at, recordId: record.record_id },
   };
@@ -538,14 +567,17 @@ export async function requestPlanChange(deps: PlanApprovalDeps, caller: string, 
 }
 
 /**
- * Penguin approves each pending part of feature `featureId`'s newest plan whose checks are all clean
- * (PRD 4.3 step 3), unless the project is in admin mode or the block has landed. Each approval is a
- * signed record authored by Penguin that names the evidence, and the author gets a `penguin_approved`
- * item in place of the `plan_part` one. Returns the parts approved.
+ * Penguin approves each pending part of feature `featureId`'s newest plan that the review policy routes
+ * to Penguin (PRD 4.3 step 3, #175): under Dev every check clean, under Throwaway every part whose tests
+ * passed. Never in admin mode or once the block has landed. Each approval is a signed record authored
+ * by Penguin that names the evidence and the policy's rule. The author gets a `penguin_approved` item
+ * in place of the `plan_part` one. Returns the parts approved.
  */
 export async function approveCleanParts(deps: PlanApprovalDeps, featureId: string): Promise<PlanPart[]> {
   const checks = deps.checks;
   if (checks === undefined || checks.adminMode || deps.features.get(featureId)?.state === "landed") return [];
+  const inForce = await checksPolicy(checks);
+  if (inForce.locked) return [];
   const plan = await deps.keeper(featureId).latestPlan(featureId);
   const pending = plan?.parts.filter((part) => part.approvalState === "pending") ?? [];
   if (plan === undefined || pending.length === 0) return [];
@@ -556,7 +588,8 @@ export async function approveCleanParts(deps: PlanApprovalDeps, featureId: strin
     const trial = checks.trial?.(featureId, part);
     // A verify part is approved on its own trial's tests, never on the facts run alone.
     if (part.kind === "verify" && trial?.state !== "recorded") continue;
-    if (routePart(plan, part, reviews, scopeMap, false, trial).inPerson) continue;
+    const route = policyRoute(inForce, routePart(plan, part, reviews, scopeMap, false, trial));
+    if (route.decider !== "penguin") continue;
     const tests = trialPart(part, trial).tests;
     const record = await deps.sign(
       deps.features.draftRecord(featureId, "approve_plan_part", { penguin: true }, {
@@ -576,9 +609,10 @@ export async function approveCleanParts(deps: PlanApprovalDeps, featureId: strin
           tests: (tests?.results ?? []).map(({ scopeId, commandId, status }) => ({ scope: scopeId, command: commandId, status })),
           reviews: newestReviews(reviews, part.scopes).map((review) => review.id),
         },
+        review_policy: policyRoutePayload(route),
       }),
     );
-    const next: PlanPart = { ...part, approvalState: "approved", approvedBy: PENGUIN_APPROVER };
+    const next: PlanPart = { ...part, approvalState: "approved", approvedBy: PENGUIN_APPROVER, route };
     if (!(await deps.keeper(featureId).replacePart(featureId, next, { revision: part.revision, state: "pending" }))) continue;
     deps.features.addRecord(record);
     deps.routes.set(featureId, next);
@@ -622,6 +656,7 @@ export async function reversePenguinApproval(deps: PlanApprovalDeps, caller: str
     ...part,
     approvalState: "pending",
     approvedBy: null,
+    route: null,
     reversal: { by: caller, revision: part.revision, at, recordId: record.record_id },
   };
   if (!(await deps.keeper(featureId).replacePart(featureId, next, { revision: part.revision, state: "approved" }))) {
@@ -706,6 +741,7 @@ export async function revisePlanPart(deps: ReviseDeps, caller: string, sessionId
     note: fix.note,
     approvalState: "pending",
     approvedBy: null,
+    route: null,
     // The facts run's results stand; whether the tested tree holds the new fix is read again.
     tests: part.tests === undefined || part.tests === null ? part.tests : { ...part.tests, fixInTree: read.fixInTree },
   };
@@ -758,6 +794,9 @@ export interface PlanWorkDeps {
   readonly routes: PlanRouteStore;
   readonly reviews: ReviewStore;
   readonly keeper: (featureId: string) => PlanKeeper;
+  /** The review policy in force and each part's route under it; absent, get_work names neither. */
+  readonly policy?: PolicyInForce;
+  readonly routeOf?: (plan: Plan, part: PlanPart) => Promise<PolicyRoute>;
 }
 
 /** A part of the session's own plan as `get_work` reports it. */
@@ -772,12 +811,16 @@ export interface OwnPlanPart {
   readonly approvedBy: string | null;
   readonly changeRequests: number;
   readonly changeRequest: PlanPart["changeRequest"];
+  /** The review policy's rule that sent the part to Penguin or a person, when known. */
+  readonly route?: PolicyRoute;
 }
 
 /** What `get_work` reports of advance notice for one session. */
 export interface PlanWork {
-  /** Parts whose current revision waits on the session's developer. */
-  readonly partsNeedingYou: readonly PartRoute[];
+  /** The sandbox's review policy in force, when known. */
+  readonly policy?: PolicyInForce;
+  /** Parts whose current revision waits on the session's developer, each with its policy route when known. */
+  readonly partsNeedingYou: readonly (PartRoute & { readonly route?: PolicyRoute })[];
   /** The newest plan of the feature the session works on, with where each part stands. */
   readonly ownPlan: { readonly planId: string; readonly roundLimit: number; readonly parts: readonly OwnPlanPart[] } | null;
   /** The runner's verdicts on the reviews the session submitted. */
@@ -788,25 +831,39 @@ export interface PlanWork {
 export async function planWork(deps: PlanWorkDeps, person: string, sessionId: string, roundLimit: number | undefined): Promise<PlanWork> {
   const featureId = deps.features.featureOfSession(sessionId);
   const plan = featureId === undefined ? undefined : await deps.keeper(featureId).latestPlan(featureId);
+  const plans = new Map<string, Plan | undefined>();
+  const routeOf = async (featureId: string, partId: string): Promise<{ readonly route?: PolicyRoute }> => {
+    if (deps.routeOf === undefined) return {};
+    if (!plans.has(featureId)) plans.set(featureId, await deps.keeper(featureId).latestPlan(featureId));
+    const found = plans.get(featureId);
+    const part = found?.parts.find((each) => each.partId === partId);
+    if (found === undefined || part === undefined) return {};
+    return { route: part.approvalState === "approved" && part.route ? part.route : await deps.routeOf(found, part) };
+  };
+  const waiting = deps.routes.waitingOn([person]);
   return {
-    partsNeedingYou: deps.routes.waitingOn([person]),
+    ...(deps.policy === undefined ? {} : { policy: deps.policy }),
+    partsNeedingYou: await Promise.all(waiting.map(async (route) => ({ ...route, ...(await routeOf(route.featureId, route.partId)) }))),
     ownPlan:
       plan === undefined
         ? null
         : {
             planId: plan.planId,
             roundLimit: roundLimit ?? PLAN_ROUND_LIMIT_DEFAULT,
-            parts: plan.parts.map(({ partId, revision, place, owner, kind, approvalState, approvedBy, changeRequests, changeRequest }) => ({
-              partId,
-              revision,
-              place,
-              owner,
-              kind,
-              state: approvalState,
-              approvedBy,
-              changeRequests,
-              changeRequest,
-            })),
+            parts: await Promise.all(
+              plan.parts.map(async ({ partId, revision, place, owner, kind, approvalState, approvedBy, changeRequests, changeRequest }) => ({
+                partId,
+                revision,
+                place,
+                owner,
+                kind,
+                state: approvalState,
+                approvedBy,
+                changeRequests,
+                changeRequest,
+                ...(await routeOf(plan.featureId, partId)),
+              })),
+            ),
           },
     reviews: deps.reviews.recordedFor(sessionId).map(reviewResultNotice),
   };
@@ -823,6 +880,8 @@ export interface PlanInboxDeps {
   readonly roundLimit: number | undefined;
   /** PENGUIN_PLAN_ADMIN_MODE, which each part's routing names; off when absent. */
   readonly adminMode?: boolean;
+  /** The sandbox's review policy in force; absent, Dev, or Production locked in admin mode. */
+  readonly policy?: () => Promise<PolicyInForce>;
   /** The trial of a part's current revision, which the routing reads (part-trial.ts `trialStanding`). */
   readonly trial?: (featureId: string, part: PlanPart) => PartTrialStanding | undefined;
   /** Whether a feature's block has landed, after which Penguin's approvals stand; never when absent. */
@@ -861,6 +920,7 @@ const ASK_REASON: Readonly<Record<PlanPartAsk, InboxItem["reason"]>> = {
  */
 export async function buildPlanInbox(deps: PlanInboxDeps, caller: string): Promise<PlanInbox> {
   const [scopeMap, delegates] = await Promise.all([deps.scopeMap(), deps.delegates()]);
+  const inForce = deps.policy === undefined ? policyInForce(undefined, deps.adminMode ?? false) : await deps.policy();
   const items = deps.items(caller);
   const owners = [caller, ...[...delegates].flatMap(([owner, delegate]) => (delegate === caller && owner !== caller ? [owner] : []))];
   const asks = new Map<string, PlanPartAsk>();
@@ -924,6 +984,7 @@ export async function buildPlanInbox(deps: PlanInboxDeps, caller: string): Promi
       breaks: part.breaks.map(breakView),
       reviews: newestReviews(stored, part.scopes).map(reviewView),
       routing,
+      route: part.approvalState === "approved" && part.route ? part.route : policyRoute(inForce, routing),
       changeRequest:
         part.changeRequest === null ? null : { by: part.changeRequest.by, revision: part.changeRequest.revision, text: part.changeRequest.text },
       read: item?.read ?? false,

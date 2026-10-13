@@ -24,6 +24,7 @@ import { linkHandler } from "./links.ts";
 import { OrgView } from "./org-page.tsx";
 import { PersonPage } from "./person-page.tsx";
 import { PersonPill } from "./pills.tsx";
+import { PolicySplitSection, ValidationPanel } from "./review-policy.tsx";
 import { ORG_PATH, personPath, type Route } from "./routes.ts";
 import { teamPeople } from "./team-view.ts";
 import type { Live } from "./use-live.ts";
@@ -133,6 +134,7 @@ export function TeamPageView({ view, team: id, viewer, navigate }: TeamPageProps
           <PersonPill id={team.lead} navigate={navigate} />
         </span>
       </header>
+      <ValidationPanel navigate={navigate} />
       <section className="team-section" aria-labelledby="team-members">
         <h2 id="team-members" className="team-section-heading">
           Members <span className="tab-count">{members.length}</span>
@@ -156,6 +158,7 @@ export function TeamPageView({ view, team: id, viewer, navigate }: TeamPageProps
         </div>
       </section>
       <ScopesTable team={team} navigate={navigate} />
+      <PolicySplitSection team={team.id} navigate={navigate} />
     </article>
   );
 }

@@ -123,7 +123,8 @@ The procedure moves conflict handling to the start of the work. Each step below 
    - **Same area.** Another running feature already works in that area. Penguin blocks the new
      feature from starting until the person whose agent works there approves. That person approves
      when the two pieces of work are far enough apart. Penguin's tools then resolve routine merge
-     conflicts between them.
+     conflicts between them. A sandbox whose review policy sets Overlapping starts to Penguin lets
+     Penguin approve the start itself ([review-policies.md](review-policies.md)).
    - **Depends on it.** Running features read what the new feature will change. Penguin lists them.
      They leave the start unblocked. They go into the merge plan.
 4. If a merge plan touching this area is already announced, Penguin hands it to the new feature at
@@ -580,7 +581,7 @@ Penguin proposes the migrate step's plans itself (`services/project-agent/src/mi
   |---|---|
   | Its scopes' tests pass and no protected invariant differs | Penguin approves it and asks the check runner to write it |
   | A failing test, a trial tree that does not hold the patch, or a protected invariant that differs | Becomes a `migration` edit task for the target's builder or the steward of the scope's DRI, with each failing check, failing test and differing input attached as evidence |
-  | A protected path, a file outside the place, admin mode or another check no edit settles | Goes to its owner in person |
+  | A protected path, a file outside the place, admin mode or another check no edit settles | Goes to its owner in person, unless the review policy sets that check's type to Penguin; under Production a part whose trial passed goes to its owner too |
 
   Each decision is a signed `migration_part_decided` record. Load: the side-by-side runs are part
   of the trial the part already had; no run is added.
@@ -639,26 +640,33 @@ Penguin proposes the migrate step's plans itself (`services/project-agent/src/mi
    - it touches no path the author protects;
    - its diff stays inside its place: the part's files and the contract's symbols.
 
-   Penguin tells the author, who may reverse the approval until the block reaches main.
+   Penguin tells the author, who may reverse the approval until the block reaches main. Each check
+   belongs to one kind of validation ([validation.md](validation.md)). The sandbox's review policy
+   may let Penguin approve past a check of a kind it sets to Penguin
+   ([review-policies.md](review-policies.md)). The tests are never set aside.
 4. Any other part goes to its author in person, who approves it once or asks for a change. A
    requested change goes back to the originating agent, which revises that part of the plan.
-5. **Admin mode:** a project can require a person's approval for every part.
+5. **Admin mode:** a project can require a person's approval for every part. The review policy's
+   Production preset does the same from the dashboard.
 
 #### Penguin's approval in the build
 
 `partRouting` (`packages/protocol/src/plan-approval.ts`) checks a part against six conditions
 from facts Penguin already holds. Each condition that is not clean is a reason. The dashboard
-shows each reason as one line. Penguin approves the part only with no reason. An absent result is a
-reason too:
+shows each reason as one line. Under the Dev review policy, the default, Penguin approves the part
+only with no reason. `policyRoute` (`packages/protocol/src/validation.ts`) applies the sandbox's
+policy to the reasons: a failing test always keeps the part from Penguin. Each other reason
+marks its type of approval, which the policy sets to Penguin or a person
+([review-policies.md](review-policies.md)). An absent result is a reason too:
 
-| Check | Clean when | Read from |
+| Check (kind) | Clean when | Read from |
 |---|---|---|
-| Tests | Each of the part's scopes is `passed` on the merged tree of the part's place. That tree holds the fix | The part revision's recorded [trial](#part-trials); without one, `PlanPart.tests`, kept from the facts run when the plan is proposed |
-| Review | The newest review of each of the part's scopes was submitted on the plan's checkpoint. The check runner accepted it. Every row says the invariant holds. A verify part needs no form, so this check and the side-by-side and stored data checks are left out for it | The feature's reviews (`review-submit.ts`), each form the part's trial ran read from that trial |
-| Side by side | That review's run shows no difference on a protected invariant | The review's exceptions |
-| Protected paths | No file of the diff lies under a path a scope's owner protects in `penguin/scopes.json` | The scope map |
-| Place | Every changed file lies in the part's scopes, and a fix commit changes no file outside them. For code on main the place is the scope's paths, tests included: a fix that moves the scope's own tests onto the new API stays inside the scope. For a running feature it is the scopes its own changes reach, where its patch must lie. The place never widens beyond the part's scopes | `PlanPart.diff.files`, `diff.outside` and `scopes` |
-| Stored data | The newest review on the plan's checkpoint records no changed stored shape that its scope only reads, or the plan declares a `storeMarker` | The review record's `storedShapes` with their owning scopes |
+| Tests (Tests) | Each of the part's scopes is `passed` on the merged tree of the part's place. That tree holds the fix | The part revision's recorded [trial](#part-trials); without one, `PlanPart.tests`, kept from the facts run when the plan is proposed |
+| Review (Logic) | The newest review of each of the part's scopes was submitted on the plan's checkpoint. The check runner accepted it. Every row says the invariant holds. A verify part needs no form, so this check and the side-by-side and stored data checks are left out for it | The feature's reviews (`review-submit.ts`), each form the part's trial ran read from that trial |
+| Side by side (Data matching) | That review's run shows no difference on a protected invariant | The review's exceptions |
+| Protected paths (Protected paths and place) | No file of the diff lies under a path a scope's owner protects in `penguin/scopes.json` | The scope map |
+| Place (Protected paths and place) | Every changed file lies in the part's scopes, and a fix commit changes no file outside them. For code on main the place is the scope's paths, tests included: a fix that moves the scope's own tests onto the new API stays inside the scope. For a running feature it is the scopes its own changes reach, where its patch must lie. The place never widens beyond the part's scopes | `PlanPart.diff.files`, `diff.outside` and `scopes` |
+| Stored data (Stored data) | The newest review on the plan's checkpoint records no changed stored shape that its scope only reads, or the plan declares a `storeMarker` | The review record's `storedShapes` with their owning scopes |
 
 A part whose one failing check is stored data (`stored_data_unmarked`) routes to the originating
 feature's person (`routesToOriginator`). Its author gets no `approve` ask for it. The originating
@@ -677,12 +685,14 @@ that also fails another check stays with its author. Its stored data reason is l
   checkpoint. A patch for a running feature is in no facts-run tree.
 - **When Penguin looks.** `approveCleanParts` (`services/project-agent/src/plan-approval.ts`) runs
   after a plan is stored and announced, after the check runner records a review of the feature or a
-  part trial, and after the originating agent revises a part. It approves each pending part with no reason.
-  A verify part also needs a recorded trial of its current revision.
+  part trial, after the originating agent revises a part and after a team lead changes the review
+  policy. It approves each pending part whose policy route names Penguin: under Dev, each part with
+  no reason. A verify part also needs a recorded trial of its current revision.
 - **The approval.** Each approval is a signed `approve_plan_part` record authored by Penguin, with
   `approved_by: "penguin"` and a `checks` field naming the checkpoint, the run its tests came from
   (`trial-<id>` or the facts run), the trial tree when a trial ran, each test result and each review
-  it read. The part's `approvedBy` is `penguin`. The author's `plan_part`
+  it read, with `review_policy`, the route that sent the part to Penguin. A person's approval
+  carries the route too. The part keeps it as `route`. The part's `approvedBy` is `penguin`. The author's `plan_part`
   item gives way to a `penguin_approved` item. An approved mechanical part on a running feature
   queues the check runner's write as an author's approval does.
 - **Reversal.** The part's owner or that owner's delegate may reverse Penguin's approval until the
@@ -697,7 +707,8 @@ that also fails another check stays with its author. Its stored data reason is l
   Once main moves to the block, the `penguin_approved` items go.
 - **Admin mode.** `PENGUIN_PLAN_ADMIN_MODE`, a Worker setting, set to `on` makes a person approve
   every part: each part carries an admin mode reason and Penguin approves none. Unset, empty or `off`
-  leaves it off. Any other value counts as on, so a mistyped setting never lets Penguin approve.
+  leaves it off. Any other value counts as on, so a mistyped setting never lets Penguin approve. While
+  it is on, the review policy is Production, locked. The dashboard cannot change it.
 
 #### Advance notice in the build
 
@@ -1710,6 +1721,12 @@ with an Approve start control.
 | Approvals inbox | Overlapping starts, plan parts touching the person's code, protected-path confirmations and exceptions. Each item shows the facts behind it: the changed lines in the person's scope, the side-by-side differences and the review form |
 | Feature page | The feature's merge as a timeline of stages with the work that reached other people and at most three summary lines, over four views: Changes (the contract change, each place the plan fixes, its files and their hunks), Pipeline (each stage with its jobs and what they ran), People (the features that read this one and the starts it waited on) and Record |
 | Identities | Creating and editing agent identities with their charters |
+| Review policy | The sandbox's review policy: its preset, who decides each type of approval, the last change and the split of approvals by route. A team lead changes it ([review-policies.md](review-policies.md)) |
+
+Every page that shows a check carries a How Penguin validates panel with the six kinds of validation
+and who decides each under the policy ([validation.md](validation.md)). Each check result names its
+kind. Each decision and write names its route: an agent through MCP with its tool, Penguin
+automatically with the policy and the kinds checked, or a person in the dashboard.
 
 Session transcripts stay on each person's machine. No dashboard page shows one.
 

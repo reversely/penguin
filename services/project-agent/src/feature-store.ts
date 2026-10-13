@@ -88,7 +88,8 @@ export interface Feature {
  * removed are written by retiring-count.ts. A split's migration plan per owner group, a place joining
  * it, who writes each part, Penguin's decision on each part's trial and the plan's block landing are
  * written by migration-plans.ts, which also opens features from main for Penguin's own work and signs
- * the contract step a feature Penguin opened carries.
+ * the contract step a feature Penguin opened carries. A change of the sandbox's review policy is written
+ * by review-policy.ts under PROJECT_RECORDS, the project's own folder, which no feature id can name.
  */
 export type FeatureRecordType =
   | "open_feature"
@@ -130,7 +131,8 @@ export type FeatureRecordType =
   | "migration_closed"
   | "migration_landed"
   | "feature_closed"
-  | "block_rebuilt";
+  | "block_rebuilt"
+  | "review_policy_changed";
 
 export interface FeatureRecord {
   readonly schema_version: 1;
@@ -257,6 +259,18 @@ function sortedArea(scopes: Iterable<string>, paths: Iterable<string>, contracts
 export async function signFeatureRecord(record: UnsignedFeatureRecord, privateKey: CryptoKey): Promise<FeatureRecord> {
   const signature = await crypto.subtle.sign("Ed25519", privateKey, canonicalBytes(record));
   return { ...record, signature: toBase64Url(new Uint8Array(signature)) };
+}
+
+/** Whether a stored record's signature verifies with the service key: a forged or changed record does not. */
+export async function verifyFeatureRecord(record: FeatureRecord, publicKey: CryptoKey): Promise<boolean> {
+  const { signature, ...body } = record;
+  if (typeof signature !== "string") return false;
+  try {
+    const bytes = Uint8Array.from(atob(signature.replace(/-/gu, "+").replace(/_/gu, "/")), (char) => char.charCodeAt(0));
+    return await crypto.subtle.verify("Ed25519", publicKey, bytes, canonicalBytes(body));
+  } catch {
+    return false;
+  }
 }
 
 /** The record's path in the record repo: `records/<feature>/<author>-<writer>-<seq>.json` (PRD section 9). */

@@ -63,7 +63,15 @@ import {
   type FeatureOutcome,
   type TokenGrant,
 } from "./feature-open.ts";
-import { FeatureStore, readOnlyReason, signFeatureRecord, type Feature } from "./feature-store.ts";
+import { FeatureStore, readOnlyReason, signFeatureRecord, verifyFeatureRecord, type Feature } from "./feature-store.ts";
+import {
+  changeReviewPolicy,
+  PROJECT_RECORDS,
+  readReviewPolicy,
+  reviewPolicyView,
+  type PolicyChangeOutcome,
+  type StoredPolicy,
+} from "./review-policy.ts";
 import { flushRecords, openRecordRepo, RecordRepoStore, type RecordFlushOutcome, type RecordRepoAccess } from "./record-repo.ts";
 import {
   approveOverlap,
@@ -219,7 +227,9 @@ import {
   requestPlanChange,
   reversePenguinApproval,
   revisePlanPart,
+  routePart,
   type ChangeRequestInput,
+  type PartCheckDeps,
   type PartDecisionInput,
   type PartDecisionOutcome,
   type PlanApprovalDeps,
@@ -288,7 +298,13 @@ import {
   type IssuePage,
   type OverlapRequests,
   type PlanPart,
+  type Plan,
   type PlanInbox,
+  type PolicyInForce,
+  type PolicyRoute,
+  type ReviewPolicyView,
+  policyInForce,
+  policyRoute,
   type PlanFactsRequest,
   type ReviewDifferences,
   type TeamView,
@@ -2016,6 +2032,7 @@ export class ProjectAgent extends Agent {
       overlaps: this.#overlapStore(),
       scopeMap: () => this.#scopeMap(repos),
       sign: async (record) => signFeatureRecord(record, (await this.#loadServiceKey()).privateKey),
+      policy: () => this.#policyInForce(),
       listener: {
         lockOpened: ({ featureId, blockedFeatureId, personId }) => {
           this.#inboxStore().overlapRequested(personId, featureId, blockedFeatureId);
@@ -2403,6 +2420,7 @@ export class ProjectAgent extends Agent {
       // A feature Penguin opens goes through the overlap lock like any other (PRD 0.5 section 4.2 step 2).
       checkOverlap: (feature) => this.#lockStep(() => checkOverlap(this.#overlapDeps(repos), this.#featureStore().get(feature.id) ?? feature)),
       adminMode: this.#adminMode(),
+      policy: () => this.#policyInForce(),
       fork: (featureId) => this.#forkFromMain(repos, featureId),
       // A closed block asks no one to approve its start, leaves the promotion queue and frees each start it held.
       released: async (featureId) => {
@@ -2591,6 +2609,7 @@ export class ProjectAgent extends Agent {
         delegates: async () => rules.delegates,
         roundLimit: this.#roundLimit(),
         adminMode: this.#adminMode(),
+        policy: () => this.#policyInForce(),
         landed: (featureId) => this.#featureStore().get(featureId)?.state === "landed",
         trial: (featureId, part) => trialStanding(this.#partTrialStore(), this.#reviewStore(), featureId, part),
         records: (featureId) => this.#featureStore().records(featureId),
@@ -2662,6 +2681,7 @@ export class ProjectAgent extends Agent {
       split: (featureId) => this.#splitStore().get(featureId),
       scopeEdges: () => this.#scopeEdgeStore().snapshot(),
       recordCommits: (featureId) => this.#recordRepoStore().commits(featureId),
+      routeOf: this.#routeOf(repos),
     };
   }
 
@@ -2722,9 +2742,17 @@ export class ProjectAgent extends Agent {
    * Advance notice for `get_work`: the parts waiting on `caller`, the plan of the feature the session
    * works on and the runner's verdicts on the session's reviews; undefined for another owner's session.
    */
-  async planWork(caller: string, sessionId: string): Promise<PlanWork | undefined> {
+  async planWork(caller: string, sessionId: string, repos: ProjectRepos): Promise<PlanWork | undefined> {
     if (this.sessionHeartbeat(caller, sessionId).status !== "ok") return undefined;
-    const deps = { features: this.#featureStore(), routes: this.#planRouteStore(), reviews: this.#reviewStore(), keeper: (id: string) => this.#planKeeper(id) };
+    const inForce = await this.#policyInForce();
+    const deps = {
+      features: this.#featureStore(),
+      routes: this.#planRouteStore(),
+      reviews: this.#reviewStore(),
+      keeper: (id: string) => this.#planKeeper(id),
+      policy: inForce,
+      routeOf: this.#routeOf(repos),
+    };
     return planWork(deps, caller, sessionId, this.#roundLimit());
   }
 
@@ -2751,6 +2779,7 @@ export class ProjectAgent extends Agent {
         scopeMap: () => this.#scopeMap(repos),
         adminMode: this.#adminMode(),
         trial: (featureId, part) => trialStanding(this.#partTrialStore(), this.#reviewStore(), featureId, part),
+        policy: () => this.#policyInForce(),
       },
       available: () => this.#available(),
     };
@@ -2759,6 +2788,68 @@ export class ProjectAgent extends Agent {
   /** PENGUIN_PLAN_ADMIN_MODE: whether a person approves every plan part. */
   #adminMode(): boolean {
     return parseAdminMode((this.env as unknown as ProjectAgentEnv).PENGUIN_PLAN_ADMIN_MODE);
+  }
+
+  /** Each part's route under the policy in force, from the checks as they stand (validation.ts policyRoute). */
+  #routeOf(repos: ProjectRepos): (plan: Plan, part: PlanPart) => Promise<PolicyRoute> {
+    return async (plan, part) => {
+      const checks = this.#planApprovalDeps(repos).checks as PartCheckDeps;
+      const routing = routePart(plan, part, checks.reviews(plan.featureId), await checks.scopeMap(), false, checks.trial?.(plan.featureId, part));
+      return policyRoute(await this.#policyInForce(), routing);
+    };
+  }
+
+  /** The newest verified `review_policy_changed` record's policy, kept until a newer record is stored. */
+  #storedPolicy: { readonly newest: string | undefined; readonly policy: Promise<StoredPolicy> } | undefined;
+
+  /** The sandbox's review policy as stored (review-policy.ts): each record's signature verified once per change. */
+  #reviewPolicy(): Promise<StoredPolicy> {
+    const records = this.#featureStore().records(PROJECT_RECORDS);
+    const newest = records.at(-1)?.recordId;
+    if (this.#storedPolicy === undefined || this.#storedPolicy.newest !== newest) {
+      const policy = this.#loadServiceKey().then(({ publicKey }) => readReviewPolicy(records, (record) => verifyFeatureRecord(record, publicKey)));
+      policy.catch(() => (this.#storedPolicy = undefined));
+      this.#storedPolicy = { newest, policy };
+    }
+    return this.#storedPolicy.policy;
+  }
+
+  /** The policy every decision reads: the stored one, or Production locked while admin mode is on. */
+  async #policyInForce(): Promise<PolicyInForce> {
+    return policyInForce((await this.#reviewPolicy()).policy, this.#adminMode());
+  }
+
+  /** The settings view for `caller` (GET /api/review-policy): the policy, who changed it and the 30-day split. */
+  async reviewPolicyView(caller: string, repos: ProjectRepos): Promise<ReviewPolicyView> {
+    const scopeMap = (await this.#reviewRules(repos)).scopeMap;
+    return reviewPolicyView(await this.#reviewPolicy(), this.#adminMode(), scopeMap, caller, this.#database(), Date.now());
+  }
+
+  /**
+   * `caller`, the person the dashboard session names, sets the review policy (review-policy.ts). Only a
+   * team lead may, never in admin mode. Penguin then decides again each pending part under it.
+   */
+  changeReviewPolicy(caller: string, input: unknown, repos: ProjectRepos): Promise<PolicyChangeOutcome> {
+    return this.#featuresChanging(
+      this.#planStep(async () => {
+        const outcome = await changeReviewPolicy(
+          {
+            features: this.#featureStore(),
+            scopeMap: async () => (await this.#reviewRules(repos)).scopeMap,
+            sign: async (record) => signFeatureRecord(record, (await this.#loadServiceKey()).privateKey),
+            current: () => this.#reviewPolicy(),
+            adminMode: this.#adminMode(),
+          },
+          caller,
+          input,
+        );
+        if (outcome.status !== "ok") return outcome;
+        // The new policy applies to the parts decided after it: each pending part is read again now.
+        const pending = new Set(this.#planRouteStore().pendingFeatures());
+        for (const featureId of pending) await approveCleanParts(this.#planApprovalDeps(repos), featureId);
+        return outcome;
+      }),
+    );
   }
 
   /**

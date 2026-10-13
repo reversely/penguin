@@ -125,6 +125,9 @@ export default {
               return approved.status === "ok" ? { status: "ok", lock: approved.lock } : approved;
             },
             planParts: async (owner) => agent.planInbox(owner, repos),
+            reviewPolicy: async (owner) => agent.reviewPolicyView(owner, repos),
+            // The person changing the policy is the session's person, named by the dashboard route, never by the body.
+            changeReviewPolicy: async (owner, policy) => agent.changeReviewPolicy(owner, policy, repos),
             // The decider is the session's person, named by the dashboard route, never by the body.
             decidePlanPart: async (owner, decision) => {
               const decided =

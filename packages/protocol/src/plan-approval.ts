@@ -50,6 +50,7 @@ import {
 } from "./plan.ts";
 import type { ReviewException, StoredShapeChange } from "./review.ts";
 import { checkSchema, type JsonSchema, type SchemaError } from "./schema-check.ts";
+import { POLICY_ROUTE_SCHEMA, type PolicyRoute } from "./validation.ts";
 
 /** One review of a scope as the routing reads it: the runner's verdict and the exceptions it raised. */
 export interface PartReviewResult {
@@ -303,6 +304,8 @@ export interface PlanPartRequest {
   /** The newest review of each scope the part touches, with its form and side-by-side run. */
   readonly reviews: readonly ReviewView[];
   readonly routing: PartRouting;
+  /** The review policy's rule that sends the part to Penguin or a person (validation.ts). */
+  readonly route: PolicyRoute;
   /** The latest requested change: who asked, for which revision, and their words as data. */
   readonly changeRequest: { readonly by: string; readonly revision: number; readonly text: string } | null;
   readonly read: boolean;
@@ -464,6 +467,7 @@ const INBOX_FIELDS = {
         breaks: { type: "array", items: BREAK_VIEW_SCHEMA },
         reviews: { type: "array", items: REVIEW_VIEW_SCHEMA },
         routing: record({ inPerson: { type: "boolean" }, reasons: { type: "array", items: REASON } }),
+        route: POLICY_ROUTE_SCHEMA,
         changeRequest: {
           anyOf: [
             record({ by: PERSON, revision: { type: "integer", minimum: 1 }, text: { type: "string", maxLength: PLAN_LIMITS.changeRequestLength } }),

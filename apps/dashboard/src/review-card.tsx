@@ -6,7 +6,7 @@
 // of the list they share and a few examples, with the full table (GET /api/reviews/<id>/differences)
 // one press away, a page at a time. Every value renders as React text.
 
-import type { BreakView, PlanPartFile, ReviewDifferences, ReviewDifferenceSet, ReviewView, SideBySideBreakdown, SideBySideSetView } from "@penguin/protocol";
+import { VALIDATION_KIND_LABEL, type BreakView, type PlanPartFile, type ReviewDifferences, type ReviewDifferenceSet, type ReviewView, type SideBySideBreakdown, type SideBySideSetView } from "@penguin/protocol";
 import { useEffect, useId, useRef, useState } from "react";
 
 import { Agent } from "./agent-directory.tsx";
@@ -31,6 +31,7 @@ export function ReviewCard({ review }: { readonly review: ReviewView }) {
       <div className="review-form">
         <header className="review-head">
           <h4 className="review-title">Review of {review.scope}</h4>
+          <span className="tag tag-data kind-tag">{VALIDATION_KIND_LABEL.logic}</span>
           <span className={`tag review-state review-state-${review.state}`}>{review.state}</span>
         </header>
         <div className="review-meta">
@@ -60,6 +61,7 @@ export function ReviewCard({ review }: { readonly review: ReviewView }) {
         </ul>
         {review.storedDataMarker === null ? null : (
           <p className="muted review-stored">
+            <span className="tag tag-data kind-tag">{VALIDATION_KIND_LABEL.stored_data}</span>{" "}
             {review.storedDataMarker.kind} marker <code>{review.storedDataMarker.evidence}</code>
           </p>
         )}
@@ -85,6 +87,7 @@ export function ReviewCard({ review }: { readonly review: ReviewView }) {
       ) : (
         <div className="side-by-side">
           <p className="tool-line">
+            <span className="tag tag-data kind-tag">{VALIDATION_KIND_LABEL.data_matching}</span>
             <code className="tool-name">{review.sideBySide.tool}</code>
             <code className="muted">{review.sideBySide.commandId}</code>
             <span>

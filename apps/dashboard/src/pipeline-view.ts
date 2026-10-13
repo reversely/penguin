@@ -3,7 +3,7 @@
 // bar (one per person per stage, with that person's parts and edit tasks) and a steward's queue. Pure, so the rules are tested without a browser (test/pipeline-view.test.ts). Every
 // string is a bare label, a count or one clause with no comma.
 
-import { PENGUIN_APPROVER } from "@penguin/protocol";
+import { blockCheckKind, BLOCK_CHECK_NAMES, PENGUIN_APPROVER, type BlockCheckName, type ValidationKind } from "@penguin/protocol";
 import type { EditAskReason, EditQueue, EditTaskKind, EditTaskState, EditTaskView, FeaturePipeline, JobFact, JobStatus, PipelineBranch, PipelineStageKey, PipelineStrip } from "@penguin/protocol";
 
 import { counted, partNumber, PENGUIN_NAME, RUN_KIND_LABEL, shortSha } from "./feature-view.ts";
@@ -61,6 +61,28 @@ const approver = (by: string | null) => (by === null ? null : by === PENGUIN_APP
 /** A place by its name alone: `analytics`, `retention-dashboard`. */
 export function placeName(place: { readonly kind: "scope"; readonly scope: string } | { readonly kind: "feature"; readonly feature: string }): string {
   return place.kind === "scope" ? place.scope : place.feature;
+}
+
+/**
+ * The kind of validation a job's result belongs to, or null for a job that checks nothing: a start is
+ * an overlapping start, a part in review is its Logic form, a block check or a run is Tests.
+ */
+export function jobKind(fact: JobFact): ValidationKind | null {
+  switch (fact.kind) {
+    case "start":
+      return "overlapping_starts";
+    case "facts":
+    case "block":
+      return "tests";
+    case "part":
+      return "logic";
+    case "check":
+      return (BLOCK_CHECK_NAMES as readonly string[]).includes(fact.check) ? blockCheckKind(fact.check as BlockCheckName) : "tests";
+    case "protected":
+      return "protected_paths_and_place";
+    default:
+      return null;
+  }
 }
 
 /** One job as a label and one fact. */
@@ -131,7 +153,7 @@ const EXPAND_FACT: Readonly<Record<Extract<JobFact, { kind: "expand" }>["state"]
 };
 
 function partFact(fact: Extract<JobFact, { kind: "part" }>): string {
-  if (fact.state === "approved") return `Approved by ${approver(fact.approvedBy) ?? fact.owner}`;
+  if (fact.state === "approved") return fact.approvedBy === PENGUIN_APPROVER ? `Approved by ${PENGUIN_NAME}` : `Approved by ${fact.approvedBy ?? fact.owner} in the dashboard`;
   if (fact.state === "round_limit") return "Past the round limit";
   if (fact.state === "change_requested") return "Change requested";
   if (fact.review === "none") return "No review yet";

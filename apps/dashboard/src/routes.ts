@@ -11,6 +11,8 @@ export type Route =
   | { readonly page: "person"; readonly person: string }
   | { readonly page: "inbox" }
   | { readonly page: "identities" }
+  /** The sandbox's review policy: who decides each type of approval and the split of approvals. */
+  | { readonly page: "policy" }
   | { readonly page: "new-issue" }
   /** One feature's page: its declaration, merge plan, checks, tools and record. */
   | { readonly page: "feature"; readonly featureId: string }
@@ -26,6 +28,9 @@ export function issueAllPath(issueId: string): string {
 
 /** The org page. */
 export const ORG_PATH = "/org";
+
+/** The review policy's settings view. */
+export const POLICY_PATH = "/review-policy";
 
 /** A team's page. A team id is lowercase letters, digits and hyphens, or `person:<id>` for a one-person team. */
 export function teamPath(team: string): string {
@@ -56,6 +61,7 @@ export function parseRoute(pathname: string, search = ""): Route | undefined {
     return person ? { page: "person", person } : { page: "team", team: null };
   }
   if (pathname === ORG_PATH) return { page: "org" };
+  if (pathname === POLICY_PATH) return { page: "policy" };
   const team = /^\/teams\/((?:person:)?[a-z0-9-]{1,64})$/.exec(pathname)?.[1];
   if (team !== undefined) return { page: "team", team };
   const person = /^\/people\/([a-z0-9-]{1,64})$/.exec(pathname)?.[1];

@@ -29,6 +29,7 @@ import {
   type BoardFacts,
 } from "./inbox-view.ts";
 import { STATE_LABEL } from "./issue-view.ts";
+import { ValidationPanel } from "./review-policy.tsx";
 import { linkHandler } from "./links.ts";
 import { useArrivals } from "./motion.tsx";
 import { approvalCount, ApprovalsInbox, type ApprovalsState } from "./approvals.tsx";
@@ -181,6 +182,7 @@ export function InboxPage({ approvals, navigate, onSignedOut }: PageProps) {
       <header className="page-header">
         <h1>Inbox</h1>
       </header>
+      <ValidationPanel navigate={navigate} />
       <ApprovalsInbox state={approvals} navigate={navigate} onSignedOut={onSignedOut} />
       {empty ? <p className="inbox-empty">Please open your team page to follow running features</p> : null}
     </div>

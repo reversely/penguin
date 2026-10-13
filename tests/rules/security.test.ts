@@ -1,17 +1,22 @@
 // PRD 0.5 section 8 (security and permissions): records are signed and a changed record fails its
 // signature; a bridge gets write only where its person may write; a viewer sees changed lines only
-// when the plan concerns them; a dashboard session can be neither forged nor kept past its expiry.
+// when the plan concerns them; a dashboard session can be neither forged nor kept past its expiry; the
+// review policy changes only by a team lead's signed record (#175).
 
 import assert from "node:assert/strict";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
 import { canonicalBytes } from "@penguin/issues";
+import { APPROVAL_TYPES, policyInForce, policyRoute, PRESET_POLICIES, REVIEW_PRESETS, type ReviewPolicy } from "@penguin/protocol";
 import { parseScopeMap, parseTeams } from "@penguin/scope-map";
 
 import { allowedScope, isPermitted } from "../../apps/worker/src/tokens.ts";
 import { decodeSession, encodeSession, sessionKey } from "../../apps/worker/src/session.ts";
 import { mayReadPartLines } from "../../services/project-agent/src/dashboard-views.ts";
-import { signFeatureRecord, type UnsignedFeatureRecord } from "../../services/project-agent/src/feature-store.ts";
+import { FeatureStore, signFeatureRecord, verifyFeatureRecord, type UnsignedFeatureRecord } from "../../services/project-agent/src/feature-store.ts";
+import type { SqlDatabase } from "../../services/project-agent/src/issue-index.ts";
+import { changeReviewPolicy, PROJECT_RECORDS, readReviewPolicy } from "../../services/project-agent/src/review-policy.ts";
 
 const fromBase64Url = (value: string) => Uint8Array.from(atob(value.replace(/-/g, "+").replace(/_/g, "/")), (char) => char.charCodeAt(0));
 
@@ -54,4 +59,54 @@ test("a dashboard session cookie cannot be altered and expires", async () => {
   assert.equal(await decodeSession(key, cookie, 3_000), undefined);
   const tampered = `${cookie.slice(0, -2)}${cookie.endsWith("A") ? "B" : "A"}A`;
   assert.equal(await decodeSession(key, tampered, 1_000), undefined);
+});
+
+// Issue #175: the sandbox's review policy. Only a team lead changes it, never while admin mode locks it;
+// a record whose signature fails, or that names another person than its author, is refused; and no
+// policy lets Penguin approve a part whose tests have not passed.
+
+/** One in-memory SQLite database with the ProjectAgent's SQL surface. */
+function memorySql(): SqlDatabase {
+  const db = new DatabaseSync(":memory:");
+  return { exec: (query, ...bindings) => db.prepare(query).all(...(bindings as never[])) as Record<string, string | number | null>[], transaction: (body) => body() };
+}
+
+async function policyDeps(adminMode = false) {
+  const keys = (await crypto.subtle.generateKey("Ed25519", true, ["sign", "verify"])) as CryptoKeyPair;
+  const features = new FeatureStore(memorySql());
+  const current = () => readReviewPolicy(features.records(PROJECT_RECORDS), (record) => verifyFeatureRecord(record, keys.publicKey));
+  return { keys, features, current, deps: { features, scopeMap: async () => scopeMap, sign: (draft: UnsignedFeatureRecord) => signFeatureRecord(draft, keys.privateKey), current, adminMode } };
+}
+
+test("only a team lead changes the review policy; admin mode refuses every change and stays Production", async () => {
+  const { deps, current } = await policyDeps();
+  const throwaway = PRESET_POLICIES.throwaway;
+  assert.equal((await changeReviewPolicy(deps, "jun", throwaway)).status, "rejected", "jun is a member, not the lead");
+  assert.equal((await current()).policy.preset, "dev");
+  assert.equal((await changeReviewPolicy(deps, "priya", { ...throwaway, changed_by: "jun" })).status, "rejected", "a field beyond preset and rows is refused");
+  assert.equal((await changeReviewPolicy(deps, "priya", throwaway)).status, "ok");
+  assert.equal((await current()).policy.preset, "throwaway");
+  const locked = await changeReviewPolicy({ ...deps, adminMode: true }, "priya", PRESET_POLICIES.dev);
+  assert.deepEqual([locked.status, locked.status === "rejected" ? locked.reason : null], ["rejected", "locked"]);
+  assert.deepEqual(policyInForce((await current()).policy, true), { policy: PRESET_POLICIES.production, locked: true });
+});
+
+test("a forged review_policy_changed record, or one naming someone other than its author, is refused", async () => {
+  const { keys, features, current } = await policyDeps();
+  const forger = (await crypto.subtle.generateKey("Ed25519", true, ["sign", "verify"])) as CryptoKeyPair;
+  const draft = (payload: Record<string, unknown>, person: string) => features.draftRecord(PROJECT_RECORDS, "review_policy_changed", { person }, payload);
+  features.addRecord(await signFeatureRecord(draft({ old: PRESET_POLICIES.dev, new: PRESET_POLICIES.throwaway, changed_by: "priya" }, "priya"), forger.privateKey));
+  assert.equal((await current()).policy.preset, "dev", "a record signed with another key is refused");
+  features.addRecord(await signFeatureRecord(draft({ old: PRESET_POLICIES.dev, new: PRESET_POLICIES.throwaway, changed_by: "jun" }, "priya"), keys.privateKey));
+  assert.equal((await current()).policy.preset, "dev", "a record naming another person than its author is refused");
+});
+
+test("no review policy lets Penguin approve a part whose tests have not passed", () => {
+  const failing = { inPerson: true, reasons: [{ kind: "tests", scope: "analytics", status: "failed", breaks: 1 }] } as const;
+  for (const preset of REVIEW_PRESETS) {
+    for (let bits = 0; bits < 2 ** APPROVAL_TYPES.length; bits += 1) {
+      const rows = Object.fromEntries(APPROVAL_TYPES.map((type, index) => [type, bits & (1 << index) ? "penguin" : "person"])) as ReviewPolicy["rows"];
+      assert.notEqual(policyRoute(policyInForce({ preset, rows }, false), failing).decider, "penguin", `${preset} ${bits}`);
+    }
+  }
 });

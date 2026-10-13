@@ -33,8 +33,10 @@
 //    `ruleWrittenRouting`): Penguin approves the part when the tests pass and no protected invariant
 //    differs. A failing trial makes the part an edit task for the target's builder or the steward of
 //    the scope's DRI, with the failing check attached. A check no edit settles, such as a protected
-//    path or admin mode, sends it to its owner in person. Each decision is a signed
-//    `migration_part_decided` record.
+//    path or admin mode, sends it to its owner in person. The sandbox's review policy (#175,
+//    `migrationPolicyRoute`) lets Penguin approve past a flagged check whose type it sets to Penguin,
+//    and Production sends a part whose trial passed to a person. Each decision is a signed
+//    `migration_part_decided` record naming the policy's rule.
 // 5. **Written.** Penguin's check runner writes an approved part's patch into its target fork through
 //    the fix-write checks (fix-write.ts `MigrationWrites`): the running feature's fork, or the plan's
 //    block feature for code on main. An edit task's kept commit writes its part. Either is a signed
@@ -75,9 +77,12 @@ import {
   partRouting,
   retiringUses,
   reviewExceptions,
-  ruleWrittenRouting,
+  migrationPolicyRoute,
+  policyInForce,
+  policyRoutePayload,
   isMigrationPlanId,
   type EditRoutingContext,
+  type PolicyInForce,
   type ImpactReport,
   type ImpactUse,
   type InvariantView,
@@ -368,6 +373,8 @@ export interface MigrationDeps {
   readonly checkOverlap: (feature: Feature) => Promise<unknown>;
   /** The project requires a person for every part (PENGUIN_PLAN_ADMIN_MODE). */
   readonly adminMode: boolean;
+  /** The sandbox's review policy in force (review-policy.ts); absent, Dev, or Production locked in admin mode. */
+  readonly policy?: () => Promise<PolicyInForce>;
   /** Forks main into the feature's repo and answers its name, or null when no fork can be made here. */
   readonly fork?: (featureId: string) => Promise<string | null>;
   /**
@@ -840,7 +847,8 @@ function failingChecks(trial: StoredPartTrial, reasons: readonly PartRoutingReas
 
 /**
  * A part trial reported (part-trial.ts): the checks of PRD 4.3 on a rule-written migration part's
- * trial, read by `ruleWrittenRouting` (PRD 0.5 section 4.2 step 2). The part needs no review form.
+ * trial, read by `ruleWrittenRouting` under the review policy (PRD 0.5 section 4.2 step 2, #175). The
+ * part needs no review form.
  * Penguin approves it when its tests pass and no protected invariant differs, and asks the check
  * runner to write it into its target fork. A failing trial makes it an edit task for the target's
  * builder or steward with the failing checks attached. A check no edit settles sends it to its owner
@@ -863,7 +871,8 @@ export async function migrationTrialReported(deps: MigrationDeps, trial: StoredP
     { reviews: [], checkpoint: plan.promotion, adminMode: deps.adminMode },
     protectedLookup(scopeMap),
   );
-  const decided = ruleWrittenRouting([...routing.reasons, ...protectedDifferences(trial, await deps.invariants())]);
+  const inForce = deps.policy === undefined ? policyInForce(undefined, deps.adminMode) : await deps.policy();
+  const decided = migrationPolicyRoute(inForce, [...routing.reasons, ...protectedDifferences(trial, await deps.invariants())]);
   const words = decided.reasons.map(reasonWords);
   const state: MigrationPartState = decided.route === "approve" ? "approved" : decided.route === "task" ? "task" : "in_person";
   // A part rebuilt from an edit task's kept commit (penguin-rebuild.ts) is tried the same way.
@@ -880,6 +889,8 @@ export async function migrationTrialReported(deps: MigrationDeps, trial: StoredP
       decision: state,
       approved_by: state === "approved" ? "penguin" : null,
       reasons: words.slice(0, 20),
+      owner: plan.owner,
+      review_policy: policyRoutePayload(decided.policy),
     }),
   );
   deps.features.addRecord(record);

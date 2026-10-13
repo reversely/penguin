@@ -9,6 +9,16 @@ affected feature's fork. Penguin then promotes everything to main together as on
 checks every step with deterministic tools. People step in only to approve an overlapping start, to
 approve a plan that touches their code, or for an exception.
 
+## How Penguin decides
+
+Penguin decides whether a change may reach main with six kinds of validation: Tests, Logic, Data
+matching, Stored data, Protected paths and place, Overlapping starts. Each kind has its own
+check and its own tool. A failed test always goes back to the agent. For the other kinds, each
+project's review policy sets whether Penguin or a person decides, from Throwaway (Penguin decides,
+owners are told) through Dev to Production (a person decides every part).
+[docs/validation.md](docs/validation.md) defines each kind and
+[docs/review-policies.md](docs/review-policies.md) the policies.
+
 ## Answers to the competition questions
 
 Penguin is an entry in Cloudflare's competition for the layer above Artifacts
