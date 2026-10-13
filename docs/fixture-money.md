@@ -1,6 +1,6 @@
 # Money-minor-units fixture
 
-The money-minor-units fixture is the Git repository of Larder, the grocery marketplace in
+The money-minor-units fixture is the Git repository of Larder, the sample grocery delivery site in
 [case-study-money.md](case-study-money.md). Fourteen people in four teams are DRI for 30 scopes.
 Forty-one features run as forks of main. The repository carries the four use cases of PRD
 section 1, which run in order on one main:

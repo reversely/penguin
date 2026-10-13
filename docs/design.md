@@ -890,8 +890,10 @@ that also fails another check stays with its author. Its stored data reason is l
 
 ### Edit tasks and who runs them
 
-Each person runs a steward and one builder per active feature. Every edit Penguin needs from an
-agent becomes an edit task for one of them.
+Each person runs a steward and one builder per active feature. A builder may split its feature into
+bounded tasks for up to five sub-agents on the person's machine; they work as the builder, under its
+charter and its feature token. Every edit Penguin needs from an agent becomes an edit task for the
+steward or the builder.
 
 1. Penguin routes each place of a task by charter. A place in a feature's fork goes to that
    feature's builder when the builder's charter holds it. Any other place goes to the steward of
