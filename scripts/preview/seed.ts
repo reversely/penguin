@@ -1974,6 +1974,8 @@ export interface LarderCommit {
   /** `owner` when absent; a person when another person's agent wrote the commit into this fork. */
   readonly author?: string;
   readonly plan?: boolean;
+  /** The agent reports the commit as a checkpoint and calls `check`, with no plan: case 2's checkpoint and revision. */
+  readonly check?: boolean;
   readonly merge?: string;
   readonly fix?: { readonly scope: string; readonly kind: string };
   readonly declares?: { readonly contracts?: Readonly<Record<string, readonly string[]>> };
@@ -2018,12 +2020,13 @@ const subjectOf = (commit: LarderCommit): string => commit.message.split("\n")[0
 /**
  * What a case's agents say on its caller items (`callers/case<N>.json`): the originating agent's
  * explanation of each receiving feature's differing calls, and that feature's agent's review note.
+ * A feature whose calls are `incidental` gets no review: the originating agent revises its change.
  */
 interface CallerWords {
   readonly explanations: Readonly<Record<string, string>>;
   /** Each receiving feature's differing calls: how the originating agent classifies them, with its reason. */
   readonly calls: Readonly<Record<string, { readonly kind: "intended" | "incidental"; readonly reason: string }>>;
-  readonly reviews: Readonly<Record<string, string>>;
+  readonly reviews?: Readonly<Record<string, string>>;
 }
 
 /** The originating agent's classification of every differing call of `item`, with the case's reason for its feature (#189). */
@@ -2065,8 +2068,9 @@ async function callerWords(preview: PreviewProject, useCase: number | undefined)
 /**
  * Each side's agent answers one caller item as the protocol asks (#188, #189): the receiving worktree's
  * agent confirms an unaffected caller, naming the replay run it read; the originating agent explains a
- * difference as expected with the case's words, classifying every differing call as intended, then
- * the receiving agent approves each call with evidence that counts and its note; a broken caller gets the
+ * difference with the case's words, classifying every differing call. A difference the case calls
+ * intended is `expected`: the receiving agent approves each call with evidence that counts and its
+ * note. One it calls incidental is `revising`: the item waits for the agent's next check. A broken caller gets the
  * originating plan's part on that feature as its fix, which the receiving agent approves. An item
  * sent to the worktree owner waits for that person's approval.
  */
@@ -2079,7 +2083,7 @@ async function answerCaller(preview: PreviewProject, item: CallerItem, words: Ca
   }
   const review = async () => {
     await preview.step(`review_caller ${where}`, async () =>
-      preview.callerCall({ action: "review", item: item.itemId, verdict: "approve", text: words?.reviews[item.feature] ?? "", ...(await callerApprovals(preview, item)) }),
+      preview.callerCall({ action: "review", item: item.itemId, verdict: "approve", text: words?.reviews?.[item.feature] ?? "", ...(await callerApprovals(preview, item)) }),
     );
   };
   switch (item.state) {
@@ -2090,10 +2094,12 @@ async function answerCaller(preview: PreviewProject, item: CallerItem, words: Ca
     case "differs":
     case "explained":
     case "changes_requested": {
+      if (item.state === "explained" && item.explanation?.kind === "revising") return;
       const text = words?.explanations[item.feature];
       if (text === undefined) throw new Error(`the case's callers file explains no difference in ${item.feature}`);
-      await preview.step(`explain_difference ${where}`, () => preview.callerCall({ action: "explain", item: item.itemId, kind: "expected", text, ...callerClasses(item, words) }));
-      return review();
+      const kind = words?.calls[item.feature]?.kind === "incidental" ? "revising" : "expected";
+      await preview.step(`explain_difference ${where}`, () => preview.callerCall({ action: "explain", item: item.itemId, kind, text, ...callerClasses(item, words) }));
+      return kind === "expected" ? review() : undefined;
     }
     case "broken":
     case "fix_rejected": {
@@ -2168,7 +2174,8 @@ async function landOrigin(preview: PreviewProject, feature: LarderFeature, words
  * Penguin answers is affected with no part. Each running feature with a part reviews its scope with
  * the case's form for the round. When the agent proposes again at a later `plan` commit, no one
  * decides the earlier plan. A review that raises an exception gets its author's request for the
- * change the next `revision` commit makes, which the agent answers with `revise_plan_part`. Each fix
+ * change the next `revision` commit makes, which the agent answers with `revise_plan_part`. At a
+ * commit marked `check` the agent reports a checkpoint and checks with no plan, as case 2 does. Each fix
  * written into another fork is reported there as a checkpoint, a `merge` commit takes main, and main
  * moves at each promotion.
  */
@@ -2337,6 +2344,14 @@ async function casesOneToThree(preview: PreviewProject, larder: Larder): Promise
       const checks = preview.runnerTools || origin.case === 3 || (origin.case === 1 && index === 0);
       if (checks) await preview.step(`check ${origin.id}`, () => preview.runnerTool(origin.id, "check"));
       await propose(origin, index);
+    } else if (commit.check === true) {
+      // The agent checks with no plan: the caller replay shows how the commit moves each running
+      // feature's calls. Each side answers its items once. A difference the agent revises waits
+      // for the next check; an unaffected caller is confirmed.
+      await preview.step(`checkpoint ${origin.id} ${tag}`, () => preview.checkpoint(origin.id, tagOf(origin, tag)));
+      await preview.step(`check ${origin.id} at ${tag}`, () => preview.runnerTool(origin.id, "check"));
+      const words = await callerWords(preview, origin.case);
+      for (const item of preview.callerItemsOf(origin.id).filter((each) => !callerItemSettled(each, "land"))) await answerCaller(preview, item, words);
     } else if (commit.fix?.kind === "revision") {
       // The originating agent answers the request with revise_plan_part, naming the revision commit
       // against the part's first base; its author's agent reviews the round with the round's form.
@@ -2366,8 +2381,11 @@ async function casesOneToThree(preview: PreviewProject, larder: Larder): Promise
       }
       // With caller items open, the agent checks again first: the caller replay then runs on the
       // forks as Penguin's updates left them, and each item whose calls changed asks its side again.
+      // A feature that wrote into no fork and already checked its head has nothing new to replay.
       const words = await callerWords(preview, feature.case);
-      if (preview.callerItemsOf(feature.id).length > 0) {
+      const checkedHead = preview.tools.list(feature.id).filter((run) => run.tool === "check").at(-1)?.checkpointSha === headSha;
+      const wrote = preview.features.records(feature.id).some((stored) => (JSON.parse(stored.file) as { type: string }).type === "fix_write");
+      if (preview.callerItemsOf(feature.id).length > 0 && (wrote || !checkedHead)) {
         await preview.step(`check ${feature.id} before the land`, () => preview.runnerTool(feature.id, "check"));
         await answerCallers(preview, feature.id, words);
       }

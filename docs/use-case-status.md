@@ -26,16 +26,16 @@ the preview seed's run of the four cases (`scripts/preview/seed.ts`), checked by
 | Updates written into Jun's and Sam's forks | works | Larder run: Penguin's check runner copies Priya's modules into each fork and applies the plan's rules; one `fix_write` record per fork, written by Penguin (#178, #179, #180) |
 | Land as one block | works | Larder run: `land_requested`, a passing `block_checked` on main and every running fork, then one `promotion` (#171) |
 
-## Case 2: the helpful fix (merge plan)
+## Case 2: the helpful fix (caller replay, revision)
 
 | Step | State | Evidence or ticket |
 |---|---|---|
 | Open: Hugo's `structured-logs` starts from main after case 1 | works | Larder run. Noor's `pagination` declares `platform`, so Penguin approves the start and tells Noor |
-| Plan proposed at `local-day`, once `start_of_local_day()` exists | works | Larder run: parts for `holiday-closures` and `weekly-digest` |
-| A test a fork already fails is not charged to the change | works | Larder run: `japan-launch` fails its yen test on its own head, so the facts run leaves it out and the plan has no part there (#170) |
-| Elif's and Sam's parts approved by Penguin; no one asked; both told | works | Larder run: both trials pass and both forms hold |
-| Forms filled in headless | works | Live check `tests/e2e/review-task-run.test.ts` (#138), on the helpful-fix fixture |
-| Fixes written and land as one block | works | Larder run, as in case 1. `japan-launch`'s own yen failure fails no block check (#171) |
+| Check at `checkpoint`: the caller replay shows `holiday-closures` and `weekly-digest` differ | works | Larder run: `start_of_day()` returns UTC midnight, so a closure at 20:00 on Christmas at UTC-08:00 and a digest west of UTC move (#187) |
+| Hugo's agent answers both differences `revising`, every call `incidental` | works | Larder run, with `callers/case2.json` (#188, #189) |
+| Check at `utc-day`: both features' callers `unaffected` | works | Larder run: `start_of_day()` is main's again and `log_day()` calls the new `start_of_utc_day()` |
+| Elif's and Sam's agents confirm their callers, each citing the revision's replay run | works | Larder run (#189) |
+| Land as one block with no plan and no write into another fork | works | Larder run. `japan-launch`'s yen failure on its fork head alone fails no block check (#171) |
 
 ## Case 3: the dependency bump (merge plan)
 
@@ -76,6 +76,7 @@ The Larder run carries the fixture's one split feature from open to contract aft
 | Question | State | Ticket |
 |---|---|---|
 | Who makes an edit when no session is open | gap | #128, #129 |
+| Is a test a fork already fails charged to the change | works | No: the facts run and the block's tests check discount a test the fork fails on its head alone (#170, #171, `tests/rules/facts.test.ts`). On Larder `japan-launch` fails its yen test alone and fails no block check of cases 2 and 3 |
 | Does the stored-data rule apply to every reviewing scope or only those that read the changed data | works | Only those that read it, per the impact graph of the reviewing scope (#126) |
 | Who carries the marker for stored data | works | The change that owns the store declares a migration or backfill once (`storeMarker`), covering every scope that only reads it. A scope that persists derived data names its own cutover marker. Without the owner's marker, a reader's part goes to the originating person (#132) |
 | Does a combined run test the changing person's own dependent scope | works | Yes, on the checkpoint itself with no merge. The scheduler schedules a run of the changer's own dependent scopes, and the scheduled runs and the agent `check` tool name the changer. On the helpful fix Priya is DRI for `ingestion` and `shared-dates`: her checkpoint runs the `ingestion` tests and passes, in a scheduled run and in a `check`, and a change that sends `start_of_day` back to local midnight fails them (#147, #155, `tests/test_analysis.py`, no test yet (docs/testing.md), no test yet (docs/testing.md)) |

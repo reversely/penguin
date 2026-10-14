@@ -109,8 +109,9 @@ LARDER_CASES = [
             "messaging/tests/test_digest_schedule.py::test_goes_out_at_the_local_hour_west_of_utc"
         },
     ),
-    ("structured-logs-local-day", "holiday-closures-local-day", set()),
-    ("structured-logs-local-day", "weekly-digest-local-day", set()),
+    # Hugo's revision keeps start_of_day() as main has it, so both forks pass unchanged.
+    ("structured-logs-utc-day", "holiday-closures-checkpoint", set()),
+    ("structured-logs-utc-day", "weekly-digest-consent", set()),
     (
         "dependency-audit-checkpoint",
         "instant-payouts-checkpoint",

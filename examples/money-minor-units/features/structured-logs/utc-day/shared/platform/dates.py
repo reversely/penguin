@@ -1,12 +1,12 @@
 """Day boundaries shared by every scope.
 
-Every datetime in this repository carries a UTC offset. ``start_of_day`` returns a UTC midnight, so
-every datetime that names one instant falls on one day, whatever offset the datetime carries.
-``start_of_local_day`` returns the midnight of a store's or a shopper's local day, for code that
-groups or schedules by that local calendar.
+Every datetime in this repository carries a UTC offset. ``start_of_day`` keeps the offset of the
+datetime it receives, so a caller picks the day by converting to an offset first.
+``start_of_utc_day`` returns a UTC midnight, so every datetime that names one instant falls on one
+day, whatever offset the datetime carries.
 """
 
-from datetime import UTC, date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 
 
 def require_offset(moment: datetime) -> None:
@@ -35,17 +35,18 @@ def parse_utc_offset(text: str) -> timedelta:
     return offset
 
 
+def _midnight(moment: datetime) -> datetime:
+    """Midnight at the start of the day of ``moment``, in the UTC offset ``moment`` carries."""
+    require_offset(moment)
+    return moment.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
 def start_of_day(moment: datetime) -> datetime:
+    """Return midnight at the start of the day of ``moment``, in the UTC offset of ``moment``."""
+    return _midnight(moment)
+
+
+def start_of_utc_day(moment: datetime) -> datetime:
     """Return midnight UTC at the start of the UTC day that contains ``moment``."""
     require_offset(moment)
-    return moment.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
-
-
-def start_of_local_day(moment: datetime, utc_offset: timedelta) -> datetime:
-    """Return local midnight at the start of the day that contains ``moment`` at ``utc_offset``.
-
-    The result carries ``utc_offset``.
-    """
-    require_offset(moment)
-    local = moment.astimezone(timezone(utc_offset))
-    return local.replace(hour=0, minute=0, second=0, microsecond=0)
+    return _midnight(moment.astimezone(UTC))

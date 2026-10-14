@@ -7,8 +7,9 @@ section 1, which run in order on one main:
 
 1. Priya's shopper accounts merge a shopper's identities (`accounts-merge`): a merge plan with a
    broken invariant, two revisions, a backfill and a verify part.
-2. Hugo's structured logs change the shared `start_of_day()` to UTC (`structured-logs`): a merge
-   plan whose parts Penguin approves with no one asked.
+2. Hugo's structured logs change the shared `start_of_day()` to UTC (`structured-logs`): the
+   caller replay shows two running features' calls differ, so Hugo's agent revises its change.
+   The block reaches main with no plan and no write into another fork.
 3. Hugo's HTTP client upgrade (`dependency-audit`): a dependency diff and idempotency keys written
    into two running features.
 4. Ines's money in minor units (`money-minor-units`): the split. Its first checkpoint is the expand.
@@ -60,13 +61,14 @@ Each commit names its `source` directory under `features/<feature id>/`, a `date
 `tag` and an `author` (`owner`, `codemod` or a person). Penguin's update of a fork names `update` in
 place of `source`: the originating feature (`from`), the tag it copies from and the modules it
 copies (`copies`). Its author is `codemod`, which writes as `Penguin <penguin@penguin.invalid>`, the
-check runner's fix writer. A fix the originating agent writes into another person's fork, as in
-case 2, names the originating person as its author. A merge of main that lays nothing of its own
+check runner's fix writer. A fix the originating agent writes into another person's fork names the
+originating person as its author. A merge of main that lays nothing of its own
 names no `source`. A commit that changes a scope's code for a plan names
 its `fix`: the scope, the kind and the pytest node IDs it makes pass. The kind is `fix` (a fix an
 originating agent writes), `revision` (a change a person asked for), `backfill` (a backfill of a
 store whose shape changed) or `migration` (a migration of Ines's split). `plan: true` marks the
-commit at which the feature's agent proposes its merge plan. `declares` adds contracts per scope and
+commit at which the feature's agent proposes its merge plan. `check: true` marks a commit the
+feature's agent reports as a checkpoint and checks with no plan. `declares` adds contracts per scope and
 examples files to the penguin files of the commit's tree, as a running feature declares its new
 code. A checkpoint
 names in `fails_alone` the tests that fail on it alone. A commit with `"merge": "main"` merges main
@@ -214,8 +216,8 @@ Each case's originating feature opens from main as the case before it left it. `
 features of cases 2 and 3 in those scopes call the shared date helper and the HTTP client. Its affected
 features forked from `base` and are among Larder's forty readers and unaffected features. In cases
 1 and 3 no agent writes into another person's fork: each affected fork's fix is Penguin's update
-([Penguin's updates](#penguins-updates)). In case 2 each fix the originating agent writes into another
-person's fork is authored by the originating person. The merged trees below are the originating commit merged onto the affected fork with
+([Penguin's updates](#penguins-updates)). In case 2 Hugo's agent revises its change, so nothing
+is written into another person's fork. The merged trees below are the originating commit merged onto the affected fork with
 `git merge-tree --write-tree`, as Penguin's block check merges them. `tests/test_fixtures.py` checks
 every row.
 
@@ -287,30 +289,27 @@ verify part reads no form, so it does not wait for the marker.
 ### Case 2: the helpful fix
 
 `shared/platform/dates.py` holds `start_of_day()`, which returns midnight in the offset of the
-datetime it receives.
+datetime it receives. Hugo's structured logs need a UTC day. Elif's holiday closures and Sam's
+weekly digest read a local day from `start_of_day()`.
 
 | Tag suffix | Feature | Author | Change |
 |---|---|---|---|
 | `checkpoint` | `structured-logs` | Hugo | `start_of_day()` returns UTC midnight. `log_day()` files a log line under its UTC day |
-| `local-day` | `structured-logs` | Hugo | `start_of_local_day(moment, utc_offset)`, declared as a platform contract. The plan is proposed here |
+| `utc-day` | `structured-logs` | Hugo | `start_of_day()` returns midnight in the offset of its datetime again. The new `start_of_utc_day()`, declared as a platform contract, returns UTC midnight. `log_day()` calls it |
 | `checkpoint` | `holiday-closures` | Elif | `is_closed()` takes the store's local day from `start_of_day()` |
-| `local-day` | `holiday-closures` | Hugo | `is_closed()` calls `start_of_local_day()` with the store's offset |
-| `take-main` | `holiday-closures` | Elif | Merges main after case 2, which holds `start_of_local_day()` |
-| `local-day` | `weekly-digest` | Hugo | The digest's send time starts from `start_of_local_day()` with the shopper's offset, on the digest's `take-main` |
+| `checkpoint` | `weekly-digest` | Sam | The digest's send time starts from `start_of_day()` at the shopper's offset |
 
-Sam's digest took main after case 1, so its fork already holds case 1's `Shopper` when case 2's
-plan is tried there, and case 2 changes no stored shape the digest reads.
+Both `structured-logs` commits carry `check`. No commit is written into Elif's or Sam's fork and
+Hugo's agent proposes no plan. At `utc-day` both functions take the day's midnight from one private
+helper, `_midnight()`, so the diff from main still changes the body of `start_of_day()`. The impact
+report then lists `start_of_day()` as modified and the caller replay wraps it on both forks: their
+calls return what they return on main.
 
 | Merged tree | Fails |
 |---|---|
 | `structured-logs-checkpoint` onto `holiday-closures-checkpoint` | `test_holidays.py::test_a_closure_covers_the_stores_whole_local_day`: 20:00 on Christmas at UTC-08:00 is 04:00 UTC on 26 December |
 | `structured-logs-checkpoint` onto `weekly-digest-consent` | `test_digest_schedule.py::test_goes_out_at_the_local_hour_west_of_utc` |
-| `structured-logs-local-day` onto `holiday-closures-local-day` or `weekly-digest-local-day` | nothing |
-
-Each `local-day` fix in Elif's or Sam's fork imports `start_of_local_day()`, which only Hugo's fork
-holds until the block reaches main. Its tests run on a tree merged with `structured-logs-local-day`.
-On those trial trees the reviews `reviews/case2-store-dashboard.json` and
-`reviews/case2-messaging.json` are accepted with no exception, so Penguin approves both parts.
+| `structured-logs-utc-day` onto `holiday-closures-checkpoint` or `weekly-digest-consent` | nothing |
 
 ### Case 3: the dependency bump
 
@@ -535,8 +534,7 @@ date order up to the split's first commit:
   `fix_token`, `writeFix`, then `report_fix_write`. Each approval also opens the copy writes of the
   originating change's current modules, as the ProjectAgent does (`openCopyWrites`). After a
   behavioural part's write, the step `check runner copies <origin>'s modules into <feature>` claims
-  that fork's copy write and copies the modules: in case 2 `shared/platform/dates.py` reaches
-  `holiday-closures` and `weekly-digest`. A runner write that copies modules first fetches the
+  that fork's copy write and copies the modules. A runner write that copies modules first fetches the
   originating fork, as runner mode does. A claim the seed does not write at that step goes back to
   its place in the fork's order. Later fixture commits of that fork stand on the fixture's own copy
   of the fix, whose tree is the same. A `merge` commit takes main.
@@ -548,8 +546,12 @@ date order up to the split's first commit:
   does (`copiesBehind`). While an affected fork lacks the originating change's current modules,
   `land_feature` answers `copy_not_written`. The step `check runner copies <feature>'s modules into
   its affected forks` then writes the copy writes Penguin opened, and `land_feature <feature> again`
-  asks once more. In cases 1 to 3 every fork holds its modules before the first ask: the mechanical
-  and verify parts of cases 1 and 3 copy them in their own writes, so no land is refused.
+  asks once more. In cases 1 and 3 every fork holds its modules before the first ask: their
+  mechanical and verify parts copy them in their writes, so no land is refused. Case 2 has no
+  plan, so no fork waits on a copy.
+- At each commit marked `check` the originating agent reports a checkpoint and calls `check` with
+  no plan. Each side then answers the open caller items once, as
+  [Caller items on the preview seed](#caller-items-on-the-preview-seed) describes.
 
 In step mode (`node scripts/preview/dashboard.ts --example money-minor-units --step`) each of these is
 its own step in `GET /preview/steps`, and each case's feature page reaches its last stage: Promoted
@@ -561,7 +563,7 @@ The run on gn100:
 | Case | Rounds | People asked | Approved by Penguin |
 |---|---|---|---|
 | 1 | Plan at `checkpoint`: Sam's part for messaging's code on main waits on Priya, no one decides. Plan at `backfill`: Jun asks for a device limit. `limit-five`: Jun asks for a lower one. `limit-one`: every part approved | Jun: two requests, then the analytics part for code on main in person | Sam's two parts, Jun's cohort report part, loyalty's verify part |
-| 2 | One plan at `local-day` | none | `holiday-closures` and `weekly-digest` |
+| 2 | No plan: Hugo's agent revises at `utc-day` | none | none |
 | 3 | One plan at `checkpoint` | none | `instant-payouts` and `tip-jar` |
 
 Jun approves the analytics part for code on main in person. Jun's analytics forms name the cutover
@@ -569,8 +571,8 @@ marker `analytics/retention.py::retention_dashboard`, the dashboard Penguin's ru
 `ShopperMap.counted_as()`. Only Jun's fork holds it, so the trial of analytics' code on main refuses
 the form with `evidence_not_found`. The cohort report part is tried
 on Priya's limit of one (`newestRevision` in `part-trial.ts`), its form holds and Penguin approves
-it. In case 2, `japan-launch` fails its yen test on its own head, so the facts run leaves it out
-and the plan has no part there, and the block checks of cases 2 and 3 do not count it. In case 3 the agent's `check` reports the dependency diff with the
+it. `japan-launch` fails its yen test on its fork head alone, so the block checks of cases 2 and 3 do not
+count it. In case 3 the agent's `check` reports the dependency diff with the
 places `instant-payouts` and `tip-jar` import the client, and Hugo's own `retry-budget` and
 `rounding-mode`. Its caller replay ([design.md](design.md#caller-replay)) reports `differs` for
 `instant-payouts` and `tip-jar`: the timed-out payout and tip are sent twice. Case 1's agent also
@@ -583,36 +585,36 @@ calls `check` at its first checkpoint, whose caller replay reports `differs` for
 Each check's caller replay opens caller items ([design.md](design.md#caller-items-in-the-build)). The
 agents answer them with the words of `callers/case<N>.json`: the originating agent's explanation of each
 receiving feature's differing calls, the reason under `calls` that classifies each of those calls as
-`intended` and that feature's agent's review note. A call id is fixed only when the replay runs, so the
-file gives one reason per receiving feature and the seed applies it to every listed call and to the
-unlisted ones. The receiving agent cites each call's id as its evidence and names the replay run
-it read when it confirms. Case 3's flag readers also make a call from the test that `dependency-audit`
-appends to `shared/flags/tests/test_remote.py`. That test cannot be evidence for the change, so the
-agent cites the call that file's earlier test made.
+`intended` or `incidental` and, for an intended difference, that feature's agent's review note. A call
+id is fixed only when the replay runs, so the file gives one reason per receiving feature and the seed
+applies it to every listed call and to the unlisted ones. The receiving agent cites each call's id as
+its evidence and names the replay run it read when it confirms. Case 3's flag readers also make a call
+from the test that `dependency-audit` appends to `shared/flags/tests/test_remote.py`. That test cannot
+be evidence for the change, so the agent cites the call that file's earlier test made.
 
 - Before each write into a receiving fork, that fork's items are answered. Penguin's update waits until
   then: the originating agent explains each difference as expected (`explain_difference`), the
   receiving feature's builder approves it (`review_caller`), and a broken caller would get the plan's
   part on that feature as its fix (`propose_caller_fix`).
+- An incidental difference is the originating agent's to fix. The agent explains it with kind
+  `revising` and the item stays at `explained`, shown as Revising, until the agent's next check
+  replays the calls. No receiving agent reviews it.
 - Before the land, the originating agent calls `check` again (`check <feature> before the land`). The
   replay then runs on the forks as Penguin's updates left them. Each item whose calls changed resets,
   each item the replay no longer reaches is withdrawn and each new one opens. The receiving builders
-  confirm each unaffected caller (`confirm_caller`). The rest of the land runs as above.
+  confirm each unaffected caller (`confirm_caller`). The rest of the land runs as above. A feature that
+  wrote into no fork and already checked its head skips this check.
 - A land refused as `callers_pending`, or a promotion the block's own replay stops, gets the answers
   first and asks again. An item sent to the worktree owner waits for that person's approval, through
   the dashboard in step mode.
 
-The run on gn100 without the check runner's tools took 503 seconds:
+The run on gn100 without the check runner's tools took 588 seconds:
 
-| Case | Items opened at the first check | Before the writes | After the check before the land |
+| Case | Items opened at the first check | Before the writes | After the last check |
 |---|---|---|---|
 | 1 | 10: `differs` for `cohort-ltv` (`ShopperMap`) and `weekly-digest` (`Shopper`, `ShopperMap`), `unaffected` for seven other features | Priya's agent explains the three differences; Jun's and Sam's builders approve them | Every caller of `cohort-ltv` and `weekly-digest` is `unaffected` and is confirmed, with new items for `daily_active_users` and `is_subscribed`. `basket-size` and `store-league` are withdrawn. 12 items confirmed |
-| 3 | 4: `differs` for `instant-payouts`, `tip-jar`, `retry-budget` and `rounding-mode` | Hugo's agent explains the payout and the tip; Kofi's and Priya's builders approve them | `instant-payouts` and `tip-jar` are `unaffected` and confirmed. The flag service's second rollout read in Hugo's own `retry-budget` and `rounding-mode` is explained and approved |
-
-With the check runner's tools (step mode's default) the run took 629 seconds. Case 2's check also opens
-`differs` items for `holiday-closures` and `weekly-digest` (`callers/case2.json`); Hugo's agent explains
-them before its fixes are written, and the check before the land withdraws them once
-`start_of_local_day()` replaces the calls.
+| 2 | 2, at `checkpoint`: `differs` for `holiday-closures` (`store_dashboard/holidays.py:14`, 5 calls) and `weekly-digest` (`messaging/digest_schedule.py:22`, 1 call), both on `start_of_day` | No write. Hugo's agent explains both as `revising`, every call `incidental` | The check at `utc-day` resets both items to `unaffected`. Elif's and Sam's builders confirm them, each naming its fork's run of that check. The land runs with no check before it |
+| 3 | 4: `differs` for `instant-payouts`, `tip-jar`, `retry-budget` and `rounding-mode` | Hugo's agent explains the payout and the tip; Kofi's and Priya's builders approve them | `instant-payouts` and `tip-jar` are `unaffected` and confirmed. The flag service's second rollout read in Hugo's `retry-budget` and `rounding-mode` is explained and approved |
 
 ## The split on the preview seed
 

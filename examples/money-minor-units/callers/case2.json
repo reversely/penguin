@@ -1,21 +1,17 @@
 {
-  "$comment": "Case 2's caller items, which open when Hugo's agent runs the check runner's tools (docs/fixture-money.md, Caller items on the preview seed): Hugo's agent explains each receiving feature's differing calls and classifies every one of them as intended with the reason under calls; that feature's agent reviews the explanation.",
+  "$comment": "Case 2's caller items, which open when Hugo's agent checks the checkpoint (docs/fixture-money.md, Caller items on the preview seed): Hugo's agent explains each receiving feature's differing calls, classifies every one of them as incidental with the reason under calls and revises its change. No receiving agent reviews them; each confirms its callers once the revision's replay shows them unaffected.",
   "explanations": {
-    "holiday-closures": "start_of_day() now returns UTC midnight. is_closed() takes the store's day from it, so 20:00 on Christmas at UTC-08:00 reads as 26 December. The plan's fix in your fork calls start_of_local_day() with the store's offset, which keeps the store's whole local day closed.",
-    "weekly-digest": "start_of_day() now returns UTC midnight. The digest's send time starts from it, so a shopper west of UTC gets the digest at another hour. The plan's fix in your fork starts the send time from start_of_local_day() with the shopper's offset."
+    "holiday-closures": "My change makes start_of_day() return UTC midnight, which only the log partitions need. is_closed() reads the store's local day from it, so 20:00 on Christmas at UTC-08:00 reads as 26 December. I am putting start_of_day() back as main has it and filing log lines by a new start_of_utc_day().",
+    "weekly-digest": "My change makes start_of_day() return UTC midnight, which only the log partitions need. The digest's send time starts from it, so a shopper west of UTC gets the digest at another hour. I am putting start_of_day() back as main has it and filing log lines by a new start_of_utc_day()."
   },
   "calls": {
     "holiday-closures": {
-      "kind": "intended",
-      "reason": "start_of_day() now returns UTC midnight. A store west of UTC reads its day from the next date."
+      "kind": "incidental",
+      "reason": "Only log_day() needs a UTC midnight. is_closed() needs the store's local midnight, which start_of_day() returned on main."
     },
     "weekly-digest": {
-      "kind": "intended",
-      "reason": "start_of_day() now returns UTC midnight. The send time moves for a shopper west of UTC."
+      "kind": "incidental",
+      "reason": "Only log_day() needs a UTC midnight. The send time needs the shopper's local midnight, which start_of_day() returned on main."
     }
-  },
-  "reviews": {
-    "holiday-closures": "Approved. With start_of_local_day() a closure covers the store's whole local day.",
-    "weekly-digest": "Approved. With start_of_local_day() the digest goes out at the shopper's local hour."
   }
 }

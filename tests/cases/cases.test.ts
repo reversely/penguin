@@ -211,32 +211,62 @@ test("case 1's feature page names each kind of validation on its results and eac
 
   const inbox = results(render.inboxHtml((await backend.planParts(jun)) as PlanInbox));
   for (const kind of ["logic", "data_matching"] as const) assert.ok(inbox.includes(VALIDATION_KIND_LABEL[kind]), `${VALIDATION_KIND_LABEL[kind]} in ${jun}'s inbox`);
-
-  // Case 2: the originating agent writes each behavioural part, then Penguin copies its modules into that fork.
-  const second = originOf(2);
-  const changes = results(render.featureHtml((await backend.featurePage(second.owner, second.id)) as FeaturePage, second.owner, "changes"));
-  const behavioural = (await preview.plan(second.id))!.parts.filter((part) => part.place.kind === "feature" && part.kind === "behavioural").length;
-  assert.ok(behavioural > 0);
-  assert.equal(changes.match(/Written\s+by @[a-z0-9-]+\/[a-z0-9.-]+ \(MCP report_fix_write\)/gu)?.length, behavioural, "each behavioural part names the agent that wrote it");
-  assert.equal(changes.match(/Modules copied\s+by Penguin \(check runner\)/gu)?.length, behavioural, "each copy write shows as Penguin's copy");
 });
 
-for (const useCase of [2, 3]) {
-  test(`case ${useCase}, ${originOf(useCase).id}: Penguin approves every part with no one asked and the owners are only told`, async () => {
-    const preview = await larder();
-    const origin = originOf(useCase);
-    const rounds = preview.rounds.filter((round) => round.plan.featureId === origin.id);
-    assert.equal(rounds.length, 1, "one plan, never revised");
-    const plan = rounds[0]!.plan;
-    assert.deepEqual(forksOf(plan.parts), forksFixedBy(origin));
-    assert.ok(plan.parts.every((part) => part.approvedBy === PENGUIN_APPROVER), JSON.stringify(plan.parts.map((part) => [part.owner, part.approvedBy])));
-    assert.deepEqual(rounds[0]!.raised, []);
-    assert.deepEqual(recordsOf(preview, origin.id, "request_plan_change"), []);
-    assert.deepEqual(recordsOf(preview, origin.id, "approve_plan_part").filter((record) => record.payload["approved_by"] !== PENGUIN_APPROVER), [], "no one is asked");
-    for (const owner of new Set(plan.parts.map((part) => part.owner))) assert.ok(toldOf(preview, owner).includes("penguin_approved"), `${owner} is told`);
-    assert.equal(preview.features.get(origin.id)?.state, "landed");
-  });
-}
+test("case 2, structured-logs: Hugo's agent revises its change, Elif's and Sam's agents confirm their callers and the land writes into no fork", async () => {
+  const preview = await larder();
+  const origin = originOf(2);
+  const receiving = ["holiday-closures", "weekly-digest"];
+  const checks = preview.tools.list(origin.id).filter((run) => run.tool === "check");
+  const verdictsAt = (tag: string) => {
+    const replay = checks.find((run) => run.checkpointSha === tagSha(preview, origin, tag))?.outcome?.callerReplay;
+    return Object.fromEntries(receiving.map((feature) => [feature, [...new Set(replay?.callers.filter((caller) => caller.feature === feature).map((caller) => caller.verdict))]]));
+  };
+  // The checkpoint's UTC start_of_day() moves both features' calls; the revision restores them.
+  assert.deepEqual(verdictsAt("checkpoint"), { "holiday-closures": ["differs"], "weekly-digest": ["differs"] });
+  assert.deepEqual(verdictsAt("utc-day"), { "holiday-closures": ["unaffected"], "weekly-digest": ["unaffected"] });
+
+  // Hugo's agent classifies every differing call as incidental and revises, with the case's words; no one reviews.
+  const words = JSON.parse(readFileSync(join(ROOT, "examples", "money-minor-units", "callers", "case2.json"), "utf8")) as { explanations: Record<string, string> };
+  const explained = recordsOf(preview, origin.id, "explain_difference");
+  assert.deepEqual(explained.map((record) => [record.payload["feature"], record.payload["kind"]]).sort(), receiving.map((feature) => [feature, "revising"]));
+  for (const record of explained) {
+    assert.equal(record.payload["text"], words.explanations[String(record.payload["feature"])]);
+    assert.ok((record.payload["calls"] as { kind: string }[]).every((call) => call.kind === "incidental"));
+  }
+  assert.deepEqual(recordsOf(preview, origin.id, "review_caller"), []);
+
+  // Each receiving agent confirms with its identity, citing the revision's replay run.
+  const utcDay = checks.find((run) => run.checkpointSha === tagSha(preview, origin, "utc-day"))?.outcome?.callerReplay;
+  const confirmed = preview.features.records(origin.id).map((stored) => JSON.parse(stored.file) as { type: string; author: Record<string, string>; payload: Record<string, unknown> }).filter((record) => record.type === "confirm_caller");
+  assert.deepEqual(confirmed.map((record) => record.payload["feature"]).sort(), receiving);
+  for (const record of confirmed) {
+    assert.equal(record.author["identity"], builderOf(LARDER.features.find((feature) => feature.id === record.payload["feature"]) as LarderFeature));
+    assert.ok(utcDay?.runs.some((run) => run.runId === record.payload["run_id"] && run.feature === record.payload["feature"]), `${record.payload["feature"]} cites the revision's run`);
+  }
+  assert.deepEqual(preview.callerItemsOf(origin.id).map((item) => [item.feature, item.verdict, item.state]).sort(), receiving.map((feature) => [feature, "unaffected", "confirmed"]));
+
+  // The land merges with no plan and nothing written into either fork.
+  assert.equal(await preview.plan(origin.id), undefined);
+  assert.deepEqual(recordsOf(preview, origin.id, "fix_write"), []);
+  assert.deepEqual(forksFixedBy(origin), []);
+  assert.equal(preview.features.get(origin.id)?.state, "landed");
+});
+
+test("case 3, dependency-audit: Penguin approves every part with no one asked and the owners are only told", async () => {
+  const preview = await larder();
+  const origin = originOf(3);
+  const rounds = preview.rounds.filter((round) => round.plan.featureId === origin.id);
+  assert.equal(rounds.length, 1, "one plan, never revised");
+  const plan = rounds[0]!.plan;
+  assert.deepEqual(forksOf(plan.parts), forksFixedBy(origin));
+  assert.ok(plan.parts.every((part) => part.approvedBy === PENGUIN_APPROVER), JSON.stringify(plan.parts.map((part) => [part.owner, part.approvedBy])));
+  assert.deepEqual(rounds[0]!.raised, []);
+  assert.deepEqual(recordsOf(preview, origin.id, "request_plan_change"), []);
+  assert.deepEqual(recordsOf(preview, origin.id, "approve_plan_part").filter((record) => record.payload["approved_by"] !== PENGUIN_APPROVER), [], "no one is asked");
+  for (const owner of new Set(plan.parts.map((part) => part.owner))) assert.ok(toldOf(preview, owner).includes("penguin_approved"), `${owner} is told`);
+  assert.equal(preview.features.get(origin.id)?.state, "landed");
+});
 
 test("case 3: the dependency diff names the two other people's running features that send requests through the client", async () => {
   const preview = await larder();
@@ -333,18 +363,14 @@ test("cases 1 to 3 each write their approved fixes, copy the originating modules
   const promotedAt: string[] = [];
   for (const useCase of [1, 2, 3]) {
     const origin = originOf(useCase);
-    const plan = (await preview.plan(origin.id))!;
+    // Case 2 proposes no plan: its revision leaves every fork as it was.
+    const parts = (await preview.plan(origin.id))?.parts ?? [];
     const writes = recordsOf(preview, origin.id, "fix_write");
     const written = writes.map((record) => record.payload["part_id"]);
-    const featureParts = plan.parts.filter((part) => part.place.kind === "feature");
-    const fixes = featureParts.filter((part) => part.kind !== "verify").map((part) => part.partId);
-    assert.ok(fixes.every((part) => written.includes(part)), `${origin.id} writes each approved fix into its fork`);
-    assert.ok(written.every((part) => featureParts.some((each) => each.partId === part)), `${origin.id} writes only into affected forks`);
-    if (useCase !== 2) {
-      // Cases 1 and 3: Penguin's check runner updates every affected fork; no agent writes into one.
-      assert.deepEqual([...written].sort(), featureParts.map((part) => part.partId).sort(), `${origin.id} updates every affected fork`);
-      assert.ok(writes.every((record) => record.payload["written_by"] === "penguin"), `${origin.id}'s updates are Penguin's`);
-    }
+    const featureParts = parts.filter((part) => part.place.kind === "feature");
+    // Penguin's check runner updates every affected fork; no agent writes into one.
+    assert.deepEqual([...written].sort(), featureParts.map((part) => part.partId).sort(), `${origin.id} updates every affected fork`);
+    assert.ok(writes.every((record) => record.payload["written_by"] === "penguin"), `${origin.id}'s updates are Penguin's`);
     assert.equal(recordsOf(preview, origin.id, "land_requested").length, 1);
     // Each affected fork holds the originating change's modules before the land is asked: a mechanical
     // or verify part's own write copies them, and a behavioural part's copy write follows the agent's.

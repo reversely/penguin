@@ -1394,6 +1394,8 @@ On Larder:
 |---|---|---|
 | 1 | `accounts-merge-checkpoint` onto `cohort-ltv-checkpoint` | `differs` at `analytics/activity.py:15` and `analytics/retention.py:30`: `ShopperMap.resolve()` links three shoppers on one kiosk, so the kiosk test's count changes |
 | 1 | `accounts-merge-checkpoint` onto `weekly-digest-checkpoint` | `differs` at six lines of `messaging/audience.py` and `messaging/subscriptions.py`; `messaging/crm_sync.py` is `unaffected` |
+| 2 | `structured-logs-checkpoint` onto `holiday-closures-checkpoint` or `weekly-digest`'s fork | `differs` at `store_dashboard/holidays.py` and `messaging/digest_schedule.py`: `start_of_day()` returns UTC midnight, so a store or a shopper west of UTC reads the next day |
+| 2 | `structured-logs-utc-day` onto the same forks | `unaffected`: `start_of_day()` returns main's midnight again and only `log_day()` calls the new `start_of_utc_day()` |
 | 3 | `dependency-audit-checkpoint` onto `instant-payouts-checkpoint` or `tip-jar-checkpoint` | `differs` at `payouts/send.py:18` and `checkout/tip_charge.py:20`: the timed-out request raised `Timeout` after one request; wire 2.0.0 sends it again, returns 200 and the processor records a second payout or charge |
 | 3 | The same onto `instant-payouts-keys` or `tip-jar-keys` | `unaffected`: each request carries its `Idempotency-Key`, so the processor moves money once on both trees |
 

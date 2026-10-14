@@ -416,8 +416,9 @@ def check_commit(
             check.fail(f"{at}.{key}", "can only be 'main'")
     if onto is not None and merge is not None:
         check.fail(f"{at}.merge", "a commit names either onto or merge")
-    if commit.get("plan", False) not in (True, False):
-        check.fail(f"{at}.plan", "must be true or false")
+    for flag in ("plan", "check"):
+        if commit.get(flag, False) not in (True, False):
+            check.fail(f"{at}.{flag}", "must be true or false")
     declares = check_declares(commit.get("declares"), f"{at}.declares", *known, check)
     if len(check.problems) > before:
         return None
