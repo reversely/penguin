@@ -16,7 +16,7 @@ section 1, which run in order on one main:
    removes the float API once no caller is left.
 
 Penguin's impact graph, review harness and tests run against this repository. Cases 1 to 3 are
-described in [Cases 1 to 3](#cases-1-to-3). Case 4 shows a blocked overlapping start, an expand
+described in [Cases 1 to 3](#cases-1-to-3). Case 4 shows an overlapping start Penguin approves at once, an expand
 with no place, the retiring next step at a running feature's checkpoint, ten migration plans, a
 requested revision, the contract and a late starter.
 
@@ -153,7 +153,7 @@ is `feature-<id>`. Each commit carries the tag `feature-<id>-<tag>`.
 | Originating | `structured-logs` (Hugo), case 2 | `main` after case 1 |
 | Originating | `dependency-audit` (Hugo), case 3 | `main` after case 2 |
 | Originating | `money-minor-units` (Ines): the split, case 4 | `main` after Lena's promotion |
-| Same area | `rounding-mode` (Hugo, approved), `promotion-stacking` (Lena, declined, then promoted) | `base` |
+| Same area | `rounding-mode` (Hugo), `promotion-stacking` (Lena, promoted before the expand) | `base` |
 | Reader | 23 features in the nine scopes that call the float API, listed below | `base` |
 | Midway | `pagination` (Noor) | `base` |
 | Unaffected | 10 features in store-dashboard, platform, catalog and promotions | `base` |
@@ -585,8 +585,8 @@ checks each step below. A whole seed run of the four cases without the originati
 took about 480 seconds on gn100.
 
 1. **Open.** Ines's feature declares money and orders. Four running features work there, so its
-   start waits on Hugo (`rounding-mode`) and on Tomas (`reorder`, `split-shipments`,
-   `substitutions`). Each approves.
+   start opens at once: Penguin approves it beside Hugo's `rounding-mode` and Tomas's `reorder`,
+   `split-shipments` and `substitutions`, and tells Hugo and Tomas with `overlap_started` items.
 2. **Expand.** Penguin sorts the first checkpoint's contract diff: 25 additive entries and nothing
    else, so the sort records no split and asks for no merge plan. The plan Ines's agent proposes
    there names no part. It declares the seven rules and the six contracts the expand replaces.

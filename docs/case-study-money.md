@@ -47,9 +47,10 @@ Every feature is its own fork of main in Artifacts. PRD cases 1 to 3 run on the 
 Priya's shopper accounts, Hugo's structured logs and Hugo's HTTP client upgrade each reach main as
 a block ([fixture-money.md](fixture-money.md#cases-1-to-3)). Lena's promotion stacking reaches main
 after them, before Ines starts. Ines's agent opens the feature "Money in minor units" and declares its area: the money
-and orders scopes. Four running features already work there, so Penguin holds the start until each
-of their people approves. Hugo approves beside the rounding-mode bump, which touches another money
-function. Tomas approves beside the three orders features Tomas runs.
+and orders scopes. Four running features already work there. Penguin approves the start at once with a
+signed `approve_overlap` record and tells each worktree owner with an `overlap_started` item: Hugo once,
+beside the rounding-mode bump, which touches another money function, and Tomas three times, beside the
+three orders features Tomas runs.
 
 ## Expand
 

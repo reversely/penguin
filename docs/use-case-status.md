@@ -16,14 +16,14 @@ the preview seed's run of the four cases (`scripts/preview/seed.ts`), checked by
 | Step | State | Evidence or ticket |
 |---|---|---|
 | Open: Priya's `accounts-merge` starts from `base` with no start to approve | works | Larder run |
-| Plan: five parts, analytics' and messaging's code on main, Jun's `cohort-ltv`, Sam's `weekly-digest` and loyalty's verify part | works | Larder run: the plan's feature places are the two forks Priya's agent writes into |
+| Plan: five parts, analytics' and messaging's code on main, Jun's `cohort-ltv`, Sam's `weekly-digest` and loyalty's verify part | works | Larder run: the plan's feature places are the two forks Penguin's check runner writes its updates into |
 | Sam's part for messaging's code on main goes to Priya while the plan names no backfill | works | Larder run: the plan at `checkpoint` routes it to Priya as `stored_data`; no one decides that plan. The digest's verify part asks no form: its trial merges `fix-messaging` onto Sam's fork, passes, and Penguin approves it in every round (#182) |
 | Priya's agent adds the backfill and proposes again; Penguin approves Sam's parts; Sam is told | works | Larder run: the plan at `backfill` names `accounts/backfill.py::backfill_shopper` as its store marker (#168) |
 | Jun's kiosk invariant routes to Jun; Jun asks for a limit, then a lower one | works | Larder run: two `request_plan_change` records by Jun, answered by `limit-five` and `limit-one` |
 | Jun's cohort report part approved by Penguin once the second revision passes | works | Larder run: the part is trialled on `limit-one` and its form holds (#169) |
 | Jun's analytics part for code on main | partial | Jun approves it in person after `limit-one`. Jun's form names the cutover marker in Jun's fork, which the trial of analytics' code on main does not hold, so the review is refused with `evidence_not_found`. PRD case 1 counts Jun twice |
 | Loyalty's verify part approved by Penguin; Lena is told | works | Larder run |
-| Fixes written into Jun's and Sam's forks | works | Larder run: Priya's agent writes each approved patch with `fix_token` and `report_fix_write`; two `fix_write` records (#171) |
+| Updates written into Jun's and Sam's forks | works | Larder run: Penguin's check runner copies Priya's modules into each fork and applies the plan's rules; one `fix_write` record per fork, written by Penguin (#178, #179, #180) |
 | Land as one block | works | Larder run: `land_requested`, a passing `block_checked` on main and every running fork, then one `promotion` (#171) |
 
 ## Case 2: the helpful fix (merge plan)
