@@ -70,6 +70,10 @@
  *     paths a person protects, `{ feature, owner, checkpoint }`, as the signed-in person. The
  *     ProjectAgent refuses anyone but `owner` or their delegate, a checkpoint other than the
  *     feature's latest and lines already confirmed.
+ *   - POST /api/plan-parts/decide-caller: decides one caller item sent to the worktree owner,
+ *     `{ item, verdict, text }` with `verdict` approve or request_changes, as the signed-in person.
+ *     The ProjectAgent refuses anyone but the receiving feature's person or their delegate and an item
+ *     that does not wait on the worktree owner.
  *   - GET /api/review-policy: the sandbox's review policy (docs/review-policies.md): its preset and
  *     rows, whether admin mode locks it, who changed it last, whether the signed-in person may change
  *     it and the split of approvals over the last 30 days, checked against REVIEW_POLICY_VIEW_SCHEMA.
@@ -181,6 +185,8 @@ export interface DashboardBackend {
   decidePlanPart(owner: string, decision: PlanPartDecision): Promise<PlanPartDecisionResult>;
   /** Confirms a feature's own protected lines as `owner`; the ProjectAgent checks who may. */
   confirmProtectedChange(owner: string, input: ProtectedChangeConfirmation): Promise<ProtectedChangeConfirmResult>;
+  /** Decides one caller item sent to the worktree owner, as `owner`; the ProjectAgent checks who may. */
+  decideCallerItem(owner: string, input: CallerItemDecision): Promise<CallerItemDecisionResult>;
   /** The sandbox's review policy as `owner` sees it (ReviewPolicyView in @penguin/protocol). */
   reviewPolicy(owner: string): Promise<unknown>;
   /** Sets the review policy as `owner`; the ProjectAgent checks that they lead a team. */
@@ -200,6 +206,17 @@ export interface ProtectedChangeConfirmation {
   readonly owner: string;
   readonly checkpoint: string;
 }
+
+/** The worktree owner's decision on one caller item, as the dashboard posts it. */
+export interface CallerItemDecision {
+  readonly item: string;
+  readonly verdict: "approve" | "request_changes";
+  readonly text: string;
+}
+
+export type CallerItemDecisionResult =
+  | { readonly status: "ok"; readonly item: unknown; readonly recordIds: readonly string[] }
+  | { readonly status: "rejected"; readonly reason: string; readonly message: string };
 
 export type ProtectedChangeConfirmResult =
   | { readonly status: "ok"; readonly recordId: string }
@@ -613,6 +630,7 @@ async function planPartRoute(request: Request, url: URL, session: DashboardSessi
     return checkPlanInbox(parts).length === 0 ? json(parts) : json({ error: "invalid plan parts" }, 500);
   }
   if (url.pathname === "/api/plan-parts/confirm-protected") return confirmProtectedRoute(request, url, session, handlers);
+  if (url.pathname === "/api/plan-parts/decide-caller") return decideCallerRoute(request, url, session, handlers);
   const kind = Object.hasOwn(PLAN_DECISION_ROUTES, url.pathname) ? PLAN_DECISION_ROUTES[url.pathname] : undefined;
   if (kind === undefined) return json({ error: "not found" }, 404);
   if (request.method !== "POST") return methodNotAllowed("POST");
@@ -659,6 +677,29 @@ async function confirmProtectedRoute(request: Request, url: URL, session: Dashbo
   }
   const confirmed = await (await handlers.dashboard()).confirmProtectedChange(session.owner, { feature, owner, checkpoint });
   return json(confirmed, confirmed.status === "ok" ? 200 : (FEATURE_REJECTION_STATUS[confirmed.reason] ?? 422));
+}
+
+/**
+ * POST /api/plan-parts/decide-caller: the session's person decides one caller item sent to the worktree
+ * owner, `{ item, verdict, text }`. The decider comes from the session only.
+ */
+async function decideCallerRoute(request: Request, url: URL, session: DashboardSession, handlers: DashboardHandlers): Promise<Response> {
+  if (request.method !== "POST") return methodNotAllowed("POST");
+  if (!isSameOrigin(request, url)) return json({ error: "cross-origin request" }, 403);
+  if (Number(request.headers.get("Content-Length") ?? 0) > MAX_PLAN_DECISION_BYTES) {
+    return json({ error: "invalid request", message: "the request is too large" }, 413);
+  }
+  const body = await readJsonObject(request);
+  if (body === undefined) return json({ error: "invalid request", message: "the body must be a JSON object" }, 400);
+  const { item, verdict, text, ...rest } = body;
+  if (Object.keys(rest).length > 0) {
+    return json({ error: "invalid", message: "the body takes only item, verdict and text; the decider is the signed-in person" }, 400);
+  }
+  if (typeof item !== "string" || (verdict !== "approve" && verdict !== "request_changes") || (text !== undefined && typeof text !== "string")) {
+    return json({ error: "invalid", message: "item must be a caller item id, verdict approve or request_changes and text a note" }, 400);
+  }
+  const decided = await (await handlers.dashboard()).decideCallerItem(session.owner, { item, verdict, text: (text as string | undefined) ?? "" });
+  return json(decided, decided.status === "ok" ? 200 : (FEATURE_REJECTION_STATUS[decided.reason] ?? 422));
 }
 
 /** The largest review policy body the route reads: six rows and a preset fit well under it. */

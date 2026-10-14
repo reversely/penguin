@@ -1080,7 +1080,8 @@ No view carries an agent's transcript. A task's `outcome` is one line the bridge
   current revision of every module it imports refuses the land as `copy_not_written` (`copiesBehind`):
   Penguin opens that fork's copy write. The agent calls `land_feature` again once it is written. The
   copies and the change are then checked in one block run. A copy written after the run was asked
-  stops the promotion as any fix does.
+  stops the promotion as any fix does. A caller item not yet confirmed, written or approved refuses
+  the land as `callers_pending` ([Caller items in the build](#caller-items-in-the-build)).
 - **The block run.** One run checks the checkpoint merged onto main's head and onto the head of the
   `main` branch of every other running feature's fork. That head carries each fix written into the
   fork. The check runner claims the run at `POST /blocks/claim` and runs the [checks](#checks) on each
@@ -1379,8 +1380,9 @@ file writes. The runner pairs the calls of the two runs:
 | `differs` | A result, an exception message or an effect differs, or a call happens on one tree only | The originating agent explains the difference or revises its change |
 | `unknown_reach` | The impact graph shows the call, but no test of the feature reaches it | The worktree's owner decides |
 
-The next-step column is the routing the per-caller items will follow. This build records each
-verdict in the check result, the block run's report and its signed `block_checked` record. Hand-written examples and
+The next-step column is the path each verdict's caller item opens
+([Caller items in the build](#caller-items-in-the-build)). The check result, the block run's report
+and its signed `block_checked` record keep each verdict. Hand-written examples and
 invariants keep running in the review harness beside the replay
 ([Side-by-side runs on the runner](#side-by-side-runs-on-the-runner)). The side-by-side run compares
 return values on chosen inputs. The replay compares every call the feature's tests make, effects
@@ -1398,6 +1400,100 @@ On Larder:
 [bridge-and-runner.md](bridge-and-runner.md#caller-replay) gives the plugin, the pairing, the ids and
 the limits.
 
+#### Caller items in the build
+
+The user, on what each verdict leads to: "the agent in the worktree should confirm all good. if
+broken, the agent trying to make the PR suggests a fix on the other end which is evaluated by the
+agent on the side of the branch". On a difference: "If it thinks the change is fine or expected, it
+sends a request to review to the worktree agent." On the receiving agent: "it should be asked to
+generally be aware of the situation and approve before the other agent touches the code, as a matter
+of politeness and two eyes on the code before it changes."
+
+Each caller item gives the receiving worktree's agent one decision it signs: it confirms, approves or
+rejects before the originating feature changes its fork or reaches main.
+
+- **Items.** Penguin keeps one item per running feature and contract that the originating feature's
+  replay reaches (`CallerItem`, `packages/protocol/src/caller-items.ts`). An item holds that
+  worktree's call sites of the contract with their verdicts, differing calls and replay runs. Its
+  verdict is the first of `broken`, `differs`, `unknown_reach` and `unaffected` that any of its
+  callers has. The originating feature's FeatureAgent keeps the items (`CallerItemStore`,
+  `services/project-agent/src/caller-items.ts`). The ProjectAgent keeps an index of them
+  (`CallerIndexStore`), so a read on the receiving side asks only the FeatureAgents that hold an item
+  on that worktree.
+- **When items open.** The originating agent's `check` opens the items. From then on every replay of
+  the feature updates them, a later check's or a block run's. A block run of a feature with no item
+  opens none: the protocol starts at the agent's first check. A replay that changes an item's calls
+  resets the item to its verdict's first state, which clears its explanation, fix and review. The
+  calls are compared by a SHA-256 over each call site's verdict and each differing call's outcome and
+  effects, so the same calls on newer commits leave the item where it stands. An item the newest
+  replay no longer reaches is `withdrawn`. A revision of the originating change therefore re-runs the
+  replay with the agent's next `check`, which resets every item whose calls moved.
+- **Paths.** Each verdict opens one path:
+
+  | Verdict | States | Who moves it |
+  |---|---|---|
+  | `unaffected` | `confirmation_requested`, then `confirmed` | The receiving agent confirms with `confirm_caller` |
+  | `broken` | `broken`, `fix_proposed`, then `fix_approved` or `fix_rejected`, then `written` | The originating agent names a part of its newest plan, placed on the receiving feature, with `propose_caller_fix`. The receiving agent approves or rejects it with `review_caller`. Penguin marks the item `written` when that part revision's fix is kept in the fork |
+  | `differs` | `differs`, `explained`, then `review_requested`, then `approved` or `changes_requested` | The originating agent calls `explain_difference`. `revising` keeps the item at `explained` until the next replay. `expected` asks for the review at once. The receiving agent approves or asks for changes with `review_caller` |
+  | `unknown_reach` | `unknown_reach`, then `approved` or `changes_requested` | The worktree owner decides on the dashboard |
+
+  A `changes_requested` item goes back to the originating agent, which explains again or revises. A
+  `fix_rejected` item takes a new proposal, usually a revised part. A part revision already written
+  into the fork cannot be proposed again: it did not fix the callers.
+- **Roles.** Only a live agent session of the receiving feature, owned by its person, confirms,
+  approves or rejects. Only a session of the originating feature proposes or explains. Penguin refuses
+  any other session as `forbidden`. It refuses an action the item's state does not allow as `conflict`.
+  While an item is with the worktree owner the receiving agent's tools refuse it.
+- **The worktree owner.** The receiving feature's person, or their delegate, decides an item sent to
+  them at `POST /api/plan-parts/decide-caller` with `{ item, verdict, text }`. Approval settles the
+  item on its path. A request for changes returns it to the originating agent. An item goes to the
+  worktree owner for one of four reasons: no test reaches the call (`unknown_reach`); it waited on the
+  receiving agent longer than the stage's wait (`unanswered`); the receiving side rejected it twice
+  (`rejected_twice`), after which every later proposal or review request goes to the owner too; or
+  the stage asks the owner after every answer (`policy`, Production). The review policy's stage sets
+  the wait and when the owner sees items at all ([review-policies.md](review-policies.md#caller-items)).
+  Reads that show items (`get_work`, the feature page, the approvals inbox) send each unanswered item
+  to the owner first, so no timer runs.
+- **Records.** Every transition is a signed record on the originating feature, signed before the item
+  is kept and kept only while the item still stands at the record it was read at. Penguin's own
+  transitions are `caller_item` (`open`, `reset`, `withdraw`, `ask_owner`, `write`). Each agent's is
+  named after its tool: `confirm_caller`, `propose_caller_fix`, `explain_difference` (one record for
+  `explain` and one for `request_review`) and `review_caller`. The worktree owner's is
+  `decide_caller`. Each names the item, the receiving feature, the contract, the action, the states
+  before and after, the verdict, the owner's reason, the rejections, the fingerprint and the replay
+  run ids. The agent's or person's words are in the record as written.
+- **Writes into the receiving fork.** A write of the originating feature's fix into a fork waits until
+  every item there is `confirmed`, `fix_approved`, `written` or `approved`, with no owner's decision
+  pending (`writeWaits`). `fix_token` refuses with `callers_pending` and names each item. The check
+  runner's claim leaves the write queued, a copy write and a mechanical part's write included. A fork
+  that holds no item writes as before.
+- **Landing.** `land_feature` refuses with `callers_pending` until every item on a running feature is
+  `confirmed`, `written`, `approved` or `withdrawn` (`landPending`). The block run's own replay may
+  reset an item. A passing land run whose items are no longer settled is then not promoted: Penguin
+  signs `promotion_refused` with the items and the feature goes back to `building`. An expand
+  promotion reads no item.
+- **The context packet.** `get_work` gives the agent `callerItems`: `receiving` for the items on its
+  worktree and `originating` for those its change opened. Each packet holds the contract's entries in
+  the originating plan's contract diff, the call sites with the tests that reached them, each
+  differing call old and new with its arguments, result or exception and effects, the replay runs
+  with their commits and test tallies and the proposed fix's part. `yourTurn` names the tool the
+  session's side answers with. The explanation, the patch, the fix note and the review are under
+  `personWritten`. The recorded calls are what the code under test returned and sent, which the
+  agent reads as data too.
+
+Items use plan parts where a part already means the same thing: a broken caller's fix is a plan part
+placed on the receiving feature, written with `fix_token` once approved. A part covers a whole fork,
+while an item covers one contract's callers in it. The `unaffected` and `differs` paths carry no patch
+at all. The items therefore keep their own states beside the parts. The part's own approval still
+follows the review policy. The item adds the receiving agent's signed consent before the write. The
+review form stays as it is: `submit_review` answers for a scope's declared invariants, while
+`review_caller` answers for one contract's replayed calls.
+
+Penguin's own updates of a fork still happen: the copies of the originating change's modules and the
+rewrite rules' patch. They wait for the receiving side's answer like any write. A caller whose replay
+is `unaffected` after Penguin's update still gets a confirmation request. On Larder, cases 1 and 3
+run the protocol in the preview seed ([fixture-money.md](fixture-money.md#caller-items-on-the-preview-seed)).
+
 ### Tools for agents
 
 Agents call these tools through MCP. Each tool answers with facts or applies one deterministic change.
@@ -1410,6 +1506,8 @@ Agents call these tools through MCP. Each tool answers with facts or applies one
 | `apply_fix` | Applies one deterministic fix: format, lint autofix, regenerate a lockfile, or a codemod for a rename, move or signature change, or by the rewrite rules of a retiring symbol |
 | `propose_plan` | Submits a merge plan; Penguin fills in the facts and returns what is missing |
 | `submit_review` | Submits the review form for a plan part ([Review harness](#review-harness)) |
+| `confirm_caller`, `review_caller` | The receiving worktree's agent confirms an unaffected caller, or approves or rejects a proposed fix or an explained difference ([Caller items in the build](#caller-items-in-the-build)) |
+| `propose_caller_fix`, `explain_difference` | The originating agent names the plan part that fixes a broken caller, or explains why calls differ |
 
 #### Tools in the build
 
@@ -1825,7 +1923,7 @@ tagged Approved by Penguin, with no control.
 | Org | Each team with its lead, its members' features counted by stage, what waits on its members and how many of its scopes are clean |
 | Team | The engineering manager's home and the landing page: each member with their features as stage pills with counts, their steward's own queue with their builders and what waits on them. Then the team's scopes with their DRIs, the counts of scopes each reads and is read by and its health. Only exceptions are highlighted |
 | Person | What waits on the person, their features with their timeline strips grouped as needing a person, in progress and on main, the scopes they are DRI for and their agents |
-| Approvals inbox | Overlapping starts Penguin told the person of, plan parts touching the person's code, custom path rule confirmations and exceptions. Each item shows the facts behind it: the changed lines in the person's scope, the side-by-side differences and the review form |
+| Approvals inbox | Overlapping starts Penguin told the person of, plan parts touching the person's code, custom path rule confirmations, exceptions and the caller items on the person's worktrees that the review policy's stage shows them. Each item shows the facts behind it: the changed lines in the person's scope, the side-by-side differences, the review form or the replayed calls |
 | Feature page | The feature's merge as a timeline of stages with the work that reached other people and at most three summary lines, over four views: Changes (the contract change, each place the plan fixes, its files and their hunks), Pipeline (each stage with its jobs and what they ran), People (the features that read this one and the starts it waited on) and Record |
 | Identities | Creating and editing agent identities with their charters |
 | Review policy | The sandbox's review policy: its stage in the release pipeline, drawn as one row, who decides each type of approval, the last change and the split of approvals by route. A team lead changes it ([review-policies.md](review-policies.md)) |

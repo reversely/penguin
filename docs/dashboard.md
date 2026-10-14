@@ -274,7 +274,7 @@ feature page shows the last reason on the run's failed job.
 |---|---|
 | Changes | The contract change first: each signature and stored data shape before and after as a diff, the retiring symbols with their replacements and, for each, its own uses in its defining module and its scope's tests, which the contract step removes with it, the incompatible and behaviour entries Penguin sorted, and the callers on main. Then each place the plan fixes: its number and place, owner, state with its route ([Kinds and routes on results](#kinds-and-routes-on-results)) and file count; its kind, revision and rounds; a fix written into another fork with its writer and commit; each copy write into that fork with the originating revision it copied; the latest requested change; each file as a unified diff with both sides' line numbers, cut at 80 lines with a button for the rest; and its breaks, invariants and uses behind a line that counts them. Last, the declared area: contracts, paths and latest checkpoint |
 | Pipeline | Each stage with its status and count, then its jobs: each job's status, label and one fact, with a link to its diff or its results. A failed or person-needed job shows its failing targets or its reviewing agent. Block checks has one check job per check kind. Once the block run a `land` asked for has reported, those jobs come from that run's checks in its signed `block_checked` record, so a promoted feature shows the run that gated its land. Before then they come from the newest `check` run. A block run never has a `retiring` job, since that check runs only on a checkpoint's own changes. A check job from a `check` run lists the findings its passing targets still name, such as the dependency diff's changed library and each place the target imports it; the `block_checked` record keeps no findings. A run the check runner stopped at the failure limit is a failed job with its last reason. The current stage lists each checkpoint the feature's agents reported with the checks run on it. What a stage's jobs ran sits under it: the plan's facts with the tool or read behind each under Plan, the review forms with their side-by-side runs under Review, the newest `check` run's results by tool under Block checks (the failing targets with their findings, each passing target whose check names findings, a count of the rest and one next step per failing check), and each agent tool call under the stage it served |
-| People | Read by: one row per running feature that reads what this feature changes, the one whose part needs the worktree owner's review first, then by stage. Its columns are the feature, its worktree owner as a pill, the reading scope and the scope it reads as pills in their owners' hues, the reader's current stage and this plan's part for it, which opens the part's diff. Start: one row per running feature this feature's start overlaps, with its worktree owner, the lock (approved, or waiting on a lock opened before #177) and who approved it, `Penguin` for a start since #177. Agents: the agents whose sessions joined the feature. Each table scrolls inside itself on a phone |
+| People | Read by: one row per running feature that reads what this feature changes, the one whose part needs the worktree owner's review first, then by stage. Its columns are the feature, its worktree owner as a pill, the reading scope and the scope it reads as pills in their owners' hues, the reader's current stage and this plan's part for it, which opens the part's diff. Callers this change reaches and Callers in this worktree: one card per caller item ([Caller items](#caller-items)), the first for the items this feature's replays opened in other worktrees, the second for the items other features' changes opened in this one. Each section shows only when it has items. Start: one row per running feature this feature's start overlaps, with its worktree owner, the lock (approved, or waiting on a lock opened before #177) and who approved it, `Penguin` for a start since #177. Agents: the agents whose sessions joined the feature. Each table scrolls inside itself on a phone |
 | Record | Each signed record with its type, its route (an agent with its MCP tool, Penguin automatically or a person in the dashboard), the kinds of validation its result belongs to, time and path in the record repo, filtered by type. Once a record is in the record repo its path links to `GET /api/features/<id>/records/<record id>`, which answers the signed file as the repo holds it at the commit that added it. A record still waiting for its push shows its path as plain text. An expand checkpoint promoted on its own shows as its own `Expand promoted` record after its `Expand requested` record. The contract step shows as `Contract step approved` when Penguin approves removing a retiring symbol with no caller left, `Contract step withdrawn` when a caller comes back and `Symbols removed` once the block that removes it reaches main. A feature Penguin opened that main moved past shows `Rebuilt from main` when Penguin forks it again from main and re-applies its parts |
 
 **Rows.** Every fold starts closed except what needs the viewer: a part the viewer decides that
@@ -367,6 +367,7 @@ custom path rule card links to its Changes view and a review exception to its re
 | Overlapping starts | Each feature that started beside one of the person's running features, its person and the scopes, contracts and paths where the two areas meet, tagged Approved by Penguin. An expand checkpoint that adds to the person's scopes shows here too, with the scopes and paths it adds to ([design.md](design.md#expand-in-the-build)) | None for a start Penguin approved. For an expand, Approve addition, `POST /api/overlaps/approve` with `feature` set to `owner:<person>`. A start on a lock opened before #177 that still waits carries Approve start |
 | Plans | One card per merge plan with parts for the person: the originating feature and person, why the plan needs the person in person, each review the parts carry and then each of the person's parts. A part Penguin approved for the person is listed too, until its block reaches main | Per part waiting on the person: Approve revision, `POST /api/plan-parts/approve`; Request change, which opens a field whose text posts `POST /api/plan-parts/request-change`. Per part Penguin approved: Reverse approval, `POST /api/plan-parts/reverse` |
 | Custom path rules | Each feature whose own change, since its merge base with main, writes a path under one of the person's custom path rules (`custom_paths` in `penguin/scopes.json`): the feature and its person, the checkpoint, each custom path and the changed lines of each file under it | Confirm lines, `POST /api/plan-parts/confirm-protected` with `{ feature, owner, checkpoint }`. A confirmed card stays, marked Confirmed, until a later checkpoint changes the lines |
+| Callers in your worktrees | Each caller item on one of the person's running features, or on a feature of a person who named them delegate, that the review policy's stage shows them ([Caller items](#caller-items)). An item sent to the worktree owner asks for a decision. Under every stage but Local development, each open `broken` or `differs` item also shows, tagged No decision needed | Per item sent to the worktree owner: Approve, `POST /api/plan-parts/decide-caller` with `{ item, verdict: "approve", text: "" }`; Request changes, which opens a field whose text posts the same route with `verdict: "request_changes"` |
 | Review exceptions | Each review of the person's scopes whose record raised an exception | None |
 | Returned plans | Each plan of the person's returned over the break limit, with the places of its parts that need a person | None |
 
@@ -413,6 +414,55 @@ Request change puts its field in focus; Escape or Cancel closes it and returns f
 change. While a decision sends, its button keeps focus and reads Approving or Sending. The server
 names the approver and the decider from the session
 ([design.md](design.md#advance-notice-in-the-build)).
+
+### Caller items
+
+A caller item is one running feature's call sites of one contract that another feature's change
+reaches, with the caller replay's verdict ([design.md](design.md#caller-replay)). The feature page and
+the inbox draw each item as the same card (`caller-card.tsx`). The card names the receiving worktree
+and its worktree owner on the originating feature's page and in the inbox. On the receiving
+feature's page it names the originating feature and its person. Below the name it shows:
+
+- the contract as code;
+- the item's state and who it waits on;
+- why it went to the worktree owner, when it did, with the count of rejections once there is one;
+- each call site as `path:line` with its verdict and how many of its calls match;
+- the originating agent's explanation, the fix it proposed (the plan part and revision, with its
+  note) and the last review note, each quoted as text an agent or a person wrote;
+- the differing calls behind a line that counts them: each call's test, the changed function, what
+  differs, then Before and After with how the call ended and its first effects.
+
+The card shows no recorded argument or return value. The tag for each state:
+
+| Tag | State | Meaning |
+|---|---|---|
+| Confirmation requested | `confirmation_requested` | Every call matched; the worktree's agent confirms |
+| Confirmed | `confirmed` | The worktree's agent confirmed |
+| Broken | `broken` | A call fails on the merged tree; the originating agent proposes a fix |
+| Fix proposed | `fix_proposed` | The worktree's agent approves or rejects the fix |
+| Fix approved | `fix_approved` | The originating agent may now write the fix into the fork |
+| Fix rejected | `fix_rejected` | The originating agent proposes another fix |
+| Fix written | `written` | The approved fix is in the fork |
+| Differs | `differs` | A result or an effect differs; the originating agent explains it |
+| Revising | `explained` | The originating agent changes its own code; its next check replays the calls again |
+| Review requested | `review_requested` | The originating agent calls the difference expected; the worktree's agent reviews it |
+| Approved | `approved` | The receiving side approved the difference |
+| Changes requested | `changes_requested` | The receiving side asked the originating agent for changes |
+| No test reaches it | `unknown_reach` | No test of the worktree reaches the call; the worktree owner decides |
+
+The tag Waits on names the party that acts next: worktree agent (the receiving feature's agent),
+originating agent, or worktree owner (the receiving feature's person). A settled item shows no Waits
+on tag. An item goes to the worktree owner when no test reaches the call, when the worktree's agent
+did not answer in time (Unanswered in time), when the receiving side rejected it twice (Rejected
+twice) and, under Production, after each answer of the worktree's agent (Review policy asks the
+worktree owner). The card's border then takes the attention colour.
+
+`POST /api/plan-parts/decide-caller` takes `{ item, verdict, text }` with `verdict` `approve` or
+`request_changes` and nothing else; the decider is the signed-in person. The ProjectAgent refuses
+anyone but the receiving feature's person or their delegate and an item that does not wait on the
+worktree owner. The record view labels the item's signed records Caller item moved (Penguin's own
+transitions), Caller confirmed, Caller fix proposed, Difference explained, Caller reviewed and Caller
+decided by the worktree owner.
 
 ### Issue items
 
@@ -561,10 +611,11 @@ soon as the project exists, before the first step, so a recording shows each ste
   steps run so far plus the next one. `next` is the index of the next one. The seed decides its steps
   as it runs, so the list ends at the next step.
 - A step whose action is a person's decision waits for that person to make it on the dashboard. The
-  decisions are a plan part's approval or change request and a confirmation of custom path rule
-  lines. `POST /preview/step` answers with `waitingFor` naming the person and the decision's route:
-  `/api/plan-parts/approve` or `/api/plan-parts/request-change`, or
-  `/api/plan-parts/confirm-protected`. No step waits on a start: Penguin approves each overlapping
+  decisions are a plan part's approval or change request, a confirmation of custom path rule
+  lines and a worktree owner's decision on a caller item. `POST /preview/step` answers with
+  `waitingFor` naming the person and the decision's route: `/api/plan-parts/approve` or
+  `/api/plan-parts/request-change`, `/api/plan-parts/confirm-protected` or
+  `/api/plan-parts/decide-caller`. No step waits on a start: Penguin approves each overlapping
   start and tells the owner. Once that person's request succeeds, the seed continues.
 
 On identity unification the plan is stored with four parts: Priya's fix commits for analytics' and

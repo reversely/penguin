@@ -51,6 +51,24 @@ Migration note: a policy or a route stored before #177 under `throwaway` or `dev
 `local_development` or `central_development` (`readPreset` in `validation.ts`). The
 `overlapping_starts` row such a policy names is ignored.
 
+## Caller items
+
+A caller item asks the receiving worktree's agent to confirm or approve before another feature's
+change writes into its fork or reaches main ([design.md](design.md#caller-items-in-the-build)). The
+stage decides when the worktree owner sees items at all and how long an item waits on the agent
+(`CALLER_STAGES` in `packages/protocol/src/caller-items.ts`):
+
+| Stage | Worktree owner decides | Worktree owner is told | Wait for the agent |
+|---|---|---|---|
+| Local development | An item no test reaches, one the agent left unanswered and one rejected twice | Nothing else | 24 hours |
+| Central development, the default | The same | Each open `broken` or `differs` item on their worktrees | 24 hours |
+| Test and Pre-production | The same | The same | 8 hours |
+| Production | Every item, after the agent's answer, plus the three above | The same | 4 hours |
+
+An item past its wait goes to the worktree owner as unanswered. Under Production the agent's
+confirmation or approval keeps the item open until the worktree owner approves it on the dashboard.
+The rows above apply to every stage whatever its plan part rows say.
+
 ## Changing the policy
 
 - **Who.** Only a lead of a team declared in `penguin/teams.json` changes the policy. A one-person
@@ -80,6 +98,7 @@ read until a newer record is stored, so each decision costs one lookup of the ne
 | A plan part | `approveCleanParts` in `plan-approval.ts` | Penguin approves a pending part whose route names Penguin |
 | A rule-written migration part after its trial | `migrationTrialReported` in `migration-plans.ts` | A failing test still makes an edit task. Under Pre-production a side-by-side run that differs goes to its worktree owner for review. A type set to auto-merge no longer sends the part to its worktree owner. Production sends a part whose trial passed to one |
 | An overlapping start | `checkOverlap` in `overlap-lock.ts` | At every stage Penguin approves each new lock at once with a signed `approve_overlap` record that names the owner. The owner gets an `overlap_started` inbox item. No one is asked |
+| A caller item | `callerAction`, `sweepUnanswered` and `ownerCallerItems` in `caller-items.ts` | The stage's row in [Caller items](#caller-items): who decides, who is told and the wait |
 
 The break limit counts the parts that fail a check when a plan is proposed, whatever the policy.
 

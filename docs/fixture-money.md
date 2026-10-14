@@ -578,6 +578,36 @@ calls `check` at its first checkpoint, whose caller replay reports `differs` for
 `weekly-digest`. Case 3's block, with Penguin's updates in both forks, reports every caller of
 `instant-payouts` and `tip-jar` `unaffected`.
 
+### Caller items on the preview seed
+
+Each check's caller replay opens caller items ([design.md](design.md#caller-items-in-the-build)). The
+agents answer them with the words of `callers/case<N>.json`: the originating agent's explanation of each
+receiving feature's differing calls and that feature's agent's review note.
+
+- Before each write into a receiving fork, that fork's items are answered. Penguin's update waits until
+  then: the originating agent explains each difference as expected (`explain_difference`), the
+  receiving feature's builder approves it (`review_caller`), and a broken caller would get the plan's
+  part on that feature as its fix (`propose_caller_fix`).
+- Before the land, the originating agent calls `check` again (`check <feature> before the land`). The
+  replay then runs on the forks as Penguin's updates left them. Each item whose calls changed resets,
+  each item the replay no longer reaches is withdrawn and each new one opens. The receiving builders
+  confirm each unaffected caller (`confirm_caller`). The rest of the land runs as above.
+- A land refused as `callers_pending`, or a promotion the block's own replay stops, gets the answers
+  first and asks again. An item sent to the worktree owner waits for that person's approval, through
+  the dashboard in step mode.
+
+The run on gn100 without the check runner's tools took 503 seconds:
+
+| Case | Items opened at the first check | Before the writes | After the check before the land |
+|---|---|---|---|
+| 1 | 10: `differs` for `cohort-ltv` (`ShopperMap`) and `weekly-digest` (`Shopper`, `ShopperMap`), `unaffected` for seven other features | Priya's agent explains the three differences; Jun's and Sam's builders approve them | Every caller of `cohort-ltv` and `weekly-digest` is `unaffected` and is confirmed, with new items for `daily_active_users` and `is_subscribed`. `basket-size` and `store-league` are withdrawn. 12 items confirmed |
+| 3 | 4: `differs` for `instant-payouts`, `tip-jar`, `retry-budget` and `rounding-mode` | Hugo's agent explains the payout and the tip; Kofi's and Priya's builders approve them | `instant-payouts` and `tip-jar` are `unaffected` and confirmed. The flag service's second rollout read in Hugo's own `retry-budget` and `rounding-mode` is explained and approved |
+
+With the check runner's tools (step mode's default) the run took 629 seconds. Case 2's check also opens
+`differs` items for `holiday-closures` and `weekly-digest` (`callers/case2.json`); Hugo's agent explains
+them before its fixes are written, and the check before the land withdraws them once
+`start_of_local_day()` replaces the calls.
+
 ## The split on the preview seed
 
 The split runs on main as cases 1 to 3 and Lena's stacking left it. `tests/cases/cases.test.ts`

@@ -41,10 +41,13 @@ import {
 import {
   BACKGROUND_RUN_CAP_DEFAULT,
   boundReviewRecord,
+  callerItemSettled,
+  callerWaitingOn,
   EDIT_RUN_MINUTES_DEFAULT,
   FIX_WRITE_BRANCH,
   isMigrationPlanId,
   routesToOriginator,
+  type CallerItem,
   type ContractWorkView,
   type LadderDecision,
   needsPerson,
@@ -69,6 +72,21 @@ import { featureView } from "../../apps/worker/src/features.ts";
 import { claimToolRuns, recordToolResult } from "../../services/project-agent/src/agent-tool-runner.ts";
 import { AgentToolStore, requestRetiringCheck, requestTool, whatsNear, type AgentToolDeps } from "../../services/project-agent/src/agent-tools.ts";
 import { buildBoard } from "../../services/project-agent/src/board.ts";
+import {
+  callerAction,
+  CallerIndexStore,
+  CallerItemStore,
+  featureCallerItems,
+  fixWritten,
+  landPending,
+  ownerCallerItems,
+  ownerDecision,
+  replayReported,
+  writeWaits,
+  type CallerActionDeps,
+  type CallerCall,
+  type CallerItemDeps,
+} from "../../services/project-agent/src/caller-items.ts";
 import { checkpointBaseline, checkpointChange, type RepoHistoryReader } from "../../services/project-agent/src/combined-run-schedule.ts";
 import { contractWork, ContractSplitStore, recordSplit, retireSplit, scheduleSort, type ContractSplitDeps } from "../../services/project-agent/src/contract-split.ts";
 import { buildFeaturePage, buildFeaturePlan, buildPersonScopes, buildTeamView, type DashboardViewDeps } from "../../services/project-agent/src/dashboard-views.ts";
@@ -129,6 +147,7 @@ import { EditTaskStore } from "../../services/project-agent/src/edit-tasks.ts";
 import { blockReported, editRouting, editTaskView, syncEditWork, type EditWorkDeps } from "../../services/project-agent/src/edit-work.ts";
 import {
   BlockQueueStore,
+  blockTargets,
   featureLanded,
   landFailed,
   reportBlockRun,
@@ -335,6 +354,9 @@ export class PreviewProject {
   /** The FeatureAgents' block runs, kept in the preview's one database, and the ProjectAgent's queue of them. */
   readonly blocks: BlockStore;
   readonly blockQueue: BlockQueueStore;
+  /** The FeatureAgents' caller items, kept in the preview's one database, and the ProjectAgent's index of them. */
+  readonly callerItems: CallerItemStore;
+  readonly callerIndex: CallerIndexStore;
   readonly penguinLands: PenguinLandStore;
   /** What the record repo holds; the repo is a bare repository on disk (`#recordRepo`). */
   readonly recordRepo: RecordRepoStore;
@@ -401,6 +423,8 @@ export class PreviewProject {
     this.fixGrants = new FixGrantStore(this.sql, now);
     this.blocks = new BlockStore(this.sql, now);
     this.blockQueue = new BlockQueueStore(this.sql, now);
+    this.callerItems = new CallerItemStore(this.sql);
+    this.callerIndex = new CallerIndexStore(this.sql);
     this.penguinLands = new PenguinLandStore(this.sql, now);
     this.recordRepo = new RecordRepoStore(this.sql);
     let sessions: SessionStore | undefined;
@@ -657,7 +681,62 @@ export class PreviewProject {
       scopeMap: async () => this.scopeMap,
       readFork: async (repo, use) => use({ ...gitReader(this.repo), log: async ({ limit }) => this.#branchLog(repo, limit) }),
       locked: (featureId) => this.overlaps.status(featureId).waitingOn.length > 0,
+      // A write into a receiving fork waits for that worktree's approval of its caller items (#188).
+      callerWaits: (originId, targetId) => writeWaits(this.callerDeps(), originId, targetId),
+      partWritten: async (originId, partId, revision) => {
+        await fixWritten(this.callerDeps(), originId, partId, revision);
+      },
     };
+  }
+
+  /** What the caller items read and write, as the ProjectAgent wires them (caller-items.ts). */
+  callerDeps(): CallerItemDeps {
+    return {
+      features: this.features,
+      keeper: () => this.callerItems,
+      index: this.callerIndex,
+      sign: (record) => this.#sign(record),
+      stage: async () => (await this.policyInForce()).policy.preset,
+      notify: this.#notify,
+      now: () => this.#clock,
+    };
+  }
+
+  callerActionDeps(): CallerActionDeps {
+    return {
+      ...this.callerDeps(),
+      heartbeat: (caller, sessionId) => this.sessions.heartbeat(caller, sessionId),
+      plan: async (featureId) => this.plans.latestPlan(featureId),
+      written: (partId, revision) => this.fixGrants.get(partId, revision)?.state === "written",
+    };
+  }
+
+  /** The caller items `originId`'s replays opened, withdrawn ones left out. */
+  callerItemsOf(originId: string): CallerItem[] {
+    return this.callerItems.callerItems(originId).filter((item) => item.state !== "withdrawn");
+  }
+
+  /**
+   * An agent calls a caller tool: the receiving worktree's agent for `confirm` and `review`, the
+   * originating agent for `propose_fix` and `explain`, each through its own session.
+   */
+  async callerCall(call: CallerCall & { readonly item: string }): Promise<CallerItem> {
+    this.tick();
+    const item = this.callerItems.callerItems(this.callerIndex.originOf(call.item) as string).find((each) => each.itemId === call.item);
+    if (item === undefined) throw new Error(`no caller item ${call.item}`);
+    const side = call.action === "confirm" || call.action === "review" ? item.feature : item.origin;
+    const person = this.features.get(side)?.personId as string;
+    const answered = await callerAction(this.callerActionDeps(), person, this.sessionOf.get(side) as string, call);
+    if (answered.status !== "ok") throw new Error(`${call.action} ${call.item}: ${answered.message}`);
+    return answered.item;
+  }
+
+  /** The worktree owner decides an item sent to them; in step mode, through the dashboard. */
+  async decideCaller(person: string, itemId: string, verdict: "approve" | "request_changes", text = ""): Promise<void> {
+    this.tick();
+    if (this.gate !== undefined) return this.gate.decision({ person, routes: ["/api/plan-parts/decide-caller"], fields: { item: itemId } });
+    const decided = await ownerDecision({ ...this.callerDeps(), delegates: async () => new Map() }, person, { item: itemId, verdict, text });
+    if (decided.status !== "ok") throw new Error(`decide ${itemId}: ${decided.message}`);
   }
 
   /** The newest `limit` commits of a branch's first-parent history: `base` reads main, a fork its own branch. */
@@ -766,12 +845,12 @@ export class PreviewProject {
    * originating change's current modules: Penguin opened that fork's copy write, and the agent asks
    * again once it is written.
    */
-  async requestLand(featureId: string): Promise<"asked" | "copy_not_written"> {
+  async requestLand(featureId: string): Promise<"asked" | "copy_not_written" | "callers_pending"> {
     this.tick();
     const feature = this.features.get(featureId);
     if (feature === undefined) throw new Error(`no feature ${featureId}`);
     const asked = await requestLand(this.landDeps(), feature.personId, this.sessionOf.get(featureId) as string, { feature: featureId });
-    if (asked.status === "rejected" && asked.reason === "copy_not_written") return "copy_not_written";
+    if (asked.status === "rejected" && (asked.reason === "copy_not_written" || asked.reason === "callers_pending")) return asked.reason;
     if (asked.status === "rejected") throw new Error(`land ${featureId}: ${asked.message}`);
     return "asked";
   }
@@ -980,7 +1059,9 @@ export class PreviewProject {
     const impact = pythonImpactAnalyzer({ repoPath: repo, python: PYTHON, env: ENV });
     const pass = await toolPass({
       claim: async () => {
-        const claimed = await claimToolRuns({ runs: this.tools, features: this.features, identity: (id) => this.identities.get(id) }, RUNNER);
+        // `check` merges onto each fork's head with its written fixes, as a land does and the ProjectAgent's claim does.
+        const land = this.landDeps();
+        const claimed = await claimToolRuns({ runs: this.tools, features: this.features, identity: (id) => this.identities.get(id), targets: (own) => blockTargets(land, own) }, RUNNER);
         return claimed.status === "ok" ? claimed.runs : [];
       },
       report: async (runId, result) => {
@@ -988,6 +1069,11 @@ export class PreviewProject {
         if (recorded.status !== "recorded") throw new Error(`report ${runId}: ${JSON.stringify(recorded)}`);
         // Main's scope dependencies go to the stored edges, as the ProjectAgent's report does.
         edgesReported(this.scopeEdges, recorded.run);
+        // A check's caller replay opens or moves the feature's caller items, as the ProjectAgent's report does.
+        const replay = recorded.run.tool === "check" ? recorded.run.outcome?.callerReplay : undefined;
+        if (replay !== undefined && recorded.run.featureId !== null) {
+          await replayReported(this.callerDeps(), recorded.run.featureId, replay, { kind: "check", id: String(runId), checkpoint: recorded.run.checkpointSha ?? "" });
+        }
         // A count of Penguin's own goes on to the contract step, as the ProjectAgent's report does.
         const counted = await countReported(this.countDeps(), recorded.run);
         if (counted !== undefined) this.counts.push({ runId, outcome: counted });
@@ -1207,6 +1293,8 @@ export class PreviewProject {
       unconfirmedProtected: (id) => unconfirmedProtected(this.protectedChanges, id),
       // A land waits until every affected fork holds the originating change's current modules (#179).
       copiesBehind: (plan, targets) => copiesBehind(this.fixWriteDeps(), plan, targets),
+      // A land waits until every affected caller is confirmed, written or approved (#188).
+      callersPending: async (id) => landPending(this.callerDeps(), id),
       sign: (record) => this.#sign(record),
       notify: this.#notify,
     };
@@ -1349,6 +1437,10 @@ export class PreviewProject {
               retryExpand: async () => ({ status: "rejected", reason: "busy", message: "the preview makes one push at a time" }),
               blockReported: async (featureId, run, decisions: readonly LadderDecision[]) =>
                 blockReported(work, featureId, run, decisions, this.migrations.openedByPenguin(featureId) ? stewardsFor(this.migrations) : undefined),
+              callerReplayReported: async (featureId, run, section) => {
+                await replayReported(this.callerDeps(), featureId, section, { kind: "block", id: run.runId, checkpoint: run.checkpoint });
+              },
+              callersPending: (featureId) => landPending(this.callerDeps(), featureId),
             },
             // Main moves only from the commit the block was checked against, in one step.
             push: async (run) => {
@@ -1541,6 +1633,7 @@ export class PreviewProject {
       recordCommits: (featureId) => this.recordRepo.commits(featureId),
       routeOf: async (plan, part) =>
         policyRoute(await this.policyInForce(), routePart(plan, part, this.reviews.list(plan.featureId), this.scopeMap, false, trialStanding(this.trials, this.reviews, plan.featureId, part))),
+      callerItems: (featureId) => featureCallerItems(this.callerDeps(), featureId),
     };
   }
 
@@ -1660,9 +1753,14 @@ export class PreviewProject {
             records: (featureId) => this.features.records(featureId),
             ownFeatures: (person) => this.features.list().filter((feature) => feature.personId === person && feature.state !== "landed").map((feature) => feature.id),
             protectedChanges: (owners, items, delegates) => protectedChangeRequests(this.protectedChanges, this.features, items, owners, owner, delegates),
+            callerItems: (person, delegates) => ownerCallerItems(this.callerDeps(), person, delegates),
           },
           owner,
         ),
+      decideCallerItem: async (owner, input) => {
+        const decided = await ownerDecision({ ...this.callerDeps(), delegates: async () => new Map() }, owner, input);
+        return decided.status === "ok" ? { status: "ok", item: decided.item, recordIds: [...decided.recordIds] } : decided;
+      },
       decidePlanPart: async (owner, decision) => {
         const decided =
           decision.kind === "request_change"
@@ -1908,6 +2006,112 @@ interface Larder {
 const subjectOf = (commit: LarderCommit): string => commit.message.split("\n")[0] as string;
 
 /**
+ * What a case's agents say on its caller items (`callers/case<N>.json`): the originating agent's
+ * explanation of each receiving feature's differing calls, and that feature's agent's review note.
+ */
+interface CallerWords {
+  readonly explanations: Readonly<Record<string, string>>;
+  readonly reviews: Readonly<Record<string, string>>;
+}
+
+/** The case's caller words, or undefined when the fixture has none for it. */
+async function callerWords(preview: PreviewProject, useCase: number | undefined): Promise<CallerWords | undefined> {
+  const file = join(ROOT, "examples", preview.fixture, "callers", `case${useCase}.json`);
+  return useCase !== undefined && existsSync(file) ? (JSON.parse(await readFile(file, "utf8")) as CallerWords) : undefined;
+}
+
+/**
+ * Each side's agent answers one caller item as the protocol asks (#188): the receiving worktree's agent
+ * confirms an unaffected caller; the originating agent explains a difference as expected with the
+ * case's words, then the receiving agent approves it with its note; a broken caller gets the
+ * originating plan's part on that feature as its fix, which the receiving agent approves. An item
+ * sent to the worktree owner waits for that person's approval.
+ */
+async function answerCaller(preview: PreviewProject, item: CallerItem, words: CallerWords | undefined): Promise<void> {
+  const where = `${item.feature}'s callers of ${item.contract}`;
+  if (callerWaitingOn(item) === "worktree_owner") {
+    const person = preview.features.get(item.feature)?.personId as string;
+    await preview.step(`${person} approves ${where}`, () => preview.decideCaller(person, item.itemId, "approve"));
+    return;
+  }
+  const review = async () => {
+    await preview.step(`review_caller ${where}`, () => preview.callerCall({ action: "review", item: item.itemId, verdict: "approve", text: words?.reviews[item.feature] ?? "" }));
+  };
+  switch (item.state) {
+    case "confirmation_requested":
+      await preview.step(`confirm_caller ${where}`, () => preview.callerCall({ action: "confirm", item: item.itemId }));
+      return;
+    case "differs":
+    case "explained":
+    case "changes_requested": {
+      const text = words?.explanations[item.feature];
+      if (text === undefined) throw new Error(`the case's callers file explains no difference in ${item.feature}`);
+      await preview.step(`explain_difference ${where}`, () => preview.callerCall({ action: "explain", item: item.itemId, kind: "expected", text }));
+      return review();
+    }
+    case "broken":
+    case "fix_rejected": {
+      const part = (await preview.plan(item.origin))?.parts.find((each) => each.place.kind === "feature" && each.place.feature === item.feature && each.kind !== "verify");
+      if (part === undefined) throw new Error(`${item.origin}'s plan has no fix for ${where}`);
+      await preview.step(`propose_caller_fix ${where}`, () => preview.callerCall({ action: "propose_fix", item: item.itemId, part: part.partId, revision: part.revision }));
+      return review();
+    }
+    case "fix_proposed":
+    case "review_requested":
+      return review();
+    default:
+  }
+}
+
+/**
+ * Answers every open caller item of `origin`, or only those on feature `only`, until each lets a write
+ * into its fork go ahead.
+ */
+async function answerCallers(preview: PreviewProject, origin: string, words: CallerWords | undefined, only?: string): Promise<void> {
+  for (let pass = 0; pass < 4; pass += 1) {
+    const open = preview.callerItemsOf(origin).filter((item) => (only === undefined || item.feature === only) && preview.features.get(item.feature)?.state !== "landed" && !callerItemSettled(item, "write"));
+    if (open.length === 0) return;
+    for (const item of open) await answerCaller(preview, item, words);
+  }
+  throw new Error(`${origin}'s caller items stay open: ${preview.callerItemsOf(origin).map((item) => `${item.feature} ${item.state}`).join(", ")}`);
+}
+
+/**
+ * The originating agent asks to land; the check runner checks the block on main and every running
+ * fork; the passing block's promotion moves main. While an affected fork lacks the originating change's
+ * current modules the land is refused: the check runner copies them, then the agent asks again. A land
+ * or a promotion that waits on caller items gets each side's answers first, then the agent asks again.
+ */
+async function landOrigin(preview: PreviewProject, feature: LarderFeature, words: CallerWords | undefined): Promise<void> {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const again = attempt === 0 ? "" : " again";
+    let asked = await preview.step(`land_feature ${feature.id}${again}`, () => preview.requestLand(feature.id));
+    for (let round = 0; asked !== "asked"; round += 1) {
+      if (round === 4) throw new Error(`${feature.id}'s land stays refused as ${asked}: ${(await landPending(preview.callerDeps(), feature.id)).join("; ")}`);
+      if (asked === "copy_not_written") {
+        await answerCallers(preview, feature.id, words);
+        const copied = await preview.step(`check runner copies ${feature.id}'s modules into its affected forks`, () => preview.writeCopies());
+        if (copied.length === 0) throw new Error(`${feature.id}'s land waits for copies the check runner did not write`);
+      } else {
+        await answerCallers(preview, feature.id, words);
+      }
+      asked = await preview.step(`land_feature ${feature.id} again`, () => preview.requestLand(feature.id));
+    }
+    await preview.step(`block checks of ${feature.id}`, () => preview.checkBlocks());
+    await preview.step(`promote ${feature.id}`, () => preview.promoteChecked());
+    if (preview.features.get(feature.id)?.state === "landed") return;
+    // The block's own replay may reset a caller item: each side answers it, and the agent lands again.
+    const open = preview.callerItemsOf(feature.id).filter((item) => !callerItemSettled(item, "land"));
+    if (open.length === 0) break;
+    await answerCallers(preview, feature.id, words);
+  }
+  const records = preview.features.records(feature.id).map((kept) => JSON.parse(kept.file) as { type: string; payload: Record<string, unknown> });
+  const checked = records.filter((record) => record.type === "block_checked").at(-1)?.payload;
+  const failing = preview.blocks.get(String(checked?.["run_id"]))?.failing;
+  throw new Error(`${feature.id} did not land: ${JSON.stringify({ failing, last: records.at(-1)?.type, refused: records.filter((record) => record.type === "promotion_refused").at(-1)?.payload["reason"] }).slice(0, 4_000)}`);
+}
+
+/**
  * Use cases 1 to 3 on Larder, then Lena's promotion stacking, in the fixture's date order up to the
  * split's first commit (docs/fixture-money.md, Cases 1 to 3). Each running feature opens from `base`
  * at its first commit. Each originating feature (`case`) opens from main as the case before left it,
@@ -2114,25 +2318,14 @@ async function casesOneToThree(preview: PreviewProject, larder: Larder): Promise
       if (preview.features.get(feature.id)?.latestCheckpointSha !== headSha) {
         await preview.step(`checkpoint ${feature.id} ${head.tag}`, () => preview.checkpoint(feature.id, tagOf(feature, head.tag as string)));
       }
-      // The agent asks to land; the check runner checks the block on main and every running fork;
-      // the passing block's promotion moves main. While an affected fork lacks the originating
-      // change's current modules the land is refused: the check runner copies them, then the agent asks again.
-      let asked = await preview.step(`land_feature ${feature.id}`, () => preview.requestLand(feature.id));
-      while (asked === "copy_not_written") {
-        const copied = await preview.step(`check runner copies ${feature.id}'s modules into its affected forks`, () => preview.writeCopies());
-        if (copied.length === 0) throw new Error(`${feature.id}'s land waits for copies the check runner did not write`);
-        asked = await preview.step(`land_feature ${feature.id} again`, () => preview.requestLand(feature.id));
+      // With caller items open, the agent checks again first: the caller replay then runs on the
+      // forks as Penguin's updates left them, and each item whose calls changed asks its side again.
+      const words = await callerWords(preview, feature.case);
+      if (preview.callerItemsOf(feature.id).length > 0) {
+        await preview.step(`check ${feature.id} before the land`, () => preview.runnerTool(feature.id, "check"));
+        await answerCallers(preview, feature.id, words);
       }
-      await preview.step(`block checks of ${feature.id}`, () => preview.checkBlocks());
-      await preview.step(`promote ${feature.id}`, async () => {
-        await preview.promoteChecked();
-        if (preview.features.get(feature.id)?.state !== "landed") {
-          const records = preview.features.records(feature.id).map((kept) => JSON.parse(kept.file) as { type: string; payload: Record<string, unknown> });
-          const checked = records.filter((record) => record.type === "block_checked").at(-1)?.payload;
-          const failing = preview.blocks.get(String(checked?.["run_id"]))?.failing;
-          throw new Error(`${feature.id} did not land: ${JSON.stringify({ failing, last: records.at(-1)?.type }).slice(0, 4_000)}`);
-        }
-      });
+      await landOrigin(preview, feature, words);
       continue;
     }
     const { feature, commit, index } = event;
@@ -2149,6 +2342,8 @@ async function casesOneToThree(preview: PreviewProject, larder: Larder): Promise
       const origin = originAt(event.at) as LarderFeature;
       const part = (await preview.plan(origin.id))?.parts.find((each) => each.place.kind === "feature" && each.place.feature === feature.id);
       if (part?.approvalState !== "approved") throw new Error(`${feature.id} ${tag}: ${origin.id}'s part there is ${part?.approvalState ?? "missing"}, not approved`);
+      // The receiving worktree's agent approves before the originating change touches its code (#188).
+      await answerCallers(preview, origin.id, await callerWords(preview, origin.case), feature.id);
       await preview.step(`fix_write ${part.partId} into ${feature.id}`, () => preview.writeApprovedFix(origin.id, part.partId));
       // A behavioural part's copy write follows the agent's write into the fork: the check runner
       // copies the originating change's current modules the fork imports.
@@ -2298,12 +2493,20 @@ async function moneyMinorUnits(preview: PreviewProject, { data: larder, byId, bu
       // The checkpoint's facts run holds the contract diff that shows each symbol removed.
       await preview.factsPass();
     });
-    await preview.step(`land ${origin.id}`, async () => {
-      const asked = await requestLand(preview.landDeps(), origin.owner, preview.sessionOf.get(origin.id) as string, { feature: origin.id });
-      if (asked.status === "rejected") throw new Error(`land ${origin.id}: ${asked.message}`);
-      await preview.blockPass();
-      await preview.runnerPass();
-    });
+    // Ines's agent checked the expand when it runs the check runner's tools: its caller items are answered first.
+    const words = await callerWords(preview, origin.case);
+    await answerCallers(preview, origin.id, words);
+    for (let attempt = 0; preview.features.get(origin.id)?.state !== "landed"; attempt += 1) {
+      if (attempt === 2) throw new Error(`${origin.id} did not land: ${JSON.stringify(preview.features.records(origin.id).map((kept) => JSON.parse(kept.file).type).slice(-6))}`);
+      await preview.step(`land ${origin.id}${attempt === 0 ? "" : " again"}`, async () => {
+        const asked = await requestLand(preview.landDeps(), origin.owner, preview.sessionOf.get(origin.id) as string, { feature: origin.id });
+        if (asked.status === "rejected") throw new Error(`land ${origin.id}: ${asked.message}`);
+        await preview.blockPass();
+        await preview.runnerPass();
+      });
+      // The block's own replay may reset a caller item: each side answers it before the next land.
+      await answerCallers(preview, origin.id, words);
+    }
   }
 }
 

@@ -5,6 +5,9 @@
 import { PENGUIN_APPROVER, penguinApprovalText, policyRuleText, reasonKind, VALIDATION_KIND_LABEL } from "@penguin/protocol";
 import type {
   BlockCheck,
+  CallerItemView,
+  CallerOwnerReason,
+  CallerSideView,
   PolicyRoute,
   FeatureException,
   FeatureStateWord,
@@ -195,6 +198,12 @@ const RECORD_LABEL: Readonly<Record<string, string>> = {
   confirm_protected_change: "Custom path rule lines confirmed",
   expand_requested: "Expand requested",
   expand_promotion: "Expand promoted",
+  caller_item: "Caller item moved",
+  confirm_caller: "Caller confirmed",
+  propose_caller_fix: "Caller fix proposed",
+  explain_difference: "Difference explained",
+  review_caller: "Caller reviewed",
+  decide_caller: "Caller decided by the worktree owner",
 };
 
 /** A signed record's type as a label; a type the dashboard does not know shows as stored. */
@@ -311,4 +320,23 @@ export function reviewAnchor(reviewId: number): string {
 /** The round of a part against the project's limit: `round 2 of 3`. */
 export function roundText(changeRequests: number, roundLimit: number): string {
   return `round ${changeRequests} of ${roundLimit}`;
+}
+
+/** Why a caller item went to the worktree owner, as a bare tag. */
+export const CALLER_OWNER_TAG: Readonly<Record<CallerOwnerReason, string>> = {
+  unknown_reach: "No test reaches the call",
+  unanswered: "Unanswered in time",
+  rejected_twice: "Rejected twice",
+  policy: "Review policy asks the worktree owner",
+};
+
+/** How a replayed call ended on one tree: `returned`, `raised Timeout` or `not made`. */
+export function callerSideText(side: CallerSideView): string {
+  if (side.status === "missing") return "not made";
+  return side.status === "raised" && side.error !== null ? `raised ${side.error}` : side.status;
+}
+
+/** The caller items `featureId`'s change opened, then those in its own worktree from other changes. */
+export function callerGroups(items: readonly CallerItemView[], featureId: string): { readonly reaches: CallerItemView[]; readonly here: CallerItemView[] } {
+  return { reaches: items.filter((item) => item.origin === featureId), here: items.filter((item) => item.feature === featureId && item.origin !== featureId) };
 }

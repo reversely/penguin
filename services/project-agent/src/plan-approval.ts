@@ -66,6 +66,7 @@ import {
   type ReturnedPlanRequest,
   type ReviewExceptionRequest,
   type TeamExceptionView,
+  type CallerItemRequest,
 } from "@penguin/protocol";
 import type { Delegates } from "@penguin/issues";
 import { answerers, ledScopes, routeScope, scopeForPath, type ScopeMap } from "@penguin/scope-map";
@@ -898,6 +899,8 @@ export interface PlanInboxDeps {
    * protectedChangeRequests), with `items` the viewer's inbox. Absent, none are listed.
    */
   readonly protectedChanges?: (owners: readonly string[], items: readonly InboxItem[], delegates: Delegates, scopeMap: ScopeMap) => readonly ProtectedChangeRequest[];
+  /** The caller items on the person's worktrees the stage shows them (caller-items.ts ownerCallerItems); absent, none. */
+  readonly callerItems?: (person: string, delegates: Delegates) => Promise<readonly CallerItemRequest[]>;
 }
 
 const REVIEW_REF = /^([^/]+)\/([^/]+)$/u;
@@ -1027,7 +1030,8 @@ export async function buildPlanInbox(deps: PlanInboxDeps, caller: string): Promi
     return [{ feature: featureId, ...returnedPayload(returned.payload), read: item.read, raisedAt: item.raisedAt }];
   });
   const protectedChanges = [...(deps.protectedChanges?.(owners, items, delegates, scopeMap) ?? [])];
-  return { parts, protectedChanges, reviewExceptions, returnedPlans, teamExceptions: teamExceptions(deps, caller, scopeMap, delegates) };
+  const callerItems = await deps.callerItems?.(caller, delegates);
+  return { parts, protectedChanges, reviewExceptions, returnedPlans, teamExceptions: teamExceptions(deps, caller, scopeMap, delegates), ...(callerItems === undefined ? {} : { callerItems }) };
 }
 
 /**

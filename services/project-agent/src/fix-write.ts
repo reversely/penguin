@@ -448,6 +448,14 @@ export interface FixWriteDeps {
    * the new head before it is granted (fix-retrial.ts). Absent, nothing is tried again.
    */
   readonly written?: (grant: FixGrant, commit: string) => Promise<void>;
+  /**
+   * Why a write of `originId`'s fix into `targetId`'s fork waits for the receiving worktree's approval
+   * of its caller items, or null when that side approved (caller-items.ts `writeWaits`). Absent, no
+   * write waits on a caller.
+   */
+  readonly callerWaits?: (originId: string, targetId: string) => Promise<string | null>;
+  /** Called once a part's own write is kept, so the caller items it answers become `written`. */
+  readonly partWritten?: (originId: string, partId: string, revision: number) => Promise<void>;
 }
 
 /** What fix writes read and tell about a migration part (migration-plans.ts). */
@@ -462,7 +470,7 @@ export interface MigrationWrites {
   retry?(partId: string, head: string): Promise<number | null>;
 }
 
-export type FixRejectReason = FeatureRejectReason | "not_approved" | "head_moved" | "waiting" | "copy_conflict";
+export type FixRejectReason = FeatureRejectReason | "not_approved" | "head_moved" | "waiting" | "copy_conflict" | "callers_pending";
 
 export type FixRejection = { readonly status: "rejected"; readonly reason: FixRejectReason; readonly message: string };
 
@@ -794,6 +802,9 @@ async function grantAgentWrite(deps: FixWriteDeps, approved: ApprovedPart, writt
   if (approved.part.kind === "mechanical" || approved.part.kind === "verify") {
     return rejected("forbidden", `part ${approved.part.partId} is ${approved.part.kind}: Penguin's check runner writes it`);
   }
+  // The receiving worktree approves before anyone else's agent touches its code (#188).
+  const callers = (await deps.callerWaits?.(approved.featureId, approved.target.id)) ?? null;
+  if (callers !== null) return rejected("callers_pending", `no write token on feature ${approved.target.id}'s fork yet: ${callers}`);
   const grant = deps.grants.open(approved.featureId, approved.plan.planId, approved.part, approved.target.id, "agent");
   if (grant.state === "written") {
     return rejected("conflict", `revision ${grant.revision} of part ${grant.partId} is already written as ${grant.commitSha}`);
@@ -979,8 +990,9 @@ export async function claimRunnerWrites(
       deps.grants.withdraw(grant.id);
       continue;
     }
-    // A write that waits for its fork's turn stays queued for a later claim.
+    // A write that waits for its fork's turn, or for the receiving worktree's approval, stays queued.
     if ((await forkTurn(deps, grant)) !== null) continue;
+    if (((await deps.callerWaits?.(grant.featureId, grant.targetFeatureId)) ?? null) !== null) continue;
     const migration = deps.migration;
     const headMoved =
       isMigrationPlanId(grant.planId) && migration !== undefined
@@ -1121,6 +1133,7 @@ async function recordFixWrite(deps: FixWriteDeps, grant: FixGrant, writtenBy: st
   deps.features.addRecord(record);
   deps.grants.written(grant.id, commit, record.record_id, copies);
   await migration?.written(grant.partId, commit, record.record_id);
+  if (migration === undefined && approved.copiedFrom === undefined) await deps.partWritten?.(grant.featureId, partId, grant.revision);
   deps.notify(approved.target.personId);
   deps.notify(approved.plan.person);
   // The fork moved: each write still waiting there is tried on the new head before its turn.

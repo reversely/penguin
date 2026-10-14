@@ -28,7 +28,10 @@ that calls a function the change modifies runs its own tests on its fork head an
 tree with that function wrapped. Each call site gets `unaffected`, `broken`, `differs` or
 `unknown_reach` from the calls' results, exceptions and effects
 ([design.md](design.md#caller-replay)). The verdicts sit in the `check` result, the block run's report
-and its `block_checked` record. No review policy row reads them yet.
+and its `block_checked` record. Each opens a caller item that the receiving worktree's agent confirms
+or approves before the change writes into its fork or reaches main
+([design.md](design.md#caller-items-in-the-build)). The review policy's stage decides when the
+worktree owner decides items too ([review-policies.md](review-policies.md#caller-items)).
 
 Custom path rules and Place are one kind. The review policy keeps them as two rows, so a sandbox may
 let Penguin decide one and not the other. Overlapping starts is no row of the policy: an overlapping
@@ -64,5 +67,5 @@ locked it, who decided, the rule and the kinds whose checks marked the part.
 |---|---|
 | Plan inbox (`GET /api/plan-parts`) | Each part's `route`: who decides, the rule and the kinds |
 | `get_work` | `reviewPolicy` and, on each part, `routing` with `reason`, `kinds` and `types` in these names |
-| Records | `approve_plan_part` and `migration_part_decided` carry `review_policy`; `approve_overlap` names the owner Penguin told |
+| Records | `approve_plan_part` and `migration_part_decided` carry `review_policy`; `approve_overlap` names the owner Penguin told; each caller item record names the stage's reason when the worktree owner decides |
 | Code | `VALIDATION_KINDS`, `VALIDATION_KIND_LABEL`, `reasonKind` and `blockCheckKind` in `validation.ts` |

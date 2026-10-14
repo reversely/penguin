@@ -143,6 +143,11 @@ export default {
               const confirmed = await agent.confirmProtectedChange(owner, input, repos);
               return confirmed.status === "ok" ? { status: "ok", recordId: confirmed.recordId } : confirmed;
             },
+            // The decider is the session's person, named by the dashboard route, never by the body.
+            decideCallerItem: async (owner, input) => {
+              const decided = await agent.decideCallerItem(owner, input, repos);
+              return decided.status === "ok" ? { status: "ok", item: decided.item, recordIds: [...decided.recordIds] } : decided;
+            },
             connectLive: (liveRequest, owner) => {
               // The browser cannot name the owner: the header is replaced with the session's.
               const headers = new Headers(liveRequest.headers);
@@ -191,6 +196,8 @@ export default {
                 retryExpand: (feature, run, charter) => project.retryExpand(feature, run, charter, repos),
                 blockReported: (feature, run, decisions) => project.blockReported(feature, run, decisions, repos),
                 fixesWrittenSince: (targets, since) => project.fixesWrittenSince(targets, since),
+                callerReplayReported: (feature, run, section) => project.callerReplayReported(feature, run, section),
+                callersPending: (feature) => project.callersPending(feature),
               };
               return (await agent.reportBlockRun(caller, runId, body, port, { base: names.base, prefix: names.prefix })) as BlockReportAnswer;
             },

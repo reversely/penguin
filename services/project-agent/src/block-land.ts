@@ -151,6 +151,7 @@ export type LandRejectReason =
   | "fix_not_in_block"
   | "fix_not_in_place"
   | "copy_not_written"
+  | "callers_pending"
   | "busy"
   // An expand checkpoint (expand-promotion.ts): the impact run is not reported, failed, finds more
   // than additions, or an owner of a scope it adds to has not approved yet.
@@ -187,6 +188,11 @@ export interface LandDeps {
    * waits on a copy.
    */
   readonly copiesBehind?: (plan: Plan, targets: readonly BlockRunTarget[]) => Promise<readonly string[]>;
+  /**
+   * Each caller item of the feature's replays that is not yet confirmed, written or approved, as one
+   * line (caller-items.ts `landPending`). Absent, no land waits on a caller.
+   */
+  readonly callersPending?: (featureId: string) => Promise<readonly string[]>;
   readonly sign: (record: UnsignedFeatureRecord) => Promise<FeatureRecord>;
   readonly notify: (personId: string) => void;
   readonly now?: () => number;
@@ -344,7 +350,14 @@ async function prepareLand(deps: LandDeps, feature: Feature, checkpoint: unknown
   if (behind.length > 0) {
     return rejected("copy_not_written", `the affected forks do not yet hold the originating change's current modules; Penguin's check runner copies them first: ${behind.join("; ")}`);
   }
+  const callers = (await deps.callersPending?.(feature.id)) ?? [];
+  if (callers.length > 0) return rejected("callers_pending", callersPendingMessage(callers));
   return { feature: feature as Prepared["feature"], plan, mainBefore: main.head, targets };
+}
+
+/** Why a feature may not reach main while caller items wait, naming each. */
+function callersPendingMessage(callers: readonly string[]): string {
+  return `every affected caller must be confirmed, its fix written or its difference approved first; read each in get_work's callerItems: ${callers.slice(0, 20).join("; ")}`;
 }
 
 export function targetFields(targets: readonly BlockRunTarget[]): Record<string, unknown>[] {
@@ -557,6 +570,13 @@ export interface BlockProjectPort {
    * (fix-write.ts). A run that named those heads checked the block without them. Absent, none.
    */
   fixesWrittenSince?(targets: readonly string[], since: string): Promise<readonly string[]>;
+  /**
+   * The run's caller replay reached Penguin: the feature's caller items follow it (caller-items.ts
+   * `replayReported`). Absent, a block run moves no item.
+   */
+  callerReplayReported?(featureId: string, run: { readonly runId: string; readonly checkpoint: string }, section: CallerReplaySection): Promise<void>;
+  /** The feature's caller items not yet settled, as lines; a passing land run waits on them. Absent, none. */
+  callersPending?(featureId: string): Promise<readonly string[]>;
 }
 
 export interface BlockReportDeps {
@@ -631,6 +651,14 @@ export async function reportBlockRun(deps: BlockReportDeps, caller: BridgeCaller
     check_ms: checkMs,
   });
   deps.store.setRecord(runId, recordId);
+  if (parsed.report.callerReplay !== undefined) {
+    try {
+      await deps.port.callerReplayReported?.(run.featureId, { runId, checkpoint: run.checkpoint }, parsed.report.callerReplay);
+    } catch (error) {
+      // The report stands; the next replay moves the items again.
+      console.error(JSON.stringify({ event: "caller_items_failed", run: runId, error: String(error).slice(0, 200) }));
+    }
+  }
   try {
     await deps.port.blockReported?.(run.featureId, { runId, checkpoint: run.checkpoint, passed: verdict.passed }, parsed.report.decisions);
   } catch (error) {
@@ -680,6 +708,13 @@ async function promote(
   };
   if (deps.planApproved !== undefined && !deps.planApproved(run.featureId, run.planId)) {
     await refuse("refused", `a part of ${run.planId === null ? "the feature's plan" : `plan ${run.planId}`} is no longer approved`, null);
+    await deps.port.landFailed(run.featureId, run.runId);
+    return { state: "refused", promotion: null, retried: null };
+  }
+  // The run's own replay may have reset a caller item: main waits until the receiving side answers it.
+  const callers = expand ? [] : ((await deps.port.callersPending?.(run.featureId)) ?? []);
+  if (callers.length > 0) {
+    await refuse("refused", callersPendingMessage(callers), null);
     await deps.port.landFailed(run.featureId, run.runId);
     return { state: "refused", promotion: null, retried: null };
   }

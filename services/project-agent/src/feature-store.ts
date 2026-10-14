@@ -90,6 +90,8 @@ export interface Feature {
  * written by migration-plans.ts, which also opens features from main for Penguin's own work and signs
  * the contract step a feature Penguin opened carries. A change of the sandbox's review policy is written
  * by review-policy.ts under PROJECT_RECORDS, the project's own folder, which no feature id can name.
+ * Each transition of a caller item is written by caller-items.ts on the originating feature: Penguin's
+ * own as `caller_item`, each agent's under the tool it called, the worktree owner's as `decide_caller`.
  */
 export type FeatureRecordType =
   | "open_feature"
@@ -133,7 +135,13 @@ export type FeatureRecordType =
   | "migration_landed"
   | "feature_closed"
   | "block_rebuilt"
-  | "review_policy_changed";
+  | "review_policy_changed"
+  | "caller_item"
+  | "confirm_caller"
+  | "propose_caller_fix"
+  | "explain_difference"
+  | "review_caller"
+  | "decide_caller";
 
 export interface FeatureRecord {
   readonly schema_version: 1;

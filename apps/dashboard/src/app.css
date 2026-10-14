@@ -4204,6 +4204,7 @@ label.button:has(input:focus-visible) {
   font: var(--text-meta);
 }
 
+.caller-calls,
 .review-rows,
 .review-refusals,
 .review-exceptions,
@@ -4227,6 +4228,8 @@ label.button:has(input:focus-visible) {
   list-style: none;
 }
 
+/* A differing call of a caller item: its test, what differs, then each tree's outcome, ruled apart as review rows are. */
+.caller-call,
 .review-row {
   display: grid;
   gap: var(--space-1);

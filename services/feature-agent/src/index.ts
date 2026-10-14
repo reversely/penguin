@@ -2,6 +2,7 @@ import { Agent } from "agents";
 import {
   ApprovedBranchStore,
   BlockStore,
+  CallerItemStore,
   closeOut,
   collectReviews,
   durableObjectSql,
@@ -28,6 +29,7 @@ import {
   type BlockRun,
   type BlockRunInput,
   type BridgeCaller,
+  type CallerItemKeeper,
   type CloseOutcome,
   type FastForwardOutcome,
   type FeatureBlocks,
@@ -51,7 +53,7 @@ import {
   type VerificationOutcome,
   type VerificationScheduleOutcome,
 } from "@penguin/project-agent";
-import type { BlockRunRequest, Promotion } from "@penguin/protocol";
+import type { BlockRunRequest, CallerItem, Promotion } from "@penguin/protocol";
 
 /** The Worker's configuration a FeatureAgent reads. */
 interface FeatureAgentEnv {
@@ -74,6 +76,10 @@ export interface PromotionRepos {
  * ProjectAgent names one instance per feature, `<project>-feature-<id>`, checks and signs every
  * record, and holds the service key; this agent keeps the rows and runs the promotion.
  *
+ * It also keeps one item per running feature and contract the feature's caller replays reach
+ * (caller-items.ts): the ProjectAgent checks each agent's answer, signs the transition and keeps the
+ * item here.
+ *
  * The check runner's block reports reach this agent directly through the Worker, with a port back to
  * the ProjectAgent for signing, the promotion slot and the feature's state. A passing land run is
  * promoted here: the agent mints a write token on the base repo for minutes and a read token on the
@@ -86,13 +92,14 @@ export interface PromotionRepos {
  * keeps its threads (huddle-threads.ts) and evaluates its close (huddle-close.ts). A feature's results
  * never open a Huddle; its block replaces the Huddle flow (PRD 0.4 section 4.5).
  */
-export class FeatureAgent extends Agent implements HuddleVerifier, HuddleReviewer, HuddleThreadKeeper, HuddleCloser, PlanKeeper, FeatureBlocks {
+export class FeatureAgent extends Agent implements HuddleVerifier, HuddleReviewer, HuddleThreadKeeper, HuddleCloser, PlanKeeper, FeatureBlocks, CallerItemKeeper {
   #runs: VerificationStore | undefined;
   #reviews: FixReviewStore | undefined;
   #threads: HuddleThreadStore | undefined;
   #approvals: ApprovedBranchStore | undefined;
   #plans: PlanStore | undefined;
   #blocks: BlockStore | undefined;
+  #callers: CallerItemStore | undefined;
   /** Huddle steps run one at a time, so no two interleave their writes. */
   #steps: Promise<unknown> = Promise.resolve();
 
@@ -145,6 +152,18 @@ export class FeatureAgent extends Agent implements HuddleVerifier, HuddleReviewe
   /** The fixes written for the feature's plan parts, oldest first. */
   fixWrites(featureId: string): FixWrite[] {
     return this.#planStore().fixWrites(featureId);
+  }
+
+  // The caller items (caller-items.ts).
+
+  /** Every caller item the feature's replays opened, in item id order. */
+  callerItems(featureId: string): CallerItem[] {
+    return this.#callerStore().callerItems(featureId);
+  }
+
+  /** Keeps a caller item the ProjectAgent signed a transition for, while it still stands at `expected`. */
+  keepCallerItem(item: CallerItem, expected: string | null): boolean {
+    return this.#callerStore().keepCallerItem(item, expected);
   }
 
   // The block and its promotion (block-store.ts, block-land.ts).
@@ -340,6 +359,11 @@ export class FeatureAgent extends Agent implements HuddleVerifier, HuddleReviewe
   #planStore(): PlanStore {
     this.#plans ??= new PlanStore(durableObjectSql(this.ctx.storage));
     return this.#plans;
+  }
+
+  #callerStore(): CallerItemStore {
+    this.#callers ??= new CallerItemStore(durableObjectSql(this.ctx.storage));
+    return this.#callers;
   }
 
   #blockStore(): BlockStore {

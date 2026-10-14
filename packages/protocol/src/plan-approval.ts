@@ -34,6 +34,7 @@
 // Worker checks it against PLAN_INBOX_SCHEMA before answering, so a malformed field never reaches the
 // page.
 
+import { CALLER_ITEM_REQUEST_SCHEMA, type CallerItemRequest } from "./caller-items.ts";
 import { BREAK_VIEW_SCHEMA, REVIEW_VIEW_SCHEMA, type BreakView, type ReviewView } from "./dashboard.ts";
 import { FEATURE_ID_MAX_LENGTH } from "./overlap.ts";
 import { PERSON_ID_MAX_LENGTH, PERSON_ID_PATTERN, SEGMENT_PATTERN } from "./operation-schema.ts";
@@ -399,6 +400,11 @@ export interface PlanInbox {
   readonly returnedPlans: readonly ReturnedPlanRequest[];
   /** The exceptions in the scopes of the teams the viewer leads, read-only. Absent from an older Worker. */
   readonly teamExceptions?: readonly TeamExceptionView[];
+  /**
+   * The caller items on the viewer's worktrees (#188): each sent to them as the worktree owner, plus each
+   * the review policy's stage tells them of. Absent from an older Worker.
+   */
+  readonly callerItems?: readonly CallerItemRequest[];
 }
 
 const FEATURE_ID: JsonSchema = { type: "string", pattern: `^${SEGMENT_PATTERN}$`, maxLength: FEATURE_ID_MAX_LENGTH };
@@ -531,7 +537,7 @@ const INBOX_FIELDS = {
   }),
 } as { readonly properties: Record<string, JsonSchema> };
 
-/** JSON Schema (draft 2020-12) for the GET /api/plan-parts answer. `teamExceptions` may be absent. */
+/** JSON Schema (draft 2020-12) for the GET /api/plan-parts answer. `teamExceptions` and `callerItems` may be absent. */
 export const PLAN_INBOX_SCHEMA: JsonSchema = {
   $schema: "https://json-schema.org/draft/2020-12/schema",
   title: "Penguin plan parts",
@@ -551,6 +557,7 @@ export const PLAN_INBOX_SCHEMA: JsonSchema = {
         raisedAt: { type: "string" },
       }),
     },
+    callerItems: { type: "array", items: CALLER_ITEM_REQUEST_SCHEMA },
   },
 };
 

@@ -54,6 +54,7 @@ import {
   type TeamView,
   type ToolRunView,
   type ViewerPlan,
+  type CallerItemView,
 } from "@penguin/protocol";
 import { dris, inScopeTeam, type ScopeMap } from "@penguin/scope-map";
 
@@ -112,6 +113,8 @@ export interface DashboardViewDeps {
   readonly routeOf?: (plan: Plan, part: PlanPart) => Promise<PolicyRoute>;
   /** The feature a builder identity was made for (EditRoster.roleOf); undefined for any other identity or when absent. */
   readonly builderFeature?: (identityId: string) => string | undefined;
+  /** The caller items the feature's replays opened and those on its worktree (caller-items.ts); absent, the page shows none. */
+  readonly callerItems?: (featureId: string) => Promise<readonly CallerItemView[]>;
 }
 
 /**
@@ -626,7 +629,8 @@ function authorLabel(record: FeatureRecord): string {
 export async function buildFeaturePage(deps: DashboardViewDeps, featureId: string, viewer: string): Promise<FeaturePage | undefined> {
   const feature = deps.features.get(featureId);
   if (feature === undefined) return undefined;
-  const [scopeMap, delegates, plan] = await Promise.all([deps.scopeMap(), deps.delegates(), deps.plan(featureId)]);
+  // The caller items come from the feature's FeatureAgent in the same pass as its plan.
+  const [scopeMap, delegates, plan, callerItems] = await Promise.all([deps.scopeMap(), deps.delegates(), deps.plan(featureId), deps.callerItems?.(featureId)]);
   const byHandle = new Map(deps.identities().map((identity) => [identity.handle, identity]));
   const records = parsedRecords(deps.features, featureId);
   const parts = deps.routes.ofFeature(featureId);
@@ -694,6 +698,7 @@ export async function buildFeaturePage(deps: DashboardViewDeps, featureId: strin
     tools: runs.map(toolRunView),
     contract: deps.contract?.(feature) ?? null,
     ...(deps.editTasks === undefined ? {} : { editTasks: deps.editTasks(featureId) }),
+    ...(callerItems === undefined ? {} : { callerItems }),
     records: deps.features.records(featureId).map((stored, index) => ({
       recordId: stored.recordId,
       type: records[index]?.type ?? "",

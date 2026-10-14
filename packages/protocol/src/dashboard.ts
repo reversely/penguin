@@ -9,6 +9,7 @@
 // text.
 
 import type { BlockCheck } from "./block-check.ts";
+import type { CallerItemView } from "./caller-items.ts";
 import type { ContractWorkView } from "./contract-sort.ts";
 import type { EditAskReason, EditQueue, EditRouteVia, EditTaskKind, EditTaskState } from "./edit-task.ts";
 import type { ImpactUse } from "./impact.ts";
@@ -586,6 +587,11 @@ export interface FeaturePage {
    * feature's timeline (#124). Absent from an older Worker.
    */
   readonly editTasks?: readonly EditTaskView[];
+  /**
+   * The caller items of the feature's replays and those on its own worktree from other features'
+   * changes (#188), each with its state and who it waits on. Absent from an older Worker.
+   */
+  readonly callerItems?: readonly CallerItemView[];
 }
 
 const text = (maxLength: number): JsonSchema => ({ type: "string", maxLength });

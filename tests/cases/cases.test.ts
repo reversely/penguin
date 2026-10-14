@@ -29,7 +29,7 @@ import {
 } from "@penguin/protocol";
 import { build } from "esbuild";
 
-import { seed, type LarderFeature, type MoneyLarder, type PreviewProject } from "../../scripts/preview/seed.ts";
+import { builderOf, seed, type LarderFeature, type MoneyLarder, type PreviewProject } from "../../scripts/preview/seed.ts";
 
 const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const LARDER = JSON.parse(readFileSync(join(ROOT, "examples", "money-minor-units", "larder.json"), "utf8")) as MoneyLarder;
@@ -282,6 +282,47 @@ test("cases 1 and 3: the caller replay shows each affected running feature's cal
   // The replay's one extra run of each feature's tests, on its fork head.
   for (const [name, section] of [["case 1 check", case1], ["case 3 check", case3]] as const) {
     t.diagnostic(`${name}: ${section.runs.map((run) => `${run.feature} ${run.durationMs} ms`).join(", ")}`);
+  }
+});
+
+test("cases 1 and 3 run the caller protocol: each unaffected caller confirmed, each difference explained and approved, each write into a receiving fork after its approval", async () => {
+  const preview = await larder();
+  const steps = ["caller_item", "confirm_caller", "explain_difference", "review_caller", "decide_caller", "propose_caller_fix"];
+  for (const useCase of [1, 3]) {
+    const origin = originOf(useCase);
+    const words = JSON.parse(readFileSync(join(ROOT, "examples", "money-minor-units", "callers", `case${useCase}.json`), "utf8")) as { explanations: Record<string, string> };
+    const records = preview.features.records(origin.id).map((stored) => JSON.parse(stored.file) as { type: string; author: Record<string, string>; payload: Record<string, unknown> });
+    // Replays each item's state from its signed records; at each write into a fork, every item there is approved from its side.
+    const states = new Map<string, { feature: string; state: string; ownerAsked: unknown }>();
+    let writes = 0;
+    for (const record of records) {
+      if (steps.includes(record.type)) {
+        states.set(String(record.payload["item_id"]), { feature: String(record.payload["feature"]), state: String(record.payload["to"]), ownerAsked: record.payload["owner_asked"] });
+        continue;
+      }
+      if (record.type !== "fix_write") continue;
+      const target = String(record.payload["target_repo"]).replace(/^feature-/u, "");
+      const open = [...states.values()].filter((item) => item.feature === target && (item.ownerAsked !== null || !["confirmed", "fix_approved", "written", "approved", "withdrawn"].includes(item.state)));
+      assert.deepEqual(open, [], `${origin.id}'s write into ${target} waits for that worktree's approval`);
+      if (states.size > 0) writes += 1;
+    }
+    assert.ok(writes > 0, `${origin.id} writes into a receiving fork after its approval`);
+    // Each receiving agent confirms with its own identity; each explanation is the case's words, reviewed by the receiving agent.
+    const confirmed = records.filter((record) => record.type === "confirm_caller");
+    assert.ok(confirmed.length > 0, `${origin.id}'s unaffected callers are confirmed`);
+    for (const record of confirmed) assert.equal(record.author["identity"], builderOf(LARDER.features.find((feature) => feature.id === record.payload["feature"]) as LarderFeature));
+    const explained = records.filter((record) => record.type === "explain_difference" && record.payload["action"] === "explain");
+    assert.ok(explained.length > 0, `${origin.id}'s differences are explained`);
+    for (const record of explained) assert.equal(record.payload["text"], words.explanations[String(record.payload["feature"])]);
+    assert.ok(records.some((record) => record.type === "review_caller" && record.payload["to"] === "approved"), `${origin.id}'s explained differences are approved`);
+    // At the land every item is settled.
+    const left = preview.callerItemsOf(origin.id).filter((item) => !["confirmed", "written", "approved"].includes(item.state) || item.ownerAsked !== null);
+    assert.deepEqual(left.map((item) => `${item.feature} ${item.state}`), []);
+  }
+  // Case 3's payouts and tips match once Penguin's update is in, and their agents still confirm them.
+  const case3 = preview.callerItemsOf(originOf(3).id);
+  for (const feature of ["instant-payouts", "tip-jar"]) {
+    assert.deepEqual(case3.filter((item) => item.feature === feature).map((item) => [item.verdict, item.state]), [["unaffected", "confirmed"]], feature);
   }
 });
 

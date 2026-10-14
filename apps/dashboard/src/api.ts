@@ -156,6 +156,26 @@ export async function confirmProtectedChange(change: { readonly feature: string;
   return true;
 }
 
+/**
+ * Decides one caller item sent to the signed-in person as its worktree owner: approve, or request
+ * changes with `text`; the server names the decider from the session. Resolves false when the item
+ * moved on since it was read.
+ */
+export async function decideCallerItem(decision: { readonly item: string; readonly verdict: "approve" | "request_changes"; readonly text: string }): Promise<boolean> {
+  const path = "/api/plan-parts/decide-caller";
+  const response = await fetch(path, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ item: decision.item, verdict: decision.verdict, text: decision.text }),
+  });
+  await response.arrayBuffer();
+  if (response.status === 401) throw new SignedOut();
+  if (response.status === 404 || response.status === 409) return false;
+  if (!response.ok) throw new Error(`${path} answered ${response.status}`);
+  return true;
+}
+
 export async function fetchIdentities(): Promise<IdentitiesPage> {
   return getJson<IdentitiesPage>("/api/identities");
 }

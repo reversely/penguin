@@ -13,10 +13,11 @@
 // agent never approves. The lists are read again on each inbox-changed or features-changed message
 // and after a reconnect. Every value renders as text.
 
-import { isOwnerLockId, type OverlapRequest, type PlanInbox, type PlanPartRequest, type ProtectedChangeRequest, type ReviewExceptionRequest } from "@penguin/protocol";
+import { isOwnerLockId, type CallerItemRequest, type OverlapRequest, type PlanInbox, type PlanPartRequest, type ProtectedChangeRequest, type ReviewExceptionRequest } from "@penguin/protocol";
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 
-import { approveOverlap, confirmProtectedChange, decidePlanPart, fetchOverlapRequests, fetchPlanInbox, SignedOut } from "./api.ts";
+import { approveOverlap, confirmProtectedChange, decideCallerItem, decidePlanPart, fetchOverlapRequests, fetchPlanInbox, SignedOut } from "./api.ts";
+import { CallerCard } from "./caller-card.tsx";
 import {
   counted,
   partNumber,
@@ -63,7 +64,8 @@ const EMPTY: Approvals = { overlaps: [], plan: { parts: [], protectedChanges: []
 /** How many items the approvals inbox shows the person; a confirmed protected change asks nothing. */
 export function approvalCount({ overlaps, plan }: Approvals): number {
   const waiting = plan.protectedChanges.filter((change) => change.state === "pending").length;
-  return overlaps.length + plan.parts.length + waiting + plan.reviewExceptions.length + plan.returnedPlans.length;
+  const callers = (plan.callerItems ?? []).filter((item) => item.ask === "decide").length;
+  return overlaps.length + plan.parts.length + waiting + plan.reviewExceptions.length + plan.returnedPlans.length + callers;
 }
 
 /** The key of a protected change's card: one per feature and protecting person. */
@@ -137,6 +139,7 @@ export function ApprovalsInbox({ state, navigate, onSignedOut }: Props) {
       }}
       onConfirm={(change) => act(changeKey(change), () => confirmProtectedChange(change))}
       onReverse={(part) => act(part.partId, () => decidePlanPart({ kind: "reverse", feature: part.feature, part: part.partId, revision: part.revision }))}
+      onDecideCaller={(item, verdict, text) => act(item.itemId, () => decideCallerItem({ item: item.itemId, verdict, text }))}
     />
   );
 }
@@ -154,11 +157,14 @@ interface ViewProps {
   readonly onConfirm?: (change: ProtectedChangeRequest) => void;
   /** Reverses Penguin's approval of a part. */
   readonly onReverse?: (part: PlanPartRequest) => void;
+  /** Decides a caller item sent to the person as its worktree owner. */
+  readonly onDecideCaller?: (item: CallerItemRequest, verdict: "approve" | "request_changes", text: string) => void;
 }
 
 /** The approvals as read, without the fetch, so they render on the server in a test. */
-export function ApprovalsView({ approvals, busy, failed, unread = false, navigate, onApproveStart, onDecide, onConfirm = () => undefined, onReverse = () => undefined }: ViewProps) {
+export function ApprovalsView({ approvals, busy, failed, unread = false, navigate, onApproveStart, onDecide, onConfirm = () => undefined, onReverse = () => undefined, onDecideCaller = () => undefined }: ViewProps) {
   const { overlaps, plan } = approvals;
+  const callers = plan.callerItems ?? [];
   const plans = planGroups(plan.parts);
   const shownReviews = new Set(plans.flatMap((group) => group.reviews.map((review) => review.reviewId)));
   return (
@@ -196,6 +202,23 @@ export function ApprovalsView({ approvals, busy, failed, unread = false, navigat
           </h2>
           {plans.map((group) => (
             <PlanCard key={group.planId} group={group} busy={busy} navigate={navigate} onDecide={onDecide} onReverse={onReverse} />
+          ))}
+        </section>
+      )}
+      {callers.length === 0 ? null : (
+        <section className="approval-group" aria-labelledby="approvals-callers">
+          <h2 id="approvals-callers" className="approval-group-heading">
+            Callers in your worktrees <span className="tab-count">{callers.length}</span>
+          </h2>
+          {callers.map((item) => (
+            <CallerCard
+              key={item.itemId}
+              item={item}
+              title="feature"
+              navigate={navigate}
+              told={item.ask === "told"}
+              decide={item.ask === "decide" ? { sending: busy === item.itemId, onDecide: (verdict, text) => onDecideCaller(item, verdict, text) } : undefined}
+            />
           ))}
         </section>
       )}

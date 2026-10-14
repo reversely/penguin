@@ -19,7 +19,8 @@ import { Agent } from "./agent-directory.tsx";
 import { fetchFeaturePage } from "./api.ts";
 import { viewerToDos, type ToDo } from "./banner-view.ts";
 import { ChangeTree } from "./change-tree.tsx";
-import { checksByTool, counted, partStateText, recordLabel, shortSha } from "./feature-view.ts";
+import { CallerCard } from "./caller-card.tsx";
+import { callerGroups, checksByTool, counted, partStateText, recordLabel, shortSha } from "./feature-view.ts";
 import { Fold, FoldProvider, useFolds } from "./fold.tsx";
 import { Icon } from "./icon.tsx";
 import { useRead } from "./inbox-page.tsx";
@@ -438,6 +439,7 @@ function PeopleView({ page, strips, owners, navigate, reveal }: PeopleProps) {
           </div>
         )}
       </section>
+      <CallerSections page={page} navigate={navigate} />
       {page.waitingOn.length === 0 ? null : (
         <section className="feature-section" id="start" aria-labelledby="start-heading">
           <h2 id="start-heading" className="team-section-heading">
@@ -490,6 +492,34 @@ function PeopleView({ page, strips, owners, navigate, reveal }: PeopleProps) {
         )}
       </section>
     </div>
+  );
+}
+
+/**
+ * The caller items (#188): the callers in other worktrees this feature's change reaches, then the
+ * callers in this worktree that other features' changes reach. Each section shows only with items.
+ */
+function CallerSections({ page, navigate }: { readonly page: FeaturePage; readonly navigate: (path: string) => void }) {
+  const { reaches, here } = callerGroups(page.callerItems ?? [], page.feature.id);
+  const sections = [
+    { id: "callers-reached", heading: "Callers this change reaches", items: reaches, title: "feature" as const },
+    { id: "callers-here", heading: "Callers in this worktree", items: here, title: "origin" as const },
+  ];
+  return (
+    <>
+      {sections.map((section) =>
+        section.items.length === 0 ? null : (
+          <section key={section.id} className="feature-section" id={section.id} aria-labelledby={`${section.id}-heading`}>
+            <h2 id={`${section.id}-heading`} className="team-section-heading">
+              {section.heading} <span className="tab-count">{section.items.length}</span>
+            </h2>
+            {section.items.map((item) => (
+              <CallerCard key={item.itemId} item={item} title={section.title} navigate={navigate} />
+            ))}
+          </section>
+        ),
+      )}
+    </>
   );
 }
 

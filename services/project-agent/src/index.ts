@@ -128,6 +128,26 @@ import {
 import { PlanFactsStore, type PlanFactsReportOutcome } from "./plan-facts.ts";
 import { releaseRun, reportRunFailure, RunFailureStore, type RunFailure, type RunStores } from "./run-failures.ts";
 import type { PlanKeeper } from "./plan-store.ts";
+import {
+  callerAction,
+  CallerIndexStore,
+  callerWork,
+  featureCallerItems,
+  fixWritten,
+  landPending,
+  ownerCallerItems,
+  ownerDecision,
+  replayReported,
+  sweepUnanswered,
+  writeWaits,
+  type CallerActionDeps,
+  type CallerCall,
+  type CallerItemDeps,
+  type CallerItemKeeper,
+  type CallerOutcome,
+  type CallerOwnerInput,
+  type CallerWork,
+} from "./caller-items.ts";
 import { fileDiffs, type GitObjectReader } from "./repo-diff.ts";
 import {
   checkProtectedChanges,
@@ -291,6 +311,7 @@ import {
   type Author,
   type BlockCheck,
   type BlockRunRequest,
+  type CallerReplaySection,
   type Board,
   type CharterView,
   type ContractWorkView,
@@ -443,6 +464,32 @@ export {
   type UnsignedFeatureRecord,
 } from "./feature-store.ts";
 export { PLAN_STORE_SCHEMA, PlanStore, type FixWrite, type PartVersion, type Plan, type PlanKeeper, type PlanPart } from "./plan-store.ts";
+export {
+  CALLER_INDEX_SCHEMA,
+  CALLER_ITEM_STORE_SCHEMA,
+  callerAction,
+  CallerIndexStore,
+  callerItemId,
+  CallerItemStore,
+  callerWork,
+  featureCallerItems,
+  fixWritten,
+  landPending,
+  ownerCallerItems,
+  ownerDecision,
+  replayReported,
+  sweepUnanswered,
+  writeWaits,
+  type CallerActionDeps,
+  type CallerCall,
+  type CallerItemDeps,
+  type CallerItemKeeper,
+  type CallerOutcome,
+  type CallerOwnerInput,
+  type CallerPacket,
+  type CallerRejection,
+  type CallerWork,
+} from "./caller-items.ts";
 export {
   BLOCK_RUN_LEASE_MS,
   BLOCK_STORE_SCHEMA,
@@ -1050,6 +1097,7 @@ export class ProjectAgent extends Agent {
   /** Huddle openings and verification steps run one at a time, so no two interleave their writes. */
   #huddleSteps: Promise<unknown> = Promise.resolve();
   #approvals: FixApprovalStore | undefined;
+  #callerIndex: CallerIndexStore | undefined;
   #closeOuts: CloseOutStore | undefined;
   /**
    * Fix sub-issues whose reviews, linked commits, labels or threads, and Huddle issues whose threads,
@@ -2393,6 +2441,16 @@ export class ProjectAgent extends Agent {
   async reportToolRun(caller: BridgeCaller, runId: number, result: unknown, repos?: ProjectRepos): Promise<ToolReportOutcome> {
     const outcome = recordToolResult(this.#toolStore(), caller, runId, result);
     if (outcome.status === "recorded" && edgesReported(this.#scopeEdgeStore(), outcome.run)) this.#liveFeed().featuresChanged();
+    // A check's caller replay opens or moves the feature's caller items (caller-items.ts).
+    const replay = outcome.status === "recorded" && outcome.run.tool === "check" ? outcome.run.outcome?.callerReplay : undefined;
+    if (outcome.status === "recorded" && replay !== undefined && outcome.run.featureId !== null) {
+      const { featureId, checkpointSha } = outcome.run;
+      try {
+        await this.#featuresChanging(this.#planStep(() => replayReported(this.#callerDeps(), featureId, replay, { kind: "check", id: String(runId), checkpoint: checkpointSha ?? "" })));
+      } catch (error) {
+        console.error(JSON.stringify({ event: "caller_items_failed", run: runId, error: String(error).slice(0, 200) }));
+      }
+    }
     if (outcome.status === "recorded") {
       try {
         const counted = await this.#planStep(() => countReported(this.#countDeps(repos), outcome.run));
@@ -2633,6 +2691,10 @@ export class ProjectAgent extends Agent {
         ownFeatures: (person) => this.#featureStore().list().filter((feature) => feature.personId === person && readOnlyReason(feature) === undefined).map((feature) => feature.id),
         protectedChanges: (owners, items, delegates, scopeMap) =>
           protectedChangeRequests(this.#protectedChangeStore(), this.#featureStore(), items, owners, caller, delegates, scopeMap),
+        callerItems: async (person, delegates) => {
+          await this.#planStep(() => sweepUnanswered(this.#callerDeps()));
+          return ownerCallerItems(this.#callerDeps(), person, delegates);
+        },
       },
       caller,
     );
@@ -2699,6 +2761,10 @@ export class ProjectAgent extends Agent {
       scopeEdges: () => this.#scopeEdgeStore().snapshot(),
       recordCommits: (featureId) => this.#recordRepoStore().commits(featureId),
       routeOf: this.#routeOf(repos),
+      callerItems: async (featureId) => {
+        await this.#planStep(() => sweepUnanswered(this.#callerDeps()));
+        return featureCallerItems(this.#callerDeps(), featureId);
+      },
     };
   }
 
@@ -2923,8 +2989,69 @@ export class ProjectAgent extends Agent {
       written: async (grant, commit) => {
         await retryWaitingWrites({ ...deps, queueTrial: (plan, part, head) => queueTrialOn(this.#trialDeps(), plan, part, head)?.id ?? null }, grant, commit);
       },
+      // A write into a receiving fork waits for that worktree's approval of its caller items (#188).
+      callerWaits: (originId, targetId) => writeWaits(this.#callerDeps(), originId, targetId),
+      partWritten: async (originId, partId, revision) => {
+        await fixWritten(this.#callerDeps(), originId, partId, revision);
+      },
     };
     return deps;
+  }
+
+  // Caller items (#188, caller-items.ts).
+
+  #callerIndexStore(): CallerIndexStore {
+    this.#callerIndex ??= new CallerIndexStore(this.#database());
+    return this.#callerIndex;
+  }
+
+  #callerDeps(): CallerItemDeps {
+    return {
+      features: this.#featureStore(),
+      keeper: (featureId) => this.#featureAgent(featureId),
+      index: this.#callerIndexStore(),
+      sign: async (record) => signFeatureRecord(record, (await this.#loadServiceKey()).privateKey),
+      stage: async () => (await this.#policyInForce()).policy.preset,
+      notify: (personId) => sendToOwner(this.getConnections<{ owner?: string }>(), personId, inboxChangedMessage()),
+    };
+  }
+
+  #callerActionDeps(): CallerActionDeps {
+    return {
+      ...this.#callerDeps(),
+      heartbeat: (caller, session) => this.sessionHeartbeat(caller, session),
+      plan: async (featureId) => this.#planKeeper(featureId).latestPlan(featureId),
+      written: (partId, revision) => this.#fixGrantStore().get(partId, revision)?.state === "written",
+    };
+  }
+
+  /**
+   * One call of `confirm_caller`, `propose_caller_fix`, `explain_difference` or `review_caller` by
+   * `caller`'s session; each tool is limited to its side of the item. Runs after the plan steps before it.
+   */
+  callerItemCall(caller: string, sessionId: string, call: CallerCall): Promise<CallerOutcome> {
+    return this.#featuresChanging(this.#planStep(() => callerAction(this.#callerActionDeps(), caller, sessionId, call)));
+  }
+
+  /** For `get_work`: a context packet per caller item on the session's worktree or opened by its change. */
+  callerWork(caller: string, sessionId: string): Promise<CallerWork | undefined> {
+    return this.#planStep(() => callerWork(this.#callerActionDeps(), caller, sessionId));
+  }
+
+  /** The worktree owner, or their delegate, decides an item sent to them on the dashboard. */
+  async decideCallerItem(caller: string, input: CallerOwnerInput, repos: ProjectRepos): Promise<CallerOutcome> {
+    const { delegates } = await this.#reviewRules(repos);
+    return this.#featuresChanging(this.#planStep(() => ownerDecision({ ...this.#callerDeps(), delegates: async () => delegates }, caller, input)));
+  }
+
+  /** A block run's caller replay reached the FeatureAgent: the feature's items follow it (BlockProjectPort). */
+  async callerReplayReported(featureId: string, run: { readonly runId: string; readonly checkpoint: string }, section: CallerReplaySection): Promise<void> {
+    await this.#featuresChanging(this.#planStep(() => replayReported(this.#callerDeps(), featureId, section, { kind: "block", id: run.runId, checkpoint: run.checkpoint })));
+  }
+
+  /** The feature's caller items not yet settled, which hold its promotion (BlockProjectPort). */
+  callersPending(featureId: string): Promise<string[]> {
+    return landPending(this.#callerDeps(), featureId);
   }
 
   // Edit tasks (PRD 0.5 section 4.4a, edit-work.ts).
@@ -3261,8 +3388,8 @@ export class ProjectAgent extends Agent {
    * One feature's FeatureAgent, named `<project>-feature-<id>` apart from every Huddle's instance. It
    * keeps the feature's plan, fix writes, block runs and promotion.
    */
-  #featureAgent(featureId: string): PlanKeeper & FeatureBlocks & { landing(featureId: string): Promise<FeatureLanding> } {
-    type Stub = PlanKeeper & FeatureBlocks & { landing(featureId: string): Promise<FeatureLanding> };
+  #featureAgent(featureId: string): PlanKeeper & FeatureBlocks & CallerItemKeeper & { landing(featureId: string): Promise<FeatureLanding> } {
+    type Stub = PlanKeeper & FeatureBlocks & CallerItemKeeper & { landing(featureId: string): Promise<FeatureLanding> };
     const named = getAgentByName(this.env.FeatureAgent, `${this.name}-feature-${featureId}`) as unknown as Promise<Stub>;
     return {
       planVersion: async (id) => (await named).planVersion(id),
@@ -3277,6 +3404,8 @@ export class ProjectAgent extends Agent {
       releaseBlockRun: async (runnerId, runId) => (await named).releaseBlockRun?.(runnerId, runId) ?? { status: "rejected", reason: "not_found", message: `no block run ${runId}` },
       stopBlockRun: async (runId, reason) => (await named).stopBlockRun?.(runId, reason),
       landing: async (id) => (await named).landing(id),
+      callerItems: async (id) => (await named).callerItems(id),
+      keepCallerItem: async (item, expected) => (await named).keepCallerItem(item, expected),
     };
   }
 
@@ -3349,6 +3478,8 @@ export class ProjectAgent extends Agent {
       unconfirmedProtected: (featureId) => unconfirmedProtected(this.#protectedChangeStore(), featureId),
       // A land waits until every affected fork holds the originating change's current modules (#179).
       copiesBehind: (plan, targets) => copiesBehind(this.#fixWriteDeps(repos), plan, targets),
+      // A land waits until every affected caller is confirmed, written or approved (#188).
+      callersPending: async (featureId) => landPending(this.#callerDeps(), featureId),
       sign: async (record) => signFeatureRecord(record, (await this.#loadServiceKey()).privateKey),
       notify: (personId) => sendToOwner(this.getConnections<{ owner?: string }>(), personId, inboxChangedMessage()),
     };

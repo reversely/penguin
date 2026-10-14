@@ -26,7 +26,7 @@ export function viewOf(id: string): View | undefined {
   if ((VIEWS as readonly string[]).includes(id)) return id as View;
   if (id.startsWith("part-") || id.startsWith("change-") || id === "area") return "changes";
   if (id.startsWith("stage-") || id.startsWith("review-") || id === "checks" || id === "reviews") return "pipeline";
-  if (id === "read-by" || id === "start" || id === "agents") return "people";
+  if (id === "read-by" || id === "start" || id === "agents" || id === "callers-reached" || id === "callers-here") return "people";
   return undefined;
 }
 
