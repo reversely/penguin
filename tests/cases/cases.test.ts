@@ -55,7 +55,7 @@ const forksFixedBy = (origin: LarderFeature) => {
     .sort();
 };
 
-test("case 1, shopper accounts: Sam's parts wait on Priya until the backfill; Jun asks twice; Penguin approves the rest", async () => {
+test("case 1, shopper accounts: Sam's parts wait on Priya until the backfill; nothing is flagged for Jun and Penguin approves every part", async () => {
   const preview = await larder();
   const origin = originOf(1);
   const rounds = preview.rounds.filter((round) => round.plan.featureId === origin.id);
@@ -86,30 +86,21 @@ test("case 1, shopper accounts: Sam's parts wait on Priya until the backfill; Ju
   }
   assert.ok(toldOf(preview, sam).includes("penguin_approved"), "Sam is told");
 
-  // Jun asks twice: for a device limit on the kiosk invariant, then for a lower one. Each request
-  // names the revision Priya's agent then makes.
+  // Priya's change limits a device to one account from its first checkpoint, so the kiosk's shoppers
+  // stay apart: nothing in analytics is flagged, no one asks for a change and Penguin approves Jun's
+  // parts. The cohort report's update is trialled on Priya's fix for analytics' code on main, whose
+  // analytics/activity.py it copies.
   const jun = scopeDri("analytics");
-  const requests = recordsOf(preview, origin.id, "request_plan_change");
-  assert.deepEqual(requests.map((record) => record.payload["requested_by"]), revisions.map(() => jun));
-  assert.deepEqual(requests.map((record) => record.payload["text"]), revisions.map((commit) => commit.message.split("\n")[0]));
-  assert.deepEqual(
-    rounds.map((round) => owned(round, jun).some((part) => round.raised.includes(part.partId))),
-    [false, true, true, false],
-    "the kiosk invariant breaks at the backfill and the limit of five, and holds at the limit of one",
-  );
-  assert.ok(toldOf(preview, jun).includes("review_exception"));
-
-  // After the limit of one every part is approved. Jun's cohort report part is trialled on the
-  // revision and Penguin approves it. Jun's form names the cutover marker in Jun's fork, which the
-  // trial of analytics' code on main does not hold, so Jun approves that part in person.
+  assert.equal(revisions.length, 0, "the change needs no revision");
+  assert.deepEqual(recordsOf(preview, origin.id, "request_plan_change"), [], "no one asks for a change");
+  assert.ok(rounds.every((round) => owned(round, jun).every((part) => !round.raised.includes(part.partId))), "nothing of Jun's is flagged in any round");
   const last = rounds.at(-1)!;
   assert.ok(last.plan.parts.every((part) => part.approvalState === "approved"), JSON.stringify(last.plan.parts.map((part) => [part.owner, part.approvedBy])));
-  const limitOne = tagSha(preview, origin, revisions.at(-1)?.tag as string);
   const [onMain, inFork] = [owned(last, jun).find((part) => part.place.kind === "scope"), owned(last, jun).find((part) => part.place.kind === "feature")];
-  assert.equal(onMain?.diff.commit, limitOne);
-  assert.equal(onMain?.approvedBy, jun);
-  assert.equal(inFork?.approvedBy, PENGUIN_APPROVER);
-  assert.equal(preview.trials.ofPart(origin.id, inFork?.partId as string)?.request.checkpoint, limitOne, "the cohort report part is trialled on the newest revision");
+  assert.equal(onMain?.approvedBy, PENGUIN_APPROVER, "Penguin approves analytics' part for code on main");
+  assert.equal(inFork?.approvedBy, PENGUIN_APPROVER, "Penguin approves the cohort report's update");
+  assert.equal(preview.trials.ofPart(origin.id, inFork?.partId as string)?.request.checkpoint, tagSha(preview, origin, "fix-analytics"), "the cohort report's update is trialled with the fix for analytics' code on main");
+  assert.ok(toldOf(preview, jun).includes("penguin_approved"), "Jun is told");
   const lena = scopeDri("loyalty");
   const verify = owned(last, lena);
   assert.ok(verify.length > 0 && verify.every((part) => part.kind === "verify" && part.approvedBy === PENGUIN_APPROVER), "Penguin approves loyalty's verify part");
@@ -123,30 +114,19 @@ test("case 1, shopper accounts: Sam's parts wait on Priya until the backfill; Ju
   assert.equal(preview.features.get(origin.id)?.state, "landed");
 });
 
-test("case 1 under each stage: Local development lets Penguin approve Jun's part, Central development and Pre-production wait for Jun, Production waits on every part", async () => {
+test("case 1 under each stage: with nothing flagged, Local and Central development and Pre-production let Penguin approve every part; Production waits on every part", async () => {
   const preview = await larder();
   const origin = originOf(1);
   const rounds = preview.rounds.filter((round) => round.plan.featureId === origin.id);
-  // The round of the backfill, where Jun first decides the part in person.
-  const backfill = rounds[1];
-  const jun = preview.scopeMap.scopes.get("analytics")?.driId as string;
-  const onMain = backfill!.plan.parts.find((part) => part.owner === jun && part.place.kind === "scope") as PlanPart;
-  const inFork = backfill!.plan.parts.find((part) => part.owner === jun && part.place.kind === "feature") as PlanPart;
-  const route = (policy: ReviewPolicy, part: PlanPart) => policyRoute(policyInForce(policy, false), backfill!.routings.get(part.partId) as PartRouting);
+  const last = rounds.at(-1)!;
+  const route = (policy: ReviewPolicy, part: PlanPart) => policyRoute(policyInForce(policy, false), last.routings.get(part.partId) as PartRouting);
   const { local_development: local, central_development: central, pre_production: preProduction, production } = PRESET_POLICIES;
-
-  // The review of analytics reports kiosk-shoppers-separate not holding (Logic) and its side-by-side
-  // run differs on it (Data matching).
-  assert.deepEqual(route(local, onMain), { ...route(local, onMain), decider: "penguin", rule: "set_to_penguin", types: ["logic", "data_matching"] }, "Local development: Penguin approves and tells Jun");
-  assert.deepEqual([route(central, onMain).decider, route(central, onMain).types], ["person", ["logic", "data_matching"]], "Central development: it waits for Jun");
-  assert.ok(backfill!.raised.includes(onMain.partId), "today's result: Jun decides it");
-  const dataToPenguin: ReviewPolicy = { preset: "central_development", rows: { ...central.rows, data_matching: "penguin" } };
-  assert.deepEqual([route(dataToPenguin, onMain).decider, route(dataToPenguin, onMain).types], ["person", ["logic"]], "Logic still flags it");
-  assert.equal(route({ preset: "central_development", rows: { ...dataToPenguin.rows, logic: "penguin" } }, onMain).decider, "penguin", "with no flagged type set to person, Penguin approves");
-  assert.deepEqual([route(preProduction, onMain).decider, route(preProduction, onMain).types], ["person", ["logic", "data_matching"]], "Pre-production: it waits for Jun");
-  for (const part of backfill!.plan.parts) assert.equal(route(preProduction, part).decider, route(central, part).decider, `Pre-production routes plan part ${part.partId} as Central development does`);
-  assert.ok(backfill!.plan.parts.every((part) => route(production, part).decider === "person"), "Production: every part waits");
-  for (const preset of REVIEW_PRESETS) assert.equal(route(PRESET_POLICIES[preset], inFork).rule, "tests", `the cohort report part's failing test goes back under ${preset}`);
+  for (const part of last.plan.parts) {
+    for (const [name, policy] of [["Local development", local], ["Central development", central], ["Pre-production", preProduction]] as const) {
+      assert.equal(route(policy, part).decider, "penguin", `${name}: Penguin approves plan part ${part.partId}`);
+    }
+    assert.equal(route(production, part).decider, "person", `Production: plan part ${part.partId} waits`);
+  }
 
   // With no policy set, Central development decides every round of cases 1 to 3 as before: Penguin approves exactly the parts with no reason.
   for (const round of [...rounds, ...preview.rounds.filter((each) => each.plan.featureId !== origin.id)]) {
@@ -194,7 +174,7 @@ async function dashboardRenderer(): Promise<{ featureHtml: (page: FeaturePage, v
 /** A page's text without the How Penguin validates panel, which names every kind whatever the results. */
 const results = (html: string) => html.replace(/<details[^>]*class="validation-panel"[^>]*>[\s\S]*?<\/details>/u, "").replace(/<[^>]+>/gu, " ").replaceAll("&#x27;", "'");
 
-test("case 1's feature page names each kind of validation on its results and each route of its decisions and writes; Jun's inbox names its kinds", async () => {
+test("case 1's feature page names each kind of validation on its results and each route of its decisions and writes; Jun's inbox renders", async () => {
   const preview = await larder();
   const origin = originOf(1);
   const render = await dashboardRenderer();
@@ -205,12 +185,11 @@ test("case 1's feature page names each kind of validation on its results and eac
   const jun = preview.scopeMap.scopes.get("analytics")?.driId as string;
   assert.ok(shown.includes("by Penguin (check runner)"), "an update Penguin's check runner wrote into an affected fork");
   assert.match(shown, /Approved by Penguin \(Central development policy: Tests/u, "a part Penguin approved under the policy");
-  assert.ok(shown.includes(`Approved by ${jun} in the dashboard`), "a part a person approved in the dashboard");
   assert.match(shown, /@[a-z0-9-]+\/[a-z0-9.-]+ \(MCP propose_plan\)/u, "the record view names the agent's tool");
-  assert.ok(shown.includes("Penguin automatically") && shown.includes(`${jun} in the dashboard`), "the record view names Penguin and the person");
+  assert.ok(shown.includes("Penguin automatically"), "the record view names Penguin's approvals");
 
-  const inbox = results(render.inboxHtml((await backend.planParts(jun)) as PlanInbox));
-  for (const kind of ["logic", "data_matching"] as const) assert.ok(inbox.includes(VALIDATION_KIND_LABEL[kind]), `${VALIDATION_KIND_LABEL[kind]} in ${jun}'s inbox`);
+  const inbox = (await backend.planParts(jun)) as PlanInbox;
+  assert.ok(render.inboxHtml(inbox).length > 0, `${jun}'s inbox renders`);
 });
 
 test("case 2, structured-logs: Hugo's agent revises its change, Elif's and Sam's agents confirm their callers and the land writes into no fork", async () => {
@@ -289,8 +268,9 @@ test("cases 1 and 3: the caller replay shows each affected running feature's cal
   const case1 = replayOf(1);
   assert.ok(case1 !== undefined, "case 1's check carries a caller replay");
   for (const feature of ["cohort-ltv", "weekly-digest"]) assert.ok(verdicts(case1.callers, feature).includes("differs"), `${feature} differs: ${JSON.stringify(verdicts(case1.callers, feature))}`);
-  const kiosk = case1.callers.find((caller) => caller.feature === "cohort-ltv" && caller.differing.some((call) => call.test.endsWith("test_shared_device_split")));
-  assert.ok(kiosk !== undefined, "the kiosk count is one of cohort-ltv's differing calls");
+  const published = case1.callers.find((caller) => caller.feature === "cohort-ltv" && caller.differing.some((call) => call.test.endsWith("test_dau_stable")));
+  assert.ok(published !== undefined, "a published day's count is one of cohort-ltv's differing calls");
+  assert.ok(!case1.callers.some((caller) => caller.differing.some((call) => call.test.endsWith("test_shared_device_split"))), "the kiosk's shoppers stay apart: one account per device");
 
   // Case 3 on the upgrade alone: the timed-out request is sent again, so money moves twice.
   const case3 = replayOf(3);

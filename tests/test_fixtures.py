@@ -83,18 +83,15 @@ LARDER_CASES = [
     (
         "accounts-merge-checkpoint",
         "cohort-ltv-checkpoint",
-        {
-            "analytics/tests/test_kiosk.py::test_shared_device_split",
-            "analytics/tests/test_retention.py::test_dau_stable",
-        },
+        {"analytics/tests/test_retention.py::test_dau_stable"},
     ),
     (
         "accounts-merge-checkpoint",
         "weekly-digest-checkpoint",
         {"messaging/tests/test_consent.py::test_unsubscribe_survives"},
     ),
-    ("accounts-merge-limit-one", "cohort-ltv-cutover", set()),
-    ("accounts-merge-limit-one", "weekly-digest-consent", set()),
+    ("accounts-merge-fix-messaging", "cohort-ltv-cutover", set()),
+    ("accounts-merge-fix-messaging", "weekly-digest-consent", set()),
     (
         "structured-logs-checkpoint",
         "holiday-closures-checkpoint",

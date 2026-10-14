@@ -578,11 +578,12 @@ export async function grantedWrite(deps: FixWriteDeps, grant: FixGrant): Promise
 }
 
 /**
- * The originating change's current revision: its newest revision across every scope of its plan
- * (part-trial.ts `newestRevision`). Each copy comes from it, so a fork holds the bytes main will take.
+ * The originating change's current revision: its newest commit across every scope of its plan,
+ * counting its fixes for code on main from the first revision (part-trial.ts `newestRevision`). Each
+ * copy comes from it, so a fork holds the bytes main will take: main takes those fixes too (#192).
  */
 export function originRevision(plan: Plan): string {
-  return newestRevision(plan, { scopes: plan.parts.flatMap((part) => part.scopes) });
+  return newestRevision(plan, { scopes: plan.parts.flatMap((part) => part.scopes) }, 1);
 }
 
 /**

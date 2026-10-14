@@ -1,6 +1,11 @@
 import pytest
 
-from accounts.shoppers import Event, ShopperMap, identity_key
+from accounts.shoppers import (
+    MAX_IDENTITIES_PER_DEVICE,
+    Event,
+    ShopperMap,
+    identity_key,
+)
 
 
 def test_web_event_is_keyed_by_user_id():
@@ -170,6 +175,31 @@ def test_merged_shopper_keeps_the_latest_value():
         ]
     )
     assert shopper_map.shopper("device:d1").get("plan") == "free"
+
+
+def test_a_device_links_at_most_max_identities_per_device_users():
+    user_ids = [f"u{n}" for n in range(MAX_IDENTITIES_PER_DEVICE + 1)]
+    events = [
+        Event("mobile", "login", "2026-01-05", ts, user_id=user_id, device_id="kiosk")
+        for ts, user_id in enumerate(user_ids, start=1)
+    ]
+    shopper_map = ShopperMap.from_events(events)
+    device_shopper = shopper_map.shopper_id("device:kiosk")
+    linked = [
+        user_id
+        for user_id in user_ids
+        if shopper_map.shopper_id(f"user:{user_id}") == device_shopper
+    ]
+    assert linked == user_ids[:MAX_IDENTITIES_PER_DEVICE]
+
+
+def test_a_linked_user_logging_in_again_stays_linked_to_the_device():
+    events = [
+        Event("mobile", "login", "2026-01-05", 1, user_id="u1", device_id="d1"),
+        Event("mobile", "login", "2026-01-06", 2, user_id="u1", device_id="d1"),
+    ]
+    shopper_map = ShopperMap.from_events(events)
+    assert shopper_map.shopper("user:u1").identities == {"device:d1", "user:u1"}
 
 
 def test_the_map_counts_an_event_by_its_identity_before_the_cutover_day():

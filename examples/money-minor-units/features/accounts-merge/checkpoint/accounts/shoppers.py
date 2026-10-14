@@ -7,7 +7,9 @@ when the event has a ``user_id``, otherwise ``device:<device_id>``.
 The shopper map links identities that belong to one shopper and gives the shopper a ``shopper_id``.
 Two merge rules link identities:
 
-- A ``login`` event that carries both a ``user_id`` and a ``device_id`` links the two.
+- A ``login`` event that carries both a ``user_id`` and a ``device_id`` links the two, while the
+  device has linked fewer than ``MAX_IDENTITIES_PER_DEVICE`` user identities. Later users of a
+  device at the limit stay separate shoppers.
 - Events that carry the same verified email link their identities.
 
 A shopper's ``shopper_id`` is the key of the shopper's first-observed identity, so a shopper with one
@@ -29,6 +31,10 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 
 LOGIN = "login"
+
+# The number of user identities a login may link to one device. A device's first user keeps it; a
+# pickup kiosk's later shoppers stay separate shoppers.
+MAX_IDENTITIES_PER_DEVICE = 1
 
 
 @dataclass(frozen=True)
@@ -105,6 +111,7 @@ class ShopperMap:
         self._first_seen: dict[str, int] = {}
         self._shoppers: dict[str, Shopper] = {}
         self._verified_emails: dict[str, str] = {}
+        self._device_users: dict[str, set[str]] = {}
 
     @classmethod
     def from_events(cls, events: Iterable[Event]) -> "ShopperMap":
@@ -118,7 +125,9 @@ class ShopperMap:
         identity = identity_key(event)
         shopper = self._add(identity)
         if event.type == LOGIN and event.user_id and event.device_id:
-            shopper = self._link(shopper, self._add(f"device:{event.device_id}"))
+            device = f"device:{event.device_id}"
+            if self._admit(device, identity):
+                shopper = self._link(shopper, self._add(device))
         if event.email and event.email_verified:
             first = self._verified_emails.setdefault(event.email, identity)
             shopper = self._link(shopper, self.shopper_id(first))
@@ -159,6 +168,14 @@ class ShopperMap:
             self._first_seen[identity] = len(self._first_seen)
             self._shoppers[identity] = Shopper(identity, {identity})
         return self.shopper_id(identity)
+
+    def _admit(self, device: str, user: str) -> bool:
+        """Return whether a login by ``user`` may link ``device``, recording the user if so."""
+        users = self._device_users.setdefault(device, set())
+        if user not in users and len(users) >= MAX_IDENTITIES_PER_DEVICE:
+            return False
+        users.add(user)
+        return True
 
     def _link(self, first: str, second: str) -> str:
         """Merge two shoppers; the shopper whose identity was observed first keeps its shopper_id."""

@@ -231,16 +231,14 @@ event carries and links no identities. Analytics counts daily active shoppers wi
 
 | Tag suffix | Feature | Author | Change |
 |---|---|---|---|
-| `checkpoint` | `accounts-merge` | Priya | A `login` links its device to the user. A shared verified email links identities. `Shopper` keeps attributes per identity (`by_identity`), so its stored shape changes. `accounts/shoppers.py` exports the two rules the readers need: `shopper_id_cutover()` with `counted_as()` for counts, `consented()` with `withdrawn()` for consent. `ShopperMap.counted_as()` gives the counted key from the map alone, for a caller that holds the map but not its events. The plan is first proposed here, with no backfill and with rule `count-by-cutover` |
+| `checkpoint` | `accounts-merge` | Priya | A `login` links its device to the user, one user per device (`MAX_IDENTITIES_PER_DEVICE = 1`), so shoppers on a shared pickup kiosk stay separate. A shared verified email links identities. `Shopper` keeps attributes per identity (`by_identity`), so its stored shape changes. `accounts/shoppers.py` exports the two rules the readers need: `shopper_id_cutover()` with `counted_as()` for counts, `consented()` with `withdrawn()` for consent. `ShopperMap.counted_as()` gives the counted key from the map alone, for a caller that holds the map but not its events. The plan is first proposed here, with no backfill and with rule `count-by-cutover` |
 | `backfill` | `accounts-merge` | Priya | `accounts/backfill.py::backfill_shopper` moves a stored record's attributes under its own identity. The plan is proposed again here and names the backfill as its store marker |
 | `fix-analytics` | `accounts-merge` | Priya | `daily_active_users` calls `shopper_id_cutover()` and `counted_as()`: identities before the cutover day, shoppers from it on |
 | `fix-messaging` | `accounts-merge` | Priya | `is_subscribed` calls `consented()`, which reads each linked identity's latest consent |
-| `limit-five` | `accounts-merge` | Priya | A login links a device to at most five user identities |
-| `limit-one` | `accounts-merge` | Priya | The limit lowered to one |
 | `checkpoint` | `cohort-ltv` | Jun | The retention dashboard (`analytics/retention.py`) beside lifetime value |
-| `cutover` | `cohort-ltv` | Penguin | Penguin's update from `accounts-merge-limit-one`: copies `accounts/shoppers.py` and `analytics/activity.py`. Rule `count-by-cutover` rewrites the cohorts' key `shopper_map.resolve(event)` to `shopper_map.counted_as(event)` |
+| `cutover` | `cohort-ltv` | Penguin | Penguin's update from `accounts-merge-fix-messaging`: copies `accounts/shoppers.py` and `analytics/activity.py`. Rule `count-by-cutover` rewrites the cohorts' key `shopper_map.resolve(event)` to `shopper_map.counted_as(event)` |
 | `checkpoint` | `weekly-digest` | Sam | The digest's audience (`messaging/audience.py`) and send times (`messaging/digest_schedule.py`) |
-| `consent` | `weekly-digest` | Penguin | Penguin's update from `accounts-merge-limit-one`: copies `accounts/shoppers.py` and `messaging/subscriptions.py`, whose `is_subscribed()` reads each linked identity's consent. No rule changes the digest's own code |
+| `consent` | `weekly-digest` | Penguin | Penguin's update from `accounts-merge-fix-messaging`: copies `accounts/shoppers.py` and `messaging/subscriptions.py`, whose `is_subscribed()` reads each linked identity's consent. No rule changes the digest's own code |
 | `take-main` | `weekly-digest` | Sam | Merges main after case 1, which holds the per-identity `Shopper` and its backfill |
 
 `fix-analytics` and `fix-messaging` are the fixes for code on main of the plan's analytics and
@@ -249,33 +247,30 @@ in the plan with the store marker named, and Penguin approves them.
 
 Priya's fixes for code on main import her rules from `accounts/shoppers.py` and call them where
 the old code read the shopper map. Jun's and Sam's forks get Penguin's updates instead. Each holds
-Priya's modules at `accounts-merge-limit-one`'s bytes, so each fork's own tests pass on its own head.
+Priya's modules at `accounts-merge-fix-messaging`'s bytes, so each fork's own tests pass on its own head.
 Each fork takes main when it next merges it, Sam's at `take-main` and Jun's at its migration, with no
 conflict in the copied modules.
 
 | Merged tree | Fails |
 |---|---|
-| `accounts-merge-checkpoint` onto `cohort-ltv-checkpoint` | `test_kiosk.py::test_shared_device_split` (three shoppers on one pickup kiosk count as one) and `test_retention.py::test_dau_stable` (a later login lowers a published day's count) |
+| `accounts-merge-checkpoint` onto `cohort-ltv-checkpoint` | `test_retention.py::test_dau_stable` (a later login lowers a published day's count). `test_kiosk.py::test_shared_device_split` passes: one user per device keeps the kiosk's shoppers apart |
 | `accounts-merge-checkpoint` onto `weekly-digest-checkpoint` | `test_consent.py::test_unsubscribe_survives` |
-| `accounts-merge-limit-one` onto `cohort-ltv-cutover` or `weekly-digest-consent` | nothing |
+| `accounts-merge-fix-messaging` onto `cohort-ltv-cutover` or `weekly-digest-consent` | nothing |
 
-No merged tree puts `accounts-merge-limit-five` onto `cohort-ltv-cutover`. Jun's fork takes
-Penguin's update only at `limit-one`, the revision at which every part of the plan is approved, so no
-fork head holds the copies at `limit-five`'s bytes. The `limit-five` round is checked by the analytics
-review below instead: `accounts-merge-limit-five` merged onto `cohort-ltv-checkpoint` with the rule's
-rewrite. Had Jun's fork taken an update at `limit-five`, the write at `limit-one` would refresh each
-copied module to `limit-one`'s bytes ([design.md](design.md#steps-1-and-3-in-the-build)).
+Penguin copies Priya's modules from the change's newest commit, counting its fixes for code on main
+(`originRevision` in `fix-write.ts`), so Jun's fork takes `analytics/activity.py` with
+`counted_as()` already called. The update's trial merges that same commit (`trialCheckpoint` in
+`part-trial.ts`), so `test_dau_stable` passes and Penguin approves the part (#192).
 
 Loyalty's tests pass on every tree of the case, so loyalty's place is a verify part. Jun's
-analytics review has one form per round: `reviews/case1-analytics-checkpoint.json` and
-`case1-analytics-limit-five.json` report `kiosk-shoppers-separate` broken,
-`case1-analytics-limit-one.json` reports it holding. Sam's is `reviews/case1-messaging.json`.
+analytics review has one form, `reviews/case1-analytics.json`: every invariant holds, and its cutover
+marker is Priya's `accounts/shoppers.py::shopper_id_cutover`, which every trial tree holds. Sam's is
+`reviews/case1-messaging.json`. The caller replay reports the published day's count as intended
+(`callers/case1.json`): Priya's agent explains it, Jun's and Sam's agents approve.
 
 | Review | Base | Fork | Result |
 |---|---|---|---|
-| Analytics | `base` | `accounts-merge-checkpoint` | Refused: the cutover marker the form names is in Jun's fork only. Three shoppers on one kiosk: 3 on main, 1 on the fork; six: 6 and 1. A `protected_difference` goes to Jun |
-| Analytics | `cohort-ltv-checkpoint` with the rule's rewrite | `accounts-merge-limit-five` merged onto it | Accepted. Six shoppers on one kiosk: 6 and 2. A `protected_difference` goes to Jun |
-| Analytics | `cohort-ltv-checkpoint` with the rule's rewrite | `accounts-merge-limit-one` merged onto it | Accepted with `case1-analytics-limit-one.json`. No example differs and no exception is raised |
+| Analytics | `base` | `accounts-merge-checkpoint` | Accepted. Three shoppers on one kiosk: 3 on main and 3 on the fork. No protected example differs, so no exception goes to Jun |
 
 The digest's place needs no rewrite, so it is a verify part: its trial asks no form. The trial merges
 `accounts-merge-fix-messaging`, the fix for messaging's code on main, onto Sam's fork, so
@@ -376,7 +371,7 @@ all of it:
 
 ```sh
 uv run python examples/money-minor-units/build.py /tmp/larder
-tree=$(git -C /tmp/larder merge-tree --write-tree feature-accounts-merge-limit-one feature-cohort-ltv-cutover | head -1)
+tree=$(git -C /tmp/larder merge-tree --write-tree feature-accounts-merge-fix-messaging feature-cohort-ltv-cutover | head -1)
 mkdir /tmp/merged && git -C /tmp/larder archive "$tree" | tar -x -C /tmp/merged
 (cd /tmp/merged && uv run --project "$OLDPWD" python -m pytest -q)
 ```
@@ -391,8 +386,8 @@ an Apple silicon laptop with Python 3.13; each pytest run took under half a seco
 | `accounts-merge-checkpoint` | `weekly-digest-checkpoint` | 1 failed, 95 passed: `test_unsubscribe_survives` | |
 | `accounts-merge-fix-analytics` | its own tree | 89 passed | |
 | `accounts-merge-fix-messaging` | its own tree | 90 passed | |
-| `accounts-merge-limit-one` | `cohort-ltv-cutover` | 98 passed | |
-| `accounts-merge-limit-one` | `weekly-digest-consent` | 102 passed | |
+| `accounts-merge-fix-messaging` | `cohort-ltv-cutover` | 98 passed | |
+| `accounts-merge-fix-messaging` | `weekly-digest-consent` | 102 passed | |
 | `dependency-audit-checkpoint` | `instant-payouts-checkpoint` | 1 failed, 103 passed: `test_timed_out_payout_is_paid_once` | 2 payouts |
 | `dependency-audit-checkpoint` | `tip-jar-checkpoint` | 1 failed, 104 passed: `test_timed_out_tip_is_charged_once` | 2 charges |
 | `dependency-audit-checkpoint` | `instant-payouts-keys` | 104 passed | 1 payout |
@@ -562,16 +557,11 @@ The run on gn100:
 
 | Case | Rounds | People asked | Approved by Penguin |
 |---|---|---|---|
-| 1 | Plan at `checkpoint`: Sam's part for messaging's code on main waits on Priya, no one decides. Plan at `backfill`: Jun asks for a device limit. `limit-five`: Jun asks for a lower one. `limit-one`: every part approved | Jun: two requests, then the analytics part for code on main in person | Sam's two parts, Jun's cohort report part, loyalty's verify part |
+| 1 | Plan at `checkpoint`: Sam's part for messaging's code on main waits on Priya, no one decides. Plan at `backfill`: every part approved | none | Jun's two parts, Sam's two parts, loyalty's verify part |
 | 2 | No plan: Hugo's agent revises at `utc-day` | none | none |
 | 3 | One plan at `checkpoint` | none | `instant-payouts` and `tip-jar` |
 
-Jun approves the analytics part for code on main in person. Jun's analytics forms name the cutover
-marker `analytics/retention.py::retention_dashboard`, the dashboard Penguin's rule moves onto
-`ShopperMap.counted_as()`. Only Jun's fork holds it, so the trial of analytics' code on main refuses
-the form with `evidence_not_found`. The cohort report part is tried
-on Priya's limit of one (`newestRevision` in `part-trial.ts`), its form holds and Penguin approves
-it. `japan-launch` fails its yen test on its fork head alone, so the block checks of cases 2 and 3 do not
+Jun's analytics form names Priya's `shopper_id_cutover()` as its cutover marker, which the trial of analytics' code on main holds, so the form is accepted and Penguin approves the part. The cohort report part is tried on Priya's fix for analytics' code on main (`trialCheckpoint` in `part-trial.ts`), which its copied `analytics/activity.py` comes from, so its tests pass and Penguin approves it. `japan-launch` fails its yen test on its fork head alone, so the block checks of cases 2 and 3 do not
 count it. In case 3 the agent's `check` reports the dependency diff with the
 places `instant-payouts` and `tip-jar` import the client, and Hugo's own `retry-budget` and
 `rounding-mode`. Its caller replay ([design.md](design.md#caller-replay)) reports `differs` for

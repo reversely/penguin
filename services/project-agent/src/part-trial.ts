@@ -231,12 +231,14 @@ export function newestRevision(plan: Plan, part: Pick<PlanPart, "scopes">, fromR
 }
 
 /**
- * The originating commit a part's trial merges. A verify part's place takes the change together with
- * its fixes for code on main, so its trial merges the fix commit of a part for code on main covering
- * one of its scopes from the first revision; any other part merges `newestRevision`.
+ * The originating commit a part's trial merges. A verify part's place, and a mechanical part's copies,
+ * take the change together with its fixes for code on main, so their trial merges the fix commit of a
+ * part for code on main covering one of their scopes from the first revision (#192: Larder's cohort
+ * report copies analytics/activity.py, which the fix for analytics' code on main changes). A
+ * behavioural part merges `newestRevision`.
  */
 export function trialCheckpoint(plan: Plan, part: Pick<PlanPart, "scopes" | "kind">): string {
-  return newestRevision(plan, part, part.kind === "verify" ? 1 : 2);
+  return newestRevision(plan, part, part.kind === "verify" || part.kind === "mechanical" ? 1 : 2);
 }
 
 /**

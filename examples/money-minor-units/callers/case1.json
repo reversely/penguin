@@ -1,7 +1,7 @@
 {
   "$comment": "Case 1's caller items (docs/fixture-money.md, Caller items on the preview seed): Priya's agent explains each receiving feature's differing calls and classifies every one of them as intended with the reason under calls; that feature's agent reviews the explanation.",
   "explanations": {
-    "cohort-ltv": "ShopperMap.resolve() now links the identities a login or a shared verified email ties together. Your kiosk test sees three shoppers on one pickup kiosk resolve to one shopper. Your retention test sees a later login lower a published day's count. Penguin's update copies accounts/shoppers.py and analytics/activity.py into your fork. Rule count-by-cutover rewrites your cohorts' key to shopper_map.counted_as(event), which counts identities before the cutover day and shoppers from it on.",
+    "cohort-ltv": "ShopperMap.resolve() now links the identities a login or a shared verified email ties together, one account per device. Your retention test sees a later login lower a published day's count. Penguin's update copies accounts/shoppers.py and analytics/activity.py into your fork. Rule count-by-cutover rewrites your cohorts' key to shopper_map.counted_as(event), which counts identities before the cutover day and shoppers from it on.",
     "weekly-digest": "Shopper now keeps its attributes per identity, and ShopperMap links a shopper's identities. Your audience therefore reads one shopper where it read several identities. Penguin's update copies accounts/shoppers.py and messaging/subscriptions.py into your fork: is_subscribed() reads each linked identity's latest consent, so an unsubscribe on any identity holds."
   },
   "calls": {
@@ -15,7 +15,7 @@
     }
   },
   "reviews": {
-    "cohort-ltv": "Approved. Counting by the cutover keeps each published day's count and keeps the kiosk's shoppers apart before the cutover day.",
+    "cohort-ltv": "Approved. Counting by the cutover keeps each published day's count, and the kiosk's shoppers stay apart.",
     "weekly-digest": "Approved. The digest writes to each linked shopper once, and an unsubscribe on any of their identities stops it."
   }
 }

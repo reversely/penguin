@@ -853,7 +853,9 @@ that also fails another check stays with its author. Its stored data reason is l
   no token.
 - **The copies.** A runner write of a plan part also copies the originating change's modules the
   fork needs (`readCopy`, `services/project-agent/src/module-copy.ts`). The originating change is its
-  baseline compared with its newest revision (`newestRevision`), read in the originating fork. Penguin
+  baseline compared with its newest commit counting its fixes for code on main from the first
+  revision (`originRevision`), read in the originating fork: main takes those fixes, so the copies
+  hold the bytes main will take (#192). Penguin
   reads the Python files of the part's scopes at the fork head, with the patch applied, as text. Each
   file of the change that one of them imports is copied. So is each file of the change that a copied
   module imports (`copiedModules`, `packages/protocol/src/module-copy.ts`). A module the fork already
@@ -1392,7 +1394,7 @@ On Larder:
 
 | Case | Merged tree | Verdicts |
 |---|---|---|
-| 1 | `accounts-merge-checkpoint` onto `cohort-ltv-checkpoint` | `differs` at `analytics/activity.py:15` and `analytics/retention.py:30`: `ShopperMap.resolve()` links three shoppers on one kiosk, so the kiosk test's count changes |
+| 1 | `accounts-merge-checkpoint` onto `cohort-ltv-checkpoint` | `differs` at `analytics/activity.py:15` and `analytics/retention.py:30`: `ShopperMap.resolve()` links a later login to earlier visits, so a published day's count in the retention test goes down |
 | 1 | `accounts-merge-checkpoint` onto `weekly-digest-checkpoint` | `differs` at six lines of `messaging/audience.py` and `messaging/subscriptions.py`; `messaging/crm_sync.py` is `unaffected` |
 | 2 | `structured-logs-checkpoint` onto `holiday-closures-checkpoint` or `weekly-digest`'s fork | `differs` at `store_dashboard/holidays.py` and `messaging/digest_schedule.py`: `start_of_day()` returns UTC midnight, so a store or a shopper west of UTC reads the next day |
 | 2 | `structured-logs-utc-day` onto the same forks | `unaffected`: `start_of_day()` returns main's midnight again and only `log_day()` calls the new `start_of_utc_day()` |
@@ -1467,8 +1469,8 @@ rejects before the originating feature changes its fork or reaches main.
   readers' calls come from that file's earlier test. Any other edit of a file counts against every
   test in it. The originating agent therefore cannot write or edit a test that approves its change.
   A test the receiving feature wrote counts: the reviewing side wrote it, and the differing calls
-  mostly come from those tests. On Larder, case 1's `cohort-ltv` calls come from its kiosk test, which
-  the feature added. An approval approves every call. The
+  mostly come from those tests. On Larder, case 1's `cohort-ltv` calls come from its retention test,
+  which the feature added. An approval approves every call. The
   replay lists at most 5 differing calls per call site and counts the rest (`differingCount`). The
   calls past the list carry no id, so an explanation or a review answers them as one group,
   `unlisted`, with their exact count, which the packet gives as `unlistedCalls`. A group with
@@ -1852,9 +1854,10 @@ tree from Git objects alone, with no checkout and no ref (`trial-tree.ts`):
    `git merge-tree --merge-base`: a cherry-pick of the fix without the rest of the fork.
 
 A verify part's trial names no fix (`fix: { kind: "none" }`) and no form: its tree is steps 1 and 3.
-Its place takes the change together with the fixes for code on main of its scopes, so step 3 merges
-the fix commit of a part for code on main covering one of its scopes from the first revision, not
-only once it is revised (`trialCheckpoint`). With no such part it merges the plan's checkpoint.
+A verify part's place, and a mechanical part's copies, take the change together with the fixes for
+code on main of its scopes, so step 3 merges the fix commit of a part for code on main covering one
+of its scopes from the first revision, not only once it is revised (`trialCheckpoint`, #192). With
+no such part it merges the plan's checkpoint.
 
 Each commit is written with fixed identities and dates, so one trial gives one tree commit. A step
 that does not apply makes the trial a `conflict`, with the reason and no tree. On a built tree the
@@ -1882,8 +1885,8 @@ A trial still running, one of another revision, or none gives no evidence.
 
 A revision gets its own trial on the revision. Penguin also asks again for each other part of the
 plan whose current trial merges an older revision than its newest one, so the older trial no longer
-counts: in Larder's case 1, once Priya's agent revises the analytics part with the limit of one,
-Jun's cohort report part is trialled again on that commit. Its forms stay those submitted on the
+counts: once the originating agent revises a part for code on main, each other part covering the same
+scope is trialled again on that commit. Its forms stay those submitted on the
 plan's checkpoint. A later checkpoint of the originating feature that no revision names is outside
 the trial until a new plan is proposed on it. On the helpful-fix fixture Jun's and Sam's fixes import
 `start_of_local_day`, so Priya's agent proposes the plan at the checkpoint that adds it, as PRD case 2
