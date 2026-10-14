@@ -16,7 +16,7 @@
 // feature. Every transition is one statement that names the state it leaves, so two reports or two
 // promotions of one run never both land. Nothing here signs: the ProjectAgent signs each record.
 
-import type { BlockCheck, BlockRunPurpose, BlockRunReport, BlockRunRequest, LadderDecision, Promotion } from "@penguin/protocol";
+import type { BlockCheck, BlockRunPurpose, BlockRunReport, BlockRunRequest, CallerReplaySection, LadderDecision, Promotion } from "@penguin/protocol";
 
 import type { SqlDatabase, SqlValue } from "./issue-index.ts";
 
@@ -149,6 +149,16 @@ export class BlockStore {
     this.#db = db;
     this.#now = now;
     for (const statement of BLOCK_STORE_SCHEMA) db.exec(statement);
+    // A store made before the caller replay gains its column; the name and definition are constants.
+    const present = new Set(db.exec(`PRAGMA table_info(BlockRun)`).map((row) => row["name"]));
+    if (!present.has("caller_replay")) db.exec(`ALTER TABLE BlockRun ADD COLUMN caller_replay TEXT`);
+  }
+
+  /** The caller replay a run's report held, or undefined for a run without one. */
+  callerReplay(runId: string): CallerReplaySection | undefined {
+    const [row] = this.#db.exec(`SELECT caller_replay FROM BlockRun WHERE run_id = ?`, runId);
+    const text = row?.["caller_replay"];
+    return typeof text === "string" ? (JSON.parse(text) as CallerReplaySection) : undefined;
   }
 
   get(runId: string): BlockRun | undefined {
@@ -301,12 +311,13 @@ export class BlockStore {
         );
       }
       this.#db.exec(
-        `UPDATE BlockRun SET state = ?, reported_at = ?, runner_ms = ?, summary = ?, decisions = ? WHERE run_id = ?`,
+        `UPDATE BlockRun SET state = ?, reported_at = ?, runner_ms = ?, summary = ?, decisions = ?, caller_replay = ? WHERE run_id = ?`,
         passed ? "passed" : "failed",
         this.#now(),
         report.durationMs,
         report.summary,
         JSON.stringify(report.decisions),
+        report.callerReplay === undefined ? null : JSON.stringify(report.callerReplay),
         runId,
       );
       return { status: "recorded", run: this.get(runId) as BlockRun };

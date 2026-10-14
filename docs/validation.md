@@ -23,6 +23,13 @@ sets how much of the review Penguin does and how much people do
 | Custom path rules and place | The fix writes no path under a custom path rule, which a scope's owner lists under `custom_paths` in `penguin/scopes.json`. It changes no file outside the part's scopes. Penguin's update of a fork also copies modules of the originating change; each copy must be a file that change itself added or changed | `partRouting` over the part's diff and the scope map; the block check `overlap` compares the writes of two blocks | The part's owner, or the owner of the custom path rule, who confirms the lines on the dashboard |
 | Overlapping starts | Where a new feature's declared area overlaps another person's running feature | The overlap lock at each declaration and checkpoint (`overlap-lock.ts`) | Penguin lets the start open at every stage. It records the overlap with a signed `approve_overlap` record and tells the person who owns the running feature |
 
+Data matching also has a check that needs no examples file: the caller replay. Each running feature
+that calls a function the change modifies runs its own tests on its fork head and on the merged
+tree with that function wrapped. Each call site gets `unaffected`, `broken`, `differs` or
+`unknown_reach` from the calls' results, exceptions and effects
+([design.md](design.md#caller-replay)). The verdicts sit in the `check` result, the block run's report
+and its `block_checked` record. No review policy row reads them yet.
+
 Custom path rules and Place are one kind. The review policy keeps them as two rows, so a sandbox may
 let Penguin decide one and not the other. Overlapping starts is no row of the policy: an overlapping
 start never waits on a worktree owner's review.

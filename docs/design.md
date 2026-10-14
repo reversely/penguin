@@ -1358,6 +1358,46 @@ On the three fixtures:
 | Helpful fix | Tests fail for Jun and Sam, one test each. Lint passes |
 | Dependency bump | The dependency diff passes with the four places Ana imports `shared.http`. On Ana's checkpoint Ana's payment test fails. With Ana's fix in Ana's fork every check passes (`tests/cases/cases.test.ts`) |
 
+#### Caller replay
+
+The user, on what a check of a shared helper is for: "the point of such a test is to make sure that
+the helper function applied to a new file doesn't die. see, most likely it's going to die if the
+function changed, either via a new output or via the function not working anymore due to some kind
+of set of changes."
+
+The caller replay gives each running feature that calls a function the change modifies one verdict
+per call site, from the feature's own tests. It needs no examples file. The check runner runs the
+feature's tests on its fork head and on the change merged onto it, with each changed function
+wrapped by the bridge's pytest plugin. Each call records its arguments, its result or exception and
+its effects: requests sent through a vendored client's transport, `http.client` or sockets, plus
+file writes. The runner pairs the calls of the two runs:
+
+| Verdict | Meaning | Next step |
+|---|---|---|
+| `unaffected` | Every call returns the same value, raises the same exception and has the same effects | The worktree's agent confirms |
+| `broken` | A call raises where it returned, a test dies before it reaches the call, or a test that reached it fails with every call matching | The originating agent proposes a fix in the receiving fork |
+| `differs` | A result, an exception message or an effect differs, or a call happens on one tree only | The originating agent explains the difference or revises its change |
+| `unknown_reach` | The impact graph shows the call, but no test of the feature reaches it | The worktree's owner decides |
+
+The next-step column is the routing the per-caller items will follow. This build records each
+verdict in the check result, the block run's report and its signed `block_checked` record. Hand-written examples and
+invariants keep running in the review harness beside the replay
+([Side-by-side runs on the runner](#side-by-side-runs-on-the-runner)). The side-by-side run compares
+return values on chosen inputs. The replay compares every call the feature's tests make, effects
+included. A change that pays twice but returns the same value therefore differs in the replay.
+
+On Larder:
+
+| Case | Merged tree | Verdicts |
+|---|---|---|
+| 1 | `accounts-merge-checkpoint` onto `cohort-ltv-checkpoint` | `differs` at `analytics/activity.py:15` and `analytics/retention.py:30`: `ShopperMap.resolve()` links three shoppers on one kiosk, so the kiosk test's count changes |
+| 1 | `accounts-merge-checkpoint` onto `weekly-digest-checkpoint` | `differs` at six lines of `messaging/audience.py` and `messaging/subscriptions.py`; `messaging/crm_sync.py` is `unaffected` |
+| 3 | `dependency-audit-checkpoint` onto `instant-payouts-checkpoint` or `tip-jar-checkpoint` | `differs` at `payouts/send.py:18` and `checkout/tip_charge.py:20`: the timed-out request raised `Timeout` after one request; wire 2.0.0 sends it again, returns 200 and the processor records a second payout or charge |
+| 3 | The same onto `instant-payouts-keys` or `tip-jar-keys` | `unaffected`: each request carries its `Idempotency-Key`, so the processor moves money once on both trees |
+
+[bridge-and-runner.md](bridge-and-runner.md#caller-replay) gives the plugin, the pairing, the ids and
+the limits.
+
 ### Tools for agents
 
 Agents call these tools through MCP. Each tool answers with facts or applies one deterministic change.

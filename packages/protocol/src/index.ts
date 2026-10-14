@@ -6,6 +6,7 @@ export * from "./combined-run.ts";
 export * from "./verification.ts";
 export * from "./impact.ts";
 export * from "./block-check.ts";
+export * from "./caller-replay.ts";
 export * from "./plan.ts";
 export * from "./rewrite-rule.ts";
 export * from "./retiring.ts";

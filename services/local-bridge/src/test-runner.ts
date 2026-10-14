@@ -1,17 +1,22 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, realpath, rm } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 
 import { runGit } from "@penguin/git-analysis";
 
-import { resolveCommand, type ResolvedCommand } from "./command-allowlist.ts";
+import { resolveCommand, resolveReplayPlugin, type ResolvedCommand } from "./command-allowlist.ts";
 
 /** A coordinator's request to run a command. It names the command by ID only, never by text. */
 export interface TestRunRequest {
   readonly commandId: string;
   /** Full object ID of the commit to check out and read the config from. */
   readonly sha: string;
+  /**
+   * The changed functions the caller replay's pytest plugin wraps during the run (caller-replay.ts).
+   * The result then carries what the plugin recorded.
+   */
+  readonly capture?: readonly { readonly symbol: string; readonly module: string; readonly qualname: string }[];
 }
 
 /** What the owner is asked to approve before the bridge creates a worktree. */
@@ -41,7 +46,12 @@ export interface TestRunResult extends ResolvedCommand {
   /** Standard output and standard error, interleaved in arrival order. */
   readonly log: string;
   readonly timings: { readonly createMs: number; readonly runMs: number; readonly removeMs: number };
+  /** With `capture`: the plugin's recording as JSON text, or null when the command wrote none. */
+  readonly capture?: string | null;
 }
+
+/** The most bytes of a recording read back. */
+const MAX_CAPTURE_BYTES = 32 * 1024 * 1024;
 
 /** The owner declined the run; no worktree was created and no command started. */
 export class ConsentRefusedError extends Error {
@@ -94,10 +104,46 @@ export class TestRunner {
     }
 
     const timeoutMs = this.#options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    const { value: outcome, timings } = await inDetachedWorktree(repoPath, resolved.sha, scratchDir, (worktree) =>
-      runShell(resolved.command, worktree, childEnvironment(env), timeoutMs),
-    );
-    return { ...resolved, ...outcome, timings };
+    if (request.capture === undefined) {
+      const { value: outcome, timings } = await inDetachedWorktree(repoPath, resolved.sha, scratchDir, (worktree) =>
+        runShell(resolved.command, worktree, childEnvironment(env), timeoutMs),
+      );
+      return { ...resolved, ...outcome, timings };
+    }
+    // The plugin's spec and recording live beside the worktree, never in it.
+    const files = await realpath(await mkdtemp(join(scratchDir, "penguin-replay-")));
+    try {
+      const spec = join(files, "spec.json");
+      const out = join(files, "recording.json");
+      await writeFile(spec, JSON.stringify({ version: 1, symbols: request.capture }));
+      const { value: outcome, timings } = await inDetachedWorktree(repoPath, resolved.sha, scratchDir, (worktree) =>
+        runShell(resolved.command, worktree, replayEnvironment(childEnvironment(env), spec, out), timeoutMs),
+      );
+      return { ...resolved, ...outcome, timings, capture: await readCapture(out) };
+    } finally {
+      await rm(files, { recursive: true, force: true });
+    }
+  }
+}
+
+/**
+ * A test command's environment with the caller replay's plugin loaded: its folder first on
+ * PYTHONPATH and `-p penguin_caller_replay` added to PYTEST_ADDOPTS, so any pytest the command starts
+ * loads it. The spec and recording paths are the plugin's only inputs.
+ */
+export function replayEnvironment(env: NodeJS.ProcessEnv, spec: string, out: string): NodeJS.ProcessEnv {
+  const plugin = resolveReplayPlugin();
+  const path = [plugin.folder, env["PYTHONPATH"]].filter((part) => part !== undefined && part !== "").join(delimiter);
+  const addopts = [env["PYTEST_ADDOPTS"], `-p ${plugin.module}`].filter((part) => part !== undefined && part !== "").join(" ");
+  return { ...env, PYTHONPATH: path, PYTEST_ADDOPTS: addopts, PENGUIN_CALLER_REPLAY_SPEC: spec, PENGUIN_CALLER_REPLAY_OUT: out };
+}
+
+async function readCapture(path: string): Promise<string | null> {
+  try {
+    if ((await stat(path)).size > MAX_CAPTURE_BYTES) return null;
+    return await readFile(path, "utf8");
+  } catch {
+    return null;
   }
 }
 

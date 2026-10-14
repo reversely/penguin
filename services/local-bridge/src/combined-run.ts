@@ -7,13 +7,15 @@ import {
   MAIN_TARGET,
   selectAffectedForks,
   type BlockCheck,
+  type CallerReplaySection,
   type CombinedRunEvent,
   type DependencyReport,
   type ImpactReport,
 } from "@penguin/protocol";
-import { affectedOwners } from "@penguin/scope-map";
+import { affectedOwners, type ScopeMap } from "@penguin/scope-map";
 
 import type { BlockChecker, BlockTarget } from "./block-checks.ts";
+import { callerReplaySection, mergeCaptures, parseCapture, replaySymbols, replayTarget, type ReplaySymbol } from "./caller-replay.ts";
 import { loadScopeMap, testCommandId } from "./command-allowlist.ts";
 import { fingerprint, type ResultFingerprint } from "./fingerprint.ts";
 import type { ImpactAnalyzer } from "./impact-analysis.ts";
@@ -189,6 +191,11 @@ export interface CombinedRunReport {
   readonly checkLogs?: ReadonlyMap<string, string>;
   /** The dependency diff the checks used, or null when it failed. */
   readonly dependencies?: DependencyReport | null;
+  /**
+   * The caller replay (caller-replay.ts): a verdict for each caller of a changed function in each
+   * running feature whose tests ran. Absent when the runner replays no callers or no impact graph ran.
+   */
+  readonly callerReplay?: CallerReplaySection;
   /** Wall time of the whole run: analysis, merges, checks and tests. */
   readonly durationMs?: number;
 }
@@ -208,6 +215,12 @@ export interface CombinedRunnerOptions {
    * check only on the targets the impact graph selects.
    */
   checks?: BlockChecker;
+  /**
+   * Replays each running feature's calls into the changed functions (caller-replay.ts). On by default
+   * when `impact` is given: a selected fork's tests on the merged commit run with the replay's plugin,
+   * and run once more on the fork head with it. False turns it off.
+   */
+  callerReplay?: boolean;
 }
 
 // pytest's short test summary (on by default through `-r fE`) names each failure on a line of
@@ -377,6 +390,9 @@ export class CombinedRunner {
     const started = performance.now();
     const { impact, impactError, selected } = await this.#impact(baselineSha, checkpointSha, targets);
     for (const id of request.recheck ?? []) selected?.add(id);
+    // The changed functions whose callers each selected fork's tests replay.
+    const symbols = impact !== null && this.#options.callerReplay !== false ? replaySymbols(impact) : [];
+    const recordings = new Map<string, Recording[]>();
 
     const results: CombinedResult[] = [];
     const notAffected: string[] = [];
@@ -413,7 +429,8 @@ export class CombinedRunner {
         results.push({ ...target, status: "not-affected", ownerCheckpoint, mergedCommit: merge.commit });
         continue;
       }
-      results.push(await this.#test(target, ownerCheckpoint, merge));
+      const replay = symbols.length > 0 && selected !== undefined ? { symbols, into: recordings } : undefined;
+      results.push(await this.#test(target, ownerCheckpoint, merge, replay));
     }
     if (request.mainTests === true) results.push(...(await this.#mainTests(checkpointSha, request.mainSha ?? baselineSha, scopeMap)));
     const report = {
@@ -425,6 +442,9 @@ export class CombinedRunner {
       impact,
       impactError,
       notAffected,
+      ...(impact === null || symbols.length === 0
+        ? {}
+        : { callerReplay: replaySection({ origin: checkpointSha, impact, scopeMap, symbols, changed, recordings }) }),
     };
     const checker = this.#options.checks;
     if (checker === undefined) return { ...report, durationMs: Math.round(performance.now() - started) };
@@ -526,21 +546,40 @@ export class CombinedRunner {
     return { kind: "clean", tree: tree.trim(), commit: checkpointSha, ms: 0 };
   }
 
-  async #test(target: DependentTarget, ownerCheckpoint: string, merge: CleanOutcome): Promise<TestedResult> {
-    const result = await this.#run(target, ownerCheckpoint, merge);
+  /**
+   * Runs a dependent scope's tests on the merged commit. With `replay`, both that run and a run on the
+   * fork head carry the caller replay's plugin; the fork head's run also serves as the run that finds
+   * the tests the fork fails alone, so the replay adds one run of the scope's tests.
+   */
+  async #test(target: DependentTarget, ownerCheckpoint: string, merge: CleanOutcome, replay?: ReplayRequest): Promise<TestedResult> {
+    const capture = replay?.symbols.map(({ symbol, module, qualname }) => ({ symbol, module, qualname }));
+    const { result, recording } = await this.#run(target, ownerCheckpoint, merge, capture);
+    let alone: Awaited<ReturnType<TestRunner["run"]>> | undefined;
+    if (replay !== undefined && capture !== undefined) {
+      const started = performance.now();
+      alone = await this.#options.runner.run({ commandId: target.commandId, sha: ownerCheckpoint, capture });
+      const recordings = replay.into.get(target.target) ?? [];
+      recordings.push({ scopeId: target.scopeId, forkCommit: ownerCheckpoint, mergedCommit: merge.commit, old: alone.capture ?? null, new: recording, ms: performance.now() - started });
+      replay.into.set(target.target, recordings);
+    }
     // On a fork's merged tree, a test the fork already fails on its own head is not the change's break.
     if (result.status !== "failed" || result.failingTests.length === 0 || target.target === MAIN_TARGET || merge.commit === ownerCheckpoint) return result;
-    const alone = await this.#options.runner.run({ commandId: target.commandId, sha: ownerCheckpoint });
+    alone ??= await this.#options.runner.run({ commandId: target.commandId, sha: ownerCheckpoint });
     const failingAlone = alone.exitCode === 0 && alone.signal === null ? [] : parseFailingTests(alone.log).map((test) => test.nodeId);
     return discountForkFailures(result, new Set(failingAlone));
   }
 
-  async #run(target: DependentTarget, ownerCheckpoint: string, merge: CleanOutcome): Promise<TestedResult> {
+  async #run(
+    target: DependentTarget,
+    ownerCheckpoint: string,
+    merge: CleanOutcome,
+    capture?: readonly { symbol: string; module: string; qualname: string }[],
+  ): Promise<{ result: TestedResult; recording: string | null }> {
     const { repoPath, runner } = this.#options;
     const started = performance.now();
-    const outcome = await runner.run({ commandId: target.commandId, sha: merge.commit });
+    const outcome = await runner.run({ commandId: target.commandId, sha: merge.commit, ...(capture === undefined ? {} : { capture }) });
     const passed = outcome.exitCode === 0 && outcome.signal === null;
-    return {
+    const result: TestedResult = {
       ...target,
       status: passed ? "passed" : "failed",
       ownerCheckpoint,
@@ -553,6 +592,7 @@ export class CombinedRunner {
       log: outcome.log,
       durationMs: performance.now() - started,
     };
+    return { result, recording: outcome.capture ?? null };
   }
 }
 
@@ -578,6 +618,53 @@ interface PlannedTarget extends DependentTarget {
   readonly ownerCheckpoint: string | undefined;
   /** True for the changer's own scope, tested on the checkpoint itself. */
   readonly own: boolean;
+}
+
+/** One dependent scope's two replay recordings on one target: on the fork head and on the merged commit. */
+interface Recording {
+  readonly scopeId: string;
+  readonly forkCommit: string;
+  readonly mergedCommit: string;
+  readonly old: string | null;
+  readonly new: string | null;
+  /** The extra run on the fork head. */
+  readonly ms: number;
+}
+
+interface ReplayRequest {
+  readonly symbols: readonly ReplaySymbol[];
+  /** Each target's recordings, by target id, in the order the targets ran. */
+  readonly into: Map<string, Recording[]>;
+}
+
+/** The caller replay section of a combined run, one replay run per target whose tests carried the plugin. */
+function replaySection(input: {
+  readonly origin: string;
+  readonly impact: ImpactReport;
+  readonly scopeMap: ScopeMap;
+  readonly symbols: readonly ReplaySymbol[];
+  readonly changed: readonly string[];
+  readonly recordings: ReadonlyMap<string, readonly Recording[]>;
+}): CallerReplaySection {
+  const changedPaths = new Set(input.changed);
+  const results = [...input.recordings].map(([feature, recordings]) => {
+    const [first] = recordings as [Recording];
+    return replayTarget({
+      feature,
+      origin: input.origin,
+      forkCommit: first.forkCommit,
+      mergedCommit: first.mergedCommit,
+      scopes: recordings.map((recording) => recording.scopeId),
+      scopeMap: input.scopeMap,
+      symbols: input.symbols,
+      changedPaths,
+      uses: input.impact.forks.find((fork) => fork.id === feature)?.uses ?? [],
+      old: mergeCaptures(recordings.map((recording) => parseCapture(recording.old))),
+      new: mergeCaptures(recordings.map((recording) => parseCapture(recording.new))),
+      durationMs: recordings.reduce((sum, recording) => sum + recording.ms, 0),
+    });
+  });
+  return callerReplaySection(results);
 }
 
 interface CleanOutcome {

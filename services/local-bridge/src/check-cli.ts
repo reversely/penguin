@@ -7,6 +7,7 @@ import { parseArgs } from "node:util";
 import { runGit } from "@penguin/git-analysis";
 
 import { BlockChecker, formatBlockChecks, pythonDependencyAnalyzer } from "./block-checks.ts";
+import { formatCallerReplay } from "./caller-replay.ts";
 import { checkTools } from "./check-tools.ts";
 import type { CliIo } from "./cli.ts";
 import { CombinedRunner, parseCheckpointArgument, type ForkTarget } from "./combined-run.ts";
@@ -81,10 +82,11 @@ export async function runCheckCommand(args: readonly string[], io: CliIo): Promi
   const checks = report.checks ?? [];
   if (values.json) {
     const results = report.results.map((result) => ("log" in result ? { ...result, log: undefined } : result));
-    const { notAffected, impactError, dependencies, durationMs } = report;
-    io.write(`${JSON.stringify({ results, notAffected, impactError, dependencies, checks, durationMs }, null, 2)}\n`);
+    const { notAffected, impactError, dependencies, callerReplay, durationMs } = report;
+    io.write(`${JSON.stringify({ results, notAffected, impactError, dependencies, checks, callerReplay, durationMs }, null, 2)}\n`);
   } else {
     io.write(formatBlockChecks(checks));
+    if (report.callerReplay !== undefined) io.write(formatCallerReplay(report.callerReplay));
     if (report.impactError) io.write(`The impact analysis failed, so every dependent scope's tests ran: ${report.impactError}\n`);
     io.write(`${checks.length} checks in ${report.durationMs} ms.\n`);
   }

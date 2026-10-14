@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
 
 import { isObjectId, runGit } from "@penguin/git-analysis";
-import { DEPENDENCY_COMMAND_ID, FIX_COMMAND_IDS, IMPACT_COMMAND_ID, SIDE_BY_SIDE_COMMAND_ID } from "@penguin/protocol";
+import { CALLER_REPLAY_COMMAND_ID, DEPENDENCY_COMMAND_ID, FIX_COMMAND_IDS, IMPACT_COMMAND_ID, SIDE_BY_SIDE_COMMAND_ID } from "@penguin/protocol";
 import { parseScopeMap, type ScopeMap } from "@penguin/scope-map";
 
 /** The repository config that maps command IDs to shell commands, relative to the repo root. */
@@ -87,6 +87,14 @@ export function resolveAnalysisCommand(commandId: string): AnalysisCommand {
   }
   const script = fileURLToPath(new URL(ANALYSIS_SCRIPTS[commandId] as string, import.meta.url));
   return { commandId, script };
+}
+
+/**
+ * The caller replay's pytest plugin (`analysis:caller-replay`): the bridge's own module, loaded into a
+ * scope's test command with `-p`. Only its folder goes on the command's PYTHONPATH.
+ */
+export function resolveReplayPlugin(): { readonly commandId: string; readonly folder: string; readonly module: string } {
+  return { commandId: CALLER_REPLAY_COMMAND_ID, folder: fileURLToPath(new URL("../analysis/replay/", import.meta.url)), module: "penguin_caller_replay" };
 }
 
 /** The command ID of a scope's test command. */

@@ -13,6 +13,7 @@
 // BRANCH_PATTERN; nothing is interpolated into a shell string.
 
 import { BLOCK_CHECK_LIMITS, BLOCK_CHECK_SCHEMA, MAIN_TARGET, type BlockCheck } from "./block-check.ts";
+import { callerReplayProblems, type CallerReplaySection } from "./caller-replay.ts";
 import { SEGMENT_PATTERN } from "./operation-schema.ts";
 import type { CharterView, LadderDecision } from "./resolution.ts";
 import { checkSchema, type JsonSchema } from "./schema-check.ts";
@@ -104,13 +105,18 @@ export interface BlockRunReport {
   readonly summary: string;
   /** The runner's wall time for the fetches, merges, checks and tests. */
   readonly durationMs: number;
+  /**
+   * The caller replay of each target that calls a changed function (caller-replay.ts). Absent when
+   * the change modifies no function or no impact graph ran.
+   */
+  readonly callerReplay?: CallerReplaySection;
 }
 
 const SHA = { type: "string", pattern: "^[0-9a-f]{40}$" };
-const object = (properties: Record<string, JsonSchema>): JsonSchema => ({
+const object = (properties: Record<string, JsonSchema>, optional: readonly string[] = []): JsonSchema => ({
   type: "object",
   additionalProperties: false,
-  required: Object.keys(properties),
+  required: Object.keys(properties).filter((key) => !optional.includes(key)),
   properties,
 });
 
@@ -118,16 +124,21 @@ const object = (properties: Record<string, JsonSchema>): JsonSchema => ({
 export const BLOCK_RUN_REPORT_SCHEMA: JsonSchema = {
   $schema: "https://json-schema.org/draft/2020-12/schema",
   title: "Penguin block run report",
-  ...object({
-    schemaVersion: { const: BLOCK_SCHEMA_VERSION },
-    runId: { type: "string", pattern: BLOCK_RUN_ID.source, maxLength: 80 },
-    checkpoint: SHA,
-    main: SHA,
-    checks: { type: "array", maxItems: BLOCK_CHECK_LIMITS.checks, items: BLOCK_CHECK_SCHEMA },
-    decisions: { type: "array", maxItems: BLOCK_CHECK_LIMITS.checks, items: LADDER_DECISION_SCHEMA },
-    summary: { type: "string", maxLength: BLOCK_LIMITS.summaryLength },
-    durationMs: { type: "integer", minimum: 0 },
-  }),
+  ...object(
+    {
+      schemaVersion: { const: BLOCK_SCHEMA_VERSION },
+      runId: { type: "string", pattern: BLOCK_RUN_ID.source, maxLength: 80 },
+      checkpoint: SHA,
+      main: SHA,
+      checks: { type: "array", maxItems: BLOCK_CHECK_LIMITS.checks, items: BLOCK_CHECK_SCHEMA },
+      decisions: { type: "array", maxItems: BLOCK_CHECK_LIMITS.checks, items: LADDER_DECISION_SCHEMA },
+      summary: { type: "string", maxLength: BLOCK_LIMITS.summaryLength },
+      durationMs: { type: "integer", minimum: 0 },
+      // parseCallerReplay checks the section itself.
+      callerReplay: { type: "object" },
+    },
+    ["callerReplay"],
+  ),
 };
 
 export type ParsedBlockReport = { readonly ok: true; readonly report: BlockRunReport } | { readonly ok: false; readonly problems: string[] };
@@ -158,6 +169,10 @@ export function parseBlockRunReport(value: unknown, request: BlockRunRequest): P
   }
   for (const [index, decision] of report.decisions.entries()) {
     if (!commits.has(decision.target)) problems.push(`/decisions/${index} names target ${decision.target}, which the run does not`);
+  }
+  if (report.callerReplay !== undefined) {
+    const forks = new Map(request.targets.map((target) => [target.feature, target.sha] as const));
+    problems.push(...callerReplayProblems(report.callerReplay, request.checkpoint, forks));
   }
   return problems.length > 0 ? { ok: false, problems: problems.slice(0, 10) } : { ok: true, report };
 }

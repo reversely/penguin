@@ -2082,7 +2082,10 @@ async function casesOneToThree(preview: PreviewProject, larder: Larder): Promise
       await preview.step(`whats_near ${origin.id}`, () => preview.whatsNear(origin.id));
       if (preview.runnerTools) await preview.step(`impact ${origin.id}`, () => preview.runnerTool(origin.id, "impact"));
       // Case 3 opens on the dependency diff `check` shows (PRD section 1), so its agent always checks.
-      if (preview.runnerTools || origin.case === 3) await preview.step(`check ${origin.id}`, () => preview.runnerTool(origin.id, "check"));
+      // Case 1's agent checks its first checkpoint, before any fork is updated: the caller replay
+      // then shows how the change moves each running feature's calls.
+      const checks = preview.runnerTools || origin.case === 3 || (origin.case === 1 && index === 0);
+      if (checks) await preview.step(`check ${origin.id}`, () => preview.runnerTool(origin.id, "check"));
       await propose(origin, index);
     } else if (commit.fix?.kind === "revision") {
       // The originating agent answers the request with revise_plan_part, naming the revision commit

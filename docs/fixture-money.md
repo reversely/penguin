@@ -572,7 +572,11 @@ on Priya's limit of one (`newestRevision` in `part-trial.ts`), its form holds an
 it. In case 2, `japan-launch` fails its yen test on its own head, so the facts run leaves it out
 and the plan has no part there, and the block checks of cases 2 and 3 do not count it. In case 3 the agent's `check` reports the dependency diff with the
 places `instant-payouts` and `tip-jar` import the client, and Hugo's own `retry-budget` and
-`rounding-mode`.
+`rounding-mode`. Its caller replay ([design.md](design.md#caller-replay)) reports `differs` for
+`instant-payouts` and `tip-jar`: the timed-out payout and tip are sent twice. Case 1's agent also
+calls `check` at its first checkpoint, whose caller replay reports `differs` for `cohort-ltv` and
+`weekly-digest`. Case 3's block, with Penguin's updates in both forks, reports every caller of
+`instant-payouts` and `tip-jar` `unaffected`.
 
 ## The split on the preview seed
 

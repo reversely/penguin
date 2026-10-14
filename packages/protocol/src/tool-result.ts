@@ -11,6 +11,7 @@
 // never pushed: `pushed` is always false.
 
 import { BLOCK_CHECK_LIMITS, BLOCK_CHECK_NAMES, BLOCK_CHECK_SCHEMA, type BlockCheck } from "./block-check.ts";
+import { callerReplayProblems, type CallerReplaySection } from "./caller-replay.ts";
 import { IMPACT_REPORT_SCHEMA, type ImpactReport } from "./impact.ts";
 import { MIGRATION_REWRITES_SCHEMA, type MigrationRewritePlace } from "./migration.ts";
 import type { MigrationGroup } from "./retiring.ts";
@@ -58,6 +59,11 @@ export interface AgentToolResult {
    * the declared rules, with its patch and the uses left. Absent otherwise.
    */
   readonly rewrites?: readonly MigrationRewritePlace[];
+  /**
+   * For a `check`: the caller replay of each running feature that calls a changed function
+   * (caller-replay.ts). Absent when no impact graph ran or the change modifies no function.
+   */
+  readonly callerReplay?: CallerReplaySection;
   readonly fix: ToolRunRecord | null;
   /** The runner's ref that keeps the fix commit, such as `refs/penguin/fixes/<commit>`; null without one. */
   readonly fixRef: string | null;
@@ -149,8 +155,9 @@ export const TOOL_RESULT_SCHEMA: JsonSchema = {
   title: "Penguin agent tool result",
   ...RESULT,
   // `migration` and `rewrites` are optional: only an impact request that searched for retiring
-  // symbols carries the first, and only Penguin's rewrite request the second.
-  properties: { ...(RESULT["properties"] as Record<string, JsonSchema>), migration: MIGRATION, rewrites: MIGRATION_REWRITES_SCHEMA },
+  // symbols carries the first, and only Penguin's rewrite request the second. `callerReplay` is a
+  // check's, and parseCallerReplay checks it.
+  properties: { ...(RESULT["properties"] as Record<string, JsonSchema>), migration: MIGRATION, rewrites: MIGRATION_REWRITES_SCHEMA, callerReplay: { type: "object" } },
 };
 
 export type ParsedToolResult = { readonly ok: true; readonly result: AgentToolResult } | { readonly ok: false; readonly problems: string[] };
@@ -180,6 +187,10 @@ export function parseToolResult(value: unknown): ParsedToolResult {
   if (result.tool !== "impact" && result.migration !== undefined) problems.push(`/migration a ${result.tool} result carries no migration groups`);
   if (result.tool !== "impact" && result.rewrites !== undefined) problems.push(`/rewrites a ${result.tool} result carries no rewrites`);
   if (result.tool !== "apply_fix" && (result.fix !== null || result.fixRef !== null)) problems.push(`/fix a ${result.tool} result carries no fix`);
+  if (result.callerReplay !== undefined) {
+    if (result.tool !== "check") problems.push(`/callerReplay a ${result.tool} result carries no caller replay`);
+    problems.push(...callerReplayProblems(result.callerReplay, result.checkpoint));
+  }
   if (result.impact !== null && (result.impact.base !== result.base || result.impact.head !== result.checkpoint)) {
     problems.push("/impact names other commits than the result");
   }

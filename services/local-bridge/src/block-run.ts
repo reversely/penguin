@@ -131,7 +131,17 @@ async function check(options: BlockPassOptions, run: BlockRunRequest): Promise<B
   const decisions = failing.map((each) => classifyCheck(each, combined, context));
   const places = [...new Set(failing.map((each) => `${each.target} ${each.check}`))];
   const summary = `${plural(checks.length, "check")} on main and ${plural(run.targets.length, "fork")}, ${failing.length} failing${places.length === 0 ? "" : `: ${places.join(", ")}`}`;
-  return { schemaVersion: BLOCK_SCHEMA_VERSION, runId: run.runId, checkpoint: run.checkpoint, main: run.main, checks, decisions, summary: bounded(summary), durationMs: 0 };
+  return {
+    schemaVersion: BLOCK_SCHEMA_VERSION,
+    runId: run.runId,
+    checkpoint: run.checkpoint,
+    main: run.main,
+    checks,
+    decisions,
+    summary: bounded(summary),
+    durationMs: 0,
+    ...(combined.callerReplay === undefined ? {} : { callerReplay: combined.callerReplay }),
+  };
 }
 
 /** A report whose one check says the block could not be checked: an `error` never passes. */

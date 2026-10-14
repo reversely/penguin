@@ -445,7 +445,8 @@ async function runCheck(options: ToolPassOptions, claim: ClaimedToolRun): Promis
   const decisions = failing.map((check) => classifyCheck(check, report, context));
   const places = [...new Set(failing.map((check) => `${check.target} ${check.check}`))];
   const summary = `${plural(checks.length, "check")}, ${failing.length} failing${places.length === 0 ? "" : `: ${places.join(", ")}`}`;
-  return { ...emptyResult(claim), checks, decisions, summary: bounded(summary) };
+  const callerReplay = report.callerReplay === undefined ? {} : { callerReplay: report.callerReplay };
+  return { ...emptyResult(claim), checks, decisions, summary: bounded(summary), ...callerReplay };
 }
 
 async function runFix(options: ToolPassOptions, claim: ClaimedToolRun): Promise<AgentToolResult> {

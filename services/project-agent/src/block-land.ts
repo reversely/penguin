@@ -36,6 +36,7 @@ import {
   parseBlockRunReport,
   type Author,
   type BlockRunTarget,
+  type CallerReplaySection,
   type CharterView,
   type LadderDecision,
   type Plan,
@@ -350,6 +351,31 @@ export function targetFields(targets: readonly BlockRunTarget[]): Record<string,
   return targets.map(({ feature, sha }) => ({ feature, sha }));
 }
 
+/**
+ * The caller replay as the signed `block_checked` record keeps it: each replay run's commits and each
+ * caller's verdict with the ids of its differing calls, which a later confirmation, explanation or
+ * review cites. The recorded values stay in the run's stored report.
+ */
+export function callerReplayFields(section: CallerReplaySection | undefined): Record<string, unknown> {
+  if (section === undefined) return {};
+  return {
+    caller_replay: {
+      runs: section.runs.map((run) => ({ run_id: run.runId, feature: run.feature, fork_commit: run.forkCommit, merged_commit: run.mergedCommit })),
+      callers: section.callers.map((caller) => ({
+        run_id: caller.runId,
+        feature: caller.feature,
+        contract: caller.contract,
+        path: caller.path,
+        line: caller.line,
+        verdict: caller.verdict,
+        calls: caller.calls,
+        differing: caller.differing.map((call) => call.callId),
+        differing_count: caller.differingCount,
+      })),
+    },
+  };
+}
+
 /** Opens the land run of a prepared feature and records the request; the feature is then `landing`. */
 async function openLand(deps: LandDeps, prepared: Prepared, charter: CharterView, author: Author, requestedBy: string): Promise<LandOutcome> {
   const { feature, plan, mainBefore, targets } = prepared;
@@ -600,6 +626,7 @@ export async function reportBlockRun(deps: BlockReportDeps, caller: BridgeCaller
       log_ref: check.logRef,
     })),
     decisions: parsed.report.decisions.map((decision) => ({ target: decision.target, check: decision.check, step: decision.step, actor: decision.actor })),
+    ...callerReplayFields(parsed.report.callerReplay),
     runner_ms: parsed.report.durationMs,
     check_ms: checkMs,
   });

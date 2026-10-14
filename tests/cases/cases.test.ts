@@ -250,6 +250,41 @@ test("case 3: the dependency diff names the two other people's running features 
   assert.deepEqual(others, forksFixedBy(origin));
 });
 
+test("cases 1 and 3: the caller replay shows each affected running feature's calls differ before Penguin's update and match after it, with case 3's second payout and charge as effects", async (t) => {
+  const preview = await larder();
+  const replayOf = (useCase: number) => preview.tools.list(originOf(useCase).id).find((run) => run.tool === "check")?.outcome?.callerReplay;
+  const verdicts = (callers: readonly { feature: string; verdict: string }[], feature: string) => [...new Set(callers.filter((caller) => caller.feature === feature).map((caller) => caller.verdict))].sort();
+
+  // Case 1, before the updates: the shopper map's new links move Jun's counts and Sam's audience.
+  const case1 = replayOf(1);
+  assert.ok(case1 !== undefined, "case 1's check carries a caller replay");
+  for (const feature of ["cohort-ltv", "weekly-digest"]) assert.ok(verdicts(case1.callers, feature).includes("differs"), `${feature} differs: ${JSON.stringify(verdicts(case1.callers, feature))}`);
+  const kiosk = case1.callers.find((caller) => caller.feature === "cohort-ltv" && caller.differing.some((call) => call.test.endsWith("test_shared_device_split")));
+  assert.ok(kiosk !== undefined, "the kiosk count is one of cohort-ltv's differing calls");
+
+  // Case 3 on the upgrade alone: the timed-out request is sent again, so money moves twice.
+  const case3 = replayOf(3);
+  assert.ok(case3 !== undefined, "case 3's check carries a caller replay");
+  for (const [feature, endpoint] of [["instant-payouts", "/v1/payouts"], ["tip-jar", "/v1/charges"]] as const) {
+    const callers = case3.callers.filter((caller) => caller.feature === feature);
+    assert.deepEqual(verdicts(callers, feature), ["differs"], `${feature} on the upgrade alone`);
+    const twice = callers.flatMap((caller) => caller.differing).find((call) => call.new.effects.filter((effect) => effect.summary.endsWith(endpoint)).length === 2);
+    assert.ok(twice !== undefined, `${feature} records the second request to ${endpoint} as an effect`);
+    assert.equal(twice.old.effects.filter((effect) => effect.summary.endsWith(endpoint)).length, 1);
+    assert.equal(twice.old.status, "raised");
+  }
+
+  // Case 3's block, with Penguin's update in each fork: every call matches.
+  const checked = recordsOf(preview, originOf(3).id, "block_checked");
+  const replay = checked.at(-1)?.payload["caller_replay"] as { callers: { feature: string; verdict: string }[] } | undefined;
+  assert.ok(replay !== undefined, "case 3's block record keeps the caller replay");
+  for (const feature of ["instant-payouts", "tip-jar"]) assert.deepEqual(verdicts(replay.callers, feature), ["unaffected"], `${feature} with Penguin's update`);
+  // The replay's one extra run of each feature's tests, on its fork head.
+  for (const [name, section] of [["case 1 check", case1], ["case 3 check", case3]] as const) {
+    t.diagnostic(`${name}: ${section.runs.map((run) => `${run.feature} ${run.durationMs} ms`).join(", ")}`);
+  }
+});
+
 test("cases 1 to 3 each write their approved fixes, copy the originating modules into each affected fork before the land, pass the block checks and reach promotion, in order", async () => {
   const preview = await larder();
   // The retiring-calls check runs on a checkpoint, not on a block.

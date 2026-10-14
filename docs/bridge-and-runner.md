@@ -897,6 +897,102 @@ with the places Ana imports the client. The one failure is Ana's payment test:
 On the three fixtures one combined run with every check takes 4 to 9 seconds on an Apple silicon
 laptop. pyright takes about 1 to 2.5 seconds of each target.
 
+### Caller replay
+
+The caller replay tells the originating agent and each running feature's owner how a change moves
+the calls the feature's code makes into the functions the change modifies
+([design.md](design.md#caller-replay)). Every combined run with an impact graph runs it, so a `check`
+request and a block run carry it (`combined-run.ts`, `caller-replay.ts`). `callerReplay: false` on
+the `CombinedRunner` turns it off.
+
+1. `replaySymbols` takes the impact report's modified, removed, renamed and moved functions and
+   methods: at most 64, each with the module it imports as and the contract it belongs to.
+2. On each running feature whose tests the impact graph selects, the scope's test command runs on the
+   merged commit with the replay's pytest plugin loaded. The same command then runs once on the
+   fork head with the plugin. That second run also finds the tests the fork fails alone, so the
+   replay adds one run of each affected scope's tests.
+3. The plugin is `services/local-bridge/analysis/replay/penguin_caller_replay.py`, the bridge's own
+   module under the command ID `analysis:caller-replay` (`command-allowlist.ts`). The test runner
+   puts its folder first on `PYTHONPATH`, adds `-p penguin_caller_replay` to `PYTEST_ADDOPTS` and
+   names a spec file and a recording file in `PENGUIN_CALLER_REPLAY_SPEC` and
+   `PENGUIN_CALLER_REPLAY_OUT`. Both files sit beside the throwaway worktree, never in it. Only the
+   Python standard library runs in the plugin.
+4. `replayTarget` pairs the two recordings and gives each caller its verdict.
+
+Before any test module is collected, the plugin wraps each named function where it is defined and
+where the named module re-exports it. Each wrapped call records:
+
+| Field | Holds |
+|---|---|
+| `test` | The pytest node id of the test that made the call |
+| `frames` | The tree's own frames that led to the call, innermost first, at most 24 |
+| `args` | The arguments by parameter name, `self` included, encoded before the call runs |
+| `outcome` | The returned value, or the exception's type and message |
+| `effects` | Each request object handed to a transport (an object with string `method` and `url`, the shape of `vendor/wire_v1` and `wire_v2`'s `Request`), each `http.client` request (which `urllib` uses), each socket connect or send, each file opened for writing, moved or removed. When the call ends, each written file's size and SHA-256. At most 32 |
+| `approximate` | True when some value is a `repr` |
+
+Every value is canonical JSON: sorted keys and sets, dataclasses and objects by their fields with
+the type named, bytes as their length and SHA-256, memory addresses removed. An object with no
+fields to read, such as a lock, is kept as its `repr` and marks the call approximate. A value over
+2,048 characters of JSON is kept as its SHA-256, its length and a 200-character preview, so two
+long values still compare exactly. Each field of an effect is capped at 600 characters. The plugin
+keeps 5,000 calls a run and counts the rest. The bridge parses the recording as JSON, compares
+values as canonical text and never evaluates one. The plugin also records each test's outcome:
+`passed`, `failed` for a failed assertion, or `error` for any other exception or a failure to set
+up or collect.
+
+A call's caller is its innermost frame in one of the feature's dependent scopes, outside test code
+(a `tests` or `test` folder, `test_*.py`, `*_test.py` or `conftest.py`) and outside the files the
+change itself changed. A call made through a helper of the change belongs to the feature's line that
+called the helper: with Penguin's update in case 3, `payouts/send.py:18` calls `post_once()`, which
+calls `Client.post`. Calls are paired by test, function, caller and order within the test.
+
+| Verdict | When |
+|---|---|
+| `broken` | A call raises on the merged tree where it returned, or raises another exception type. A test that made a call dies on the merged tree with an `error` before making it. Every call matches yet a test that reached the caller passes on the fork head and fails on the merged tree |
+| `differs` | A call's result, exception message or effects differ, or a call happens on one tree only |
+| `unaffected` | Every call through the caller matches |
+| `unknown_reach` | The impact graph shows a call to a changed function at that line, but no test of the feature reaches it. Every such line gets it when the test command wrote no recording, such as a command that is not pytest |
+
+`broken` comes first, then `differs`. A failing test the calls explain stays `differs`: on case 3's
+upgrade alone `test_timed_out_payout_is_paid_once` fails because the second payout went out, which
+is the difference the replay shows.
+
+The section (`CallerReplaySection`, `packages/protocol/src/caller-replay.ts`) holds one run per
+feature and one verdict per caller. A run names its id, the feature, the originating checkpoint, the
+fork head, the merged commit, the scopes, the wrapped functions, the functions a side could not wrap,
+each side's test tally and recorded calls. It also names the extra run's time. A caller names the feature,
+the contract, the file and line, the verdict with its reason, the run id, the call counts, the tests
+that reached it and the first 5 differing calls. Each differing call has a call id and both sides:
+status, arguments, value or exception and the first 8 effects, each with a one-line summary. A
+section over 256 KiB of JSON drops the differing calls' arguments, then all but one differing call
+per caller, then the rest; `trimmed` says so and every count stays.
+
+A run id is `replay-` and 20 hexadecimal digits of the SHA-256 of the checkpoint, the feature, the
+fork head, the merged commit and the wrapped functions. A call id is `call-` and 20 digits of the
+SHA-256 of the feature, the contract, the caller's file and line, the test, the function and the
+call's order. The same trees give the same ids. A call keeps its id when a revised change is
+replayed again. `replayRun` and `replayCall` look them up.
+
+Penguin checks a reported section with `parseCallerReplay`: its shape and size, every recorded
+value's size, each caller naming a run of the section for its own feature, call ids unique within a
+run and each verdict agreeing with its calls. A block report's runs must start from the run's
+checkpoint and replay only the forks the run named at the heads it named. The ProjectAgent keeps the
+section in the `BlockRun` row (`BlockStore.callerReplay`). The signed `block_checked` record carries
+`caller_replay`: each run's id and commits, then each caller's verdict with the ids of its differing
+calls. A `check` result carries the section in `callerReplay`. `penguin-bridge check` prints it after
+the block checks:
+
+```text
+instant-payouts replay-650b3ccd297432b12a35 (payouts): 4 and 4 calls recorded, 5/4 passed on the fork head/merged tree
+  payouts/send.py:18 shared/platform/http.py::Client differs: 1 of 2 calls differ: result, exception, effects
+    call-dcb27a7e9856d4d2d1d6 payouts/tests/test_send.py::test_timed_out_payout_is_paid_once: raised Timeout, 1 effects -> returned {"$type":"Response","json":{"id":"mv_2"},"status":200}, 2 effects
+```
+
+On the Larder seed on gn100 the extra run on a fork head takes 130 to 182 ms per feature. Case 1's
+`check` replays nine features in 1,389 ms in all, `cohort-ltv` 182 ms of it. Case 3's replays four
+in 578 ms in all: `instant-payouts` 141 ms, `tip-jar` 150 ms.
+
 ### Resolution ladder
 
 The runner routes each failed or erred block check through the resolution ladder of

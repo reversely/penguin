@@ -310,3 +310,107 @@ def test_side_by_side_runs_a_contract_on_given_inputs_and_rejects_a_call_that_do
     results = {each["id"]: each for each in report["results"]}
     assert (results["ok"]["status"], results["ok"]["value"]) == ("returned", 149)
     assert results["bad"]["status"] == "invalid"
+
+
+REPLAY_TREE = {
+    "pytest.ini": "[pytest]\naddopts = -p no:cacheprovider\n",
+    "wire.py": (
+        "import threading\n"
+        "from dataclasses import dataclass, field\n\n\n"
+        "@dataclass(frozen=True)\n"
+        "class Request:\n"
+        "    method: str\n"
+        "    url: str\n"
+        "    json: dict\n"
+        "    headers: dict = field(default_factory=dict)\n\n\n"
+        "class Client:\n"
+        "    def __init__(self, transport):\n"
+        "        self.transport = transport\n"
+        "        self.lock = threading.Lock()\n\n"
+        "    def post(self, path, json):\n"
+        "        return self.transport(Request('POST', 'https://pay.invalid' + path, json))\n"
+    ),
+    "app/__init__.py": "",
+    "app/pay.py": (
+        "def pay(client, reference, lines=()):\n"
+        "    return client.post('/v1/payouts', {'reference': reference, 'lines': list(lines)})\n"
+    ),
+    "app/tests/__init__.py": "",
+    "app/tests/test_pay.py": (
+        "from app.pay import pay\n"
+        "from wire import Client\n\n\n"
+        "class Ledger:\n"
+        "    def __init__(self, path):\n"
+        "        self.path = path\n\n"
+        "    def __call__(self, request):\n"
+        "        with open(self.path, 'a') as ledger:\n"
+        "            ledger.write(request.json['reference'] + '\\n')\n"
+        "        if request.json['reference'] == 'boom':\n"
+        "            raise KeyError('boom')\n"
+        "        return 200\n\n\n"
+        "def test_pays(tmp_path):\n"
+        "    assert pay(Client(Ledger(tmp_path / 'ledger')), 'po-1', range(2000)) == 200\n\n\n"
+        "def test_fails(tmp_path):\n"
+        "    assert pay(Client(Ledger(tmp_path / 'ledger')), 'po-2') == 201\n\n\n"
+        "def test_dies(tmp_path):\n"
+        "    pay(Client(Ledger(tmp_path / 'ledger')), 'boom')\n"
+    ),
+}
+
+
+def test_caller_replay_plugin_records_calls_results_and_effects_as_data(
+    tmp_path: Path,
+) -> None:
+    tree = tmp_path / "tree"
+    for path, text in REPLAY_TREE.items():
+        (tree / path).parent.mkdir(parents=True, exist_ok=True)
+        (tree / path).write_text(text)
+    spec, out = tmp_path / "spec.json", tmp_path / "recording.json"
+    symbols = [
+        {"symbol": "wire.Client.post", "module": "wire", "qualname": "Client.post"},
+        {"symbol": "wire.gone", "module": "wire", "qualname": "gone"},
+    ]
+    spec.write_text(json.dumps({"version": 1, "symbols": symbols}))
+    env = {
+        "PATH": "/usr/bin:/bin",
+        "PYTHONPATH": str(ANALYSIS / "replay"),
+        "PYTEST_ADDOPTS": "-p penguin_caller_replay",
+        "PENGUIN_CALLER_REPLAY_SPEC": str(spec),
+        "PENGUIN_CALLER_REPLAY_OUT": str(out),
+    }
+    ran = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "app"],
+        # Two of the three tests fail on purpose; the recording is what the test reads.
+        check=False,
+        cwd=tree,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert "1 passed" in ran.stdout and "2 failed" in ran.stdout, ran.stdout
+    recording = json.loads(out.read_text())
+    assert [(s["symbol"], s["status"]) for s in recording["symbols"]] == [
+        ("wire.Client.post", "wrapped"),
+        ("wire.gone", "unresolved"),
+    ]
+    tests = recording["tests"]
+    assert tests["app/tests/test_pay.py::test_pays"] == "passed"
+    assert tests["app/tests/test_pay.py::test_fails"] == "failed"
+    assert tests["app/tests/test_pay.py::test_dies"] == "error"
+    calls = {call["test"].split("::")[1]: call for call in recording["calls"]}
+    paid = calls["test_pays"]
+    # The caller is the feature's line; the request handed to the transport and the file it
+    # wrote are the call's effects.
+    assert paid["frames"][0] == {"path": "app/pay.py", "line": 2, "function": "pay"}
+    assert paid["outcome"] == {"status": "returned", "value": 200}
+    kinds = [effect["kind"] for effect in paid["effects"]]
+    assert kinds == ["request", "file", "file-content"], kinds
+    assert paid["effects"][0]["detail"]["url"] == "https://pay.invalid/v1/payouts"
+    assert paid["effects"][1]["detail"]["path"] == "$outside/ledger"
+    # A long argument is kept as its digest; a lock has no fields, so it is its repr, marked
+    # approximate, with its address removed.
+    assert paid["args"]["$truncated"] is True and len(paid["args"]["sha256"]) == 64
+    assert calls["test_fails"]["approximate"] is True
+    assert "0x?" in json.dumps(calls["test_fails"]["args"])
+    assert calls["test_dies"]["outcome"]["status"] == "raised"
+    assert calls["test_dies"]["outcome"]["error"]["type"] == "KeyError"

@@ -235,6 +235,17 @@ export {
   type TargetMerge,
 } from "./block-checks.ts";
 export {
+  callerReplaySection,
+  formatCallerReplay,
+  parseCapture,
+  replaySymbols,
+  replayTarget,
+  type Capture,
+  type ReplaySymbol,
+  type ReplayTargetInput,
+  type ReplayTargetResult,
+} from "./caller-replay.ts";
+export {
   checkTools,
   defaultPython,
   defaultRuff,
