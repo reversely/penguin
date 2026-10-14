@@ -14,6 +14,11 @@
 //   and kept only while the item still stands at the record it was read at.
 // - A write into a receiving fork waits until every item there is approved from the receiving side
 //   (`writeWaits`); the originating feature reaches main only once every item is settled (`landPending`).
+// - Every agent answer cites the replay (#189): a confirmation names the run it read, an explanation
+//   classifies each differing call by its call id and a review gives each call a verdict with evidence
+//   the replay ran, from a test on main before the change. Penguin looks each id up in the item and
+//   never builds a message from text it did not find there. A refused answer leaves its reason on the
+//   item until the item next moves.
 
 import {
   CALLER_ACTION_BY,
@@ -28,14 +33,22 @@ import {
   itemVerdict,
   ownerApproved,
   ownerRequestedChanges,
+  REPLAY_CALL_ID_PATTERN,
+  REPLAY_RUN_ID_PATTERN,
   type Author,
+  type CallerCallClass,
+  type CallerCallKind,
+  type CallerCallVerdict,
   type CallerItem,
   type CallerItemAction,
   type CallerItemRequest,
   type CallerItemState,
   type CallerItemView,
   type CallerOwnerReason,
+  type CallerRefusalCode,
   type CallerReplaySection,
+  type CallerUnlistedClass,
+  type CallerUnlistedVerdict,
   type CallerVerdict,
   type Plan,
   type ReviewPreset,
@@ -46,6 +59,7 @@ import type { Delegates } from "@penguin/issues";
 import { parseFeatureId, type FeatureRecord, type FeatureRecordType, type FeatureStore, type UnsignedFeatureRecord } from "./feature-store.ts";
 import type { SqlDatabase } from "./issue-index.ts";
 import { RUNNING_STATES } from "./overlap-lock.ts";
+import type { ChangedFile, GitObjectReader } from "./repo-diff.ts";
 import type { SessionOutcome } from "./session-store.ts";
 
 export const CALLER_ITEM_STORE_SCHEMA: readonly string[] = [
@@ -171,9 +185,102 @@ export interface CallerActionDeps extends CallerItemDeps {
   readonly plan: (featureId: string) => Promise<Plan | undefined>;
   /** Whether that revision of a part is already written into its fork (FixGrantStore); absent, none is. */
   readonly written?: (partId: string, revision: number) => boolean;
+  /**
+   * Where each test, by pytest node id, stands against the item's originating change at the item's
+   * checkpoint and the receiving feature's change at the replayed fork head (`testStandingOf`). Raises
+   * when either change cannot be read.
+   */
+  readonly testStanding: (item: CallerItem, tests: readonly string[]) => Promise<ReadonlyMap<string, TestStanding>>;
 }
 
-export type CallerRejectReason = "invalid" | "forbidden" | "not_found" | "conflict" | "offline";
+/**
+ * A test against an originating change. `added` and `edited`: the change adds the test or edits its
+ * file other than by appending new tests. Otherwise `main`: the test was on main before the change;
+ * `receiving`: the receiving feature's change wrote its file; `not_on_main`: neither.
+ */
+export type TestStanding = "main" | "receiving" | "added" | "edited" | "not_on_main";
+
+type OwnChangeFiles = { readonly mergeBase: string; readonly files: readonly ChangedFile[] };
+
+/** The most bytes of a test file read to compare its two versions; a larger edited file counts as edited. */
+const TEST_FILE_BYTES = 262_144;
+
+/**
+ * Where each of `tests` (pytest node ids) stands. `origin` is the originating change's merge base with
+ * main and the files it changes (protected-change.ts `ownChange`); `fork` reads that merge base's tree
+ * and both versions of an edited file. `receiving` is the receiving feature's change the same way: a
+ * test it wrote is the reviewing side's evidence, never the originating change's, so it counts beside
+ * main's. A file the change only appends new top-level tests to keeps its earlier tests as they were on
+ * main, so those count; any other edit of the file counts against every test in it.
+ */
+export async function testStandingOf(
+  fork: Pick<GitObjectReader, "readCommit" | "readTree" | "readBlob">,
+  origin: OwnChangeFiles,
+  receiving: OwnChangeFiles,
+  tests: readonly string[],
+): Promise<Map<string, TestStanding>> {
+  const changed = new Map(origin.files.map((file) => [file.path, file]));
+  const written = new Set(receiving.files.filter((file) => file.newHash !== null).map((file) => file.path));
+  const base = await fork.readCommit(origin.mergeBase);
+  if (base === null) throw new Error(`merge base ${origin.mergeBase} is not in the fork`);
+  const standing = new Map<string, TestStanding>();
+  for (const test of new Set(tests)) {
+    const path = test.split("::", 1)[0] as string;
+    const file = changed.get(path);
+    if (file === undefined) standing.set(test, (await treeHasFile(fork, base.treeHash, path)) ? "main" : written.has(path) ? "receiving" : "not_on_main");
+    else if (file.oldHash === null) standing.set(test, "added");
+    else standing.set(test, await editedTestStanding(fork, file, test));
+  }
+  return standing;
+}
+
+/** A test in a file the change edits: `main` when the edit only appends new tests and the test was there before. */
+async function editedTestStanding(fork: Pick<GitObjectReader, "readBlob">, file: ChangedFile, test: string): Promise<TestStanding> {
+  if (file.oldHash === null || file.newHash === null) return "edited";
+  const [before, after] = await Promise.all([fork.readBlob(file.oldHash), fork.readBlob(file.newHash)]);
+  if (before === null || after === null || before.size > TEST_FILE_BYTES || after.size > TEST_FILE_BYTES) return "edited";
+  const [old, now] = await Promise.all([before.text(), after.text()]);
+  const name = (test.split("::").at(-1) ?? "").replace(/\[.*$/su, "");
+  const defined = new RegExp(`^\\s*(?:async\\s+)?def\\s+${name.replace(/[^A-Za-z0-9_]/gu, "")}\\s*\\(`, "mu");
+  if (name === "" || !defined.test(old)) return "added";
+  return onlyAddsTests(old.split("\n"), now.split("\n")) ? "main" : "edited";
+}
+
+/**
+ * Whether `after` keeps every line of `before` in order and each line it adds is blank or belongs to a
+ * new top-level test: a `def test_` line, its decorators and its indented body.
+ */
+function onlyAddsTests(before: readonly string[], after: readonly string[]): boolean {
+  let kept = 0;
+  let inNewTest = false;
+  for (const line of after) {
+    if (kept < before.length && line === before[kept]) {
+      kept += 1;
+      if (/^\S/u.test(line)) inNewTest = false;
+      continue;
+    }
+    if (line.trim() === "") continue;
+    if (/^(?:@|(?:async\s+)?def\s+test_)/u.test(line)) inNewTest = true;
+    else if (!(inNewTest && /^\s/u.test(line))) return false;
+  }
+  return kept === before.length;
+}
+
+/** Whether root tree `tree` holds a file at `path`, read one directory at a time. */
+async function treeHasFile(reader: Pick<GitObjectReader, "readTree">, tree: string, path: string): Promise<boolean> {
+  let current = tree;
+  const segments = path.split("/");
+  for (const [index, name] of segments.entries()) {
+    const entry = (await reader.readTree(current))?.find((each) => each.name === name);
+    if (entry === undefined) return false;
+    if (index === segments.length - 1) return entry.type !== "tree";
+    if (entry.type !== "tree") return false;
+    current = entry.hash;
+  }
+  return false;
+}
+
+export type CallerRejectReason = "invalid" | "forbidden" | "not_found" | "conflict" | "offline" | CallerRefusalCode;
 export type CallerRejection = { readonly status: "rejected"; readonly reason: CallerRejectReason; readonly message: string };
 export type CallerOutcome = { readonly status: "ok"; readonly item: CallerItem; readonly recordIds: readonly string[] } | CallerRejection;
 
@@ -267,7 +374,8 @@ async function transition(
       ...fields,
     }),
   );
-  const item: CallerItem = { ...after, updatedAt: at, recordId: record.record_id };
+  // A move clears the refusals: they explain why the item stood still.
+  const item: CallerItem = { ...after, refusals: [], updatedAt: at, recordId: record.record_id };
   if (!(await deps.keeper(after.origin).keepCallerItem(item, before?.recordId ?? null))) {
     return rejected("conflict", `item ${after.itemId} moved while this answer was made; read it again in get_work`);
   }
@@ -364,14 +472,150 @@ export async function replayReported(
   return moved;
 }
 
-/** One call of a caller tool, as the MCP tools send it. */
+/**
+ * One call of a caller tool, as the MCP tools send it. `run` is the replay run a confirmation read.
+ * `calls` answers each listed differing call by its id: `{ call, kind, reason }` in an explanation,
+ * `{ call, verdict, evidence }` in a review. `unlisted` answers the calls the replay counted but did
+ * not list, as one group with their count.
+ */
 export type CallerCall =
-  | { readonly action: "confirm"; readonly item: unknown }
+  | { readonly action: "confirm"; readonly item: unknown; readonly run?: unknown }
   | { readonly action: "propose_fix"; readonly item: unknown; readonly part: unknown; readonly revision: unknown; readonly note?: unknown }
-  | { readonly action: "explain"; readonly item: unknown; readonly kind: unknown; readonly text: unknown }
-  | { readonly action: "review"; readonly item: unknown; readonly verdict: unknown; readonly text?: unknown };
+  | { readonly action: "explain"; readonly item: unknown; readonly kind: unknown; readonly text: unknown; readonly calls?: unknown; readonly unlisted?: unknown }
+  | { readonly action: "review"; readonly item: unknown; readonly verdict: unknown; readonly text?: unknown; readonly calls?: unknown; readonly unlisted?: unknown };
 
 const ITEM_ID = /^caller-[0-9a-f]{16}$/u;
+const RUN_ID = new RegExp(REPLAY_RUN_ID_PATTERN, "u");
+const CALL_ID = new RegExp(REPLAY_CALL_ID_PATTERN, "u");
+
+/**
+ * Refuses an answer for want of real evidence and keeps the reason on the item, without moving it, so
+ * the feature page shows why the item stands still. Only a session of the item's side reaches this.
+ */
+async function refuse(deps: CallerItemDeps, item: CallerItem, code: CallerRefusalCode, by: string, message: string): Promise<CallerRejection> {
+  const refusals = [...(item.refusals ?? []), { code, by, at: iso(deps) }].slice(-CALLER_ITEM_LIMITS.refusals);
+  if (await deps.keeper(item.origin).keepCallerItem({ ...item, refusals }, item.recordId)) {
+    for (const feature of [item.origin, item.feature]) {
+      const person = deps.features.get(feature)?.personId;
+      if (person !== undefined) deps.notify(person);
+    }
+  }
+  return rejected(code, message);
+}
+
+type Refused = { readonly code: CallerRefusalCode; readonly message: string };
+
+/** The item's listed differing calls by id with the number its callers counted past them. */
+function differingOf(item: CallerItem): { readonly listed: ReadonlyMap<string, CallerVerdict["differing"][number]>; readonly unlisted: number } {
+  const listed = new Map(item.callers.flatMap((caller) => caller.differing.map((call) => [call.callId, call] as const)));
+  const unlisted = item.callers.reduce((sum, caller) => sum + Math.max(0, caller.differingCount - caller.differing.length), 0);
+  return { listed, unlisted };
+}
+
+/** A record's field as an object, or undefined. */
+const asRecord = (value: unknown): Record<string, unknown> | undefined => (typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined);
+
+/**
+ * The answers to every listed differing call and to the unlisted group, read with `entry` from the
+ * tool's `calls` and `unlisted`. A malformed answer is `invalid`. An id the replay does not list, a
+ * listed call left out, or unlisted calls answered without their exact count is refused by its code.
+ */
+function readAnswers<T, U>(
+  item: CallerItem,
+  calls: unknown,
+  unlisted: unknown,
+  entry: (value: Record<string, unknown>, at: string) => T | string,
+  group: (value: Record<string, unknown>) => U | string,
+): { readonly calls: (T & { readonly callId: string })[]; readonly unlisted: (U & { readonly count: number }) | null } | CallerRejection | Refused {
+  const differing = differingOf(item);
+  const given = calls ?? [];
+  if (!Array.isArray(given) || given.length > CALLER_ITEM_LIMITS.answers) return rejected("invalid", `calls must be a list of at most ${CALLER_ITEM_LIMITS.answers} answers`);
+  const answers: (T & { readonly callId: string })[] = [];
+  const seen = new Set<string>();
+  for (const [index, value] of given.entries()) {
+    const fields = asRecord(value);
+    const at = `calls[${index}]`;
+    if (fields === undefined || typeof fields["call"] !== "string" || !CALL_ID.test(fields["call"])) return rejected("invalid", `${at}.call must be a call id, \`call-\` and 20 hexadecimal digits`);
+    const callId = fields["call"];
+    if (seen.has(callId)) return rejected("invalid", `${at} answers call ${callId} a second time`);
+    seen.add(callId);
+    if (!differing.listed.has(callId)) return { code: "call_unknown", message: `${at} names call ${callId}, which item ${item.itemId}'s replay does not list; answer the calls get_work lists` };
+    const read = entry(fields, at);
+    if (typeof read === "string") return rejected("invalid", read);
+    answers.push({ ...read, callId });
+  }
+  const missing = [...differing.listed.keys()].filter((callId) => !seen.has(callId));
+  if (missing.length > 0) return { code: "call_left_out", message: `answer every differing call; left out: ${missing.join(", ")}` };
+  if (differing.unlisted === 0) {
+    if (unlisted !== undefined && unlisted !== null) return rejected("invalid", "the replay listed every differing call; leave unlisted out");
+    return { calls: answers, unlisted: null };
+  }
+  const fields = asRecord(unlisted);
+  if (fields === undefined || fields["count"] !== differing.unlisted) {
+    return { code: "unlisted_uncounted", message: `the replay counted ${differing.unlisted} differing calls past those it lists; answer them in unlisted with count ${differing.unlisted}` };
+  }
+  const read = group(fields);
+  if (typeof read === "string") return rejected("invalid", read);
+  return { calls: answers, unlisted: { ...read, count: differing.unlisted } };
+}
+
+/** One classification: `intended` or `incidental` with a reason. */
+function readKind(fields: Record<string, unknown>, at: string): { readonly kind: CallerCallKind; readonly reason: string } | string {
+  const { kind, reason } = fields;
+  if (kind !== "intended" && kind !== "incidental") return `${at}.kind must be intended or incidental`;
+  if (typeof reason !== "string" || reason.trim() === "") return `${at}.reason must be text`;
+  if (reason.length > CALLER_ITEM_LIMITS.reasonLength) return `${at}.reason is over ${CALLER_ITEM_LIMITS.reasonLength} characters`;
+  return { kind, reason };
+}
+
+/** One verdict with its evidence, the evidence checked later against the replay. */
+function readVerdict(fields: Record<string, unknown>, at: string): { readonly verdict: "approve" | "request_changes"; readonly evidence: string } | string {
+  const verdict = fields["verdict"];
+  if (verdict !== "approve" && verdict !== "request_changes") return `${at}.verdict must be approve or request_changes`;
+  const evidence = fields["evidence"];
+  if (typeof evidence !== "string" || evidence === "" || evidence.length > CALLER_ITEM_LIMITS.reasonLength) {
+    return `${at}.evidence must be a pytest node id or a call id of the replay`;
+  }
+  return { verdict, evidence };
+}
+
+const isRefused = (value: unknown): value is Refused => typeof value === "object" && value !== null && "code" in value && !("status" in value);
+
+/**
+ * Why a review's evidence is not real, or undefined. Each piece must be a replayed call id of the item
+ * or a pytest node id the item's replay ran on the merged tree. The test behind it must have been on
+ * main before the originating change or written by the receiving feature, and untouched by the
+ * originating change.
+ */
+async function evidenceRefusal(deps: CallerActionDeps, item: CallerItem, cited: readonly { readonly at: string; readonly evidence: string }[]): Promise<Refused | CallerRejection | undefined> {
+  const { listed } = differingOf(item);
+  const ran = new Set(item.callers.flatMap((caller) => [...caller.tests, ...caller.differing.map((call) => call.test)]));
+  const tests: { readonly at: string; readonly test: string }[] = [];
+  for (const { at, evidence } of cited) {
+    const test = listed.get(evidence)?.test ?? (ran.has(evidence) ? evidence : undefined);
+    // The evidence is echoed only once it is found in the item: unfound text never reaches a message.
+    if (test === undefined) return { code: "evidence_unknown", message: `${at}.evidence is no test or call of item ${item.itemId}'s replay; cite a call id or a test the packet lists` };
+    tests.push({ at, test });
+  }
+  if (tests.length === 0) return undefined;
+  let standing: ReadonlyMap<string, TestStanding>;
+  try {
+    standing = await deps.testStanding(item, tests.map(({ test }) => test));
+  } catch (error) {
+    console.error(JSON.stringify({ event: "caller_evidence_unread", item: item.itemId, error: String(error).slice(0, 200) }));
+    return rejected("conflict", `Penguin could not read the files feature ${item.origin}'s change touches; try again`);
+  }
+  for (const { at, test } of tests) {
+    const where = standing.get(test);
+    if (where === "added" || where === "edited") {
+      return { code: "evidence_from_change", message: `${at}.evidence runs ${test}, which feature ${item.origin}'s change ${where === "added" ? "adds" : "edits"}; cite a test that was on main before the change or that your feature wrote` };
+    }
+    if (where !== "main" && where !== "receiving") {
+      return { code: "evidence_not_on_main", message: `${at}.evidence runs ${test}, which was neither on main before feature ${item.origin}'s change nor written by your feature` };
+    }
+  }
+  return undefined;
+}
 
 function boundedText(value: unknown, field: string, required: boolean): string | CallerRejection {
   if (value === undefined && !required) return "";
@@ -436,8 +680,18 @@ export async function callerAction(deps: CallerActionDeps, caller: string, sessi
       const { item, handle } = found;
       const refusal = stateRefusal(item, "confirm");
       if (refusal !== undefined) return refusal;
+      // The confirmation names the run it read: one of the item's, which replayed every caller, each call matching.
+      if (typeof call.run !== "string" || !RUN_ID.test(call.run)) return rejected("invalid", "run must be the replay run id you read, `replay-` and 20 hexadecimal digits");
+      const run = call.run;
+      if (!item.runs.some((each) => each.runId === run) || item.callers.some((caller) => caller.runId !== run)) {
+        return refuse(deps, item, "run_not_on_item", handle, `run ${run} is not the replay run of item ${item.itemId}; cite the run in its packet's runs`);
+      }
+      const unmatched = item.callers.filter((caller) => caller.verdict !== "unaffected" || caller.matched !== caller.calls || caller.differingCount > 0);
+      if (unmatched.length > 0) {
+        return refuse(deps, item, "run_not_matched", handle, `run ${run} has calls that did not match at ${unmatched.map((caller) => `${caller.path}:${caller.line}`).join(", ")}`);
+      }
       const ownerAsked = ownerAfter(await deps.stage(), "confirmed", item.rejections);
-      return done(await transition(deps, item, { ...item, state: "confirmed", ownerAsked }, "confirm", handle));
+      return done(await transition(deps, item, { ...item, state: "confirmed", ownerAsked }, "confirm", handle, { run_id: run }));
     }
     case "propose_fix": {
       const found = await agentItem(deps, caller, sessionId, call.item, "originating_agent");
@@ -477,8 +731,21 @@ export async function callerAction(deps: CallerActionDeps, caller: string, sessi
       if (kind !== "expected" && kind !== "revising") return rejected("invalid", "kind must be expected or revising");
       const text = boundedText(call.text, "the explanation", true);
       if (isRejection(text)) return text;
-      const explanation: CallerItem["explanation"] = { kind, text, by: handle, at: iso(deps) };
-      const explained = await transition(deps, item, { ...item, state: "explained", explanation, review: null, ownerAsked: null }, "explain", handle, { kind, text });
+      const answers = readAnswers<Omit<CallerCallClass, "callId">, Omit<CallerUnlistedClass, "count">>(item, call.calls, call.unlisted, readKind, (fields) => readKind(fields, "unlisted"));
+      if (isRejection(answers)) return answers;
+      if (isRefused(answers)) return refuse(deps, item, answers.code, handle, answers.message);
+      // An incidental difference is the originating change's to fix: it never goes to the receiving agent.
+      const incidental = [...answers.calls.filter((each) => each.kind === "incidental").map((each) => each.callId), ...(answers.unlisted?.kind === "incidental" ? ["the unlisted calls"] : [])];
+      if (kind === "expected" && incidental.length > 0) {
+        return refuse(deps, item, "incidental_to_review", handle, `an incidental difference cannot go to review (${incidental.join(", ")}); revise your change and call explain_difference with kind revising`);
+      }
+      const explanation: CallerItem["explanation"] = { kind, text, calls: answers.calls, unlisted: answers.unlisted, by: handle, at: iso(deps) };
+      const explained = await transition(deps, item, { ...item, state: "explained", explanation, review: null, ownerAsked: null }, "explain", handle, {
+        kind,
+        text,
+        calls: answers.calls.map(({ callId, kind: callKind, reason }) => ({ call_id: callId, kind: callKind, reason })),
+        unlisted: answers.unlisted,
+      });
       if (isRejection(explained) || kind === "revising") return done(explained);
       // An expected difference goes to the receiving agent for review at once.
       const ownerAsked = ownerAfter(await deps.stage(), "review_requested", explained.rejections);
@@ -497,11 +764,29 @@ export async function callerAction(deps: CallerActionDeps, caller: string, sessi
       const action: CallerItemAction = fixing ? (verdict === "approve" ? "approve_fix" : "reject_fix") : verdict === "approve" ? "approve" : "request_changes";
       const refusal = stateRefusal(item, action);
       if (refusal !== undefined) return refusal;
+      const answers = readAnswers<Omit<CallerCallVerdict, "callId">, Omit<CallerUnlistedVerdict, "count">>(item, call.calls, call.unlisted, readVerdict, (fields) => readVerdict(fields, "unlisted"));
+      if (isRejection(answers)) return answers;
+      if (isRefused(answers)) return refuse(deps, item, answers.code, handle, answers.message);
+      const given = [...answers.calls, ...(answers.unlisted === null ? [] : [answers.unlisted])];
+      if (verdict === "approve" && given.some((each) => each.verdict !== "approve")) return rejected("invalid", "an approval approves every differing call; request changes instead");
+      const cited = [
+        ...answers.calls.map((each, index) => ({ at: `calls[${index}]`, evidence: each.evidence })),
+        ...(answers.unlisted === null ? [] : [{ at: "unlisted", evidence: answers.unlisted.evidence }]),
+      ];
+      const unreal = await evidenceRefusal(deps, item, cited);
+      if (isRejection(unreal)) return unreal;
+      if (unreal !== undefined) return refuse(deps, item, unreal.code, handle, unreal.message);
       const rejections = item.rejections + (verdict === "approve" ? 0 : 1);
       const state: CallerItemState = fixing ? (verdict === "approve" ? "fix_approved" : "fix_rejected") : verdict === "approve" ? "approved" : "changes_requested";
-      const review: CallerItem["review"] = { verdict, text, by: handle, at: iso(deps) };
+      const review: CallerItem["review"] = { verdict, text, calls: answers.calls, unlisted: answers.unlisted, by: handle, at: iso(deps) };
       const ownerAsked = ownerAfter(await deps.stage(), state, rejections);
-      const fields = { verdict_given: verdict, text, ...(fixing && item.fix !== null ? { part_id: item.fix.partId, revision: item.fix.revision } : {}) };
+      const fields = {
+        verdict_given: verdict,
+        text,
+        calls: answers.calls.map(({ callId, verdict: callVerdict, evidence }) => ({ call_id: callId, verdict: callVerdict, evidence })),
+        unlisted: answers.unlisted,
+        ...(fixing && item.fix !== null ? { part_id: item.fix.partId, revision: item.fix.revision } : {}),
+      };
       return done(await transition(deps, item, { ...item, state, review, rejections, ownerAsked }, action, handle, fields));
     }
     default:
@@ -664,15 +949,23 @@ export interface CallerPacket {
   readonly callSites: readonly { readonly path: string; readonly line: number; readonly verdict: string; readonly calls: number; readonly matched: number; readonly reason: string; readonly tests: readonly string[] }[];
   /** Each differing call, old and new, with its arguments, result or exception and effects. */
   readonly calls: readonly CallerVerdict["differing"][number][];
+  /** Differing calls the replay counted past those listed in `calls`; an explanation or review answers them as one group with this count. */
+  readonly unlistedCalls: number;
   /** The replay runs: the commits compared and the test tallies on each tree. */
   readonly runs: CallerItem["runs"];
   readonly fix: { readonly part: string; readonly revision: number; readonly kind: string | null; readonly files: readonly string[] } | null;
   readonly personWritten: {
-    readonly explanation: { readonly kind: string; readonly text: string; readonly by: string } | null;
+    readonly explanation: {
+      readonly kind: string;
+      readonly text: string;
+      readonly calls: readonly CallerCallClass[];
+      readonly unlisted: CallerUnlistedClass | null;
+      readonly by: string;
+    } | null;
     readonly fixNote: string | null;
     /** The proposed fix's patch against the receiving fork, as the originating agent submitted it. */
     readonly patch: string | null;
-    readonly review: { readonly verdict: string; readonly text: string; readonly by: string } | null;
+    readonly review: { readonly verdict: string; readonly text: string; readonly calls: readonly CallerCallVerdict[]; readonly unlisted: CallerUnlistedVerdict | null; readonly by: string } | null;
   };
 }
 
@@ -715,13 +1008,17 @@ function packetOf(item: CallerItem, plan: Plan | undefined, side: "receiving_age
     contractDiff: contractEntries(plan, item.contract),
     callSites: item.callers.map(({ path, line, verdict, calls, matched, reason, tests }) => ({ path, line, verdict, calls, matched, reason, tests })),
     calls: item.callers.flatMap((caller) => caller.differing),
+    unlistedCalls: differingOf(item).unlisted,
     runs: item.runs,
     fix: item.fix === null ? null : { part: item.fix.partId, revision: item.fix.revision, kind: part?.kind ?? null, files: part?.diff.files.map((file) => file.path) ?? [] },
     personWritten: {
-      explanation: item.explanation === null ? null : { kind: item.explanation.kind, text: item.explanation.text, by: item.explanation.by },
+      explanation:
+        item.explanation === null
+          ? null
+          : { kind: item.explanation.kind, text: item.explanation.text, calls: item.explanation.calls ?? [], unlisted: item.explanation.unlisted ?? null, by: item.explanation.by },
       fixNote: item.fix?.note ?? null,
       patch: part !== undefined && part.revision === item.fix?.revision ? part.diff.patch : null,
-      review: item.review === null ? null : { verdict: item.review.verdict, text: item.review.text, by: item.review.by },
+      review: item.review === null ? null : { verdict: item.review.verdict, text: item.review.text, calls: item.review.calls ?? [], unlisted: item.review.unlisted ?? null, by: item.review.by },
     },
   };
 }
@@ -731,7 +1028,7 @@ function packetOf(item: CallerItem, plan: Plan | undefined, side: "receiving_age
  * own worktree, and per item its feature's change opened. Undefined for a session that is not live or
  * works on no feature.
  */
-export async function callerWork(deps: CallerActionDeps, caller: string, sessionId: string): Promise<CallerWork | undefined> {
+export async function callerWork(deps: Omit<CallerActionDeps, "testStanding">, caller: string, sessionId: string): Promise<CallerWork | undefined> {
   if (deps.heartbeat(caller, sessionId).status !== "ok") return undefined;
   const featureId = parseFeatureId(deps.features.featureOfSession(sessionId));
   if (featureId === undefined || deps.features.get(featureId)?.personId !== caller) return undefined;

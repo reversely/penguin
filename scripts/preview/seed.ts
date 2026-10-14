@@ -82,6 +82,7 @@ import {
   ownerCallerItems,
   ownerDecision,
   replayReported,
+  testStandingOf,
   writeWaits,
   type CallerActionDeps,
   type CallerCall,
@@ -708,6 +709,15 @@ export class PreviewProject {
       heartbeat: (caller, sessionId) => this.sessions.heartbeat(caller, sessionId),
       plan: async (featureId) => this.plans.latestPlan(featureId),
       written: (partId, revision) => this.fixGrants.get(partId, revision)?.state === "written",
+      // A review's evidence counts only from a test on main before the originating change or one the
+      // receiving feature wrote, as the ProjectAgent reads it.
+      testStanding: async (item, tests) => {
+        const reader = gitReader(this.repo);
+        const history = gitHistory(this.repo);
+        const forkHead = item.runs[0]?.forkCommit;
+        if (forkHead === undefined) throw new Error(`item ${item.itemId} has no replayed head`);
+        return testStandingOf(reader, await ownChange(reader, history, item.source.checkpoint), await ownChange(reader, history, forkHead), tests);
+      },
     };
   }
 
@@ -2011,7 +2021,39 @@ const subjectOf = (commit: LarderCommit): string => commit.message.split("\n")[0
  */
 interface CallerWords {
   readonly explanations: Readonly<Record<string, string>>;
+  /** Each receiving feature's differing calls: how the originating agent classifies them, with its reason. */
+  readonly calls: Readonly<Record<string, { readonly kind: "intended" | "incidental"; readonly reason: string }>>;
   readonly reviews: Readonly<Record<string, string>>;
+}
+
+/** The originating agent's classification of every differing call of `item`, with the case's reason for its feature (#189). */
+function callerClasses(item: CallerItem, words: CallerWords | undefined): Pick<Extract<CallerCall, { action: "explain" }>, "calls" | "unlisted"> {
+  const answer = words?.calls[item.feature];
+  if (answer === undefined) throw new Error(`the case's callers file classifies no call in ${item.feature}`);
+  const unlisted = item.callers.reduce((sum, caller) => sum + caller.differingCount - caller.differing.length, 0);
+  return {
+    calls: item.callers.flatMap((caller) => caller.differing.map((call) => ({ call: call.callId, kind: answer.kind, reason: answer.reason }))),
+    unlisted: unlisted === 0 ? undefined : { count: unlisted, kind: answer.kind, reason: answer.reason },
+  };
+}
+
+/**
+ * The receiving agent's approval of every differing call of `item`. Each call cites its replayed call
+ * id when the test that made it counts as evidence (#189); otherwise, as for a call made by a test the
+ * originating change added, it cites the first other call or call site test that counts. The unlisted
+ * calls cite the first evidence that counts.
+ */
+async function callerApprovals(preview: PreviewProject, item: CallerItem): Promise<Pick<Extract<CallerCall, { action: "review" }>, "calls" | "unlisted">> {
+  const listed = item.callers.flatMap((caller) => caller.differing);
+  const unlisted = item.callers.reduce((sum, caller) => sum + caller.differingCount - caller.differing.length, 0);
+  const candidates = [...listed.map((call) => ({ evidence: call.callId, test: call.test })), ...item.callers.flatMap((caller) => caller.tests.map((test) => ({ evidence: test, test })))];
+  const standing = await preview.callerActionDeps().testStanding(item, candidates.map((each) => each.test));
+  const counts = (test: string) => standing.get(test) === "main" || standing.get(test) === "receiving";
+  const fallback = candidates.find((each) => counts(each.test))?.evidence;
+  return {
+    calls: listed.map((call) => ({ call: call.callId, verdict: "approve" as const, evidence: counts(call.test) ? call.callId : (fallback ?? call.callId) })),
+    unlisted: unlisted === 0 ? undefined : { count: unlisted, verdict: "approve" as const, evidence: fallback ?? "" },
+  };
 }
 
 /** The case's caller words, or undefined when the fixture has none for it. */
@@ -2021,9 +2063,10 @@ async function callerWords(preview: PreviewProject, useCase: number | undefined)
 }
 
 /**
- * Each side's agent answers one caller item as the protocol asks (#188): the receiving worktree's agent
- * confirms an unaffected caller; the originating agent explains a difference as expected with the
- * case's words, then the receiving agent approves it with its note; a broken caller gets the
+ * Each side's agent answers one caller item as the protocol asks (#188, #189): the receiving worktree's
+ * agent confirms an unaffected caller, naming the replay run it read; the originating agent explains a
+ * difference as expected with the case's words, classifying every differing call as intended, then
+ * the receiving agent approves each call with evidence that counts and its note; a broken caller gets the
  * originating plan's part on that feature as its fix, which the receiving agent approves. An item
  * sent to the worktree owner waits for that person's approval.
  */
@@ -2035,18 +2078,21 @@ async function answerCaller(preview: PreviewProject, item: CallerItem, words: Ca
     return;
   }
   const review = async () => {
-    await preview.step(`review_caller ${where}`, () => preview.callerCall({ action: "review", item: item.itemId, verdict: "approve", text: words?.reviews[item.feature] ?? "" }));
+    await preview.step(`review_caller ${where}`, async () =>
+      preview.callerCall({ action: "review", item: item.itemId, verdict: "approve", text: words?.reviews[item.feature] ?? "", ...(await callerApprovals(preview, item)) }),
+    );
   };
   switch (item.state) {
     case "confirmation_requested":
-      await preview.step(`confirm_caller ${where}`, () => preview.callerCall({ action: "confirm", item: item.itemId }));
+      // The agent names the replay run it read, as confirm_caller asks.
+      await preview.step(`confirm_caller ${where}`, () => preview.callerCall({ action: "confirm", item: item.itemId, run: item.runs[0]?.runId }));
       return;
     case "differs":
     case "explained":
     case "changes_requested": {
       const text = words?.explanations[item.feature];
       if (text === undefined) throw new Error(`the case's callers file explains no difference in ${item.feature}`);
-      await preview.step(`explain_difference ${where}`, () => preview.callerCall({ action: "explain", item: item.itemId, kind: "expected", text }));
+      await preview.step(`explain_difference ${where}`, () => preview.callerCall({ action: "explain", item: item.itemId, kind: "expected", text, ...callerClasses(item, words) }));
       return review();
     }
     case "broken":

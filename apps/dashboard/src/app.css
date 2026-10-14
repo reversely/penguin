@@ -4281,6 +4281,7 @@ label.button:has(input:focus-visible) {
 
 .review-stored,
 .review-refusals,
+.caller-refusals,
 .review-exceptions {
   font: var(--text-meta);
   overflow-wrap: anywhere;

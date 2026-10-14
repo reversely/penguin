@@ -1,11 +1,13 @@
 // One caller item (#188) as a card: the receiving worktree and the contract the change reaches there,
 // its state and who it waits on, each call site with its verdict, the differing calls behind a line
-// counting them, and what the agents and people wrote, quoted. The feature page lists the cards for
+// counting them, each with the originating agent's classification and the receiving agent's verdict
+// and evidence, what the agents and people wrote, quoted. Below the quotes, a short reason tag names
+// each answer Penguin refused since the item last moved (#189). The feature page lists the cards for
 // the callers a change reaches and for those in its own worktree; the worktree owner's approvals
 // inbox lists the cards sent to them, with Approve and Request changes on each they decide. Every
 // value renders as React text.
 
-import { CALLER_PARTY_LABEL, CALLER_STATE_LABEL, type CallerItemView, type CallerSideView } from "@penguin/protocol";
+import { CALLER_PARTY_LABEL, CALLER_REFUSAL_LABEL, CALLER_STATE_LABEL, type CallerItemView, type CallerSideView } from "@penguin/protocol";
 import { useId, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 
 import { PersonAvatar } from "./avatar.tsx";
@@ -107,6 +109,16 @@ export function CallerCard({ item, title, navigate, decide, told = false }: Prop
           </footer>
         </blockquote>
       )}
+      {item.refusals.length === 0 ? null : (
+        <ul className="code-list caller-refusals" aria-label="Refused">
+          {item.refusals.map((refusal, index) => (
+            <li key={index}>
+              <span className="tag tag-failure">{CALLER_REFUSAL_LABEL[refusal.code]}</span>
+              <span className="muted">{refusal.by}</span>
+            </li>
+          ))}
+        </ul>
+      )}
       {calls.length === 0 ? null : (
         <Disclosure className="part-details" summary={counted(calls.length, "differing call")}>
           <ol className="caller-calls">
@@ -124,6 +136,24 @@ export function CallerCard({ item, title, navigate, decide, told = false }: Prop
                 <dl className="facts">
                   <SideFact term="Before" side={call.old} />
                   <SideFact term="After" side={call.new} />
+                  {call.kind === null ? null : (
+                    <div className="fact">
+                      <dt>Classified</dt>
+                      <dd>
+                        <span className={call.kind.kind === "intended" ? "tag tag-data" : "tag tag-attention"}>{call.kind.kind}</span>
+                        <span>{call.kind.reason}</span>
+                      </dd>
+                    </div>
+                  )}
+                  {call.verdict === null ? null : (
+                    <div className="fact">
+                      <dt>Review</dt>
+                      <dd>
+                        <span className={call.verdict.verdict === "approve" ? "tag tag-verified" : "tag tag-attention"}>{call.verdict.verdict === "approve" ? "approved" : "changes requested"}</span>
+                        <code className="code-chip">{call.verdict.evidence}</code>
+                      </dd>
+                    </div>
+                  )}
                 </dl>
               </li>
             ))}

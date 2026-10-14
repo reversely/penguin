@@ -139,6 +139,7 @@ import {
   ownerDecision,
   replayReported,
   sweepUnanswered,
+  testStandingOf,
   writeWaits,
   type CallerActionDeps,
   type CallerCall,
@@ -479,6 +480,7 @@ export {
   ownerDecision,
   replayReported,
   sweepUnanswered,
+  testStandingOf,
   writeWaits,
   type CallerActionDeps,
   type CallerCall,
@@ -3016,7 +3018,29 @@ export class ProjectAgent extends Agent {
     };
   }
 
-  #callerActionDeps(): CallerActionDeps {
+  #callerActionDeps(repos: Pick<ProjectRepos, "base">): CallerActionDeps {
+    return {
+      ...this.#callerWorkDeps(),
+      // A review's evidence counts only from a test on main before the originating change or one the
+      // receiving feature wrote, never one the originating change touches (#189).
+      testStanding: async (item, tests) => {
+        const features = this.#featureStore();
+        const repo = features.get(item.origin)?.repo;
+        const receivingRepo = features.get(item.feature)?.repo;
+        const forkHead = item.runs[0]?.forkCommit;
+        if (repo == null || receivingRepo == null || forkHead === undefined) throw new Error(`item ${item.itemId} has no fork or replayed head to read`);
+        return withRepo(this.env.ARTIFACTS, repos.base, async (main) => {
+          const receiving = await withRepo(this.env.ARTIFACTS, receivingRepo, (fork) => ownChange(fork as unknown as GitObjectReader, main, forkHead));
+          return withRepo(this.env.ARTIFACTS, repo, async (fork) => {
+            const reader = fork as unknown as GitObjectReader;
+            return testStandingOf(reader, await ownChange(reader, main, item.source.checkpoint), receiving, tests);
+          });
+        });
+      },
+    };
+  }
+
+  #callerWorkDeps(): Omit<CallerActionDeps, "testStanding"> {
     return {
       ...this.#callerDeps(),
       heartbeat: (caller, session) => this.sessionHeartbeat(caller, session),
@@ -3029,13 +3053,13 @@ export class ProjectAgent extends Agent {
    * One call of `confirm_caller`, `propose_caller_fix`, `explain_difference` or `review_caller` by
    * `caller`'s session; each tool is limited to its side of the item. Runs after the plan steps before it.
    */
-  callerItemCall(caller: string, sessionId: string, call: CallerCall): Promise<CallerOutcome> {
-    return this.#featuresChanging(this.#planStep(() => callerAction(this.#callerActionDeps(), caller, sessionId, call)));
+  callerItemCall(caller: string, sessionId: string, call: CallerCall, repos: Pick<ProjectRepos, "base">): Promise<CallerOutcome> {
+    return this.#featuresChanging(this.#planStep(() => callerAction(this.#callerActionDeps(repos), caller, sessionId, call)));
   }
 
   /** For `get_work`: a context packet per caller item on the session's worktree or opened by its change. */
   callerWork(caller: string, sessionId: string): Promise<CallerWork | undefined> {
-    return this.#planStep(() => callerWork(this.#callerActionDeps(), caller, sessionId));
+    return this.#planStep(() => callerWork(this.#callerWorkDeps(), caller, sessionId));
   }
 
   /** The worktree owner, or their delegate, decides an item sent to them on the dashboard. */

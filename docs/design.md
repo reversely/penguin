@@ -1432,9 +1432,9 @@ rejects before the originating feature changes its fork or reaches main.
 
   | Verdict | States | Who moves it |
   |---|---|---|
-  | `unaffected` | `confirmation_requested`, then `confirmed` | The receiving agent confirms with `confirm_caller` |
+  | `unaffected` | `confirmation_requested`, then `confirmed` | The receiving agent confirms with `confirm_caller`, naming the replay run it read |
   | `broken` | `broken`, `fix_proposed`, then `fix_approved` or `fix_rejected`, then `written` | The originating agent names a part of its newest plan, placed on the receiving feature, with `propose_caller_fix`. The receiving agent approves or rejects it with `review_caller`. Penguin marks the item `written` when that part revision's fix is kept in the fork |
-  | `differs` | `differs`, `explained`, then `review_requested`, then `approved` or `changes_requested` | The originating agent calls `explain_difference`. `revising` keeps the item at `explained` until the next replay. `expected` asks for the review at once. The receiving agent approves or asks for changes with `review_caller` |
+  | `differs` | `differs`, `explained`, then `review_requested`, then `approved` or `changes_requested` | The originating agent calls `explain_difference` and classifies every differing call. `revising` keeps the item at `explained` until the next replay. `expected` asks for the review at once. The receiving agent approves or asks for changes with `review_caller`, giving each differing call a verdict with evidence |
   | `unknown_reach` | `unknown_reach`, then `approved` or `changes_requested` | The worktree owner decides on the dashboard |
 
   A `changes_requested` item goes back to the originating agent, which explains again or revises. A
@@ -1444,6 +1444,38 @@ rejects before the originating feature changes its fork or reaches main.
   approves or rejects. Only a session of the originating feature proposes or explains. Penguin refuses
   any other session as `forbidden`. It refuses an action the item's state does not allow as `conflict`.
   While an item is with the worktree owner the receiving agent's tools refuse it.
+- **Evidence.** The user, on how the harness enforces the caller protocol: "how do you get the harnes
+  to help enforce this behaviour?" Every agent answer cites what the replay recorded. Penguin looks
+  each cited id up in the item (`callerAction`):
+
+  | Tool | What it cites | Penguin refuses |
+  |---|---|---|
+  | `confirm_caller` | `run`: the replay run id the agent read | A run that is not the item's (`run_not_on_item`), or a run with a call that did not match (`run_not_matched`) |
+  | `explain_difference` | `calls`: each listed differing call by its call id, `intended` or `incidental`, with a reason | A listed call left out (`call_left_out`), a call id the replay does not list (`call_unknown`) and `expected` with an incidental call (`incidental_to_review`): the originating agent revises its change instead |
+  | `review_caller` | `calls`: each listed differing call by its call id, `approve` or `request_changes`, with evidence | A call left out or unknown as above. Evidence the replay did not run (`evidence_unknown`), from a test the originating change added or edited (`evidence_from_change`) or from a test that was neither on main before the change nor written by the receiving feature (`evidence_not_on_main`) |
+
+  Evidence is a replayed call id of the item, or a pytest node id the item's replay ran on the
+  merged tree: a differing call's test or a test that reached a call site. A call id counts as the
+  test that made the call. Penguin reads the originating change at the item's checkpoint: its merge
+  base with main and the files it changes (`ownChange`). It reads the receiving feature's change the
+  same way, at the fork head the replay ran. A node id counts only when the originating change leaves
+  its test untouched and the test was in the merge base's tree or the receiving feature wrote its file
+  (`testStandingOf`). A file the originating change only appends new top-level tests to keeps its
+  earlier tests. On Larder, case 3 appends a test to `shared/flags/tests/test_remote.py`; the flag
+  readers' calls come from that file's earlier test. Any other edit of a file counts against every
+  test in it. The originating agent therefore cannot write or edit a test that approves its change.
+  A test the receiving feature wrote counts: the reviewing side wrote it, and the differing calls
+  mostly come from those tests. On Larder, case 1's `cohort-ltv` calls come from its kiosk test, which
+  the feature added. An approval approves every call. The
+  replay lists at most 5 differing calls per call site and counts the rest (`differingCount`). The
+  calls past the list carry no id, so an explanation or a review answers them as one group,
+  `unlisted`, with their exact count, which the packet gives as `unlistedCalls`. A group with
+  another count is refused (`unlisted_uncounted`). The count shows the agent and the reviewer how many
+  calls the group answer covers. Nothing past the list passes unanswered. An item with many
+  differing calls still moves. Penguin builds a refusal's message only from ids it found in the item.
+  An id is checked by its form before any lookup. Each refusal is kept on the item with its code and
+  author, the newest 3, until the item next moves. The feature page shows them. A refusal signs no
+  record and leaves the item's state as it was.
 - **The worktree owner.** The receiving feature's person, or their delegate, decides an item sent to
   them at `POST /api/plan-parts/decide-caller` with `{ item, verdict, text }`. Approval settles the
   item on its path. A request for changes returns it to the originating agent. An item goes to the
@@ -1461,7 +1493,8 @@ rejects before the originating feature changes its fork or reaches main.
   `explain` and one for `request_review`) and `review_caller`. The worktree owner's is
   `decide_caller`. Each names the item, the receiving feature, the contract, the action, the states
   before and after, the verdict, the owner's reason, the rejections, the fingerprint and the replay
-  run ids. The agent's or person's words are in the record as written.
+  run ids. A confirmation adds the run it cited, an explanation each call's classification and a
+  review each call's verdict and evidence. The agent's or person's words are in the record as written.
 - **Writes into the receiving fork.** A write of the originating feature's fix into a fork waits until
   every item there is `confirmed`, `fix_approved`, `written` or `approved`, with no owner's decision
   pending (`writeWaits`). `fix_token` refuses with `callers_pending` and names each item. The check
@@ -1475,10 +1508,11 @@ rejects before the originating feature changes its fork or reaches main.
 - **The context packet.** `get_work` gives the agent `callerItems`: `receiving` for the items on its
   worktree and `originating` for those its change opened. Each packet holds the contract's entries in
   the originating plan's contract diff, the call sites with the tests that reached them, each
-  differing call old and new with its arguments, result or exception and effects, the replay runs
-  with their commits and test tallies and the proposed fix's part. `yourTurn` names the tool the
-  session's side answers with. The explanation, the patch, the fix note and the review are under
-  `personWritten`. The recorded calls are what the code under test returned and sent, which the
+  differing call old and new with its arguments, result or exception and effects, the count of
+  differing calls past the list (`unlistedCalls`), the replay runs with their commits and test tallies
+  and the proposed fix's part. `yourTurn` names the tool the session's side answers with. The
+  explanation with each call's reason, the patch, the fix note and the review with each call's
+  evidence are under `personWritten`. The recorded calls are what the code under test returned and sent, which the
   agent reads as data too.
 
 Items use plan parts where a part already means the same thing: a broken caller's fix is a plan part

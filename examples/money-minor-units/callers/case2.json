@@ -1,8 +1,18 @@
 {
-  "$comment": "Case 2's caller items, which open when Hugo's agent runs the check runner's tools (docs/fixture-money.md, Caller items on the preview seed): Hugo's agent explains each receiving feature's differing calls; that feature's agent reviews the explanation.",
+  "$comment": "Case 2's caller items, which open when Hugo's agent runs the check runner's tools (docs/fixture-money.md, Caller items on the preview seed): Hugo's agent explains each receiving feature's differing calls and classifies every one of them as intended with the reason under calls; that feature's agent reviews the explanation.",
   "explanations": {
     "holiday-closures": "start_of_day() now returns UTC midnight. is_closed() takes the store's day from it, so 20:00 on Christmas at UTC-08:00 reads as 26 December. The plan's fix in your fork calls start_of_local_day() with the store's offset, which keeps the store's whole local day closed.",
     "weekly-digest": "start_of_day() now returns UTC midnight. The digest's send time starts from it, so a shopper west of UTC gets the digest at another hour. The plan's fix in your fork starts the send time from start_of_local_day() with the shopper's offset."
+  },
+  "calls": {
+    "holiday-closures": {
+      "kind": "intended",
+      "reason": "start_of_day() now returns UTC midnight. A store west of UTC reads its day from the next date."
+    },
+    "weekly-digest": {
+      "kind": "intended",
+      "reason": "start_of_day() now returns UTC midnight. The send time moves for a shopper west of UTC."
+    }
   },
   "reviews": {
     "holiday-closures": "Approved. With start_of_local_day() a closure covers the store's whole local day.",

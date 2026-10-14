@@ -244,10 +244,10 @@ When the originating agent's `check` replays another running feature's calls int
 
 | Tool | Who calls it | Input | Answer |
 |---|---|---|---|
-| `confirm_caller` | The receiving worktree's agent | `item` | The item with its state, owner's reason, rejections and the signed record ids |
-| `review_caller` | The receiving worktree's agent | `item`, `verdict` (`approve` or `request_changes`), `text` (required for `request_changes`) | The same |
+| `confirm_caller` | The receiving worktree's agent | `item`, `run`: the replay run id it read from the packet's `runs` | The item with its state, owner's reason, rejections and the signed record ids |
+| `review_caller` | The receiving worktree's agent | `item`, `verdict` (`approve` or `request_changes`), `text` (required for `request_changes`), `calls`: one `{ call, verdict, evidence }` per differing call, `unlisted`: `{ count, verdict, evidence }` when `unlistedCalls` is above 0 | The same |
 | `propose_caller_fix` | The originating agent | `item`, `part` and `revision` of a part of its newest plan placed on the receiving feature, optional `note` | The same |
-| `explain_difference` | The originating agent | `item`, `kind` (`expected` or `revising`), `text` | The same, with two record ids for `expected`: the explanation and the review request |
+| `explain_difference` | The originating agent | `item`, `kind` (`expected` or `revising`), `text`, `calls`: one `{ call, kind, reason }` per differing call with `kind` `intended` or `incidental`, `unlisted`: `{ count, kind, reason }` when `unlistedCalls` is above 0 | The same, with two record ids for `expected`: the explanation and the review request |
 
 `get_work` lists the items under `callerItems`: `receiving` for the items on the session's worktree and
 `originating` for the items its feature's change opened. Each packet names the item, its feature,
@@ -265,6 +265,25 @@ characters answers `invalid`. A proposal of a part revision already written into
 `conflict`: revise the part and propose the new revision. After the receiving side rejects an item
 twice, every later proposal or review request goes to the developer of the receiving worktree, who
 decides on the dashboard.
+
+Each answer cites the replay. Penguin refuses one that does not, with its code as `error`
+([design.md](design.md#caller-items-in-the-build)):
+
+| Error | Answer |
+|---|---|
+| `run_not_on_item` | `confirm_caller` names a run that is not the item's replay run |
+| `run_not_matched` | A call of the named run did not match |
+| `call_left_out` | `calls` leaves out a differing call the packet lists |
+| `call_unknown` | `calls` names a call id the packet does not list |
+| `unlisted_uncounted` | `unlisted` is missing or its `count` is not the packet's `unlistedCalls` |
+| `incidental_to_review` | `kind` `expected` with an `incidental` call: say `revising` and change your code |
+| `evidence_unknown` | Evidence that is neither a differing call's id nor a test the replay ran |
+| `evidence_from_change` | Evidence from a test the originating change adds, or from a file it edits other than by appending new tests |
+| `evidence_not_on_main` | Evidence from a test file that was neither on main before the originating change nor written by your feature |
+
+Evidence is a differing call's id or a pytest node id from a call's `test` or a call site's `tests`.
+An approval approves every call. A refused answer moves nothing; the feature page shows its reason
+until the item next moves.
 
 ## Edit tasks
 

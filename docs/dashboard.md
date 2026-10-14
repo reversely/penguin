@@ -429,8 +429,12 @@ feature's page it names the originating feature and its person. Below the name i
 - each call site as `path:line` with its verdict and how many of its calls match;
 - the originating agent's explanation, the fix it proposed (the plan part and revision, with its
   note) and the last review note, each quoted as text an agent or a person wrote;
+- the answers Penguin refused since the item last moved, the newest 3, each as a reason tag with the
+  agent that sent it;
 - the differing calls behind a line that counts them: each call's test, the changed function, what
-  differs, then Before and After with how the call ended and its first effects.
+  differs, then Before and After with how the call ended and its first effects. Once answered, a call
+  shows Classified with `intended` or `incidental` and the originating agent's reason. Review then
+  shows approved or changes requested with the receiving agent's evidence as code.
 
 The card shows no recorded argument or return value. The tag for each state:
 
@@ -449,6 +453,20 @@ The card shows no recorded argument or return value. The tag for each state:
 | Approved | `approved` | The receiving side approved the difference |
 | Changes requested | `changes_requested` | The receiving side asked the originating agent for changes |
 | No test reaches it | `unknown_reach` | No test of the worktree reaches the call; the worktree owner decides |
+
+Each refusal reason tag ([design.md](design.md#caller-items-in-the-build)):
+
+| Tag | Code | Refused answer |
+|---|---|---|
+| Run not from this item | `run_not_on_item` | A confirmation names another run |
+| Run has differing calls | `run_not_matched` | A confirmation names a run with a call that did not match |
+| Differing call left out | `call_left_out` | An explanation or a review leaves out a listed call |
+| Call not in the replay | `call_unknown` | It names a call id the replay does not list |
+| Unlisted calls not counted | `unlisted_uncounted` | It answers the calls past the list without their exact count |
+| Incidental difference sent to review | `incidental_to_review` | An explanation calls an incidental difference expected |
+| Evidence not in the replay | `evidence_unknown` | A review cites a test or a call the replay did not run |
+| Test written by the change | `evidence_from_change` | A review cites a test the originating change added or edited |
+| Test not on main or this worktree | `evidence_not_on_main` | A review cites a test that was neither on main before the change nor written by the receiving feature |
 
 The tag Waits on names the party that acts next: worktree agent (the receiving feature's agent),
 originating agent, or worktree owner (the receiving feature's person). A settled item shows no Waits

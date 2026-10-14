@@ -582,7 +582,13 @@ calls `check` at its first checkpoint, whose caller replay reports `differs` for
 
 Each check's caller replay opens caller items ([design.md](design.md#caller-items-in-the-build)). The
 agents answer them with the words of `callers/case<N>.json`: the originating agent's explanation of each
-receiving feature's differing calls and that feature's agent's review note.
+receiving feature's differing calls, the reason under `calls` that classifies each of those calls as
+`intended` and that feature's agent's review note. A call id is fixed only when the replay runs, so the
+file gives one reason per receiving feature and the seed applies it to every listed call and to the
+unlisted ones. The receiving agent cites each call's id as its evidence and names the replay run
+it read when it confirms. Case 3's flag readers also make a call from the test that `dependency-audit`
+appends to `shared/flags/tests/test_remote.py`. That test cannot be evidence for the change, so the
+agent cites the call that file's earlier test made.
 
 - Before each write into a receiving fork, that fork's items are answered. Penguin's update waits until
   then: the originating agent explains each difference as expected (`explain_difference`), the

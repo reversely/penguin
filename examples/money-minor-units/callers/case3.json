@@ -1,10 +1,28 @@
 {
-  "$comment": "Case 3's caller items (docs/fixture-money.md, Caller items on the preview seed): Hugo's agent explains each receiving feature's differing calls; that feature's agent reviews the explanation.",
+  "$comment": "Case 3's caller items (docs/fixture-money.md, Caller items on the preview seed): Hugo's agent explains each receiving feature's differing calls and classifies every one of them as intended with the reason under calls; that feature's agent reviews the explanation.",
   "explanations": {
     "instant-payouts": "wire 2.0.0 sends a timed-out request up to two more times. Your timed-out payout test now sees the processor record a second payout. Penguin's update copies shared/platform/http.py and wire 2.0.0 into your fork. Rule payout-once rewrites client.post(\"/v1/payouts\", body) to post_once(client, \"/v1/payouts\", body), which sends the body's reference as its Idempotency-Key. The processor answers the repeat with its first response, so it pays once.",
     "tip-jar": "wire 2.0.0 sends a timed-out request up to two more times. Your timed-out tip test now sees the processor record a second charge. Penguin's update copies shared/platform/http.py and wire 2.0.0 into your fork. Rule charge-once rewrites client.post(\"/v1/charges\", body) to post_once(client, \"/v1/charges\", body), which sends the body's reference as its Idempotency-Key. The processor answers the repeat with its first response, so it charges once.",
     "retry-budget": "wire 2.0.0 sends a timed-out request up to two more times. When the flag service drops one request, shared/flags/remote.py now reads the rollout on the next try where it fell back before. Reading a rollout changes nothing on the flag service, so the second request is intended.",
     "rounding-mode": "wire 2.0.0 sends a timed-out request up to two more times. When the flag service drops one request, shared/flags/remote.py now reads the rollout on the next try where it fell back before. Reading a rollout changes nothing on the flag service, so the second request is intended."
+  },
+  "calls": {
+    "instant-payouts": {
+      "kind": "intended",
+      "reason": "wire 2.0.0 sends a timed-out request again. post_once keeps the retried payout to one payout."
+    },
+    "tip-jar": {
+      "kind": "intended",
+      "reason": "wire 2.0.0 sends a timed-out request again. post_once keeps the retried tip to one charge."
+    },
+    "retry-budget": {
+      "kind": "intended",
+      "reason": "wire 2.0.0 sends a dropped rollout read again. A rollout read writes nothing to the flag service."
+    },
+    "rounding-mode": {
+      "kind": "intended",
+      "reason": "wire 2.0.0 sends a dropped rollout read again. A rollout read writes nothing to the flag service."
+    }
   },
   "reviews": {
     "instant-payouts": "Approved. With post_once the retried payout carries the same Idempotency-Key, so a timed-out payout is paid once.",

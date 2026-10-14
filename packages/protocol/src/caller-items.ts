@@ -188,6 +188,12 @@ export const CALLER_REJECTION_LIMIT = 2;
 export const CALLER_ITEM_LIMITS = {
   /** An explanation, a review note or a fix proposal's note. */
   textLength: 4_000,
+  /** One differing call's reason or one piece of evidence. */
+  reasonLength: 1_000,
+  /** Calls one explanation or review answers. */
+  answers: 256,
+  /** Refused answers an item keeps until it next moves. */
+  refusals: 3,
   /** Items one replay may open for one originating feature. */
   items: 256,
   /** Differing calls a view lists per item. */
@@ -197,11 +203,38 @@ export const CALLER_ITEM_LIMITS = {
 /** An item id: `caller-` and 16 hexadecimal digits of the SHA-256 of its originating feature, receiving feature and contract. */
 export const CALLER_ITEM_ID_PATTERN = "^caller-[0-9a-f]{16}$";
 
+/**
+ * How the originating agent classifies one differing call. `intended`: the change means the call to
+ * differ. `incidental`: the change does not mean it to, so the agent revises the change.
+ */
+export type CallerCallKind = "intended" | "incidental";
+
+/** The originating agent's classification of one listed differing call, by its replay call id. */
+export interface CallerCallClass {
+  readonly callId: string;
+  readonly kind: CallerCallKind;
+  readonly reason: string;
+}
+
+/**
+ * One answer for the differing calls the replay counted but did not list (a caller's
+ * `differingCount` past its listed calls). `count` states their number exactly.
+ */
+export interface CallerUnlistedClass {
+  readonly count: number;
+  readonly kind: CallerCallKind;
+  readonly reason: string;
+}
+
 /** What the originating agent said about a differing item. */
 export interface CallerExplanation {
   /** `expected`: the difference is intended, so the receiving agent reviews it. `revising`: the agent changes its own code. */
   readonly kind: "expected" | "revising";
   readonly text: string;
+  /** Every listed differing call, classified; absent on an explanation kept before #189. */
+  readonly calls?: readonly CallerCallClass[];
+  /** The unlisted differing calls as one group; null when the replay listed every one. */
+  readonly unlisted?: CallerUnlistedClass | null;
   readonly by: string;
   readonly at: string;
 }
@@ -215,13 +248,80 @@ export interface CallerFix {
   readonly at: string;
 }
 
+/**
+ * The receiving agent's verdict on one listed differing call. `evidence` is a pytest node id that ran
+ * on the merged tree in the item's replay, or a replayed call id of the item.
+ */
+export interface CallerCallVerdict {
+  readonly callId: string;
+  readonly verdict: "approve" | "request_changes";
+  readonly evidence: string;
+}
+
+/** The receiving agent's verdict on the unlisted differing calls as one group, with their exact count. */
+export interface CallerUnlistedVerdict {
+  readonly count: number;
+  readonly verdict: "approve" | "request_changes";
+  readonly evidence: string;
+}
+
 /** The receiving side's answer: the agent's review, or the worktree owner's decision. */
 export interface CallerReview {
   readonly verdict: "approve" | "request_changes";
   readonly text: string;
+  /** The agent's verdict per listed differing call; absent for the worktree owner's decision. */
+  readonly calls?: readonly CallerCallVerdict[];
+  readonly unlisted?: CallerUnlistedVerdict | null;
   readonly by: string;
   readonly at: string;
 }
+
+/**
+ * Why Penguin refused an agent's answer for want of real evidence (#189):
+ *
+ * - `run_not_on_item`: `confirm_caller` cites a run that is not the item's replay run.
+ * - `run_not_matched`: a call of the cited run did not match.
+ * - `call_left_out`: an explanation or a review leaves out a listed differing call.
+ * - `call_unknown`: it names a call id the item's replay does not list.
+ * - `unlisted_uncounted`: it does not answer the unlisted differing calls with their exact count.
+ * - `incidental_to_review`: an explanation sends an incidental difference for review.
+ * - `evidence_unknown`: a review cites a test or a call the item's replay did not run.
+ * - `evidence_from_change`: a review cites a test the originating change added or edited.
+ * - `evidence_not_on_main`: a review cites a test that was neither on main before the change nor
+ *   written by the receiving feature.
+ */
+export const CALLER_REFUSAL_CODES = [
+  "run_not_on_item",
+  "run_not_matched",
+  "call_left_out",
+  "call_unknown",
+  "unlisted_uncounted",
+  "incidental_to_review",
+  "evidence_unknown",
+  "evidence_from_change",
+  "evidence_not_on_main",
+] as const;
+export type CallerRefusalCode = (typeof CALLER_REFUSAL_CODES)[number];
+
+/** One refused answer, kept on the item until the item next moves. */
+export interface CallerRefusal {
+  readonly code: CallerRefusalCode;
+  readonly by: string;
+  readonly at: string;
+}
+
+/** Each refusal reason as the dashboard tags it. */
+export const CALLER_REFUSAL_LABEL: Readonly<Record<CallerRefusalCode, string>> = {
+  run_not_on_item: "Run not from this item",
+  run_not_matched: "Run has differing calls",
+  call_left_out: "Differing call left out",
+  call_unknown: "Call not in the replay",
+  unlisted_uncounted: "Unlisted calls not counted",
+  incidental_to_review: "Incidental difference sent to review",
+  evidence_unknown: "Evidence not in the replay",
+  evidence_from_change: "Test written by the change",
+  evidence_not_on_main: "Test not on main or this worktree",
+};
 
 /** One replay run an item's callers came from, without the recorded values. */
 export interface CallerItemRun {
@@ -255,6 +355,8 @@ export interface CallerItem {
   readonly explanation: CallerExplanation | null;
   readonly fix: CallerFix | null;
   readonly review: CallerReview | null;
+  /** The newest refused answers since the item last moved; absent on an item kept before #189. */
+  readonly refusals?: readonly CallerRefusal[];
   readonly openedAt: string;
   readonly updatedAt: string;
   /** The newest `caller_item` record. */
@@ -300,7 +402,13 @@ export interface CallerItemView {
     readonly differs: readonly string[];
     readonly old: CallerSideView;
     readonly new: CallerSideView;
+    /** The originating agent's classification of the call, with its reason. */
+    readonly kind: { readonly kind: CallerCallKind; readonly reason: string } | null;
+    /** The receiving agent's verdict on the call, with its evidence. */
+    readonly verdict: { readonly verdict: CallerCallVerdict["verdict"]; readonly evidence: string } | null;
   }[];
+  /** Answers Penguin refused since the item last moved, newest last. */
+  readonly refusals: readonly CallerRefusal[];
   readonly explanation: { readonly kind: CallerExplanation["kind"]; readonly text: string; readonly by: string } | null;
   readonly fix: { readonly partId: string; readonly revision: number; readonly note: string } | null;
   readonly review: { readonly verdict: CallerReview["verdict"]; readonly text: string; readonly by: string } | null;
@@ -316,6 +424,8 @@ function sideView(side: ReplaySide): CallerSideView {
 /** The dashboard's view of an item: the differing calls' outcomes and effects, never their recorded values. */
 export function callerItemView(item: CallerItem, people: { readonly origin: string; readonly feature: string }): CallerItemView {
   const calls: ReplayCall[] = item.callers.flatMap((caller) => caller.differing).slice(0, CALLER_ITEM_LIMITS.viewCalls);
+  const kinds = new Map((item.explanation?.calls ?? []).map((each) => [each.callId, { kind: each.kind, reason: each.reason }]));
+  const verdicts = new Map((item.review?.calls ?? []).map((each) => [each.callId, { verdict: each.verdict, evidence: each.evidence }]));
   return {
     itemId: item.itemId,
     origin: item.origin,
@@ -329,7 +439,17 @@ export function callerItemView(item: CallerItem, people: { readonly origin: stri
     ownerAsked: item.ownerAsked,
     rejections: item.rejections,
     callers: item.callers.map(({ path, line, verdict, calls: count, matched, differingCount }) => ({ path, line, verdict, calls: count, matched, differingCount })),
-    differing: calls.map((call) => ({ callId: call.callId, test: call.test, symbol: call.symbol, differs: call.differs, old: sideView(call.old), new: sideView(call.new) })),
+    differing: calls.map((call) => ({
+      callId: call.callId,
+      test: call.test,
+      symbol: call.symbol,
+      differs: call.differs,
+      old: sideView(call.old),
+      new: sideView(call.new),
+      kind: kinds.get(call.callId) ?? null,
+      verdict: verdicts.get(call.callId) ?? null,
+    })),
+    refusals: item.refusals ?? [],
     explanation: item.explanation === null ? null : { kind: item.explanation.kind, text: item.explanation.text, by: item.explanation.by },
     fix: item.fix === null ? null : { partId: item.fix.partId, revision: item.fix.revision, note: item.fix.note },
     review: item.review === null ? null : { verdict: item.review.verdict, text: item.review.text, by: item.review.by },
@@ -375,7 +495,21 @@ const VIEW_FIELDS = {
   differing: {
     type: "array",
     maxItems: CALLER_ITEM_LIMITS.viewCalls,
-    items: record({ callId: text(64, 1), test: text(500, 1), symbol: text(512, 1), differs: { type: "array", items: text(16) }, old: SIDE, new: SIDE }),
+    items: record({
+      callId: text(64, 1),
+      test: text(500, 1),
+      symbol: text(512, 1),
+      differs: { type: "array", items: text(16) },
+      old: SIDE,
+      new: SIDE,
+      kind: nullable(record({ kind: { type: "string", enum: ["intended", "incidental"] }, reason: text(CALLER_ITEM_LIMITS.reasonLength) })),
+      verdict: nullable(record({ verdict: { type: "string", enum: ["approve", "request_changes"] }, evidence: text(CALLER_ITEM_LIMITS.reasonLength) })),
+    }),
+  },
+  refusals: {
+    type: "array",
+    maxItems: CALLER_ITEM_LIMITS.refusals,
+    items: record({ code: { type: "string", enum: [...CALLER_REFUSAL_CODES] }, by: BY, at: text(64, 1) }),
   },
   explanation: nullable(record({ kind: { type: "string", enum: ["expected", "revising"] }, text: text(CALLER_ITEM_LIMITS.textLength), by: BY })),
   fix: nullable(record({ partId: text(128, 1), revision: { type: "integer", minimum: 1 }, note: text(CALLER_ITEM_LIMITS.textLength) })),

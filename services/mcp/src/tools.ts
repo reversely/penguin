@@ -149,7 +149,7 @@ export interface McpProject {
   /** The caller items on the session's worktree and those its feature's change opened (caller-items.ts); absent without them. */
   callerWork?(caller: string, sessionId: string): MaybePromise<CallerWorkView | undefined>;
   /** One call of a caller tool by the session; the ProjectAgent checks the session's side of the item. */
-  callerItemCall?(caller: string, sessionId: string, call: CallerCallView): MaybePromise<CallerCallResult>;
+  callerItemCall?(caller: string, sessionId: string, call: CallerCallView, repos: { readonly base: string }): MaybePromise<CallerCallResult>;
   readIssue(
     id: string,
   ): MaybePromise<{ readonly issue: IssueRecord | undefined; readonly timeline: readonly OperationView[] }>;
@@ -213,10 +213,24 @@ export interface CallerPacketView {
 
 /** One call of a caller tool, as the ProjectAgent's `callerAction` takes it. */
 export type CallerCallView =
-  | { readonly action: "confirm"; readonly item: string }
+  | { readonly action: "confirm"; readonly item: string; readonly run: string }
   | { readonly action: "propose_fix"; readonly item: string; readonly part: string; readonly revision: number; readonly note?: string | undefined }
-  | { readonly action: "explain"; readonly item: string; readonly kind: "expected" | "revising"; readonly text: string }
-  | { readonly action: "review"; readonly item: string; readonly verdict: "approve" | "request_changes"; readonly text?: string | undefined };
+  | {
+      readonly action: "explain";
+      readonly item: string;
+      readonly kind: "expected" | "revising";
+      readonly text: string;
+      readonly calls: readonly { readonly call: string; readonly kind: "intended" | "incidental"; readonly reason: string }[];
+      readonly unlisted?: { readonly count: number; readonly kind: "intended" | "incidental"; readonly reason: string } | undefined;
+    }
+  | {
+      readonly action: "review";
+      readonly item: string;
+      readonly verdict: "approve" | "request_changes";
+      readonly text?: string | undefined;
+      readonly calls: readonly { readonly call: string; readonly verdict: "approve" | "request_changes"; readonly evidence: string }[];
+      readonly unlisted?: { readonly count: number; readonly verdict: "approve" | "request_changes"; readonly evidence: string } | undefined;
+    };
 
 export type CallerCallResult =
   | {
@@ -897,7 +911,26 @@ const callerItem = z
   .regex(/^caller-[0-9a-f]{16}$/u)
   .describe("The caller item, as get_work's `callerItems` names it.");
 const callerText = z.string().max(4_000);
-const confirmCallerInput = z.strictObject({ sessionId, item: callerItem });
+const callerCallId = z
+  .string()
+  .regex(/^call-[0-9a-f]{20}$/u)
+  .describe("A differing call's id, as the packet's `calls` lists it.");
+const callerReason = z.string().min(1).max(1_000);
+const callerKind = z.enum(["intended", "incidental"]).describe("`intended`: your change means the call to differ. `incidental`: it does not, so you revise your change.");
+const callerEvidence = z
+  .string()
+  .min(1)
+  .max(1_000)
+  .describe("A pytest node id the item's replay ran, from a test on main before the originating change, or a differing call's id.");
+const unlistedCount = z.number().int().min(1).describe("The packet's `unlistedCalls`: the differing calls the replay counted but did not list.");
+const confirmCallerInput = z.strictObject({
+  sessionId,
+  item: callerItem,
+  run: z
+    .string()
+    .regex(/^replay-[0-9a-f]{20}$/u)
+    .describe("The replay run you read, from the packet's `runs`; every call through your call sites matched in it."),
+});
 const proposeCallerFixInput = z.strictObject({
   sessionId,
   item: callerItem,
@@ -908,14 +941,30 @@ const proposeCallerFixInput = z.strictObject({
 const explainDifferenceInput = z.strictObject({
   sessionId,
   item: callerItem,
-  kind: z.enum(["expected", "revising"]).describe("`expected`: the difference is intended and goes to the receiving agent for review. `revising`: you change your own code; your next check replays the calls again."),
+  kind: z.enum(["expected", "revising"]).describe("`expected`: every difference is intended and goes to the receiving agent for review. `revising`: you change your code; your next check replays the calls again."),
   text: callerText.min(1).describe("Why the calls differ, in terms of the receiving worktree's code."),
+  calls: z
+    .array(z.strictObject({ call: callerCallId, kind: callerKind, reason: callerReason.describe("Why this call differs.") }))
+    .max(256)
+    .describe("One classification per differing call in the packet's `calls`, each listed call once."),
+  unlisted: z
+    .strictObject({ count: unlistedCount, kind: callerKind, reason: callerReason })
+    .optional()
+    .describe("Required when the packet's `unlistedCalls` is above 0: one classification for those calls."),
 });
 const reviewCallerInput = z.strictObject({
   sessionId,
   item: callerItem,
   verdict: z.enum(["approve", "request_changes"]),
   text: callerText.optional().describe("Your note for the originating agent; required when you request changes."),
+  calls: z
+    .array(z.strictObject({ call: callerCallId, verdict: z.enum(["approve", "request_changes"]), evidence: callerEvidence }))
+    .max(256)
+    .describe("One verdict with its evidence per differing call in the packet's `calls`, each listed call once."),
+  unlisted: z
+    .strictObject({ count: unlistedCount, verdict: z.enum(["approve", "request_changes"]), evidence: callerEvidence })
+    .optional()
+    .describe("Required when the packet's `unlistedCalls` is above 0: one verdict for those calls."),
 });
 
 const INSTRUCTIONS =
@@ -1066,7 +1115,7 @@ export function createPenguinMcpServer(
       });
     },
   );
-  if (project.callerItemCall !== undefined) registerCallerTools(server, owner, project as McpProject & Required<Pick<McpProject, "callerItemCall">>);
+  if (project.callerItemCall !== undefined) registerCallerTools(server, owner, project as McpProject & Required<Pick<McpProject, "callerItemCall">>, repos.base);
 
   server.registerTool(
     "get_issue",
@@ -1754,8 +1803,8 @@ function callerAnswer(outcome: CallerCallResult): CallToolResult {
  * The caller tools (#188). Each is limited to its side of an item: the receiving worktree's agent
  * confirms and reviews, the originating agent proposes a fix or explains a difference.
  */
-function registerCallerTools(server: McpServer, owner: string, project: McpProject & Required<Pick<McpProject, "callerItemCall">>): void {
-  const call = async (sessionId: string, each: CallerCallView) => callerAnswer(await project.callerItemCall(owner, sessionId, each));
+function registerCallerTools(server: McpServer, owner: string, project: McpProject & Required<Pick<McpProject, "callerItemCall">>, base: string): void {
+  const call = async (sessionId: string, each: CallerCallView) => callerAnswer(await project.callerItemCall(owner, sessionId, each, { base }));
   const write = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false } as const;
   server.registerTool(
     "confirm_caller",
@@ -1764,12 +1813,13 @@ function registerCallerTools(server: McpServer, owner: string, project: McpProje
       description:
         "For the agent of the worktree another feature's change reaches: confirms that every call through your " +
         "code's call sites of the changed contract still matches, as get_work's `callerItems.receiving` packet shows " +
-        "after the caller replay. Only an item in `confirmation_requested` takes it. The originating feature reaches main only " +
+        "after the caller replay. Only an item in `confirmation_requested` takes it. Name the replay run you read: Penguin " +
+        "refuses a run that is not the item's or has a call that did not match. The originating feature reaches main only " +
         "once you confirm. No fix of its touches your fork before then.",
       inputSchema: confirmCallerInput,
       annotations: write,
     },
-    async ({ sessionId: id, item }) => call(id, { action: "confirm", item }),
+    async ({ sessionId: id, item, run }) => call(id, { action: "confirm", item, run }),
   );
   server.registerTool(
     "review_caller",
@@ -1779,12 +1829,15 @@ function registerCallerTools(server: McpServer, owner: string, project: McpProje
         "For the agent of the worktree another feature's change reaches: approves or asks for changes to a fix the " +
         "originating agent proposed for your worktree (`fix_proposed`), or to a difference it explained as expected " +
         "(`review_requested`). Read the packet first: each differing call old and new, the patch and the explanation " +
-        "under `personWritten`. Approving a fix lets the originating agent write it into your fork; asking for changes " +
+        "under `personWritten`. Give every differing call a verdict with evidence: a pytest node id the replay ran " +
+        "(the call's test or one of the call site's tests) or the call's id. Penguin refuses a call left out, evidence the " +
+        "replay did not run and a test the originating change added or edited or that was not on main before it. " +
+        "Approving a fix lets the originating agent write it into your fork; asking for changes " +
         "sends it back. A second rejection sends the item to your developer, the worktree owner.",
       inputSchema: reviewCallerInput,
       annotations: write,
     },
-    async ({ sessionId: id, item, verdict, text }) => call(id, { action: "review", item, verdict, text }),
+    async ({ sessionId: id, item, verdict, text, calls, unlisted }) => call(id, { action: "review", item, verdict, text, calls, unlisted }),
   );
   server.registerTool(
     "propose_caller_fix",
@@ -1806,11 +1859,13 @@ function registerCallerTools(server: McpServer, owner: string, project: McpProje
       title: "Explain difference",
       description:
         "For the originating agent, when your change makes another worktree's calls return or send something else " +
-        "(`differs`): find out why. If your own code is wrong, say `revising`, fix it and call check again; the replay " +
-        "then resets the item. If the difference is intended, say `expected` and explain it: the receiving agent reviews it.",
+        "(`differs`): find out why. Classify every differing call by its id as `intended` or `incidental`, with a reason. " +
+        "If any difference is incidental, say `revising`, fix your code and call check again; the replay then resets the " +
+        "item. Penguin refuses `expected` with an incidental call. If every difference is intended, say `expected` and " +
+        "explain it: the receiving agent reviews it.",
       inputSchema: explainDifferenceInput,
       annotations: write,
     },
-    async ({ sessionId: id, item, kind, text }) => call(id, { action: "explain", item, kind, text }),
+    async ({ sessionId: id, item, kind, text, calls, unlisted }) => call(id, { action: "explain", item, kind, text, calls, unlisted }),
   );
 }
