@@ -81,6 +81,7 @@ import {
   landPending,
   ownerCallerItems,
   ownerDecision,
+  heldReplay,
   replayReported,
   testStandingOf,
   writeWaits,
@@ -1071,7 +1072,7 @@ export class PreviewProject {
       claim: async () => {
         // `check` merges onto each fork's head with its written fixes, as a land does and the ProjectAgent's claim does.
         const land = this.landDeps();
-        const claimed = await claimToolRuns({ runs: this.tools, features: this.features, identity: (id) => this.identities.get(id), targets: (own) => blockTargets(land, own) }, RUNNER);
+        const claimed = await claimToolRuns({ runs: this.tools, features: this.features, identity: (id) => this.identities.get(id), targets: (own) => blockTargets(land, own), held: (featureId) => heldReplay(this.callerDeps(), featureId) }, RUNNER);
         return claimed.status === "ok" ? claimed.runs : [];
       },
       report: async (runId, result) => {

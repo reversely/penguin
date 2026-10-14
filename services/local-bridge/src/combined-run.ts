@@ -10,12 +10,13 @@ import {
   type CallerReplaySection,
   type CombinedRunEvent,
   type DependencyReport,
+  type HeldReplay,
   type ImpactReport,
 } from "@penguin/protocol";
 import { affectedOwners, type ScopeMap } from "@penguin/scope-map";
 
 import type { BlockChecker, BlockTarget } from "./block-checks.ts";
-import { callerReplaySection, mergeCaptures, parseCapture, replaySymbols, replayTarget, type ReplaySymbol } from "./caller-replay.ts";
+import { callerReplaySection, mergeCaptures, parseCapture, replaySymbols, replayTarget, withHeld, type ReplaySymbol } from "./caller-replay.ts";
 import { loadScopeMap, testCommandId } from "./command-allowlist.ts";
 import { fingerprint, type ResultFingerprint } from "./fingerprint.ts";
 import type { ImpactAnalyzer } from "./impact-analysis.ts";
@@ -82,6 +83,12 @@ export interface CombinedRunRequest {
    * as a use of the change, yet the fix must go back through the checks.
    */
   readonly recheck?: readonly string[];
+  /**
+   * Functions the replay wraps beside those the change modifies, and the forks whose tests it reruns
+   * for them: the ones the originating feature's unsettled caller items name (#193). A revision that
+   * restores a function then shows its callers `unaffected` instead of withdrawing their items.
+   */
+  readonly held?: readonly HeldReplay[];
   /**
    * Runs every scope's tests on the checkpoint merged onto main, as `main` results. A block run asks
    * for it: main moves to the checked tree, so every scope's tests must pass there (PRD 0.4 4.5).
@@ -390,8 +397,9 @@ export class CombinedRunner {
     const started = performance.now();
     const { impact, impactError, selected } = await this.#impact(baselineSha, checkpointSha, targets);
     for (const id of request.recheck ?? []) selected?.add(id);
-    // The changed functions whose callers each selected fork's tests replay.
-    const symbols = impact !== null && this.#options.callerReplay !== false ? replaySymbols(impact) : [];
+    for (const each of request.held ?? []) selected?.add(each.feature);
+    // The changed functions whose callers each selected fork's tests replay, and the held ones.
+    const symbols = impact !== null && this.#options.callerReplay !== false ? withHeld(replaySymbols(impact), request.held ?? []) : [];
     const recordings = new Map<string, Recording[]>();
 
     const results: CombinedResult[] = [];

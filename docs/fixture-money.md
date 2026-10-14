@@ -300,10 +300,10 @@ weekly digest read a local day from `start_of_day()`.
 | `checkpoint` | `weekly-digest` | Sam | The digest's send time starts from `start_of_day()` at the shopper's offset |
 
 Both `structured-logs` commits carry `check`. No commit is written into Elif's or Sam's fork and
-Hugo's agent proposes no plan. At `utc-day` both functions take the day's midnight from one private
-helper, `_midnight()`, so the diff from main still changes the body of `start_of_day()`. The impact
-report then lists `start_of_day()` as modified and the caller replay wraps it on both forks: their
-calls return what they return on main.
+Hugo's agent proposes no plan. At `utc-day` `start_of_day()` is byte for byte as on main, so the
+impact report no longer lists it. The caller replay still wraps it on both forks because the
+feature's open caller items name it (`heldReplay`, #193): their calls return what they return on
+main, and both items come back `unaffected`.
 
 | Merged tree | Fails |
 |---|---|

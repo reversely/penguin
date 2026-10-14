@@ -25,6 +25,7 @@ import {
   type CallerReplayRun,
   type CallerReplaySection,
   type CallerVerdict,
+  type HeldReplay,
   type ImpactReport,
   type ImpactUse,
   type ReplayCall,
@@ -69,6 +70,23 @@ export function replaySymbols(impact: ImpactReport): ReplaySymbol[] {
     const qualname = change.symbol.slice(module.length + 1);
     if (!DOTTED.test(qualname) || found.has(change.symbol)) continue;
     found.set(change.symbol, { symbol: change.symbol, module, qualname, contract: change.contract ?? `${change.path}::${qualname}` });
+  }
+  return [...found.values()].slice(0, CALLER_REPLAY_LIMITS.symbols);
+}
+
+/**
+ * The changed functions plus the held ones (#193), each once, at most the plugin's limit. A held
+ * function's module comes from its contract's path; one whose name lies outside that module is left out.
+ */
+export function withHeld(changed: readonly ReplaySymbol[], held: readonly HeldReplay[]): ReplaySymbol[] {
+  const found = new Map(changed.map((entry) => [entry.symbol, entry]));
+  for (const { symbol, contract } of held) {
+    if (found.has(symbol)) continue;
+    const module = moduleOfPath(contract.split("::")[0] ?? "");
+    if (module === undefined || !symbol.startsWith(`${module}.`)) continue;
+    const qualname = symbol.slice(module.length + 1);
+    if (!DOTTED.test(qualname)) continue;
+    found.set(symbol, { symbol, module, qualname, contract });
   }
   return [...found.values()].slice(0, CALLER_REPLAY_LIMITS.symbols);
 }

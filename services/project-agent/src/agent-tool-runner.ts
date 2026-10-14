@@ -28,7 +28,7 @@ import {
 import type { CharterIdentity } from "@penguin/policies";
 
 import type { AgentToolRun, AgentToolStore } from "./agent-tools.ts";
-import type { BlockRunTarget } from "@penguin/protocol";
+import type { BlockRunTarget, HeldReplay } from "@penguin/protocol";
 
 import type { Feature, FeatureStore } from "./feature-store.ts";
 import type { BridgeCaller } from "./issue-index.ts";
@@ -63,6 +63,11 @@ export interface ClaimedToolRun {
   readonly charter: { readonly handle: string; readonly person: string; readonly scopes: readonly string[]; readonly paths: readonly string[] };
   /** The other running features' forks with a checkpoint, one per feature. */
   readonly forks: readonly ClaimedFork[];
+  /**
+   * For `check`: the functions the feature's unsettled caller items name, which the replay keeps
+   * wrapping even when the checkpoint no longer modifies them (caller-items.ts `heldReplay`, #193).
+   */
+  readonly held?: readonly HeldReplay[];
 }
 
 export type ToolRunClaim =
@@ -79,6 +84,8 @@ export interface ToolRunnerDeps {
    * (block-land.ts `blockTargets`). Absent, each fork counts at its latest checkpoint.
    */
   readonly targets?: (own: string) => Promise<readonly BlockRunTarget[]>;
+  /** The functions a feature's unsettled caller items name (caller-items.ts `heldReplay`). Absent, none. */
+  readonly held?: (featureId: string) => Promise<readonly HeldReplay[]>;
 }
 
 /**
@@ -168,6 +175,7 @@ export async function claimToolRuns(deps: ToolRunnerDeps, caller: BridgeCaller):
         paths: [...identity.charterPaths],
       },
       forks: await forks(feature.id),
+      ...(run.tool === "check" && deps.held !== undefined ? { held: await deps.held(feature.id) } : {}),
     });
   }
   return { status: "ok", runs };

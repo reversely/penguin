@@ -9,7 +9,7 @@ import test from "node:test";
 import { callerReplayProblems, parseBlockRunReport, parseCallerReplay, replayCall, type BlockRunRequest, type ImpactUse } from "@penguin/protocol";
 import { parseScopeMap } from "@penguin/scope-map";
 
-import { callerReplaySection, parseCapture, replayTarget, type Capture, type CapturedCall, type ReplayTargetInput } from "../../services/local-bridge/src/caller-replay.ts";
+import { callerReplaySection, parseCapture, replayTarget, withHeld, type Capture, type CapturedCall, type ReplayTargetInput } from "../../services/local-bridge/src/caller-replay.ts";
 
 const map = parseScopeMap({
   scopes: [
@@ -140,4 +140,21 @@ test("Penguin refuses a caller replay that names a run it lacks, a verdict its c
   const parsed = parseBlockRunReport(report, request);
   assert.equal(parsed.ok, false);
   assert.match(parsed.ok ? "" : parsed.problems.join(), /callerReplay\/runs\/0 replays instant-payouts/u);
+});
+
+test("a held function is wrapped beside the changed ones once, from its contract's module (#193)", () => {
+  const changed = [{ symbol: "shared.platform.dates.log_day", module: "shared.platform.dates", qualname: "log_day", contract: "shared/platform/dates.py::log_day" }];
+  const held = [
+    { symbol: "shared.platform.dates.start_of_day", contract: "shared/platform/dates.py::start_of_day", feature: "holiday-closures" },
+    { symbol: "shared.platform.dates.start_of_day", contract: "shared/platform/dates.py::start_of_day", feature: "weekly-digest" },
+    { symbol: "shared.platform.dates.log_day", contract: "shared/platform/dates.py::log_day", feature: "holiday-closures" },
+    { symbol: "other.module.thing", contract: "shared/platform/dates.py::thing", feature: "weekly-digest" },
+  ];
+  assert.deepEqual(
+    withHeld(changed, held).map((each) => [each.symbol, each.module, each.qualname]),
+    [
+      ["shared.platform.dates.log_day", "shared.platform.dates", "log_day"],
+      ["shared.platform.dates.start_of_day", "shared.platform.dates", "start_of_day"],
+    ],
+  );
 });

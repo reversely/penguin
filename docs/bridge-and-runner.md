@@ -906,7 +906,12 @@ request and a block run carry it (`combined-run.ts`, `caller-replay.ts`). `calle
 the `CombinedRunner` turns it off.
 
 1. `replaySymbols` takes the impact report's modified, removed, renamed and moved functions and
-   methods: at most 64, each with the module it imports as and the contract it belongs to.
+   methods: at most 64, each with the module it imports as and the contract it belongs to. A `check`
+   claim also carries `held`: the functions the feature's unsettled caller items name
+   (`heldReplay` in `services/project-agent/src/caller-items.ts`, #193). `withHeld` adds them, so a
+   revision that restores a function to main's bytes still replays its callers and shows them
+   `unaffected` instead of withdrawing their items. The forks those items name run their tests even
+   when the impact graph no longer selects them.
 2. On each running feature whose tests the impact graph selects, the scope's test command runs on the
    merged commit with the replay's pytest plugin loaded. The same command then runs once on the
    fork head with the plugin. That second run also finds the tests the fork fails alone, so the

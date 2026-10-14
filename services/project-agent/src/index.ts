@@ -137,6 +137,7 @@ import {
   landPending,
   ownerCallerItems,
   ownerDecision,
+  heldReplay,
   replayReported,
   sweepUnanswered,
   testStandingOf,
@@ -2429,6 +2430,7 @@ export class ProjectAgent extends Agent {
         identity: (identityId) => this.readIdentity(identityId),
         // `check` merges onto each fork's head with its written fixes, as a land does.
         targets: (own) => blockTargets({ features, readRepo }, own),
+        held: (featureId) => heldReplay(this.#callerDeps(), featureId),
       },
       caller,
     );

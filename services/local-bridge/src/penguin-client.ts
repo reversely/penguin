@@ -23,6 +23,7 @@ import {
   type ApprovalReport,
   type ApprovalSpec,
   type CombinedRunEvent,
+  type HeldReplay,
   type PartTrialReport,
   type PartTrialRequest,
   type PlanFactsReport,
@@ -728,6 +729,22 @@ export interface ClaimedToolRun {
   readonly charter: { readonly handle: string; readonly person: string; readonly scopes: readonly string[]; readonly paths: readonly string[] };
   /** The other running features' forks, one per feature. */
   readonly forks: readonly ClaimedFork[];
+  /** For `check`: the functions the feature's unsettled caller items name, which the replay keeps wrapping (#193). */
+  readonly held?: readonly HeldReplay[];
+}
+
+/** The most held functions a claim may carry; the replay wraps at most its symbol limit in all. */
+const HELD_LIMIT = 256;
+const DOTTED_NAME = /^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$/u;
+
+/** A held function as Penguin listed it, or undefined when any field is malformed. */
+function heldReplay(value: unknown): HeldReplay | undefined {
+  const { symbol, contract, feature } = (value ?? {}) as Record<string, unknown>;
+  const valid =
+    typeof symbol === "string" && symbol.length <= 512 && DOTTED_NAME.test(symbol) &&
+    typeof contract === "string" && contract.length <= 512 && contract.includes("::") &&
+    typeof feature === "string" && FEATURE_FORK.test(`feature-${feature}`);
+  return valid ? { symbol, contract, feature } : undefined;
 }
 
 /** Penguin's answer to a tool result. */
@@ -763,7 +780,8 @@ export async function claimToolRuns(server: string, bridgeToken: string, fetchIm
     throw new RemoteUnavailableError(`Penguin could not hand out tool requests (HTTP ${status})`);
   }
   return body["runs"].map((entry: unknown): ClaimedToolRun => {
-    const { runId, tool, feature, person: featurePerson, fork, base, checkpoint, input, charter, forks } = (entry ?? {}) as Record<string, unknown>;
+    const { runId, tool, feature, person: featurePerson, fork, base, checkpoint, input, charter, forks, held } = (entry ?? {}) as Record<string, unknown>;
+    const keep = held === undefined ? [] : Array.isArray(held) && held.length <= HELD_LIMIT ? held.map(heldReplay) : [undefined];
     const { handle, person, scopes, paths } = (charter ?? {}) as Record<string, unknown>;
     const others = Array.isArray(forks) ? forks.map(claimedFork) : [undefined];
     if (
@@ -783,7 +801,8 @@ export async function claimToolRuns(server: string, bridgeToken: string, fetchIm
       typeof person !== "string" ||
       !strings(scopes) ||
       !strings(paths) ||
-      others.some((other) => other === undefined)
+      others.some((other) => other === undefined) ||
+      keep.some((each) => each === undefined)
     ) {
       throw new RemoteUnavailableError("Penguin listed a tool request without its feature fork, commits and charter");
     }
@@ -798,6 +817,7 @@ export async function claimToolRuns(server: string, bridgeToken: string, fetchIm
       input: input as Record<string, unknown>,
       charter: { handle, person, scopes, paths },
       forks: others as ClaimedFork[],
+      ...(held === undefined ? {} : { held: keep as HeldReplay[] }),
     };
   });
 }

@@ -35,18 +35,13 @@ def parse_utc_offset(text: str) -> timedelta:
     return offset
 
 
-def _midnight(moment: datetime) -> datetime:
-    """Midnight at the start of the day of ``moment``, in the UTC offset ``moment`` carries."""
-    require_offset(moment)
-    return moment.replace(hour=0, minute=0, second=0, microsecond=0)
-
-
 def start_of_day(moment: datetime) -> datetime:
     """Return midnight at the start of the day of ``moment``, in the UTC offset of ``moment``."""
-    return _midnight(moment)
+    require_offset(moment)
+    return moment.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
 def start_of_utc_day(moment: datetime) -> datetime:
     """Return midnight UTC at the start of the UTC day that contains ``moment``."""
     require_offset(moment)
-    return _midnight(moment.astimezone(UTC))
+    return moment.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)

@@ -37,6 +37,7 @@ import {
   REPLAY_RUN_ID_PATTERN,
   type Author,
   type CallerCallClass,
+  type HeldReplay,
   type CallerCallKind,
   type CallerCallVerdict,
   type CallerItem,
@@ -396,6 +397,26 @@ function ownerAfter(stage: ReviewPreset, state: CallerItemState, rejections: num
 }
 
 /**
+ * The functions an originating feature's next replay keeps wrapping: those its unsettled items' runs
+ * wrapped, with the receiving feature each belongs to (#193). A revision that restores a function to
+ * main's bytes leaves it out of the impact report's changes; without this its items would be
+ * withdrawn rather than shown `unaffected`, and no receiving agent could confirm them.
+ */
+export async function heldReplay(deps: Pick<CallerItemDeps, "keeper">, originId: string): Promise<HeldReplay[]> {
+  const held = new Map<string, HeldReplay>();
+  for (const item of await deps.keeper(originId).callerItems(originId)) {
+    if (item.state === "withdrawn" || callerItemSettled(item, "land")) continue;
+    for (const run of item.runs) {
+      for (const symbol of run.symbols ?? []) {
+        const key = JSON.stringify([symbol, item.feature]);
+        if (!held.has(key)) held.set(key, { symbol, contract: item.contract, feature: item.feature });
+      }
+    }
+  }
+  return [...held.values()];
+}
+
+/**
  * A caller replay reached Penguin from the originating feature's `check` run (`source.kind` `check`)
  * or one of its block runs. A check opens an item per running feature and contract the replay reaches.
  * A block run updates the items of a feature that already has them: the protocol starts at the
@@ -431,7 +452,7 @@ export async function replayReported(
     const verdict = itemVerdict(callers);
     const itemRuns = [...new Set(callers.map((caller) => caller.runId))].flatMap((runId) => {
       const run = runs.get(runId);
-      return run === undefined ? [] : [{ runId, forkCommit: run.forkCommit, mergedCommit: run.mergedCommit, scopes: run.scopes, tests: run.tests }];
+      return run === undefined ? [] : [{ runId, symbols: run.symbols, forkCommit: run.forkCommit, mergedCommit: run.mergedCommit, scopes: run.scopes, tests: run.tests }];
     });
     const before = existing.get(itemId);
     const facts = { callers, runs: itemRuns, source, fingerprint, verdict };

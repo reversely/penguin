@@ -27,6 +27,7 @@ import {
   CallerItemStore,
   callerWork,
   featureCallerItems,
+  heldReplay,
   landPending,
   ownerCallerItems,
   ownerDecision,
@@ -557,4 +558,23 @@ test("a test stands on main, added or edited by the originating change, written 
     "billing/tests/test_x.py::test_x": "not_on_main",
     "payouts/tests::test_send": "not_on_main",
   });
+});
+
+test("a check's replay keeps wrapping what an unsettled item names, and lets go once it settles (#193)", async () => {
+  const w = await world();
+  await replayReported(w.deps, "dependency-audit", section([caller("instant-payouts", "differs"), caller("tip-jar", "unaffected")]), CHECK);
+  assert.deepEqual(
+    (await heldReplay(w.deps, "dependency-audit")).map((each) => [each.symbol, each.feature]).sort(),
+    [
+      ["shared.platform.http.Client.post", "instant-payouts"],
+      ["shared.platform.http.Client.post", "tip-jar"],
+    ],
+  );
+  const confirmed = await w.priya({ action: "confirm", item: w.item("tip-jar").itemId, run: RUN("tip-jar") });
+  assert.equal(confirmed.status, "ok");
+  assert.deepEqual(
+    (await heldReplay(w.deps, "dependency-audit")).map((each) => each.feature),
+    ["instant-payouts"],
+    "a confirmed item is settled, so its function is no longer held",
+  );
 });

@@ -326,10 +326,24 @@ export const CALLER_REFUSAL_LABEL: Readonly<Record<CallerRefusalCode, string>> =
 /** One replay run an item's callers came from, without the recorded values. */
 export interface CallerItemRun {
   readonly runId: string;
+  /** The functions the run wrapped (CallerReplayRun.symbols); absent on an item kept before #193. */
+  readonly symbols?: readonly string[];
   readonly forkCommit: string;
   readonly mergedCommit: string;
   readonly scopes: readonly string[];
   readonly tests: { readonly old: { readonly passed: number; readonly failed: number; readonly errors: number }; readonly new: { readonly passed: number; readonly failed: number; readonly errors: number } };
+}
+
+/**
+ * A function the replay keeps wrapping while an item that named it is unsettled, even once the
+ * originating change no longer modifies it (#193): the run then shows the item's callers `unaffected`.
+ */
+export interface HeldReplay {
+  /** The dotted name the run wrapped, such as `shared.platform.dates.start_of_day`. */
+  readonly symbol: string;
+  readonly contract: string;
+  /** The receiving feature whose tests reach it. */
+  readonly feature: string;
 }
 
 /** One item: an originating feature's change reaching one contract's callers in one running feature. */

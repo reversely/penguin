@@ -438,6 +438,8 @@ async function runCheck(options: ToolPassOptions, claim: ClaimedToolRun): Promis
     mainSha: claim.base,
     // The feature's person's own dependent scopes run on the checkpoint, never as no-checkpoint.
     changer: claim.person,
+    // Functions the feature's unsettled caller items name stay wrapped (#193).
+    ...(claim.held === undefined ? {} : { held: claim.held }),
   });
   const checks = report.checks ?? [];
   const failing = checks.filter((check) => check.result === "failed" || check.result === "error");
