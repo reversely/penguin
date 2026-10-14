@@ -189,16 +189,17 @@ needs or a person who replied.
 
 ## Overlapping starts
 
-A feature whose declared area another running feature covers waits to start until the covering
-feature's person approves ([design.md](design.md#step-3-in-the-build)). Its `open_feature` answer
-carries no token and lists the covering features in `waitingOn`. `get_work` reports the same under
-`feature.waitingOn`; once the list is empty, `feature_token` gives the token. The covering person's
-running sessions hear of the request once, at their next safe checkpoint: the hook answer names it
-and `report_checkpoint` lists it under `newOverlaps`. `get_work` lists it under
-`overlapsNeedingYou`. The agent tells its developer, who approves on the dashboard inbox. Once the
-lock is approved or withdrawn, the waiting feature's sessions hear of it at their next safe
-checkpoint: the hook answer names it and `report_checkpoint` lists it under `locksSettled`. A
-feature of the same person makes no lock; `ownOverlaps` lists it.
+A feature whose declared area another person's running feature covers starts at once
+([design.md](design.md#step-3-in-the-build)). Penguin approves the start with a signed
+`approve_overlap` record. The `open_feature` answer carries the write token and lists each covering
+feature under `overlap.approvedBy`, with `penguin` as the approver. `get_work` reports the same under
+`feature.approvedBy`. The covering feature's worktree owner gets an `overlap_started` item in the
+dashboard inbox. No one is asked. A feature of the same person makes no lock; `ownOverlaps` lists it.
+
+A lock that waits for a person, such as an expand checkpoint that adds to a scope another person
+owns, reaches that person's running sessions once, at their next safe checkpoint: the hook answer
+names it and `report_checkpoint` lists it under `newOverlaps`. `get_work` lists it under
+`overlapsNeedingYou`. The agent tells its developer, who approves on the dashboard inbox.
 
 ## Merge plan parts
 

@@ -189,7 +189,8 @@ The procedure moves conflict handling to the start of the work. Each step below 
   lock, since that person already knows both pieces of work. The ProjectAgent keeps the overlap as
   an `OwnOverlap`, writes it into the check's record and lists it on the feature under
   `ownOverlaps` in the `open_feature`, `declare_area` and `get_work` answers.
-- **The wait.** While any lock on a feature is open, the Worker mints no write token on its fork.
+- **The wait.** Penguin approves each new lock at once (below), so `open_feature` answers with the
+  token. While any lock on a feature is open, the Worker mints no write token on its fork.
   `open_feature` still makes the fork. It answers with a null token and lists each covering
   feature with its person in `waitingOn`. `feature_token` refuses with `locked`. `get_work` reports
   the wait under `feature.waitingOn`. Once every lock is approved, `feature_token` gives the token.
@@ -198,7 +199,10 @@ The procedure moves conflict handling to the start of the work. Each step below 
   and tells the agent to call `feature_token`. `report_checkpoint` lists it under `locksSettled`.
   `get_work` lists each approval under `feature.approvedBy`. A session that joins the feature
   after the lock settled hears nothing of it.
-- **The approval.** The covering person gets an inbox item of reason `overlap`. Their running
+- **The approval.** Penguin approves each new lock at once with a signed `approve_overlap` record
+  authored by Penguin that names the covering person. That person gets an inbox item of reason
+  `overlap_started` and is not asked. A lock still open waits for the covering person, who gets an
+  inbox item of reason `overlap`. Their running
   sessions hear of it at their next safe checkpoint: the bridge hook's answer names it,
   `report_checkpoint` lists it under `newOverlaps` and `get_work` lists it under
   `overlapsNeedingYou`. The person approves on the dashboard inbox, which posts
@@ -211,7 +215,8 @@ The procedure moves conflict handling to the start of the work. Each step below 
 - **Records.** Each check writes a signed `overlap_check` record on the checked feature, authored by
   Penguin, with the locks it opened, the locks it withdrew, the same person's overlaps and the
   dependents. Each approval writes
-  a signed `approve_overlap` record on the blocked feature, authored by the approving person.
+  a signed `approve_overlap` record on the blocked feature, authored by Penguin or by the approving
+  person.
 
 ### Plan
 
