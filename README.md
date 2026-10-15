@@ -93,34 +93,23 @@ flowchart LR
   Q --> Worker
 ```
 
-## Connect your agent
+## Try it
 
-Penguin works with any coding agent that speaks MCP, such as Claude Code or Codex, running on your own
-machine.
+Penguin runs on your own Cloudflare account. With Node.js 22.18, Git and a Cloudflare account with
+Artifacts:
 
-1. **Get your MCP token** from the person who runs your Penguin project.
-2. **Add Penguin as an MCP server.** For Claude Code:
+```sh
+git clone https://github.com/reversely/penguin && cd penguin && npm install
+npx wrangler login
+npm run deploy -- --owner <you>
+npm install -g ./services/local-bridge
+```
 
-   ```sh
-   claude mcp add --transport http penguin https://<your-penguin>/mcp \
-     --header "Authorization: Bearer <your token>"
-   ```
-
-   Codex and a shared `.mcp.json` are in [docs/mcp-setup.md](docs/mcp-setup.md).
-3. **Install the bridge**, which publishes your checkpoints after showing you the exact changes:
-
-   ```sh
-   git clone <this repo> ~/penguin && cd ~/penguin && npm install
-   npm install -g ./services/local-bridge
-   ```
-
-4. **Add the hook** from [docs/mcp-setup.md](docs/mcp-setup.md#fix-tasks-and-safe-checkpoints), so
-   your agent hears about new work before its next step.
-
-Tell your agent which feature it works on, for example: "You're working on accounts-merge. Check your
-change with Penguin and deal with whatever it finds." When it has nothing left to do, it calls
-`wait_for_work`. Penguin wakes it when a change reaches its branch
-([docs/mcp-setup.md](docs/mcp-setup.md#waiting-for-new-work)).
+`npm run deploy` deploys the Worker, sets up your project and prints the `claude mcp add` command (and
+the Codex one) that connects your coding agent; run it. The last line installs the bridge that
+publishes your checkpoints. Then tell your agent its feature: "You're working on accounts-merge. Check
+your change with Penguin and deal with whatever it finds." When it has nothing to do, it waits on
+`wait_for_work` until a change reaches its branch.
 
 ## Use the dashboard
 
@@ -134,21 +123,6 @@ A caller card shows what Penguin replayed: the receiving branch's tests on main 
 with the first changed call side by side.
 
 ![A caller card for weekly-digest: Penguin ran its tests on main and with accounts-merge; is_subscribed returned email_subscribed true on main and false with the change](docs/images/caller-card.jpg)
-
-## Try it
-
-Penguin runs on your own Cloudflare account. With Node.js 22.18, Git and a Cloudflare account with
-Artifacts:
-
-```sh
-git clone https://github.com/reversely/penguin && cd penguin && npm install
-npx wrangler login
-npm run deploy -- --owner <you>
-```
-
-The last command deploys the Worker, sets up your project and prints the `claude mcp add` command
-(and the Codex one) that connects your coding agent to Penguin. Run it, then ask your agent to open a
-feature with Penguin.
 
 ## Documentation
 
