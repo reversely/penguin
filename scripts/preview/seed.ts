@@ -53,6 +53,7 @@ import {
   type LadderDecision,
   needsPerson,
   PLAN_STORE_MARKERS,
+  type BlockRunReport,
   type FixWriteSpec,
   type PartRouting,
   policyInForce,
@@ -366,6 +367,8 @@ export class PreviewProject {
   readonly fixGrants: FixGrantStore;
   /** The FeatureAgents' block runs, kept in the preview's one database, and the ProjectAgent's queue of them. */
   readonly blocks: BlockStore;
+  /** Every block run report the check runner made, in order, kept only for scripts/benchmark-land.ts (SEED_BLOCK_REPORTS=1). */
+  readonly blockReports: BlockRunReport[] = [];
   readonly blockQueue: BlockQueueStore;
   /** The FeatureAgents' caller items, kept in the preview's one database, and the ProjectAgent's index of them. */
   readonly callerItems: CallerItemStore;
@@ -865,7 +868,7 @@ export class PreviewProject {
     const kept = await this.#runnerClaim(
       (grant, spec) =>
         (target === undefined || grant.targetFeatureId === target) &&
-        (copyWriteOf(grant) !== undefined || (verifyInto.has(grant.targetFeatureId) && spec.patch === "")),
+        (copyWriteOf(grant) !== undefined || (verifyInto.has(grant.targetFeatureId) && spec.patch === "" && spec.copy !== undefined)),
     );
     return kept.map(({ grant }) => `${writtenPart(grant)} into ${grant.targetFeatureId}`);
   }
@@ -1456,6 +1459,7 @@ export class PreviewProject {
     const pass = await blockPass({
       claim: async () => this.blocks.claim(RUNNER.bridgeId),
       report: async (report) => {
+        if (process.env["SEED_BLOCK_REPORTS"] === "1") this.blockReports.push(report as BlockRunReport);
         const recorded = await reportBlockRun(
           {
             store: this.blocks,
@@ -2235,9 +2239,12 @@ async function landOrigin(preview: PreviewProject, feature: LarderFeature, words
         // A verify part on a running feature the fixture holds no update of, such as a generated caller
         // whose calls come out the same, is written by the check runner as the copies themselves.
         const updated = new Set(larderExpanded().larder.features.filter((each) => each.commits.some((commit) => commit.update?.from === feature.id)).map((each) => each.id));
-        const verifyInto = new Set(larderExpanded().larder.features.map((each) => each.id).filter((each) => !updated.has(each)));
+        const plan = await preview.plan(feature.id);
+        const verifyInto = new Set(
+          (plan?.parts ?? []).flatMap((part) => (part.kind === "verify" && part.place.kind === "feature" && !updated.has(part.place.feature) ? [part.place.feature] : [])),
+        );
         const copied = await preview.step(`check runner copies ${feature.id}'s modules into its affected forks`, () => preview.writeCopies(undefined, verifyInto));
-        if (copied.length === 0) throw new Error(`${feature.id}'s land waits for copies the check runner did not write: ${(await landPending(preview.callerDeps(), feature.id)).join("; ").slice(0, 2_000)}; claimable writes: ${JSON.stringify(await Promise.all(preview.fixGrants.claimable().map(async (grant) => [grant.targetFeatureId, grant.partId, preview.fixGrants.waitsFor(grant), (await preview.fixWriteDeps().callerWaits?.(grant.featureId, grant.targetFeatureId)) ?? null, preview.fixWriteDeps().locked?.(grant.targetFeatureId) ?? null]))).slice(0, 3_000)}`);
+        if (copied.length === 0) throw new Error(`${feature.id}'s land waits for copies the check runner did not write: ${(await landPending(preview.callerDeps(), feature.id)).join("; ").slice(0, 2_000)}; queued writes: ${JSON.stringify(preview.fixGrants.claimable().map((grant) => [grant.targetFeatureId, grant.partId, preview.fixGrants.waitsFor(grant)])).slice(0, 3_000)}`);
       } else {
         await answerCallers(preview, feature.id, words);
       }
@@ -2254,7 +2261,7 @@ async function landOrigin(preview: PreviewProject, feature: LarderFeature, words
   const records = preview.features.records(feature.id).map((kept) => JSON.parse(kept.file) as { type: string; payload: Record<string, unknown> });
   const checked = records.filter((record) => record.type === "block_checked").at(-1)?.payload;
   const failing = preview.blocks.get(String(checked?.["run_id"]))?.failing;
-  throw new Error(`${feature.id} did not land: ${JSON.stringify({ failing, last: records.at(-1)?.type, refused: records.filter((record) => record.type === "promotion_refused").at(-1)?.payload["reason"] }).slice(0, 4_000)}`);
+  throw new Error(`${feature.id} did not land: ${JSON.stringify({ failing, checked: { ...checked, checks: undefined, targets: (checked?.["targets"] as unknown[] | undefined)?.length }, last: records.at(-1)?.type, refused: records.filter((record) => record.type === "promotion_refused").at(-1)?.payload["reason"] }).slice(0, 6_000)}`);
 }
 
 /**
@@ -2535,6 +2542,8 @@ async function larderCases(preview: PreviewProject): Promise<void> {
   // The build leaves main where the last promotion put it; the cases start it at the first commit.
   preview.moveMain(larder.sha(data.base.tag));
   await casesOneToThree(preview, larder);
+  // A benchmark of cases 1 to 3 alone (scripts/benchmark-land.ts) stops before the split.
+  if (process.env["SEED_CASES_TO"] === "3") return;
   await moneyMinorUnits(preview, larder);
 }
 

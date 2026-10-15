@@ -22,6 +22,7 @@ fixture's own readers do, so cases 1 and 2 reach them:
   Case 2's change moves it to the UTC day until Hugo's agent revises the change.
 """
 
+import os
 import re
 from itertools import cycle
 
@@ -299,6 +300,34 @@ def _minutes(start: str, minutes: int) -> str:
     return f"{day}T{total // 60:02d}:{total % 60:02d}:00+00:00"
 
 
+# A benchmark may build Larder with fewer generated people (scripts/benchmark-land.ts), and the live
+# demo with none ("off"); the pinned fixture always uses the 'scale' section's own counts.
+SCALE_PEOPLE = "LARDER_SCALE_PEOPLE"
+
+
+def team_counts(scale: dict, scopes: dict) -> dict[str, int]:
+    """How many generated people join each team: the section's counts, or, when the environment sets
+    LARDER_SCALE_PEOPLE, that many in the same proportion, each team keeping a person per caller."""
+    counts = scale["teams"]
+    wanted = os.environ.get(SCALE_PEOPLE)
+    if wanted is None:
+        return counts
+    total = sum(counts.values())
+    if not wanted.isdigit() or int(wanted) > len(scale["names"]):
+        raise ValueError(
+            f"{SCALE_PEOPLE} must be 'off' or a whole number from 0 to "
+            f"{len(scale['names'])}, not {wanted!r}"
+        )
+    limit = int(wanted)
+    needed = {team: 0 for team in counts}
+    for caller in scale["callers"]:
+        needed[scopes[caller["scope"]]["team"]] += 1
+    return {
+        team: max(needed[team], round(count * limit / total))
+        for team, count in counts.items()
+    }
+
+
 def expand(raw: dict) -> tuple[dict, dict[tuple[str, str], dict[str, bytes]]]:
     """larder.json's data grown to its 'scale' section, and each generated commit's source files.
 
@@ -307,6 +336,9 @@ def expand(raw: dict) -> tuple[dict, dict[tuple[str, str], dict[str, bytes]]]:
     scale = raw.get("scale")
     if scale is None:
         return raw, {}
+    # The live demo on Cloudflare runs the fourteen DRIs' Larder alone (LARDER_SCALE_PEOPLE=off).
+    if os.environ.get(SCALE_PEOPLE) == "off":
+        return {key: value for key, value in raw.items() if key != "scale"}, {}
     scopes = {scope["id"]: scope for scope in raw["scopes"]}
     teams = {
         team["id"]: dict(team, members=list(team["members"])) for team in raw["teams"]
@@ -319,7 +351,7 @@ def expand(raw: dict) -> tuple[dict, dict[tuple[str, str], dict[str, bytes]]]:
     # People, each in the team the counts give next.
     people, team_of = [], {}
     names = iter(scale["names"])
-    for team_id, count in scale["teams"].items():
+    for team_id, count in team_counts(scale, scopes).items():
         for _ in range(count):
             name = next(names)
             person_id = name.lower().replace(" ", "-")
