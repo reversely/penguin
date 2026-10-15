@@ -121,8 +121,8 @@ identity in the first prompt, for example:
 | `worktreeId` | The bridge's id for the worktree, or any stable name of letters, digits, `.`, `_` and `-` |
 | `branch` | The branch checked out in the worktree |
 
-`register_session` returns a `sessionId`. The agent passes it to `get_work`, `get_work_item`, `get_issue`, `post_update`
-and `report_checkpoint`. Each of those calls keeps the session running. After about 90 seconds without
+`register_session` returns a `sessionId`. The agent passes it to `get_work`, `get_work_item`, `wait_for_work`,
+`get_issue`, `post_update` and `report_checkpoint`. Each of those calls keeps the session running. After about 90 seconds without
 one, Penguin marks the session offline and the agent registers again. Once a session registers, the
 identity's agent box in its owner's square on the team map leaves "No session". The identity's agent
 card lists the session with its vendor, branch and worktree ([dashboard.md](dashboard.md#agent-card)).
@@ -155,6 +155,72 @@ The agent reads one entry's details with `get_work_item`, naming the entry by it
 token's owner, and a caller item must sit on the session's worktree or come from its feature's change.
 Any other entry answers `not_found`. An issue's details, including a fix task's fields, come from
 `get_issue`.
+
+## Waiting for new work
+
+An MCP server cannot start an agent's turn. An agent with nothing left to do calls
+`wait_for_work` instead of ending its turn, so a caller item, an approval or a written fix reaches it
+without anyone typing to it. The tool is plain MCP over the same `/mcp` endpoint: any client that
+holds a tool call open and accepts progress notifications can use it.
+
+| Argument | Value |
+|---|---|
+| `sessionId` | The session's id from `register_session` |
+| `timeoutSeconds` | Optional; how long to wait, from 1 to 1200 seconds. The default is 1200 |
+
+The call holds until the session has work it has not read: a caller item, a plan part or a decision
+on the session's plan, a review request or verdict, a tool result, a fix written into its fork, an
+edit task, an issue or thread, or a landing result. It then answers `{ "status": "new_work", ... }`
+with only the `get_work` entries that are new since the agent's last `get_work` or `wait_for_work`
+answer, in `get_work`'s shape. An entry whose state changed counts as new. With nothing new by the
+timeout it answers `{ "status": "nothing_yet" }`. The agent then calls it again.
+
+While the call waits, Penguin sends an MCP progress notification when the call starts and then about
+every 60 seconds, for a client that sent a progress token. Waiting counts as the session's safe
+checkpoint ([Fix tasks and safe checkpoints](#fix-tasks-and-safe-checkpoints)) and as its heartbeat,
+so the session stays running. A session waits only on its work: Penguin refuses a wait on a
+session of another owner with `forbidden`.
+
+The Worker holds the call as a streamed MCP response. Each round asks the ProjectAgent Durable
+Object to wait for up to a minute. The ProjectAgent wakes the round from the event that updates the
+dashboards (an issue, a session or a feature changed) or when the check runner records a tool result.
+No round reads storage while it waits. After a wake, the Worker builds the session's `get_work`
+summary again and compares it with what the agent read. One call builds the summary at most 50
+times; a busy project whose changes all belong to other sessions ends the call with `nothing_yet`
+sooner.
+
+### Cloudflare limits
+
+Cloudflare sets no wall-clock limit on an HTTP-triggered Worker while the client stays connected,
+including one streaming a response body. A Durable Object stays active while an RPC call is in
+flight ([Workers limits](https://developers.cloudflare.com/workers/platform/limits/#duration);
+[Durable Objects lifecycle](https://developers.cloudflare.com/durable-objects/concepts/durable-object-lifecycle/)).
+When Cloudflare updates the Workers runtime, it gives existing requests and streaming responses up
+to 20 minutes to finish before the old process ends them
+([Runtime updates](https://developers.cloudflare.com/workers/platform/limits/#runtime-updates)).
+Penguin caps a wait at 1200 seconds so a wait finishes inside that grace period. A Durable Object
+that restarts during a deploy ends its in-flight calls; the Worker then reads the session's work
+again and keeps waiting. Waiting costs no CPU time. The Durable Object stays in memory while a round
+is open, which Cloudflare bills as duration. Each summary build makes about a dozen Durable Object
+calls; a Worker on the Free plan may make 1,000 calls to Cloudflare services per request
+([Subrequests](https://developers.cloudflare.com/workers/platform/limits/#subrequests)), which
+sets the cap of 50 builds per call. Copies of these pages, fetched when the tool was built, are in
+`docs/research/` on the build machine (`cf-workers-platform-limits.md`,
+`cf-durable-objects-platform-limits.md`, `cf-durable-objects-concepts-durable-object-lifecycle.md`,
+`claude-code-mcp.md` and `codex-mcp.txt`).
+
+### Client timeouts
+
+| Client | Setting | What to set |
+|---|---|---|
+| Claude Code | Idle timeout: 5 minutes for an HTTP server without a response or a progress notification; `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT` in milliseconds changes it | Nothing: Penguin's progress notifications reset it every minute |
+| Claude Code | Per-server `timeout` in `.mcp.json`, in milliseconds: a hard wall-clock limit per tool call that progress notifications do not extend | Leave it unset (the default from `MCP_TOOL_TIMEOUT` is about 28 hours), or set it above the wait, such as `"timeout": 1260000` |
+| Codex | `tool_timeout_sec` in the server's `[mcp_servers.penguin]` table; the default is 60 | Set it above the wait, such as `tool_timeout_sec = 1260`, or pass a `timeoutSeconds` below it |
+
+In Claude Code (v2.1.212 or later), a call still running after two minutes moves to a background
+task. Its latest progress shows in `/tasks`. Claude Code re-invokes the session with the answer when
+the call finishes ([Claude Code MCP](https://code.claude.com/docs/en/mcp#automatic-backgrounding-of-long-tool-calls)).
+The progress notifications reach `/tasks` only. They never enter the model's context.
 
 ## Fix tasks and safe checkpoints
 

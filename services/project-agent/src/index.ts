@@ -20,6 +20,7 @@ import { BASE_BRANCH, readBaseFile } from "./base-repo.ts";
 import { buildBoard } from "./board.ts";
 import { buildIssuePage } from "./issue-page.ts";
 import { LiveFeed, liveOwner, sendToOwner } from "./live-feed.ts";
+import { WorkReadStore, WorkSignal, type WorkMark } from "./work-wait.ts";
 import { buildInbox } from "./inbox-page.ts";
 import {
   buildIdentitiesPage,
@@ -298,6 +299,7 @@ import {
   type Session,
   type SessionInput,
   type SessionOutcome,
+  type SessionRejection,
   type SessionWork,
 } from "./session-store.ts";
 import type { Delegates, FixLookup, IssueRecord, ReduceRejectReason, RejectReason, Thread } from "@penguin/issues";
@@ -391,6 +393,7 @@ export {
 export { buildBoard, type BoardSources } from "./board.ts";
 export { buildIssuePage, issueView, type IssuePageSources } from "./issue-page.ts";
 export { LIVE_OWNER_HEADER, LiveFeed, liveOwner, sendToOwner, type OwnedConnection } from "./live-feed.ts";
+export { WORK_READ_SCHEMA, WorkReadStore, WorkSignal, type WorkMark } from "./work-wait.ts";
 export { buildInbox, type InboxPageSources } from "./inbox-page.ts";
 export {
   avatarUrl,
@@ -1103,6 +1106,9 @@ export class ProjectAgent extends Agent {
   #lockSteps: Promise<unknown> = Promise.resolve();
   #ledger: IngestLedger | undefined;
   #live: LiveFeed | undefined;
+  /** Wakes the open wait_for_work calls when the work get_work reads may have changed (work-wait.ts). */
+  readonly #workSignal = new WorkSignal();
+  #workReads: WorkReadStore | undefined;
   /** Ingests run one at a time, so two pushes never interleave their walks and applies. */
   #ingests: Promise<unknown> = Promise.resolve();
   #huddles: HuddleStore | undefined;
@@ -2457,6 +2463,51 @@ export class ProjectAgent extends Agent {
   }
 
   /**
+   * For `wait_for_work` (#210): one round of an idle session's wait. Waiting with nothing in progress
+   * is the session's safe checkpoint, so what waits for the session is delivered before the round and
+   * again after a change wakes it. The round ends when the work get_work reads may have changed since
+   * `since` (at once when it already has), or after `ms`, at most a minute. The session must be the
+   * caller's and running; the call also counts as its heartbeat.
+   */
+  async awaitSessionWork(
+    caller: string,
+    sessionId: string,
+    since: WorkMark | null,
+    ms: number,
+  ): Promise<{ readonly status: "ok"; readonly mark: WorkMark; readonly changed: boolean } | SessionRejection> {
+    const before = this.#idleCheckpoint(caller, sessionId);
+    if (before !== undefined) return before;
+    const round = await this.#workSignal.wait(since, Math.min(Math.max(ms, 0), 60_000));
+    if (round.changed) this.#idleCheckpoint(caller, sessionId);
+    return { status: "ok", ...round };
+  }
+
+  /** The keys of the get_work entries `caller`'s session last read; empty for another owner's session. */
+  workRead(caller: string, sessionId: string): string[] {
+    if (this.sessionHeartbeat(caller, sessionId).status !== "ok") return [];
+    return this.#workReadStore().get(sessionId);
+  }
+
+  /** Records the keys of the get_work entries `caller`'s session just read. */
+  markWorkRead(caller: string, sessionId: string, keys: readonly string[]): void {
+    if (this.sessionHeartbeat(caller, sessionId).status !== "ok") return;
+    this.#workReadStore().set(sessionId, keys);
+  }
+
+  /** A waiting session's safe checkpoint; the rejection when the session is not the caller's or is offline. */
+  #idleCheckpoint(caller: string, sessionId: string): SessionRejection | undefined {
+    const delivery = this.#armSweep(this.#sessionStore().checkpoint(caller, sessionId));
+    if (delivery.status !== "ok") return delivery;
+    this.#deliverEditTasks(sessionId);
+    return undefined;
+  }
+
+  #workReadStore(): WorkReadStore {
+    this.#workReads ??= new WorkReadStore(this.#database());
+    return this.#workReads;
+  }
+
+  /**
    * For the integration runner only: claims the waiting `impact`, `check` and `apply_fix` requests,
    * each with its fork, checkpoint, baseline, charter and the other running features' forks
    * (agent-tool-runner.ts). Any other role is refused.
@@ -2487,6 +2538,8 @@ export class ProjectAgent extends Agent {
    */
   async reportToolRun(caller: BridgeCaller, runId: number, result: unknown, repos?: ProjectRepos): Promise<ToolReportOutcome> {
     const outcome = recordToolResult(this.#toolStore(), caller, runId, result);
+    // A waiting session's result reaches it at the wait's own checkpoint (awaitSessionWork).
+    if (outcome.status === "recorded") this.#workSignal.changed();
     if (outcome.status === "recorded" && edgesReported(this.#scopeEdgeStore(), outcome.run)) this.#liveFeed().featuresChanged();
     // A late report never brings back the list of a feature that already landed or stopped.
     const reportedFeature = outcome.status === "recorded" && outcome.run.featureId !== null ? this.#featureStore().get(outcome.run.featureId) : undefined;
@@ -3964,7 +4017,10 @@ export class ProjectAgent extends Agent {
   }
 
   #liveFeed(): LiveFeed {
-    this.#live ??= new LiveFeed((message) => this.broadcast(message));
+    this.#live ??= new LiveFeed((message) => {
+      this.broadcast(message);
+      this.#workSignal.changed();
+    });
     return this.#live;
   }
 

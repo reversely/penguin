@@ -30,6 +30,7 @@ these tools, among others:
 |---|---|
 | `register_session` | Says which of its person's agent identities it works as, such as `@jun/reports` |
 | `get_work` | Reads the issues and fix tasks assigned to that identity; also the threads and overlapping starts that need its person and whether its feature waits to start |
+| `wait_for_work` | Holds while the agent has nothing to do, in place of ending its turn; answers with the `get_work` entries that arrive ([mcp-setup.md](mcp-setup.md#waiting-for-new-work)) |
 | `get_issue` | Reads one issue in full |
 | `post_update` | Comments, links a commit, changes state, replies in a thread, sends a fix upstream |
 | `report_checkpoint` | Reports a checkpoint on its person's owner fork or on its feature's fork; the answer lists any task or thread that arrived |
@@ -59,8 +60,8 @@ products are in [mcp-setup.md](mcp-setup.md#fix-tasks-and-safe-checkpoints).
 
 ## 3. The person's inbox
 
-An agent that is not running, or that has stopped to wait for its person, makes no tool calls, so
-neither path above reaches it. Penguin cannot start or wake an agent. On a Claude plan nothing can
+An agent with nothing to do calls `wait_for_work`. Penguin answers that call when new work arrives. An agent that is not running, or that ended its turn to wait for its person, makes no tool
+calls, so neither path above reaches it. Penguin cannot start an agent or a new turn. On a Claude plan nothing can
 post into a session's window from outside. Penguin puts the item in the person's inbox on the
 dashboard instead: "Start a session" for a task assigned to an identity with no running session,
 "Waiting for your reply" for a thread, "Waiting for your review" for a fix. The person then starts a
@@ -78,6 +79,7 @@ session or tells their agent.
 ## What Penguin does not do
 
 - Read an agent's conversation: transcripts stay on the person's machine.
-- Start, stop or wake an agent.
+- Start or stop an agent, or start a turn: it answers only a tool call the agent made, `wait_for_work`
+  included.
 - Push code for an agent: each agent's work reaches Penguin only as a checkpoint its person's bridge
   publishes.
