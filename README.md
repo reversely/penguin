@@ -1,105 +1,94 @@
 # Penguin
 
-Code ships through five stages: local development, central development, test, pre-production and
-production. Penguin runs a sandbox where the work many people's coding agents do in local development
-merges into one codebase continuously without breaking main. A sandbox is one Penguin project: its
-base repo and the forks its agents work in. A team can run a sandbox at any of the five stages. The
-stage sets how much of the review Penguin does and how much people do: people decide more of it at
-each stage nearer production.
+Penguin is a Git platform on Cloudflare for teams whose members each run their own coding agents in
+one codebase. Before a change reaches main, Penguin checks it against the other people's unfinished
+branches that use the code it changes. It checks only those. When a check finds a difference, the
+agents on both sides settle it. Penguin then merges the change with every approved fix in one push.
 
-Each person owns features. Each feature is a fork of main in Cloudflare Artifacts,
-worked by one or more of that person's agents. When a feature changes something other running
-features depend on, the agent making the change plans the merge first. It proposes the fix for each
-affected feature and tells those authors in advance. It writes each approved fix straight into the
-affected feature's fork. Penguin then promotes everything to main together as one block. Penguin
-checks every step with deterministic tools. A feature that starts in another running feature's area
-opens at once. Penguin tells that feature's person. People step in to approve a plan that
-touches their code or for an exception, as often as the sandbox's stage sets.
+## What Penguin catches
 
-## How Penguin decides
+A change can merge cleanly and pass its own tests while it changes what someone else's unfinished
+work does. Each developer's tests pass on their own branch. The break only appears once the change
+reaches main. Penguin finds those changes before the merge:
 
-Penguin decides whether a change may reach main with six kinds of validation: Tests, Logic, Data
-matching, Stored data, Custom path rules and place, Overlapping starts. Each kind has its own check
-and its own tool. A failed test always goes back to the agent. An overlapping start always opens
-with its owner told. For the other kinds, the sandbox's review policy names its stage, which sets
-whether Penguin or a person decides:
+- **Logic:** Priya's change merges a shopper's devices into one account. Jun's unfinished analytics
+  dashboard now reports a lower count for a day it already published.
+- **A shared helper:** Hugo's change makes `start_of_day` return UTC midnight. Elif's holiday closures
+  and Sam's weekly digest, both still in progress, now use the wrong local day.
+- **Data at scale:** Ines moves every price to whole cents. Penguin replays recorded orders on main
+  and on each step of the change. It stops the step that changes a tax total.
 
-| Stage | Who decides a part a check marks |
+## How it works
+
+1. **Fork.** Each feature is its own fork of main in Cloudflare Artifacts. An agent works only in its
+   person's fork, with a short-lived token that writes to that fork alone.
+2. **Commit.** At each checkpoint, Penguin records which functions the change calls and changes. A
+   Durable Object keeps that list for every running feature.
+3. **Compare.** When an agent asks Penguin to check its change, Penguin looks up the branches that call
+   what the change touches and replays their code twice: once on main, once with the change. Every
+   difference names one call site in one branch.
+4. **Patch.** The agent making the change explains each difference as intended and proposes a fix, or
+   revises its own change. A difference that a later check no longer finds closes by itself.
+5. **Review.** The agent that owns each affected branch, or its person, approves the fix. Penguin's
+   check runner writes the approved fix into that branch with a token for that one fork.
+6. **Merge.** When every difference is settled, Penguin merges the change into main in one push.
+
+How much a person decides is set per project, from Penguin deciding alone in local development to a
+person approving every part in production ([docs/review-policies.md](docs/review-policies.md)).
+
+## Built on Cloudflare
+
+| Piece | What Penguin uses it for |
 |---|---|
-| Local development | Penguin, which tells the owners |
-| Central development, the default | The person the part routes to |
-| Test and Pre-production | The person the part routes to, also for a rule-written migration part whose side-by-side run differs |
-| Production | A person, for every part |
+| Artifacts | Main, one fork per feature and the record of every plan, approval and merge. Tokens are scoped to one repo and expire in minutes |
+| Durable Objects | The ProjectAgent keeps people, sessions and the list of which branches call which functions. One FeatureAgent per feature keeps its plan, its differences and its fixes. It also makes the merge |
+| Workers | The MCP endpoint agents call and the dashboard people use |
+| Queues | Pushes to the issues repo reach the Worker |
 
-[docs/validation.md](docs/validation.md) defines each kind and
-[docs/review-policies.md](docs/review-policies.md) the policies.
+## Connect your agent
 
-## Answers to the competition questions
+Penguin works with any coding agent that speaks MCP, such as Claude Code or Codex, running on your own
+machine.
 
-Penguin is an entry in Cloudflare's competition for the layer above Artifacts
-([Cloudflare](https://blog.cloudflare.com/next-git-platform-on-cloudflare/)). The post asks four
-questions.
+1. **Get your MCP token** from the person who runs your Penguin project.
+2. **Add Penguin as an MCP server.** For Claude Code:
 
-| The post asks | Penguin's answer |
-|---|---|
-| "How do agents know what other agents are working on?" | Every feature declares its area when it opens. Penguin checks the declaration against every running feature. It keeps the overlap current at each checkpoint |
-| "What happens when they make conflicting changes?" | The agent making the change plans the merge. It writes the fixes into the affected forks once their authors approve. Penguin then promotes the whole set as one block, so main receives all of the change in one push |
-| "How do you review everything they produce?" | Deterministic checks gate every block. Agents review their own scope through a fixed form that Penguin validates and tests. People see the exceptions |
-| "How do you keep track of not just what changed, but why?" | Every plan, approval, check and promotion is a signed record in the project's record repo in Artifacts |
+   ```sh
+   claude mcp add --transport http penguin https://<your-penguin>/mcp \
+     --header "Authorization: Bearer <your token>"
+   ```
 
-## Procedure
+   Codex and a shared `.mcp.json` are in [docs/mcp-setup.md](docs/mcp-setup.md).
+3. **Install the bridge**, which publishes your checkpoints after showing you the exact changes:
 
-1. **Open.** A feature declares its area. Penguin records where it overlaps another running feature
-   and tells that feature's person. The feature starts at once.
-2. **Plan.** A feature that changes something others depend on carries a merge plan written by its
-   agent. Penguin supplies the contract diff, the callers and each affected scope's invariants.
-3. **Advance notice.** Each affected author's agent reviews its part through a validated review form
-   with declared invariants and side-by-side runs. The author approves once.
-4. **Build.** The originating agent writes each approved fix straight into the affected feature's
-   existing fork with a short-lived token scoped to that one repo. No new branch or fork is made.
-5. **Block promotion.** Penguin checks the whole set deterministically. It moves main once.
-6. **Late starters.** A feature opened after a plan was announced receives the plan at open.
+   ```sh
+   git clone <this repo> ~/penguin && cd ~/penguin && npm install
+   npm install -g ./services/local-bridge
+   ```
 
-Deterministic checks, tools and a resolution ladder handle mechanical breaks. Agents handle behaviour.
-Penguin writes no judgment fix. [docs/design.md](docs/design.md) holds the full design.
+4. **Add the hook** from [docs/mcp-setup.md](docs/mcp-setup.md#fix-tasks-and-safe-checkpoints), so
+   your agent hears about new work before its next step.
 
-## Use cases
+Tell your agent which feature it works on, for example: "You're working on accounts-merge. Check your
+change with Penguin and deal with whatever it finds." When it has nothing left to do, it calls
+`wait_for_work`. Penguin wakes it when a change reaches its branch. Codex users raise
+`tool_timeout_sec` to 1260 for this ([docs/mcp-setup.md](docs/mcp-setup.md#waiting-for-new-work)).
 
-1. **One person, two streams.** Priya's identity merge rules change data that Jun's analytics and
-   Sam's messaging read ([fixture](docs/fixture.md#under-the-new-procedure),
-   [demo story](docs/demo-story.md)).
-2. **The helpful fix.** Priya's UTC fix to a shared date helper would move Jun's and Sam's users to
-   the wrong local day ([fixture](docs/fixture-helpful-fix.md#under-the-new-procedure)).
-3. **The dependency bump.** Hugo's HTTP client upgrade retries by default, which would charge Ana's
-   payments twice ([fixture](docs/fixture-dependency-bump.md#under-the-new-procedure)).
-4. **Money in minor units.** One change to the price type touches nine scopes and 24 running features
-   on a team of fourteen people ([case study](docs/case-study-money.md)).
+## Use the dashboard
 
-## Status
-
-The current build has:
-
-- Artifacts repos and repo-scoped tokens
-- the signed operation log with validation and rejection reasons
-- the ProjectAgent with one Durable Object per coordinated unit of work
-- MCP tools and session registration
-- the bridge with consent, checkpoint publishing and the safe-checkpoint hook
-- combined runs on merged trees with `git merge-tree`
-- fix routing, including sending a fix upstream to the scope that caused the break
-- verification on a dedicated branch
-- the walkthrough harness that runs the first three use cases
-- the dashboard shell, team map and identities
-
-The approved design is still being built in this order: features as forks with overlap locks; merge
-plans with approvals and fixes written into affected forks; the deterministic checks, tools and
-routing; the review harness; block promotion; the dashboard views; the scaled case with the
-walkthrough of all four use cases. Pages in [docs/](docs/README.md) that describe the current build
-say where the design changes them.
+Sign in with GitHub. Your inbox lists what waits on you: a fix to approve for your branch, a
+difference your agent could not settle, or a plan part routed to you. Each feature's page shows its
+pipeline (Open, Plan, Review, Fixes written, Block checks, Promoted), the branches its change reaches
+and every difference with the agents' explanations. [docs/dashboard.md](docs/dashboard.md) describes
+each screen.
 
 ## Try it
 
-[docs/deploy.md](docs/deploy.md) sets up a deployment. [docs/walkthrough.md](docs/walkthrough.md)
-runs the first three use cases through the current build.
+- **On your machine:** `node scripts/preview/dashboard.ts --example identity-unification` serves the
+  dashboard over a seeded demo project, Larder, an online grocery service. Build the dashboard first
+  with `npm run build -w @penguin/dashboard`.
+- **On your own Cloudflare account:** [docs/deploy.md](docs/deploy.md) sets up the Worker, its Durable
+  Objects, the Artifacts namespace and the secrets.
 
 ## Documentation
 
