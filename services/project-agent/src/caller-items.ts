@@ -1011,6 +1011,17 @@ async function proposeRule(
   const problem = rewriteRuleProblem({ id: "caller-fix", contract: item.contract, kind: "expression", pattern: fields["pattern"], replacement: fields["replacement"], imports });
   if (problem !== null) return rejected("invalid", problem.replace(/^rule caller-fix: /u, "the rule: "));
   const sites = [...new Set(item.callers.filter((caller) => caller.verdict === "broken" && caller.path.endsWith(".py")).map((caller) => caller.path))].sort();
+  // The check runner's codemod rewrites only uses of the item's contract (#224): say so now, with the next step, rather
+  // than after the runner refuses the write three times.
+  const symbol = (item.contract.split("::")[1] ?? "").split(".")[0] ?? "";
+  if (symbol !== "" && !new RegExp(`\\b${symbol}\\b`, "u").test(String(fields["pattern"]))) {
+    const read = deps.callerSudo?.() === true ? `; read the fork first with caller_read_token for item ${item.itemId}` : "";
+    return rejected(
+      "invalid",
+      `the rule's pattern names no use of ${item.contract}, this item's contract, so the check runner could not rewrite it. ` +
+        `To change other code in ${item.feature} (${sites.join(", ") || "its call sites"}), propose a plan part with a patch for ${item.feature} with propose_plan${read}`,
+    );
+  }
   if (sites.length === 0) return rejected("conflict", `item ${item.itemId} has no broken Python call site for a rule to rewrite`);
   if (sites.length > RULE_SITE_LIMIT) return rejected("invalid", `item ${item.itemId}'s broken call sites span over ${RULE_SITE_LIMIT} files; fix them with a plan part`);
   if ((await deps.plan(item.origin)) === undefined) {

@@ -271,6 +271,9 @@ test("a broken caller is settled by the originating agent's rule: one runner wri
   assert.equal(statusOf(mixed), "invalid", "a part or a rule, not both");
   const unbound = await w.priya({ action: "propose_fix", item, rule: { pattern: RULE.pattern, replacement: "$total" } });
   assert.equal(statusOf(unbound), "invalid", "a rule is checked as a plan's rewrite rule");
+  const outside = await w.priya({ action: "propose_fix", item, rule: { pattern: "daily_active_users($events, $map)", replacement: "daily_active_users($events)" } });
+  assert.equal(statusOf(outside), "invalid", "a rule outside the item's contract is refused at once");
+  assert.match(JSON.stringify(outside), /propose a plan part with a patch for cohort-ltv/u, "the refusal names the next step");
   const byReceiver = await w.jun({ action: "propose_fix", item, rule: RULE });
   assert.equal(statusOf(byReceiver), "forbidden", "only the originating agent states the rule");
 

@@ -1092,7 +1092,8 @@ export const INSTRUCTIONS =
   "(2) Read your work with get_work and one entry's details with get_work_item; never parse saved tool output with scripts. " +
   "(3) Never put a token in a command, a file or a message. " +
   "(4) Never edit another person's branch: answer each difference with explain_difference or revise your own change, and " +
-  "for a broken call site in another branch state a rule with propose_caller_fix. " +
+  "for a broken call site in another branch state a rule with propose_caller_fix. A rule rewrites only uses of the item's own contract; " +
+  "to change other code in that branch, propose a plan part with a patch for it. " +
   "(5) Keep messages to your person to a few sentences: what Penguin found and what you did.";
 
 /** What the instructions add while the deployer has PENGUIN_CALLER_SUDO on (#222). */

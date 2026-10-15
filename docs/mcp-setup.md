@@ -58,6 +58,8 @@ working guide:
 3. Never put a token in a command, a file or a message.
 4. Never edit another person's branch: answer each difference with `explain_difference` or revise your
    own change, and for a broken call site in another branch state a rule with `propose_caller_fix`.
+   A rule rewrites only uses of the item's own contract; to change other code in that branch, propose a
+   plan part with a patch for it. Penguin refuses an out-of-contract rule at once and names that step.
 5. Keep messages to your person to a few sentences: what Penguin found and what you did.
 
 While the deployer has `PENGUIN_CALLER_SUDO` on, the instructions add one paragraph after the guide.
