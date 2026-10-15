@@ -41,6 +41,7 @@ import {
 } from "./issue-view.ts";
 import { latestChange } from "./live-changes.ts";
 import { linkHandler } from "./links.ts";
+import { readShared } from "./live-reads.ts";
 import { assignChoices, assignOperation } from "./new-issue-view.ts";
 import { useIdentityHandles, type IdentityHandles, type KnownIdentities } from "./use-identity-handles.ts";
 import type { Live } from "./use-live.ts";
@@ -89,10 +90,11 @@ export function IssuePageView({ issueId, viewer, live, navigate, onSignedOut }: 
   const connected = live.status === "live";
   const identities = useIdentityHandles(live, onSignedOut);
   const phone = usePhone();
+  const read = useCallback(() => fetchIssue(issueId), [issueId]);
 
   useEffect(() => {
     let current = true;
-    fetchIssue(issueId).then(
+    readShared(read).then(
       (read) => {
         if (current) setLoad(read === undefined ? { kind: "missing" } : { kind: "ready", page: read });
       },
@@ -105,7 +107,7 @@ export function IssuePageView({ issueId, viewer, live, navigate, onSignedOut }: 
       current = false;
     };
     // `connected` reads the issue again after a reconnect, which may have missed a change.
-  }, [issueId, change, reload, connected, onSignedOut]);
+  }, [read, change, reload, connected, onSignedOut]);
 
   if (load.kind === "missing") {
     return (

@@ -212,7 +212,7 @@ is a person in the dashboard.
 - **Issues:** every issue that involves the person, open issues first. Each row carries why it is
   there: Assigned, Review, Reply or Session to start.
 
-The role reads `GET /api/people/<id>/scopes` once and again on every live message. A line names the
+The role reads `GET /api/people/<id>/scopes` once and again after every burst of live messages. A line names the
 main commit the dependencies were read from (`Read from main at <commit>`), or says that Reads show
 declared dependencies until the next promotion of main. A search field (scope, scope id, DRI or team)
 and the source filters (All, Derived, Declared, Not in code, each with its count) narrow the tables;
@@ -553,8 +553,8 @@ then one `assign` per identity, then opens the new issue.
 
 ## Live updates
 
-The org, team and person pages, a feature page and the approvals read their answers again on every live message the
-person's connection receives and after a reconnect. The ProjectAgent sends an inbox-changed message
+The org, team and person pages, a feature page and the approvals read their answers again after every burst of live
+messages the person's connection receives and after a reconnect. The ProjectAgent sends an inbox-changed message
 to the people a decision, an overlap or a review exception concerns. It also sends a features-changed
 message to every connection after a write that may change a feature, its merge plan, a part's
 decision, a fix write or a review. Those writes are a feature's opening, area and checkpoints; an
@@ -572,6 +572,18 @@ message to one person's own connections, an identities-changed message or a feat
 message. The message carries no
 issue data: each page reads what it shows again through the API, which checks the session. The
 account menu shows whether the connection is live.
+
+The dashboard gathers live messages for one second from the first of a burst, then applies them
+together (`use-live.ts`, `live-reads.ts`). A burst moves each kind of revision at most once, so a
+page reads each endpoint it shows at most once per burst. The window opens on the first message and
+does not slide, so a steady stream of messages still reaches the pages once a second. Every read goes
+through one shared reader per endpoint. Hooks that read the same endpoint in one render share one
+request: the shell's board and an issue page's sidebar board make one `/api/board` request. A call
+made while that endpoint's read is in flight starts no second request. The reader runs one more read
+after the current one ends, and every call made meanwhile gets that read's answer. The issue items
+behind `/api/inbox` show only in an issue page's sidebar, so only an issue page reads them. Ten live
+messages within one second make one request per endpoint the page shows
+(`apps/dashboard/test/live-reads.test.ts`).
 
 Rows a live change adds slide in, staggered; boxes whose order changes slide to their new place.
 Nothing moves on first paint, a route change or a theme switch. Every animation has a reduced-motion

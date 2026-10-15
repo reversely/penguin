@@ -31,6 +31,7 @@ import {
 import { STATE_LABEL } from "./issue-view.ts";
 import { ValidationPanel } from "./review-policy.tsx";
 import { linkHandler } from "./links.ts";
+import { readShared } from "./live-reads.ts";
 import { useArrivals } from "./motion.tsx";
 import { approvalCount, ApprovalsInbox, type ApprovalsState } from "./approvals.tsx";
 import { issueAllPath, type Route } from "./routes.ts";
@@ -51,8 +52,11 @@ export interface InboxState {
   markRead(item: InboxEntry): void;
 }
 
-/** The signed-in person's inbox, read again on each live change and after a reconnect. */
-export function useInbox(live: Live, onSignedOut: () => void): InboxState {
+/**
+ * The signed-in person's inbox, read while `shown`, again on each live change and after a reconnect.
+ * Only the issue pages' sidebar shows it, so the other pages make no inbox request.
+ */
+export function useInbox(live: Live, shown: boolean, onSignedOut: () => void): InboxState {
   const [load, setLoad] = useState<InboxLoad>({ kind: "loading" });
   const [marking, setMarking] = useState<ReadonlySet<string>>(new Set());
   const [markFailed, setMarkFailed] = useState(false);
@@ -60,8 +64,9 @@ export function useInbox(live: Live, onSignedOut: () => void): InboxState {
   const connected = live.status === "live";
 
   useEffect(() => {
+    if (!shown) return;
     let current = true;
-    fetchInbox().then(
+    readShared(fetchInbox).then(
       (items) => {
         if (current) setLoad({ kind: "ready", items });
       },
@@ -75,7 +80,7 @@ export function useInbox(live: Live, onSignedOut: () => void): InboxState {
       current = false;
     };
     // `connected` reads the inbox again after a reconnect, which may have missed a change.
-  }, [live.revision, live.inboxRevision, connected, reloads, onSignedOut]);
+  }, [shown, live.revision, live.inboxRevision, connected, reloads, onSignedOut]);
 
   const markRead = useCallback(
     (item: InboxEntry) => {
@@ -110,12 +115,15 @@ export function useInbox(live: Live, onSignedOut: () => void): InboxState {
 
 export type Read<T> = { readonly kind: "loading" } | { readonly kind: "ready"; readonly value: T } | { readonly kind: "failed" };
 
-/** One API answer, read again whenever `revision` changes; a failed refresh keeps the last answer. */
+/**
+ * One API answer, read again whenever `revision` changes; a failed refresh keeps the last answer. The
+ * hooks reading the same `read` share one request at a time (live-reads.ts).
+ */
 export function useRead<T>(read: () => Promise<T>, revision: string, onSignedOut: () => void): Read<T> {
   const [state, setState] = useState<Read<T>>({ kind: "loading" });
   useEffect(() => {
     let current = true;
-    read().then(
+    readShared(read).then(
       (value) => {
         if (current) setState({ kind: "ready", value });
       },

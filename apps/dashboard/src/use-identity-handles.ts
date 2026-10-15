@@ -4,6 +4,7 @@
 import { useEffect, useState } from "react";
 
 import { fetchIdentities, SignedOut } from "./api.ts";
+import { readShared } from "./live-reads.ts";
 import type { Live } from "./use-live.ts";
 
 /** What the dashboard knows of each identity by handle: its id and its uploaded avatar as a `data:` URL, or null. */
@@ -25,7 +26,7 @@ export function useIdentityHandles(live: Live, onSignedOut: () => void): Identit
 
   useEffect(() => {
     let current = true;
-    fetchIdentities().then(
+    readShared(fetchIdentities).then(
       (page) => {
         if (current) {
           setHandles({

@@ -18,6 +18,7 @@ import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type K
 
 import { approveOverlap, confirmProtectedChange, decideCallerItem, decidePlanPart, fetchOverlapRequests, fetchPlanInbox, SignedOut } from "./api.ts";
 import { CallerCard } from "./caller-card.tsx";
+import { readShared } from "./live-reads.ts";
 import {
   counted,
   partNumber,
@@ -82,7 +83,7 @@ export function useApprovals(live: Live, onSignedOut: () => void): ApprovalsStat
   const reload = useCallback(async () => {
     const read = ++latest.current;
     try {
-      const [overlaps, plan] = await Promise.all([fetchOverlapRequests(), fetchPlanInbox()]);
+      const [overlaps, plan] = await Promise.all([readShared(fetchOverlapRequests), readShared(fetchPlanInbox)]);
       if (read !== latest.current) return;
       setApprovals({ overlaps, plan });
       setFailed(false);

@@ -86,9 +86,9 @@ function Shell({ session, onSignedOut }: { session: Session; onSignedOut: () => 
   const [route, navigate] = useRoute();
   const live = useLive();
   // The shell holds the approvals, so the navigation's count and the inbox page read them once. The
-  // issue items stay for the issue pages' sidebar list.
+  // issue items stay for the issue pages' sidebar list, read only while an issue page shows it.
   const approvals = useApprovals(live, onSignedOut);
-  const inbox = useInbox(live, onSignedOut);
+  const inbox = useInbox(live, route?.page === "issue", onSignedOut);
   // The shell holds the team too, so the team map and every person's hue on any page come from one read.
   const team = useTeam(live, onSignedOut);
   // The review policy every page's How Penguin validates panel and the org and team pages read; a save reads it again.

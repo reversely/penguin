@@ -26,6 +26,7 @@ import { fetchBoard, fetchIdentities, SignedOut, writeIdentity } from "./api.ts"
 import { IdentityAvatar, PersonAvatar } from "./avatar.tsx";
 import { useMediaQuery } from "./details-pane.tsx";
 import { Icon } from "./icon.tsx";
+import { readShared } from "./live-reads.ts";
 import {
   AVATAR_TYPES,
   avatarProblem,
@@ -91,7 +92,7 @@ export function IdentitiesPageView({ viewer, live, navigate, onSignedOut }: Prop
 
   useEffect(() => {
     let current = true;
-    fetchIdentities().then(
+    readShared(fetchIdentities).then(
       (page) => {
         if (current) setLoad({ kind: "ready", page });
       },
