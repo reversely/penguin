@@ -14,6 +14,7 @@ export {
   formatImpactReport,
   ImpactAnalysisError,
   pythonImpactAnalyzer,
+  pythonImpactBatchAnalyzer,
   runPythonAnalysis,
 } from "./impact-analysis.ts";
 export type { ImpactAnalyzer, ImpactForkRequest, ImpactRequest, PythonImpactOptions } from "./impact-analysis.ts";

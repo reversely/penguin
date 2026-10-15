@@ -258,3 +258,112 @@ def test_each_larder_fork_penguin_updates_holds_the_originating_modules_and_pass
             text=True,
         )
         assert merged.returncode == 0, merged.stdout
+
+
+IMPACT = (
+    Path(__file__).resolve().parents[1]
+    / "services"
+    / "local-bridge"
+    / "analysis"
+    / "python_impact.py"
+)
+# The analysis takes at most this many forks a request.
+FORKS_PER_READ = 256
+
+
+def impact_report(repo: Path, request: dict) -> dict:
+    run = subprocess.run(
+        [sys.executable, "-I", str(IMPACT), "--repo", str(repo)],
+        input=json.dumps(request),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return json.loads(run.stdout)
+
+
+def read_forks(repo: Path, request: dict, forks: list[dict]) -> list[dict]:
+    """Every fork's entry of the analysis, read in requests of at most FORKS_PER_READ forks."""
+    return [
+        entry
+        for at in range(0, len(forks), FORKS_PER_READ)
+        for entry in impact_report(
+            repo, request | {"forks": forks[at : at + FORKS_PER_READ]}
+        )["forks"]
+    ]
+
+
+# #195: the caller list Penguin keeps at each checkpoint finds the same forks for a change as reading
+# every fork's own changes does, on the 200-person Larder.
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    ("change", "before"),
+    [("accounts-merge-checkpoint", "base"), ("structured-logs-checkpoint", None)],
+)
+def test_the_caller_list_finds_the_forks_reading_every_fork_finds(
+    larder: Path, change: str, before: str | None
+) -> None:
+    data = json.loads(
+        subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                str(EXAMPLES / "money-minor-units" / "build.py"),
+                "--expanded",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+    )["larder"]
+    head = git_out(larder, "rev-parse", f"feature-{change}").strip()
+    base = git_out(larder, "rev-parse", before or f"feature-{change}^").strip()
+    started = git_out(larder, "rev-parse", "base").strip()
+    forks = [
+        {
+            "id": feature["id"],
+            "sha": git_out(
+                larder, "rev-parse", f"feature-{feature['id']}-checkpoint"
+            ).strip(),
+            "scopes": [],
+            "since": started,
+        }
+        for feature in data["features"]
+        if feature["start"] == "base"
+        and feature["role"] != "originating"
+        and feature["commits"][0].get("tag") == "checkpoint"
+    ]
+    assert len(forks) > FORKS_PER_READ
+
+    report = impact_report(larder, {"base": base, "head": head, "forks": []})
+    names = {
+        change["symbol"]
+        for change in report["changes"]
+        if change["change"] in {"modified", "removed", "renamed", "moved"}
+    } | {
+        change["path"].removesuffix(".py").replace("/", ".")
+        for change in report["changes"]
+        if change["change"] in {"modified", "removed", "renamed", "moved"}
+    }
+    reading = {
+        entry["id"]
+        for entry in read_forks(larder, {"base": base, "head": head}, forks)
+        if entry["uses"]
+    }
+    lists = {
+        entry["id"]: entry["calls"]
+        for entry in read_forks(
+            larder, {"base": started, "head": started, "calls": True}, forks
+        )
+    }
+    listed = {
+        fork
+        for fork, calls in lists.items()
+        if any(
+            call == name or call.startswith(f"{name}.")
+            for call in calls
+            for name in names
+        )
+    }
+    assert listed == reading
+    assert reading, f"{change} reaches some running feature"

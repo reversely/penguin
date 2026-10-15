@@ -27,6 +27,7 @@ import {
   fetchedRefs,
   FixApplier,
   isRunnerRepo,
+  pythonImpactBatchAnalyzer,
   PartTrialRunner,
   PlanFactsRunner,
   pythonDependencyAnalyzer,
@@ -143,6 +144,7 @@ import {
 } from "../../services/project-agent/src/protected-change.ts";
 import { fileDiffs } from "../../services/project-agent/src/repo-diff.ts";
 import { edgesReported, requestScopeEdges, ScopeEdgeStore } from "../../services/project-agent/src/scope-edges.ts";
+import { CallerListStore, callsReported, requestCallerList } from "../../services/project-agent/src/caller-list.ts";
 import { closeRemoved, countReported, requestRetiringCount, type CountOutcome, type RetiringCountDeps } from "../../services/project-agent/src/retiring-count.ts";
 import { EditRoster } from "../../services/project-agent/src/edit-roster.ts";
 import { EditTaskStore } from "../../services/project-agent/src/edit-tasks.ts";
@@ -348,6 +350,7 @@ export class PreviewProject {
   readonly retiring: RetiringStore;
   /** Main's scope dependencies from the last derivation, as the ProjectAgent keeps them. */
   readonly scopeEdges: ScopeEdgeStore;
+  readonly callerLists: CallerListStore;
   readonly splits: ContractSplitStore;
   readonly migrations: MigrationStore;
   readonly editTasks: EditTaskStore;
@@ -418,6 +421,7 @@ export class PreviewProject {
     this.forks = new OwnerForkStore(this.sql, now);
     this.retiring = new RetiringStore(this.sql, now);
     this.scopeEdges = new ScopeEdgeStore(this.sql, now);
+    this.callerLists = new CallerListStore(this.sql, now);
     this.splits = new ContractSplitStore(this.sql, now);
     this.migrations = new MigrationStore(this.sql, now);
     this.editTasks = new EditTaskStore(this.sql, { now });
@@ -1002,6 +1006,7 @@ export class PreviewProject {
             this.scopeMap,
           ),
         checkRetiring: (checked, session, commit) => requestRetiringCheck(this.toolDeps(), checked, session, commit),
+        listCalls: async (listed, commit) => requestCallerList(this.tools, listed, commit, await checkpointBaseline(history, history, commit)),
         ...(this.sortContracts
           ? {
               sortContract: async (sorted: Parameters<typeof recordSplit>[1]) => {
@@ -1085,6 +1090,8 @@ export class PreviewProject {
         if (recorded.status !== "recorded") throw new Error(`report ${runId}: ${JSON.stringify(recorded)}`);
         // Main's scope dependencies go to the stored edges, as the ProjectAgent's report does.
         edgesReported(this.scopeEdges, recorded.run);
+        // A checkpoint's caller list goes to the stored lists, as the ProjectAgent's report does.
+        callsReported(this.callerLists, recorded.run);
         // A check's caller replay opens or moves the feature's caller items, as the ProjectAgent's report does.
         const replay = recorded.run.tool === "check" ? recorded.run.outcome?.callerReplay : undefined;
         if (replay !== undefined && recorded.run.featureId !== null) {
@@ -1103,6 +1110,7 @@ export class PreviewProject {
         return recorded as never;
       },
       fetchFork: (fork) => fetchPreviewFork(repo, this.repo, fork),
+      impactBatch: pythonImpactBatchAnalyzer({ repoPath: repo, python: PYTHON, env: ENV }),
       impact,
       combined: new CombinedRunner({
         repoPath: repo,
@@ -1337,6 +1345,7 @@ export class PreviewProject {
           {
             ...this.featureDeps(),
             readChange: (_repo, commit) => checkpointChange(history, history, commit),
+            listCalls: async (listed, commit) => requestCallerList(this.tools, listed, commit, await checkpointBaseline(history, history, commit)),
             protectedChanges: (reporting, commit) =>
               checkProtectedChanges(
                 {

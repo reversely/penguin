@@ -1,6 +1,9 @@
 """Impact graph and contract diff for Python, read from Git trees with the standard library only.
 
-Usage: python3 -I python_impact.py --repo PATH < request.json
+Usage: python3 -I python_impact.py --repo PATH [--batch] < request.json
+
+With ``--batch`` the input is a JSON array of requests and the output a JSON array of their reports,
+in order; one run parses each file the requests share once.
 
 The request is a JSON object: ``{"base": SHA, "head": SHA, "forks": [{"id": ID, "sha": SHA,
 "scopes": [SCOPE ID, ...], "since": SHA}]}``. The report on standard output names every function,
@@ -11,6 +14,13 @@ scopes that imports, calls or references a changed symbol, with its file and lin
 The request may add ``"symbols": ["path::name", ...]``: contracts to search for as if they had
 changed, such as the retiring symbols of a parallel change. Their uses are reported beside the uses
 of the change itself, so ``base`` equal to ``head`` lists only them.
+
+The request may add ``"calls": true``: each fork in the report then carries ``calls``, every module,
+class, function, method and module-level value of the fork's tree that the fork's own files import,
+call or reference, defined outside those files, as dotted names such as
+``accounts.shoppers.ShopperMap.resolve``. With ``since`` the own files are those the fork added or
+changed since its merge base with ``since``. Penguin keeps these lists so a later change finds the
+forks that call it without reading every fork again.
 
 The request may add ``"edges": true``: the report then carries ``scopeEdges``, one entry per pair of
 scopes where a file in the consumer scope's paths imports, calls or references a module or definition
@@ -1434,6 +1444,8 @@ class AnalysisRequest:
     symbols: tuple[str, ...] = ()
     # Whether the report carries the head tree's scope dependencies (``scope_edges``).
     edges: bool = False
+    # Whether each fork carries the names its own files use (``fork_calls``).
+    calls: bool = False
 
 
 def parse_request(raw: object) -> AnalysisRequest:
@@ -1493,8 +1505,16 @@ def parse_request(raw: object) -> AnalysisRequest:
     edges = raw.get("edges", False)
     if not isinstance(edges, bool):
         raise RequestError("edges must be true or false")
+    calls = raw.get("calls", False)
+    if not isinstance(calls, bool):
+        raise RequestError("calls must be true or false")
     return AnalysisRequest(
-        raw["base"], raw["head"], tuple(forks), tuple(sorted(set(symbols_raw))), edges
+        raw["base"],
+        raw["head"],
+        tuple(forks),
+        tuple(sorted(set(symbols_raw))),
+        edges,
+        calls,
     )
 
 
@@ -1548,6 +1568,31 @@ def scope_edges(tree: Tree, limits: Limits, truncated: list[bool]) -> list[dict]
     return _cap(edges, limits, truncated)
 
 
+def fork_calls(tree: Tree, own: set[str] | None) -> list[str]:
+    """Every name of ``tree`` that the files in ``own`` use, defined outside them, sorted.
+
+    Every module and definition is watched, so one ``UseFinder`` pass per own file resolves each
+    import, call and reference through the tree's aliases, as the search for a changed symbol does.
+    None for ``own`` reads every file.
+    """
+    watched = {name: source.path for name, (_, source) in tree.definitions.items()}
+    for module, source in tree.modules.items():
+        watched[module] = source.path
+    called = set()
+    for path in sorted(tree.files):
+        source = tree.files[path]
+        if source.facts is None or (own is not None and path not in own):
+            continue
+        finder = UseFinder(tree, source, watched)
+        finder.visit(source.facts.tree)
+        called.update(
+            symbol
+            for _, symbol, _ in finder.uses
+            if own is None or watched[symbol] not in own
+        )
+    return sorted(called)
+
+
 def unanalysed_paths(base: Tree, head: Tree) -> list[str]:
     """Changed paths whose effect this analysis cannot see: anything but a parsed, importable module."""
     unanalysed = []
@@ -1593,10 +1638,16 @@ def _cap(items: list, limits: Limits, truncated: list[bool]) -> list:
 
 
 def analyse(
-    repo: GitRepo, request: AnalysisRequest, limits: Limits = DEFAULT_LIMITS
+    repo: GitRepo,
+    request: AnalysisRequest,
+    limits: Limits = DEFAULT_LIMITS,
+    cache: dict | None = None,
 ) -> dict:
-    """Build the impact graph and contract diff for a request and return the report."""
-    cache: dict = {}
+    """Build the impact graph and contract diff for a request and return the report.
+
+    ``cache`` maps blob IDs to parsed facts; requests that share one parse each file they share once.
+    """
+    cache = {} if cache is None else cache
     base = load_tree(repo, "base", request.base, cache, limits)
     head = load_tree(repo, "head", request.head, cache, limits)
     diff = contract_diff(base, head)
@@ -1641,6 +1692,8 @@ def analyse(
             "uses": _cap(uses, limits, truncated),
             "errors": _cap(errors, limits, truncated),
         }
+        if request.calls:
+            entry["calls"] = _cap(fork_calls(tree, own), limits, truncated)
         forks.append(entry)
 
     # Uses inside the files that define a changed symbol are the change itself, not its callers.
@@ -1689,20 +1742,35 @@ def main(argv: list[str] | None = None) -> int:
         required=True,
         help="path of the Git repository that holds every commit",
     )
+    parser.add_argument(
+        "--batch",
+        action="store_true",
+        help="read a JSON array of requests and write a JSON array of reports, parsing each shared file once",
+    )
     args = parser.parse_args(argv)
     raw = sys.stdin.buffer.read(MAX_REQUEST_BYTES + 1)
     try:
         if len(raw) > MAX_REQUEST_BYTES:
             raise RequestError(f"the request exceeds {MAX_REQUEST_BYTES} bytes")
         try:
-            request = parse_request(json.loads(raw))
+            parsed = json.loads(raw)
         except json.JSONDecodeError as error:
             raise RequestError(f"the request is not JSON: {error.msg}") from None
-        report = analyse(GitRepo(args.repo), request)
+        repo = GitRepo(args.repo)
+        if args.batch:
+            if not isinstance(parsed, list) or len(parsed) > MAX_FORKS:
+                raise RequestError(
+                    f"a batch must be an array of at most {MAX_FORKS} requests"
+                )
+            requests = [parse_request(each) for each in parsed]
+            cache: dict = {}
+            output = [analyse(repo, request, cache=cache) for request in requests]
+        else:
+            output = analyse(repo, parse_request(parsed))
     except (RequestError, GitError) as error:
         sys.stderr.write(f"{TOOL}: {error}\n")
         return 2
-    sys.stdout.write(json.dumps(report, sort_keys=True) + "\n")
+    sys.stdout.write(json.dumps(output, sort_keys=True) + "\n")
     return 0
 
 

@@ -150,6 +150,41 @@ def test_impact_counts_only_a_forks_own_changes_as_its_callers(tmp_path: Path) -
     )
 
 
+def test_calls_list_the_names_a_forks_own_changes_use(tmp_path: Path) -> None:
+    """#195: a checkpoint's caller list names what its own files use, never what main's files use."""
+    repo, base = new_repo(tmp_path, BASE)
+    git(repo, "checkout", "-qb", "feature")
+    fork = commit(
+        repo,
+        {
+            "analytics/monthly.py": "from shared.dates import start_of_day\n\n\ndef month(day):\n    return start_of_day(day)\n"
+        },
+        "own caller",
+    )
+    without = commit(
+        repo, {"analytics/monthly.py": "def month(day):\n    return day\n"}, "no caller"
+    )
+    request = {"base": base, "head": base, "calls": True}
+    calls = run(
+        "python_impact.py",
+        "--repo",
+        repo,
+        request
+        | {"forks": [{"id": "monthly", "sha": fork, "scopes": [], "since": base}]},
+    )["forks"][0]["calls"]
+    assert calls == ["shared.dates.start_of_day"]
+    after = run(
+        "python_impact.py",
+        "--repo",
+        repo,
+        request
+        | {"forks": [{"id": "monthly", "sha": without, "scopes": [], "since": base}]},
+    )["forks"][0]["calls"]
+    assert after == [], (
+        "the carried analytics/weekly.py is main's caller, not the fork's"
+    )
+
+
 def test_codemod_rewrites_every_call_of_a_renamed_function(tmp_path: Path) -> None:
     tree = tmp_path / "tree"
     for path, text in BASE.items():

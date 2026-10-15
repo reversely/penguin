@@ -17,7 +17,10 @@
 //   migration parts (`search: "rewrite"`) applies the declared rules to each place and reports each
 //   place's patch with the uses it leaves (`runMigrationRewrite`). Penguin's read of main's scope
 //   dependencies after a promotion (`search: "edges"`) runs one analysis of main with `edges: true`
-//   and reports the scope pairs with their counts (`runScopeEdges`).
+//   and reports the scope pairs with their counts (`runScopeEdges`). Penguin's caller list at a
+//   checkpoint (`search: "calls"`) runs one analysis of the checkpoint's own changes since main with
+//   `calls: true` and reports every name they use; one analysis reads every waiting checkpoint's list
+//   (`runCallerLists`).
 // - `check` runs a combined run with the block checks (combined-run.ts): the checkpoint merged onto
 //   its baseline (`main`) and onto each other running feature's fork, keyed by the feature id. A
 //   person with two running features gets two merged trees, each tested in that person's scopes. Each failed or erred
@@ -66,7 +69,7 @@ import { scopeForPath, type ScopeMap } from "@penguin/scope-map";
 import type { FixApplier } from "./apply-fix.ts";
 import { loadScopeMap } from "./command-allowlist.ts";
 import type { CombinedRunner } from "./combined-run.ts";
-import type { ImpactAnalyzer } from "./impact-analysis.ts";
+import type { ImpactAnalyzer, ImpactBatchAnalyzer, ImpactRequest } from "./impact-analysis.ts";
 import type { ClaimedToolRun, ToolRunReply } from "./penguin-client.ts";
 import { charterPaths, classifyCheck, DEFAULT_ROUND_LIMIT, loadIdentities, routingContext } from "./resolution.ts";
 import { patchedTree } from "./patch-tree.ts";
@@ -81,6 +84,8 @@ export interface ToolPassOptions {
   /** Makes every commit of a feature's fork (`feature-<id>`) available in `repoPath`. */
   readonly fetchFork: (fork: string) => Promise<void>;
   readonly impact: ImpactAnalyzer;
+  /** Several impact requests in one analysis, for Penguin's caller lists; absent, each runs on its own. */
+  readonly impactBatch?: ImpactBatchAnalyzer;
   /** Runs the block checks; its runner must hold consent for the scopes' tests. */
   readonly combined: CombinedRunner;
   readonly fixes: FixApplier;
@@ -120,8 +125,83 @@ export async function toolPass(options: ToolPassOptions): Promise<ToolPassResult
     return fetched.get(fork) as Promise<void>;
   };
   const runs: ToolRunResult[] = [];
-  for (const claim of claimed) runs.push(await runOne(options, claim, fetchOnce));
+  const lists = claimed.filter(isCallerListClaim);
+  for (let at = 0; at < lists.length; at += CALLER_LIST_BATCH) runs.push(...(await runCallerLists(options, lists.slice(at, at + CALLER_LIST_BATCH), fetchOnce)));
+  for (const claim of claimed) if (!isCallerListClaim(claim)) runs.push(await runOne(options, claim, fetchOnce));
   return { claimed: claimed.length, runs, durationMs: Math.round(performance.now() - started) };
+}
+
+/** The most caller lists one analysis reads: a batch takes at most 256 requests. */
+const CALLER_LIST_BATCH = 256;
+
+const isCallerListClaim = (claim: ClaimedToolRun): boolean => claim.tool === "impact" && claim.input["search"] === "calls";
+
+/** One checkpoint's caller list request: its change against its baseline, with its own fork's names. */
+const callerListRequest = (claim: ClaimedToolRun): ImpactRequest => ({
+  base: claim.base,
+  head: claim.checkpoint,
+  forks: [{ id: claim.feature, sha: claim.checkpoint, scopes: [], since: claim.base }],
+  calls: true,
+});
+
+/**
+ * Penguin's caller lists (`search: "calls"`), many checkpoints in one analysis: the requests share one
+ * parse of each file they carry unchanged from main, so each checkpoint costs only the files it
+ * changed. Each request is reported with its own report: the names its change modifies and the names
+ * its own files use. A list cut at its limit is reported as an error and keeps no list: a feature with
+ * no list is checked as a land's target until a later checkpoint lists it.
+ */
+async function runCallerLists(options: ToolPassOptions, claims: readonly ClaimedToolRun[], fetchFork: (fork: string) => Promise<void>): Promise<ToolRunResult[]> {
+  const ready: ClaimedToolRun[] = [];
+  const results: ToolRunResult[] = [];
+  for (const claim of claims) {
+    const base = { runId: claim.runId, tool: claim.tool, feature: claim.feature };
+    try {
+      await fetchFork(claim.fork);
+      for (const sha of [claim.base, claim.checkpoint]) {
+        if (!(await hasCommit(options.repoPath, sha))) throw new Error(`commit ${sha} is not in the fetched forks`);
+      }
+      ready.push(claim);
+    } catch (error) {
+      const reason = (error as Error).message;
+      results.push({ ...base, result: null, reply: null, error: reason, failure: await noteFailure(options.fail, "tool", String(claim.runId), reason) });
+    }
+  }
+  if (ready.length === 0) return results;
+  const started = performance.now();
+  const requests = ready.map(callerListRequest);
+  let reports: ImpactReport[] = [];
+  let failed = "";
+  try {
+    reports = options.impactBatch === undefined ? await Promise.all(requests.map((request) => options.impact(request))) : await options.impactBatch(requests);
+  } catch (error) {
+    failed = (error as Error).message;
+  }
+  const durationMs = Math.round((performance.now() - started) / ready.length);
+  for (const [index, claim] of ready.entries()) {
+    const impact = reports[index];
+    const calls = impact?.forks[0]?.calls;
+    const result: AgentToolResult =
+      impact === undefined || calls === undefined || impact.truncated
+        ? { ...emptyResult(claim), result: "error", summary: bounded(`the caller list could not be read: ${failed || (calls === undefined ? "the report left out the fork" : "a list was cut at its limit")}`) }
+        : {
+            ...emptyResult(claim),
+            impact,
+            summary: bounded(
+              `${plural(impact.changes.length, "changed symbol")}; ${plural(calls.length, "name")} the checkpoint's own changes use` +
+                (impact.complete ? "" : "; the change touches files the analysis cannot read"),
+            ),
+          };
+    const base = { runId: claim.runId, tool: claim.tool, feature: claim.feature };
+    const kept = boundToolResult({ ...result, durationMs });
+    try {
+      results.push({ ...base, result: kept, reply: await options.report(claim.runId, kept), error: null, failure: null });
+    } catch (error) {
+      const reason = `the result was not reported: ${(error as Error).message}`;
+      results.push({ ...base, result: kept, reply: null, error: reason, failure: await noteFailure(options.fail, "tool", String(claim.runId), reason) });
+    }
+  }
+  return results;
 }
 
 async function runOne(options: ToolPassOptions, claim: ClaimedToolRun, fetchFork: (fork: string) => Promise<void>): Promise<ToolRunResult> {

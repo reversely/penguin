@@ -687,7 +687,9 @@ each one as if it had changed, so a request whose base equals its head reports o
 Penguin uses it for retiring symbols ([design.md](design.md#steps-1-to-5-in-the-build)). A request
 with `edges: true` also gets `scopeEdges`: for each pair of scopes, the import, call and reference
 sites the consumer scope's files at head hold into the provider scope's modules and definitions. An
-edge names two scope ids and three counts, no path or symbol. A rename or
+edge names two scope ids and three counts, no path or symbol. A request with `calls: true` gives each
+fork `calls`: every module and definition of its tree its own files use, defined outside them, as
+dotted names; Penguin keeps them as the caller list ([design.md](design.md#caller-list)). A rename or
 move whose old name still reaches the very definition it moved to, through `old = new` in the module
 or class or through an import of the new definition into the old module, is reported with `kept:
 true`. The old name's callers are still listed. The report comes back on standard output and is checked against `IMPACT_REPORT_SCHEMA` in
@@ -1123,6 +1125,10 @@ and every other running feature's fork with read tokens into the runner's reposi
   dependencies ([design.md](design.md#scope-dependencies-from-the-code)). It is claimed like a
   count, with no other fork. The runner runs one analysis of main at the promotion with
   `edges: true` and reports it as `impact`.
+- A request Penguin records at each checkpoint with `search: "calls"` reads the checkpoint's caller
+  list ([design.md](design.md#caller-list)). It is claimed with no other fork. The runner reads every
+  waiting list of a pass in one analysis with `calls: true`, at most 256 forks at a time, and reports
+  each request's names under `calls` with no `impact`. An incomplete read is reported as an error.
 - A request Penguin records after a count with `search: "rewrite"` is the rewrite of a split's
   migration parts ([design.md](design.md#migration-plans-in-the-build)). It is claimed like a count.
   Its input names the originating feature's retiring symbols with their rules. It also names each

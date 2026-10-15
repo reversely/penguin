@@ -10,7 +10,9 @@
 // the requesting session at its next safe checkpoint (AgentToolStore.deliver).
 //
 // Penguin's own count of the callers of retiring symbols after a promotion (retiring-count.ts) is
-// claimed the same way, with no agent's charter and with every running feature's fork.
+// claimed the same way, with no agent's charter and with every running feature's fork. Its read of
+// main's scope dependencies (scope-edges.ts) and each checkpoint's caller list (caller-list.ts) are
+// claimed with no other fork.
 //
 // The runner holds write on a feature's fork only for an approved mechanical plan part, minted for
 // that part alone (fix-write.ts), so an `apply_fix` result names a commit kept as a local ref on the
@@ -34,6 +36,7 @@ import type { Feature, FeatureStore } from "./feature-store.ts";
 import type { BridgeCaller } from "./issue-index.ts";
 import { RUNNING_STATES } from "./overlap-lock.ts";
 import { CALLERS_SEARCH, PENGUIN_SESSION, REWRITE_SEARCH } from "./retiring-count.ts";
+import { isCallerListRequest } from "./caller-list.ts";
 import { isEdgesRequest } from "./scope-edges.ts";
 
 /** Another running feature's fork the checks merge the checkpoint onto, a target of its own. */
@@ -151,8 +154,9 @@ export async function claimToolRuns(deps: ToolRunnerDeps, caller: BridgeCaller):
       runs.push(countClaim(run, feature, await forks("")));
       continue;
     }
-    // Main's scope dependencies read only main at the promotion, so no other fork is fetched.
-    if (feature !== undefined && isEdgesRequest(run)) {
+    // Main's scope dependencies read only main at the promotion, and a caller list reads only the
+    // feature's own checkpoint, so no other fork is fetched.
+    if (feature !== undefined && (isEdgesRequest(run) || isCallerListRequest(run))) {
       runs.push(countClaim(run, feature, []));
       continue;
     }

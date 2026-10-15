@@ -326,6 +326,11 @@ export interface FeatureCheckpointDeps extends FeatureDeps {
    * once that run is reported, records the split. The run's id, or undefined. Absent, nothing is sorted.
    */
   readonly sortContract?: (feature: Feature) => Promise<string | undefined>;
+  /**
+   * Asks the check runner for the checkpoint's caller list (caller-list.ts requestCallerList), at an
+   * agent's checkpoint and at each of Penguin's writes. Absent, no list is kept.
+   */
+  readonly listCalls?: (feature: Feature, sha: string) => Promise<unknown>;
   readonly now?: () => number;
 }
 
@@ -369,6 +374,7 @@ export async function reportFeatureCheckpoint(
   const plansJoined = (await deps.joinPlans?.(outcome.feature)) ?? [];
   const retiringCheck = sessionId === null ? undefined : await deps.checkRetiring?.(outcome.feature, sessionId, sha);
   const contractSort = await deps.sortContract?.(outcome.feature);
+  await deps.listCalls?.(outcome.feature, sha);
   const delivery = sessionId === null ? undefined : deps.deliver(caller, sessionId);
   return {
     ...outcome,
@@ -391,8 +397,8 @@ const NO_PLAN_NOTICES: Delivery["planNotices"] = { parts: [], decisions: [], rev
  * Records `sha`, the head of a fork Penguin opened, as the feature's checkpoint under a signed
  * `checkpoint_area` record authored by Penguin (penguin-land.ts): the protected-path confirmations,
  * the area update, the plans it now meets and its contract diff's facts run, as an agent's checkpoint
- * takes them. No session is delivered to and no retiring-calls check is asked: Penguin wrote nothing
- * of its own.
+ * takes them, with its caller list. No session is delivered to and no retiring-calls check is asked:
+ * Penguin wrote nothing of its own.
  */
 export async function recordPenguinCheckpoint(
   deps: Omit<FeatureCheckpointDeps, "deliver" | "commitExists">,
@@ -406,6 +412,7 @@ export async function recordPenguinCheckpoint(
   if (outcome.status === "rejected") return outcome;
   await deps.joinPlans?.(outcome.feature);
   await deps.sortContract?.(outcome.feature);
+  await deps.listCalls?.(outcome.feature, sha);
   return outcome;
 }
 

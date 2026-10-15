@@ -8,6 +8,8 @@ import test from "node:test";
 
 import { recordToolResult } from "../../services/project-agent/src/agent-tool-runner.ts";
 import { AgentToolStore } from "../../services/project-agent/src/agent-tools.ts";
+import { CallerListStore, callsReported, requestCallerList } from "../../services/project-agent/src/caller-list.ts";
+import type { Feature } from "../../services/project-agent/src/feature-store.ts";
 import type { SqlDatabase } from "../../services/project-agent/src/issue-index.ts";
 
 const BASE = "a".repeat(40);
@@ -67,4 +69,47 @@ test("a result for another checkpoint is refused", () => {
   const store = runs();
   const run = request(store);
   assert.equal(recordToolResult(store, runner, run.id, result({ checkpoint: "d".repeat(40) })).status, "rejected");
+});
+
+// #195: each checkpoint's caller list, kept so a later change finds the forks it reaches from the rows alone.
+test("a checkpoint's caller list puts its feature among a name's callers, and a later checkpoint takes it out", () => {
+  const db = new DatabaseSync(":memory:");
+  const sql: SqlDatabase = {
+    exec: (query, ...bindings) => db.prepare(query).all(...(bindings as never[])) as Record<string, string | number | null>[],
+    transaction: (body) => body(),
+  };
+  const store = new AgentToolStore(sql);
+  const lists = new CallerListStore(sql);
+  const feature = { id: "cohort-ltv", repo: "feature-cohort-ltv" } as Feature;
+  const report = (checkpoint: string, calls: readonly string[]) => {
+    const runId = requestCallerList(store, feature, checkpoint, BASE) as number;
+    const impact = {
+      schemaVersion: 1,
+      tool: "python-impact",
+      commandId: "analysis:python-impact",
+      base: BASE,
+      head: checkpoint,
+      changes: [],
+      signatures: [],
+      removedExports: [],
+      dataShapes: [],
+      contracts: [],
+      headUses: [],
+      forks: [{ id: feature.id, sha: checkpoint, scopes: [], since: BASE, mergeBase: BASE, carried: 0, uses: [], errors: [], calls }],
+      unanalysed: [],
+      errors: [],
+      complete: true,
+      truncated: false,
+      files: { base: 1, head: 1, parsed: 1 },
+    };
+    const recorded = recordToolResult(store, runner, runId, { ...result({ tool: "impact", checkpoint, result: "found", summary: "", impact }) });
+    assert.equal(recorded.status, "recorded", JSON.stringify(recorded));
+    if (recorded.status === "recorded") assert.equal(callsReported(lists, recorded.run), true);
+  };
+  report(CHECKPOINT, ["accounts.shoppers.Event", "accounts.shoppers.ShopperMap.resolve"]);
+  assert.deepEqual(lists.callersOf(["accounts.shoppers.ShopperMap.resolve"]), ["cohort-ltv"]);
+  assert.deepEqual(lists.callersOf(["accounts.shoppers"]), ["cohort-ltv"], "a changed module matches every use of its names");
+  assert.deepEqual(lists.callersOf(["accounts.shopper"]), [], "a name never matches a longer name it only starts");
+  report("d".repeat(40), ["accounts.shoppers.Event"]);
+  assert.deepEqual(lists.callersOf(["accounts.shoppers.ShopperMap.resolve"]), []);
 });

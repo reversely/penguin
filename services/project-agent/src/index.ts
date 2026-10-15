@@ -199,6 +199,7 @@ import {
 import { coverMidway, handOver, meeting, PlanCoverageStore } from "./plan-coverage.ts";
 import { RetiringStore } from "./retiring-store.ts";
 import { edgesReported, requestScopeEdges, ScopeEdgeStore } from "./scope-edges.ts";
+import { CallerListStore, callsReported, requestCallerList } from "./caller-list.ts";
 import { contractWork, ContractSplitStore, recordSplit, retireSplit, scheduleSort, type ContractSplitDeps } from "./contract-split.ts";
 import type { BlockRun } from "./block-store.ts";
 import {
@@ -1078,6 +1079,7 @@ export class ProjectAgent extends Agent {
   #planCoverage: PlanCoverageStore | undefined;
   #retiring: RetiringStore | undefined;
   #scopeEdges: ScopeEdgeStore | undefined;
+  #callerLists: CallerListStore | undefined;
   #migrations: MigrationStore | undefined;
   #penguinLands: PenguinLandStore | undefined;
   /** Penguin's lands of the features it opened run one sweep at a time (penguin-land.ts). */
@@ -2007,6 +2009,19 @@ export class ProjectAgent extends Agent {
           return undefined;
         }
       },
+      // The checkpoint's caller list (caller-list.ts, #195). A failure here is logged and never fails the checkpoint.
+      listCalls: async (feature: Feature, commit: string) => {
+        try {
+          if (feature.repo === null) return undefined;
+          const baseSha = await withRepo(this.env.ARTIFACTS, feature.repo, (fork) =>
+            withRepo(this.env.ARTIFACTS, repos.base, (base) => checkpointBaseline(fork, base, commit)),
+          );
+          return requestCallerList(this.#toolStore(), feature, commit, baseSha);
+        } catch (error) {
+          console.error(JSON.stringify({ event: "caller_list_failed", feature: feature.id, error: String(error).slice(0, 200) }));
+          return undefined;
+        }
+      },
       // PRD 0.5 section 5.1: one retiring-calls check per checkpoint, when the project retires symbols.
       // A failure here is logged and never fails the checkpoint.
       checkRetiring: async (feature: Feature, session: string, commit: string) => {
@@ -2445,6 +2460,7 @@ export class ProjectAgent extends Agent {
   async reportToolRun(caller: BridgeCaller, runId: number, result: unknown, repos?: ProjectRepos): Promise<ToolReportOutcome> {
     const outcome = recordToolResult(this.#toolStore(), caller, runId, result);
     if (outcome.status === "recorded" && edgesReported(this.#scopeEdgeStore(), outcome.run)) this.#liveFeed().featuresChanged();
+    if (outcome.status === "recorded") callsReported(this.#callerListStore(), outcome.run);
     // A check's caller replay opens or moves the feature's caller items (caller-items.ts).
     const replay = outcome.status === "recorded" && outcome.run.tool === "check" ? outcome.run.outcome?.callerReplay : undefined;
     if (outcome.status === "recorded" && replay !== undefined && outcome.run.featureId !== null) {
@@ -3274,6 +3290,12 @@ export class ProjectAgent extends Agent {
   #scopeEdgeStore(): ScopeEdgeStore {
     this.#scopeEdges ??= new ScopeEdgeStore(this.#database());
     return this.#scopeEdges;
+  }
+
+  /** Which running features call which names, kept at each checkpoint (caller-list.ts). */
+  #callerListStore(): CallerListStore {
+    this.#callerLists ??= new CallerListStore(this.#database());
+    return this.#callerLists;
   }
 
   /** The project's retiring symbols, declared by stored merge plans (retiring-store.ts). */

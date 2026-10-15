@@ -157,7 +157,12 @@ export const TOOL_RESULT_SCHEMA: JsonSchema = {
   // `migration` and `rewrites` are optional: only an impact request that searched for retiring
   // symbols carries the first, and only Penguin's rewrite request the second. `callerReplay` is a
   // check's, and parseCallerReplay checks it.
-  properties: { ...(RESULT["properties"] as Record<string, JsonSchema>), migration: MIGRATION, rewrites: MIGRATION_REWRITES_SCHEMA, callerReplay: { type: "object" } },
+  properties: {
+    ...(RESULT["properties"] as Record<string, JsonSchema>),
+    migration: MIGRATION,
+    rewrites: MIGRATION_REWRITES_SCHEMA,
+    callerReplay: { type: "object" },
+  },
 };
 
 export type ParsedToolResult = { readonly ok: true; readonly result: AgentToolResult } | { readonly ok: false; readonly problems: string[] };

@@ -27,7 +27,7 @@ import { combinedRunPass, forkFetcher, formatCombinedPass, type CombinedPassResu
 import { CombinedRunner } from "./combined-run.ts";
 import { fixWritePass, formatFixWritePass, writeFix, type FixWritePassResult } from "./fix-write.ts";
 import { penguinRemote, tokenRemote } from "./git-remote.ts";
-import { pythonImpactAnalyzer } from "./impact-analysis.ts";
+import { pythonImpactAnalyzer, pythonImpactBatchAnalyzer } from "./impact-analysis.ts";
 import { formatPartTrialPass, partTrialPass, PartTrialRunner, trialFetcher, type PartTrialPassResult } from "./part-trial-run.ts";
 import { factsFetcher, formatPlanFactsPass, planFactsPass, PlanFactsRunner, type PlanFactsPassResult } from "./plan-facts-run.ts";
 import { defaultClonePath } from "./issue-cli.ts";
@@ -334,6 +334,7 @@ async function testJobsPass(
         report: (runId, result) => reportToolRun(server, bridgeToken, runId, result, fetchImpl),
         fetchFork: (fork) => fetchRepoBranches(repo, readRemotes, fork),
         impact,
+        impactBatch: pythonImpactBatchAnalyzer({ repoPath: repo, python: programs.python }),
         combined,
         fixes,
         repoPath: repo,

@@ -1266,6 +1266,7 @@ with its commit and scopes, then what the analysis found.
 | Stored data shapes | Field lists before and after for each dataclass, `NamedTuple`, `TypedDict` and `Enum` whose fields change |
 | Uses | Each import, call or reference of a changed symbol, with its file and line. Head uses lie outside the changed files. Fork uses lie inside the fork's scopes. A fork asked with `since` lists only uses in files it changed since its merge base with that commit. The rest count as `carried` |
 | Scope edges | Asked with `edges: true`: each pair of scopes where the consumer's files at head import, call or reference the provider's modules and definitions, with the count of each kind of use site. No path, line or symbol |
+| Calls | Asked with `calls: true`, on each fork: every module and definition of the fork's tree that its own files import, call or reference, defined outside those files, as dotted names such as `accounts.shoppers.ShopperMap.resolve` |
 
 Names resolve through imports and re-exports. A re-export in `__all__` that points at another
 definition counts as a change to the re-exported name. In the dependency bump, `shared/http.py`
@@ -1284,6 +1285,27 @@ report lists `start_of_day()` as modified with an unchanged signature. It lists 
 `analytics/weekly.py` and Sam's call in `messaging/reminders.py`, so both forks run tests. On
 identity unification it lists the `Profile` field change and the new required `identity` parameter
 of `Profile.set`. It lists every analytics and messaging file that imports the identity map.
+
+#### Caller list
+
+A land, a check and a plan check need the running features that call what a change modifies. Reading
+every fork for that costs time for every running feature, so Penguin keeps a caller list instead
+(`services/project-agent/src/caller-list.ts`, #195):
+
+1. **Request.** Each checkpoint of a feature, an agent's or one of Penguin's own writes, records one
+   `impact` request of Penguin's own with `search: "calls"`. The check runner reads every waiting
+   list in one analysis with `calls: true`, each fork asked with `since` its baseline on main, so a
+   file the forks carry unchanged from main is parsed once and each checkpoint costs only the files it
+   changed. The runner reports each request with its own fork's names under `calls`. An incomplete
+   read is reported as an error and keeps no list.
+2. **Store.** The ProjectAgent replaces the feature's rows (`ForkCall`) with the reported names. A
+   report older than the stored one is ignored.
+3. **Read.** `callersOf(names)` answers from the rows alone which features use any of the names. A
+   name matches itself and every name inside it, so a changed module matches every use of its names,
+   as the impact graph counts a module's uses.
+
+On the 200-person Larder, the list finds exactly the forks that reading every fork's own changes
+finds for case 1's and case 2's changes (`tests/test_fixtures.py`).
 
 #### Scope dependencies from the code
 

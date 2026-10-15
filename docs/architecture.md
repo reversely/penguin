@@ -218,7 +218,9 @@ matches a pending operation clears its `PendingOp` row.
    checks that this person owns the covering feature and writes a signed `approve_overlap` record.
 4. Each checkpoint on the fork, from `report_checkpoint` or the bridge's `POST /checkpoints`, must be
    in the fork. The ProjectAgent diffs it against its baseline on main and adds the changed paths
-   and their scopes to the declared area.
+   and their scopes to the declared area. It also asks the check runner for the checkpoint's caller list: the names its own
+   changes use, which the ProjectAgent keeps so a later change finds the forks it reaches without
+   reading every fork ([design.md](design.md#caller-list)).
 
 ### Writing an approved fix
 

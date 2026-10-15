@@ -107,6 +107,11 @@ export interface ImpactFork {
   readonly uses: readonly ImpactUse[];
   /** Files inside the fork's scopes the analysis could not read. */
   readonly errors: readonly ImpactError[];
+  /**
+   * When the request asked for `calls`: every module and definition of the fork's tree its own files
+   * use, defined outside them, as dotted names such as `accounts.shoppers.ShopperMap.resolve`.
+   */
+  readonly calls?: readonly string[];
 }
 
 export interface ImpactReport {
@@ -236,8 +241,9 @@ export const IMPACT_REPORT_SCHEMA: JsonSchema = {
           carried: { type: "integer", minimum: 0 },
           uses: list(use),
           errors: list(record(error)),
+          calls: strings,
         },
-        ["since", "mergeBase", "carried"],
+        ["since", "mergeBase", "carried", "calls"],
       ),
     },
     unanalysed: list(PATH),
