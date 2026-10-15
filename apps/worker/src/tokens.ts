@@ -6,8 +6,8 @@
  * feature's write token comes only from its own agent sessions (features.ts). Artifacts tokens only separate
  * read from write per repo, so the repo boundary is the push permission boundary. A write token on
  * another person's feature fork is minted only for one approved plan part (fix-write.ts in the
- * ProjectAgent): to the originating agent through `fix_token`, or to the check runner's claim of a
- * mechanical part, for PENGUIN_FIX_TOKEN_TTL_MINUTES.
+ * ProjectAgent): to the check runner's claim of any approved part, or to the originating agent through
+ * `fix_token` for a write opened for it before #207, for PENGUIN_FIX_TOKEN_TTL_MINUTES.
  *
  * Token plaintext passes through this module into the response body only; it is never logged.
  */

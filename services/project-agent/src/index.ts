@@ -2901,7 +2901,7 @@ export class ProjectAgent extends Agent {
       roundLimit: this.#roundLimit(),
       notify: (personId) => sendToOwner(this.getConnections<{ owner?: string }>(), personId, inboxChangedMessage()),
       // An approved part on a running feature takes its place in its fork's order of writes (fix-write.ts):
-      // the check runner writes a mechanical one, the originating agent or its fix task a behavioural one.
+      // the check runner writes it, whatever its kind (#207).
       // Each approval also asks Penguin's copy of the originating change's current modules into every
       // approved part's fork, a behavioural part's included (#179).
       approved: (featureId, plan, part) => {

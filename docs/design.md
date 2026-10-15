@@ -831,11 +831,12 @@ that also fails another check stays with its author. Its stored data reason is l
 
 #### Steps 1 and 3 in the build
 
-- **Who writes.** The originating agent named in the plan (`Plan.proposedBy`) writes a behavioural
-  part. Its session on the originating feature calls `fix_token` with the part and the revision. A
-  mechanical part is Penguin's codemod, so the check runner writes it: the approval queues the write
-  and the runner claims it at `POST /fix-writes/claim`
-  ([bridge-and-runner.md](bridge-and-runner.md#fix-writes)). An approved verify part on a running
+- **Who writes.** The check runner writes every approved part on a running feature, behavioural
+  and mechanical alike (#207): the approval queues the write and the runner claims it at
+  `POST /fix-writes/claim` ([bridge-and-runner.md](bridge-and-runner.md#fix-writes)). No agent writes
+  code in another person's fork; the receiving agent only approves. A behavioural part whose write
+  was opened for an agent before #207 is still written by the originating agent named in the plan
+  (`Plan.proposedBy`) through `fix_token`, and `fix_token` refuses every other part. An approved verify part on a running
   feature queues a runner write too. The claim withdraws it when the fork needs no module copied. An
   approved rule-written part of a
   split's migration plan is queued the same way, onto its running feature's fork or its plan's block
@@ -918,8 +919,9 @@ that also fails another check stays with its author. Its stored data reason is l
 #### Step 4 in the build
 
 - **The order.** Approving a part on a running feature opens its write (`openFixWrite`,
-  `services/project-agent/src/fix-write.ts`). The check runner writes a mechanical or verify part.
-  The originating agent or the holder of its fix task writes a behavioural one. The writes into one fork
+  `services/project-agent/src/fix-write.ts`). The check runner writes it, whatever its kind; only
+  a write opened for an agent before #207 goes to the originating agent or the holder of its fix
+  task. The writes into one fork
   stand in the order they opened.
 - **One token per fork.** Penguin grants a write only when three conditions hold
   (`FixGrantStore.waitsFor`). No other write into the same fork holds a token. No earlier write into
@@ -1583,9 +1585,10 @@ rejects before the originating feature changes its fork or reaches main.
   review each call's verdict and evidence. The agent's or person's words are in the record as written.
 - **Writes into the receiving fork.** A write of the originating feature's fix into a fork waits until
   every item there is `confirmed`, `fix_approved`, `written`, `approved` or `unaffected`, with no owner's decision
-  pending (`writeWaits`). `fix_token` refuses with `callers_pending` and names each item. The check
-  runner's claim leaves the write queued, a copy write and a mechanical part's write included. A fork
-  that holds no item writes as before.
+  pending (`writeWaits`). The check runner's claim leaves the write queued, a copy write included,
+  and a land refused as `copy_not_written` names the items the copy waits on. `fix_token`, for a
+  write still opened for an agent, refuses with `callers_pending` and names each item. A fork that
+  holds no item writes as before.
 - **Landing.** `land_feature` refuses with `callers_pending` until every item on a running feature is
   `confirmed`, `written`, `approved`, `unaffected` or `withdrawn` (`landPending`). The block run's own replay may
   reset an item. A passing land run whose items are no longer settled is then not promoted: Penguin
@@ -1602,7 +1605,7 @@ rejects before the originating feature changes its fork or reaches main.
   agent reads as data too.
 
 Items use plan parts where a part already means the same thing: a broken caller's fix is a plan part
-placed on the receiving feature, written with `fix_token` once approved. A part covers a whole fork,
+placed on the receiving feature, written by the check runner once approved. A part covers a whole fork,
 while an item covers one contract's callers in it. The `unaffected` and `differs` paths carry no patch
 at all. The items therefore keep their own states beside the parts. The part's own approval still
 follows the review policy. The item adds the receiving agent's signed consent before the write. The

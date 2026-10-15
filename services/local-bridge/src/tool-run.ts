@@ -27,7 +27,7 @@
 //   check gets its one next step from the resolution ladder (`classifyCheck`). No fix is applied: a
 //   fix for steps 1 to 3 is the agent's `apply_fix`, or Penguin's once a merge plan grants it a fork.
 // - `apply_fix` applies the requested fix to the checkpoint inside the caller's charter
-//   (apply-fix.ts). The runner holds write on a feature's fork only for an approved mechanical plan
+//   (apply-fix.ts). The runner holds write on a feature's fork only for an approved plan
 //   part, with a token minted for that part (fix-write.ts), so the commit stays at
 //   `refs/penguin/fixes/<commit>` in the runner's repository and is reported with `pushed: false`.
 //

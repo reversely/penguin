@@ -983,8 +983,9 @@ const INSTRUCTIONS =
   "A merge plan announced before you opened your feature, whose area yours meets, comes in open_feature's " +
   "`announcedPlans`: write against the planned change from the start. Penguin's check runner writes the " +
   "mechanical updates into other people's forks itself: it copies your change's modules into each affected " +
-  "fork and rewrites the calls there by your plan's rules. You write into another person's fork only a " +
-  "behavioural part of your plan that its author approved, with fix_token and report_fix_write. When your " +
+  "fork and rewrites the calls there by your plan's rules. It also writes every approved part of your plan into " +
+  "its fork, behavioural ones included: no agent writes code in another person's fork, and an agent whose fork " +
+  "receives a fix only approves it. When your " +
   "feature is ready, call land_feature: Penguin checks the block and moves main itself. A land refused as " +
   "`copy_not_written` waits for the check runner to copy your modules into an affected fork; call " +
   "land_feature again once the copy is written. " +
@@ -1067,7 +1068,7 @@ export function createPenguinMcpServer(
         "Penguin approves removing it. The next step then starts with \"Contract\": remove it, report a checkpoint and land. " +
         "`migration` lists the migration plans Penguin proposed for those symbols, one per owner group, with each part's writer and state. " +
         "`editTasks` lists the edit tasks Penguin routed to this session's identity by charter and delivered at a safe checkpoint: " +
-        "a review form to send with submit_review, an approved fix to write with fix_token, or a next step after a failed check " +
+        "a review form to send with submit_review or a next step after a failed check " +
         "to make in `fork`, changing only `files` or the paths of `scopes`; Penguin's checks named in `verifier` then run. " +
         "`editQueue` counts your developer's running, queued and asked tasks against the cap of background runs. " +
         "`callerItems` lists each caller item: `receiving` for callers in your worktree that another feature's change reaches, " +
@@ -1075,7 +1076,8 @@ export function createPenguinMcpServer(
         "each differing call old and new with its effects, the replay runs and the tests that ran, the proposed fix's patch and the " +
         "other side's explanation or review under `personWritten`. `yourTurn` names the tool your side answers with: confirm_caller, " +
         "review_caller, propose_caller_fix or explain_difference. Your feature lands only once every item is confirmed, its fix written " +
-        "or its difference approved; a fix into another worktree waits until that worktree approves.",
+        "or its difference approved. Penguin's check runner writes an approved fix into the receiving worktree once that " +
+        "worktree approves it; the receiving agent only approves and never edits the fix in.",
       inputSchema: workInput,
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -1471,7 +1473,9 @@ function registerFeatureTools(server: McpServer, features: McpFeatures): void {
     {
       title: "Fix token",
       description:
-        "After an author approves a behavioural part of your feature's merge plan, a short-lived write token " +
+        "Penguin's check runner writes every approved part of your merge plan into its fork itself, and fix_token " +
+        "refuses those as `forbidden`. It answers only for a behavioural part whose write Penguin opened for the " +
+        "originating agent before the runner wrote them all: a short-lived write token " +
         "on that author's feature fork, for this one part. Only the originating agent named in the plan " +
         "gets it, only for the part's current approved revision. The token works on that one fork. The " +
         "answer's `write` names the commit to make: apply the approved patch (`personWritten.patch`) to " +
@@ -1839,7 +1843,7 @@ function registerCallerTools(server: McpServer, owner: string, project: McpProje
         "under `personWritten`. Give every differing call a verdict with evidence: a pytest node id the replay ran " +
         "(the call's test or one of the call site's tests) or the call's id. Penguin refuses a call left out, evidence the " +
         "replay did not run and a test the originating change added or edited or that was not on main before it. " +
-        "Approving a fix lets the originating agent write it into your fork; asking for changes " +
+        "Approving a fix lets Penguin's check runner write it into your fork; you do not edit it in. Asking for changes " +
         "sends it back. A second rejection sends the item to your developer, the worktree owner.",
       inputSchema: reviewCallerInput,
       annotations: write,
@@ -1853,8 +1857,8 @@ function registerCallerTools(server: McpServer, owner: string, project: McpProje
       description:
         "For the originating agent, when your change breaks a caller in another worktree (`broken`): names the part of " +
         "your feature's newest plan, placed on that worktree's feature, whose patch fixes the caller. Propose the patch " +
-        "with propose_plan or revise_plan_part first. The receiving agent then approves or rejects it; fix_token issues " +
-        "a write token only after its approval.",
+        "with propose_plan or revise_plan_part first. The receiving agent then approves or rejects it; once approved, " +
+        "Penguin's check runner writes it into that fork.",
       inputSchema: proposeCallerFixInput,
       annotations: write,
     },

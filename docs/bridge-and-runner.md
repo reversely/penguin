@@ -242,7 +242,8 @@ Each pass:
 8. **Clean up.** The bridge removes the worktree and its fetch ref, whatever happened.
 
 An approved fix needs no agent: its patch is fixed, so the bridge writes it with the fix-write code
-([Fix writes](#fix-writes)) and reports that commit.
+([Fix writes](#fix-writes)) and reports that commit. Penguin opens a fix task only for a write opened
+for an agent before the check runner wrote every part (#207); every later approval goes to the runner.
 
 Penguin keeps a reported commit only when it has one parent, sits on the fork's `main` and changes
 only the task's allowed paths. Otherwise the task goes back to the owner with Penguin's reason.
@@ -384,8 +385,8 @@ penguin-bridge runner --combined
    - claims the `impact`, `check` and `apply_fix` requests agents made. It fetches the feature's
      fork and the other running features' forks, runs the tool on the checkpoint and reports the
      result (`tool-run.ts`, [Agent tools on the runner](#agent-tools-on-the-runner));
-   - claims the writes of approved mechanical plan parts and writes each into the affected
-     feature's fork ([Fix writes](#fix-writes));
+   - claims the writes of approved plan parts of every kind and the module copies, and writes each
+     into the affected feature's fork ([Fix writes](#fix-writes));
    - claims the block runs of features that land or whose plan needs checking again, runs the
      checks and reports each one ([Block runs](#block-runs)).
 
@@ -536,27 +537,34 @@ v1 failed for 7 of the 20 forks with `bad band #78`, on both passes.
 ### Fix writes
 
 Once an author approves a part of a merge plan, its fix becomes one commit on the affected feature's
-fork ([design.md](design.md#steps-1-and-3-in-the-build)). A mechanical or verify part's commit is
-Penguin's update. The plan's rules rewrite the fork's call sites. The runner copies the originating
-change's modules the fork imports. Three writers commit it, all with the same code
-(`fix-write.ts`):
+fork ([design.md](design.md#steps-1-and-3-in-the-build)). The check runner writes it, whatever the
+part's kind (#207). No agent writes code in another person's fork. The commit holds the part's
+approved patch: the plan's rules rewrite a mechanical part's call sites, and a behavioural part's patch
+is the one its author approved. The same commit copies the originating change's modules the fork
+imports. The receiving feature's agent only approves; `get_work` tells it that Penguin writes the
+fix. The writers all use the same code (`fix-write.ts`):
 
-- The originating agent pipes the answer of the `fix_token` MCP tool to `penguin-bridge fix-write`.
-  The command fetches the fork into `<state-dir>/fix-writes`, or `--repo <path>`, writes the fix and
-  prints the commit as JSON for `report_fix_write`.
-- The affected feature's builder takes the part's fix task ([Edit tasks](#edit-tasks)). When the
-  person's bridge claims that task, the bridge commits the approved patch itself, with no agent run
-  (`edit-run.ts`).
-- Runner mode claims the writes of approved mechanical and verify parts at `POST /fix-writes/claim` under a
-  10-minute lease. It also claims the copy writes of any approved part: a spec with an empty patch
-  whose `copy` names the originating change's current revision
-  ([design.md](design.md#steps-1-and-3-in-the-build)). An approved rule-written part of a split's migration plan comes the same way,
-  onto its running feature's fork or its plan's block feature
-  ([design.md](design.md#migration-plans-in-the-build)); a fork whose start waits on an overlap lock
-  is left out of the claim. Each claim carries a `write` token minted for that part on that fork. The runner
-  writes each fix and reports the commit to `POST /fix-writes/<write id>`. A write that stops is
-  reported as a [failed run](#failed-runs). Penguin queues it again. The next claim prepares it with
-  a new token.
+- Runner mode claims every write at `POST /fix-writes/claim` under a 10-minute lease: each approved
+  part's own write, and the copy writes a land asks for, a spec with an empty patch whose `copy`
+  names the originating change's current revision
+  ([design.md](design.md#steps-1-and-3-in-the-build)). One claim loop serves both. Each claimed write
+  carries a `write` token minted for that part on the named fork alone. A write into a fork whose
+  caller items wait on the receiving side stays queued; a land refused as `copy_not_written` names
+  that wait.
+- A write Penguin opened for an agent before #207 is still the agent's. The originating agent pipes
+  the answer of the `fix_token` MCP tool to `penguin-bridge fix-write`, which fetches the fork into
+  `<state-dir>/fix-writes`, or `--repo <path>`, writes the fix and prints the commit as JSON for
+  `report_fix_write`. Or the affected feature's builder takes the part's fix task
+  ([Edit tasks](#edit-tasks)), and the person's bridge commits the approved patch with no agent run
+  (`edit-run.ts`). `fix_token` refuses every other part as `forbidden`.
+
+An approved rule-written part of a split's migration plan comes through the same claim, onto its
+running feature's fork or its plan's block feature
+([design.md](design.md#migration-plans-in-the-build)). A fork whose start waits on an overlap lock is
+left out of the claim. The runner writes each fix and reports the commit to
+`POST /fix-writes/<write id>`, as `report_fix_write` does for an agent. A write that stops is reported
+as a [failed run](#failed-runs). Penguin queues it again. The next claim prepares it with a new
+token.
 
 The writer fetches the fork's `main` and stops with `moved` when its head is not the granted parent.
 It reads each file the patch writes at the parent and applies the patch with `applyPatchFile`

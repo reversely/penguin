@@ -18,7 +18,6 @@ import {
   claimRunnerWrites,
   copiesBehind,
   copyWriteKey,
-  copyWriteOf,
   FixGrantStore,
   openCopyWrites,
   openFixWrite,
@@ -91,6 +90,16 @@ const BASE_MONEY = "def cents(amount):\n    return amount\n";
 const MONEY_1 = "def cents(amount):\n    return int(amount * 100)\n";
 const MONEY_2 = "def cents(amount):\n    return round(amount * 100)\n";
 const WEEKLY = "from shared.money import cents\n\n\ndef total(rows):\n    return sum(cents(row) for row in rows)\n";
+/** The approved behavioural fix of Jun's caller, and the file it leaves. */
+const WEEKLY_FIXED = "from shared.money import cents\n\n\ndef total(rows):\n    return sum(cents(row) for row in rows if row)\n";
+const WEEKLY_PATCH = [
+  "--- a/analytics/weekly.py",
+  "+++ b/analytics/weekly.py",
+  "@@ -5 +5 @@",
+  "-    return sum(cents(row) for row in rows)",
+  "+    return sum(cents(row) for row in rows if row)",
+  "",
+].join("\n");
 /** The fork's own change to the module: a line the originating change does not have. */
 const FORK_MONEY = "def cents(amount):\n    return amount\n\n\ndef dollars(value):\n    return value / 100\n";
 
@@ -148,7 +157,18 @@ function world(kind: PlanPart["kind"], forkMoney = BASE_MONEY) {
     place: { kind: "feature", feature: "weekly" },
     scopes: ["analytics"],
     ...(kind === "behavioural"
-      ? { diff: { source: "patch", repo: "feature-weekly", ref: "feature-weekly@x+patch:sha256:0", commit: null, base: fork.head, patch: "unused", files: [], truncated: false } }
+      ? {
+          diff: {
+            source: "patch",
+            repo: "feature-weekly",
+            ref: "feature-weekly@x+patch:sha256:0",
+            commit: null,
+            base: fork.head,
+            patch: WEEKLY_PATCH,
+            files: [{ path: "analytics/weekly.py" }] as never,
+            truncated: false,
+          },
+        }
       : {}),
   });
   let plan = {
@@ -238,26 +258,38 @@ async function runWrite(w: ReturnType<typeof world>, spec: Awaited<ReturnType<ty
   return runnerFixReport(w.deps, RUNNER, write.spec.writeId, { commit });
 }
 
-test("a behavioural part gets a copy write after its own write; a mechanical part copies in its own write", () => {
+test("the check runner writes an approved behavioural part with its copies; land_feature then answers no copy_not_written", async () => {
   const w = world("behavioural");
-  const grants = w.grants;
   const behavioural = w.plan().parts[0] as PlanPart;
-  const mechanical = part({ partId: "money/v1#reminders", kind: "mechanical", place: { kind: "feature", feature: "reminders" }, scopes: ["analytics"] });
-  const plan = { ...w.plan(), parts: [behavioural, mechanical] } as Plan;
-  for (const each of plan.parts) {
-    openFixWrite(grants, "money", plan, each);
-    openCopyWrites(grants, "money", plan, each);
-  }
-  const source = plan.facts.change.checkpoint;
-  const copy = grants.get(copyWriteKey(behavioural.partId, source), 1);
-  assert.equal(copy?.writer, "runner", "Penguin's check runner copies the modules, not the agent");
-  assert.deepEqual(copyWriteOf(copy!), { partId: behavioural.partId, source });
-  assert.match(grants.waitsFor(copy!) ?? "", /write of part money\/v1#weekly revision 1 came first/u, "the agent's change goes in first");
-  assert.equal(grants.get(copyWriteKey(mechanical.partId, source), 1), undefined, "the mechanical part's own write carries its copies");
-  const own = grants.get(mechanical.partId, 1)!;
-  grants.written(own.id, "c".repeat(40), "rec");
-  openCopyWrites(grants, "money", plan);
-  assert.ok(grants.get(copyWriteKey(mechanical.partId, source), 1), "once written, a later revision's copy is asked for it too");
+  const kept: unknown[] = [];
+  const keeper = w.deps.keeper("money") as unknown as { keepFixWrite: (write: unknown) => Promise<boolean> };
+  keeper.keepFixWrite = async (write) => (kept.push(write), true);
+  // Every check before the block run passes, so the land reaches it; the test stops there.
+  const openBlockRun = async () => {
+    throw new Error("block run opened");
+  };
+  const land: LandDeps = { ...w.land, agent: () => ({ latestPlan: async () => w.plan(), fixWrites: async () => kept, openBlockRun }) as never };
+  // The approval opens one runner write that carries the copies, and no copy write beside it.
+  openFixWrite(w.grants, "money", w.plan(), behavioural);
+  openCopyWrites(w.grants, "money", w.plan(), behavioural);
+  assert.equal(w.grants.get(behavioural.partId, 1)?.writer, "runner", "Penguin writes the fix, not an agent");
+  assert.equal(w.grants.get(copyWriteKey(behavioural.partId, w.plan().facts.change.checkpoint), 1), undefined);
+
+  const claimed = await claimRunnerWrites(w.deps, RUNNER);
+  const [write] = claimed.status === "ok" ? claimed.writes : [];
+  assert.ok(write !== undefined, "the runner claims the behavioural part's write");
+  assert.equal(write.repo, "feature-weekly", "the token is minted on the named fork alone");
+  assert.deepEqual(write.spec.paths, ["analytics/weekly.py"], "it writes only the approved part's paths");
+  assert.equal(write.spec.writer, "runner");
+  assert.deepEqual(write.spec.copy?.paths, ["shared/money.py"], "the module copy goes in the same write");
+  const commit = w.fork.commit({ "analytics/weekly.py": WEEKLY_FIXED, "shared/money.py": MONEY_1 }, [write.spec.parent], write.spec.message);
+  const other = await runnerFixReport(w.deps, { bridgeId: "runner-2", role: "runner" }, write.spec.writeId, { commit });
+  assert.equal(other.status === "rejected" ? other.reason : other.status, "forbidden", "only the claiming runner reports");
+  const reported = await runnerFixReport(w.deps, RUNNER, write.spec.writeId, { commit });
+  assert.equal(reported.status, "ok", JSON.stringify(reported));
+  assert.equal(w.grants.get(behavioural.partId, 1)?.state, "written", "report_fix_write is recorded");
+
+  await assert.rejects(requestLand(land, "priya", "session-1", { feature: "money" }), /block run opened/u, "no copy_not_written: the land opens its block run");
 });
 
 test("every copy write refreshes a module Penguin copied at an earlier revision to the current one, byte for byte", async () => {

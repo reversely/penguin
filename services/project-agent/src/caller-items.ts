@@ -1049,7 +1049,6 @@ const TOOLS_FOR: Readonly<Partial<Record<CallerItemState, readonly string[]>>> =
   differs: ["explain_difference"],
   explained: ["explain_difference"],
   changes_requested: ["explain_difference"],
-  fix_approved: ["fix_token"],
 };
 
 function contractEntries(plan: Plan | undefined, contract: string): CallerPacket["contractDiff"] {

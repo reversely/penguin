@@ -50,9 +50,10 @@ by folder name, separated by commas.
    each revision. A running feature that the fixture marks `midway` publishes its later checkpoint.
    It then gains a part that its person approves. A `late-starter` opens after the plan and receives
    it at open.
-4. **Build.** The originating agent writes each approved behavioural part into the affected fork with
-   `fix_token`, `penguin-bridge fix-write` and `report_fix_write`. The check runner writes each
-   mechanical part. The walkthrough checks that every written commit's tree equals the fixture's own
+4. **Build.** The check runner the walkthrough starts claims each approved part, behavioural and
+   mechanical, at `POST /fix-writes/claim` and writes it into the affected fork with the copied
+   modules (#207). No agent writes into another person's fork, and none needs `penguin-bridge` on
+   its path. The walkthrough waits for each write on the feature page and checks that every written commit's tree equals the fixture's own
    fix tree. Each affected feature's agent reports the written commit as its next checkpoint.
 5. **Land.** The originating agent publishes its remaining commits, calls `check` and then
    `land_feature`. The walkthrough runs every scope's test command on main's new head.

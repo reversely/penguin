@@ -38,7 +38,6 @@ import {
   MemoryKeyStore,
   penguinRemote,
   runCli,
-  runFixWriteCommand,
   runPreviewCommand,
   tokenEnvironment,
   type CliIo,
@@ -347,19 +346,16 @@ test("the block exit check: main is never red across a scripted run with several
     assert.equal(await checkMainGreen("a failing plan check"), initialMain, "a failing block never moves main");
     step("plan check failed on the unfixed forks", { runId: checked.runId, failing: checked.failing, nextSteps: checked.nextSteps.map((each: any) => ({ target: each.target, step: each.step })) });
 
-    // 3. Jun and Sam approve; Priya's agent writes each fix into their forks.
+    // 3. Jun and Sam approve; Penguin's check runner writes each fix into their forks.
     for (const [each, part] of [[jun, plan.parts[0]], [sam, plan.parts[1]]] as const) {
       const approved = await each.api("POST", stack.url, "/api/plan-parts/approve", { feature: ORIGIN.id, part: part.partId, revision: part.revision });
       assert.equal(approved.status, 200, JSON.stringify(approved.body));
     }
+    const written = await pass();
     for (const part of plan.parts) {
-      const answer = await priya.call("fix_token", { feature: ORIGIN.id, part: part.partId, revision: part.revision });
-      const output: string[] = [];
-      const code = await runFixWriteCommand(["--state-dir", priya.stateDir], quietIo(output), priya.stateDir, async () => JSON.stringify(answer));
-      assert.equal(code, 0, output.join(""));
-      const written = JSON.parse(output.join("").trim().split("\n").at(-1) as string);
-      const reported = await priya.call("report_fix_write", { feature: ORIGIN.id, part: part.partId, revision: part.revision, commit: written.commit });
-      step(`fix written for ${part.partId}`, { fork: reported.fork, commit: reported.commit, durationMs: reported.durationMs });
+      const line = written.split("\n").find((each) => each.includes(`(part ${part.partId})`) && each.includes(" kept as "));
+      assert.ok(line !== undefined, `the runner wrote ${part.partId}: ${written}`);
+      step(`fix written for ${part.partId}`, { runner: line });
     }
 
     // 4. Jun previews Priya's checkpoint with a read token; nothing new is made in Artifacts.

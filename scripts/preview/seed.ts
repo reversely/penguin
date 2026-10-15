@@ -104,8 +104,6 @@ import { buildFeaturePage, buildFeaturePlan, buildPersonScopes, buildTeamView, t
 import { openFeature, recordFeatureRepo, recordPenguinCheckpoint, reportFeatureCheckpoint, type FeatureDeps } from "../../services/project-agent/src/feature-open.ts";
 import { FeatureStore, signFeatureRecord, verifyFeatureRecord } from "../../services/project-agent/src/feature-store.ts";
 import {
-  agentFixGrant,
-  agentFixReport,
   claimRunnerWrites,
   copiesBehind,
   copyWriteOf,
@@ -790,30 +788,17 @@ export class PreviewProject {
 
   /**
    * Writes the approved fix of `partId` into its running feature's fork and reports the commit, as
-   * the originating agent does with `fix_token` and `report_fix_write`, or the check runner for a
-   * mechanical part with its claim. The commit is the approved patch on the fork head, written with
-   * the bridge's `writeFix`. Answers the commit kept as the `fix_write` record.
+   * the check runner does with its claim for every part (#207). The commit is the approved patch on the
+   * fork head, with the originating change's copied modules, written with the bridge's `writeFix`.
+   * Answers the commit kept as the `fix_write` record.
    */
   async writeApprovedFix(featureId: string, partId: string): Promise<string> {
     this.tick();
-    const feature = this.features.get(featureId);
     const part = (await this.plan(featureId))?.parts.find((each) => each.partId === partId);
-    if (feature === undefined || part === undefined) throw new Error(`no part ${partId}`);
-    const deps = this.fixWriteDeps();
-    const sessionId = this.sessionOf.get(featureId) as string;
-    const heartbeat = (caller: string, session: string) => this.sessions.heartbeat(caller, session);
-    const input = { feature: featureId, part: partId, revision: part.revision };
-    if (part.kind !== "behavioural") {
-      const [own] = await this.#runnerClaim((grant) => grant.partId === partId);
-      if (own === undefined) throw new Error(`the check runner claimed no write of ${partId}`);
-      return own.commit;
-    }
-    const granted = await agentFixGrant(deps, heartbeat, feature.personId, sessionId, input);
-    if (granted.status !== "ok") throw new Error(`fix_token ${partId}: ${granted.message}`);
-    const written = await this.#pushFix(granted.spec);
-    const reported = await agentFixReport(deps, heartbeat, feature.personId, sessionId, { ...input, commit: written });
-    if (reported.status !== "ok") throw new Error(`report_fix_write ${partId}: ${reported.message}`);
-    return written;
+    if (this.features.get(featureId) === undefined || part === undefined) throw new Error(`no part ${partId}`);
+    const [own] = await this.#runnerClaim((grant) => grant.partId === partId);
+    if (own === undefined) throw new Error(`the check runner claimed no write of ${partId}`);
+    return own.commit;
   }
 
   /**
@@ -2530,16 +2515,14 @@ async function casesOneToThree(preview: PreviewProject, larder: Larder): Promise
       await preview.step(`checkpoint ${feature.id}`, () => preview.checkpoint(feature.id, tagOf(feature, tag)));
     } else if (origins.some((origin) => fixedBy(origin, feature, commit))) {
       // The fixture's commit is the approved fix of the originating plan's part on this fork. Penguin's
-      // check runner writes a mechanical or verify part's update (the rules' patch and the copied
-      // modules); the originating agent writes a behavioural part's patch (fix_token), unchanged.
+      // check runner writes every part's update: its patch, unchanged, and the copied modules.
       const origin = originAt(event.at) as LarderFeature;
       const part = (await preview.plan(origin.id))?.parts.find((each) => each.place.kind === "feature" && each.place.feature === feature.id);
       if (part?.approvalState !== "approved") throw new Error(`${feature.id} ${tag}: ${origin.id}'s part there is ${part?.approvalState ?? "missing"}, not approved`);
       // The receiving worktree's agent approves before the originating change touches its code (#188).
       await answerCallers(preview, origin.id, await callerWords(preview, origin.case), feature.id);
       await preview.step(`fix_write ${part.partId} into ${feature.id}`, () => preview.writeApprovedFix(origin.id, part.partId));
-      // A behavioural part's copy write follows the agent's write into the fork: the check runner
-      // copies the originating change's current modules the fork imports.
+      // A copy write still waiting there, such as one a land asked, follows.
       if (preview.copiesWaiting(feature.id)) {
         await preview.step(`check runner copies ${origin.id}'s modules into ${feature.id}`, () => preview.writeCopies(feature.id));
       }

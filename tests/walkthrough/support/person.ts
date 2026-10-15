@@ -20,7 +20,6 @@ import {
   MemoryKeyStore,
   penguinRemote,
   runCli,
-  runFixWriteCommand,
   tokenEnvironment,
   type CliIo,
 } from "@penguin/local-bridge";
@@ -154,19 +153,6 @@ export class AgentSession {
 
   async work(): Promise<Record<string, any>> {
     return this.call("get_work");
-  }
-
-  /**
-   * Writes an approved part's fix into the affected fork, as the originating agent does: fix_token,
-   * `penguin-bridge fix-write` on its answer, then report_fix_write. Returns the report's answer.
-   */
-  async writeFix(part: string, revision: number): Promise<Record<string, any>> {
-    const granted = await this.call("fix_token", { feature: this.feature.id, part, revision });
-    const output: string[] = [];
-    const code = await runFixWriteCommand(["--state-dir", this.#person.stateDir], quietIo(output), this.#person.stateDir, async () => JSON.stringify(granted));
-    if (code !== 0) throw new Error(`fix-write for ${part} exited ${code}: ${output.join("")}`);
-    const written = JSON.parse(output.join("").trim().split("\n").at(-1) as string) as { commit: string };
-    return this.call("report_fix_write", { feature: this.feature.id, part, revision, commit: written.commit });
   }
 
   /** Whether a push to `repo` with this feature's fork token is refused: an agent token never writes elsewhere. */

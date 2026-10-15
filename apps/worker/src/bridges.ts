@@ -62,8 +62,8 @@
  *   land merges onto them.
  * - POST /tool-runs/<run id>, bridge token of a runner bridge: reports a claimed request's result. The
  *   requesting session hears of it at its next safe checkpoint. A request already completed answers 409.
- * - POST /fix-writes/claim, bridge token of a runner bridge: claims the writes of approved mechanical
- *   plan parts. Each names the affected feature's fork, the head to fast-forward, the patch, its paths
+ * - POST /fix-writes/claim, bridge token of a runner bridge: claims the writes of approved
+ *   plan parts of any kind and of module copies. Each names the affected feature's fork, the head to fast-forward, the patch, its paths
  *   and the commit message, with a write token minted for that part alone on that fork alone, for
  *   PENGUIN_FIX_TOKEN_TTL_MINUTES.
  * - POST /fix-writes/<write id>, bridge token of the runner that claimed it: reports the pushed commit.
@@ -203,7 +203,7 @@ export interface BridgeDirectory {
   claimToolRuns(caller: BridgeCaller): Promise<ToolRunClaim> | ToolRunClaim;
   /** Attaches the runner's result to tool request `runId`; refused unless `caller` holds the runner role. */
   reportToolRun(caller: BridgeCaller, runId: number, result: unknown, repos?: ProjectRepos): Promise<ToolReportOutcome> | ToolReportOutcome;
-  /** Claims the writes of approved mechanical plan parts; refused unless `caller` holds the runner role. */
+  /** Claims the writes of approved plan parts and module copies; refused unless `caller` holds the runner role. */
   claimFixWrites(
     caller: BridgeCaller,
     repos: ProjectRepos,

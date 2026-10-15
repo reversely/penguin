@@ -530,26 +530,18 @@ export class CaseRun {
 
   // Build -------------------------------------------------------------------------------------------
 
-  /** Writes every approved part for a running feature into its fork: the agent's behavioural parts, the runner's mechanical ones. */
+  /** Waits for the check runner to write every approved part for a running feature into its fork, whatever its kind (#207). */
   async writeFixes(): Promise<void> {
     for (const part of this.parts.values()) {
       if (part.place.kind !== "feature") continue;
       const feature = this.fixture.feature(part.place.feature as string);
-      let commit: string;
-      let writer: string;
-      if (part.kind === "behavioural") {
-        const reported = await this.originAgent.writeFix(part.partId, part.revision);
-        commit = reported["commit"];
-        writer = this.originAgent.identity.handle;
-      } else {
-        const written = await this.until(`the runner's write of ${part.partId}`, async () => {
-          const page = await this.featurePage(this.origin.id);
-          const fix = (page.fixes as { partId: string; write: { state: string; commit: string | null } | null }[]).find((each) => each.partId === part.partId);
-          return fix?.write?.state === "written" ? fix.write : undefined;
-        });
-        commit = written.commit as string;
-        writer = "check runner";
-      }
+      const written = await this.until(`the runner's write of ${part.partId}`, async () => {
+        const page = await this.featurePage(this.origin.id);
+        const fix = (page.fixes as { partId: string; write: { state: string; commit: string | null } | null }[]).find((each) => each.partId === part.partId);
+        return fix?.write?.state === "written" ? fix.write : undefined;
+      });
+      const commit = written.commit as string;
+      const writer = "check runner";
       const owner = this.person(feature.owner);
       await owner.fetchRepo(`feature-${feature.id}`);
       const fix = this.fixture.fixOf(feature) as CaseCommit;

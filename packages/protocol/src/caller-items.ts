@@ -8,7 +8,7 @@
 //   and that agent confirms (`confirmed`).
 // - `broken`: the originating agent proposes a fix for the receiving branch (`fix_proposed`), a plan
 //   part placed on that feature. The receiving agent approves it (`fix_approved`) or rejects it
-//   (`fix_rejected`). An approved fix is written into the fork (`written`).
+//   (`fix_rejected`). Penguin's check runner writes an approved fix into the fork (`written`).
 // - `differs`: the originating agent explains the difference. It either revises its own change
 //   (`explained`, until the next replay resets the item) or calls the difference expected, which asks
 //   for a review (`review_requested`). The receiving agent approves (`approved`) or asks for changes
@@ -77,7 +77,8 @@ export const CALLER_PARTIES = ["receiving_agent", "originating_agent", "worktree
 export type CallerParty = (typeof CALLER_PARTIES)[number];
 
 const RECEIVING: ReadonlySet<CallerItemState> = new Set(["confirmation_requested", "fix_proposed", "review_requested"]);
-const ORIGINATING: ReadonlySet<CallerItemState> = new Set(["broken", "fix_rejected", "fix_approved", "differs", "explained", "changes_requested"]);
+// An approved fix waits on nobody: Penguin's check runner writes it (#207).
+const ORIGINATING: ReadonlySet<CallerItemState> = new Set(["broken", "fix_rejected", "differs", "explained", "changes_requested"]);
 
 /** Who acts next: the worktree owner while the item is sent to them, otherwise by its state. */
 export function callerWaitingOn(item: { readonly state: CallerItemState; readonly ownerAsked: CallerOwnerReason | null }): CallerParty {

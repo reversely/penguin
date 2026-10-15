@@ -858,7 +858,7 @@ export function fixWriteSpecOf(value: unknown): FixWriteSpec | undefined {
 }
 
 /**
- * Claims the writes of approved mechanical plan parts, each with a write token minted for that part on
+ * Claims the writes of approved plan parts and module copies, each with a write token minted for that part on
  * the affected fork alone. Penguin answers only a bridge registered with the runner role.
  */
 export async function claimFixWrites(server: string, bridgeToken: string, fetchImpl: Fetch = fetch): Promise<ClaimedFixWrite[]> {

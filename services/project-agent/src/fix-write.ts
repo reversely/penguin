@@ -4,14 +4,13 @@
 // Once an author approves a part of a merge plan on their running feature, the part's patch is written
 // into that feature's existing fork as one commit on `main`. No branch or fork is made.
 //
-// - Who writes. A behavioural part is written by the originating agent named in the plan
-//   (`Plan.proposedBy`): a session of that identity on the originating feature asks `fix_token` and gets
-//   a write token on the affected fork alone. A mechanical part, Penguin's codemod, is written by the
-//   check runner: its approval queues a write. The runner's claim gets a token minted for that part
-//   only. The identity a behavioural part's edit task was routed to (edit-tasks.ts, PRD 0.5 section
-//   4.4a: the target feature's builder first) may write it too: its session through `fix_token`, or
-//   its person's bridge through the task's claim. No other session, identity or bridge gets a token
-//   on another person's fork here.
+// - Who writes. The check runner writes every approved part, behavioural ones included (#207): no
+//   agent writes code in another person's fork. Its approval queues a write, and the runner's claim
+//   gets a token minted for that part on the affected fork alone. A behavioural part whose write was
+//   opened for an agent before #207 (`writer = 'agent'`) is still written by the originating agent
+//   named in the plan (`Plan.proposedBy`) through `fix_token`, or by the identity its edit task was
+//   routed to (edit-tasks.ts). No other session, identity or bridge gets a token on another person's
+//   fork here.
 // - When. Only for the current revision of a part in the feature's newest plan, only while it is
 //   approved and not yet written. Anything else is refused and no token is minted. The Worker mints the
 //   token for minutes (PENGUIN_FIX_TOKEN_TTL_MINUTES); its plaintext never reaches this module.
@@ -757,7 +756,8 @@ async function prepare(
 /**
  * `fix_token`: a write on the affected fork for `caller`'s session, which must be the originating agent
  * named in the plan, working on the originating feature, for the current approved revision of a
- * behavioural part not yet written. The Worker mints the token on the grant's repo alone.
+ * behavioural part whose write was opened for an agent before #207 and is not yet written. The Worker
+ * mints the token on the grant's repo alone.
  */
 export async function agentFixGrant(
   deps: FixWriteDeps,
@@ -800,8 +800,10 @@ export async function taskFixGrant(deps: FixWriteDeps, input: FixPartInput, hold
  * holds the fork for `leaseMs`, the lifetime of the token minted on it.
  */
 async function grantAgentWrite(deps: FixWriteDeps, approved: ApprovedPart, writtenBy: string, leaseMs: number): Promise<FixGrantOutcome> {
-  if (approved.part.kind === "mechanical" || approved.part.kind === "verify") {
-    return rejected("forbidden", `part ${approved.part.partId} is ${approved.part.kind}: Penguin's check runner writes it`);
+  // Only a write opened for an agent before #207 is an agent's; every other approved part is the runner's.
+  const opened = deps.grants.get(approved.part.partId, approved.part.revision);
+  if (approved.part.kind !== "behavioural" || opened === undefined || opened.writer !== "agent") {
+    return rejected("forbidden", `part ${approved.part.partId} is written by Penguin's check runner; no agent writes it`);
   }
   // The receiving worktree approves before anyone else's agent touches its code (#188).
   const callers = (await deps.callerWaits?.(approved.featureId, approved.target.id)) ?? null;
@@ -861,14 +863,13 @@ function revise(deps: FixWriteDeps, approved: ApprovedPart): (head: string, prob
 
 /**
  * On an approval: opens the write of a part on a running feature, which places it in its fork's
- * order. The check runner claims a mechanical part's write; the originating agent or the holder of its
- * fix task asks for a behavioural one's.
+ * order. The check runner claims it, whatever the part's kind (#207).
  */
 export function openFixWrite(grants: FixGrantStore, featureId: string, plan: Plan, part: PlanPart): void {
   if (part.place.kind !== "feature" || part.approvalState !== "approved") return;
   // A verify part's write only copies the originating change's modules the fork imports; its claim
   // withdraws it when there are none.
-  grants.open(featureId, plan.planId, part, part.place.feature, part.kind === "behavioural" ? "agent" : "runner");
+  grants.open(featureId, plan.planId, part, part.place.feature, "runner");
 }
 
 /** The originating change's modules the check runner copies into the fork at `head`, with `files` the part's patch. */
@@ -920,9 +921,9 @@ export async function returnCopyConflict(deps: FixWriteDeps, approved: ApprovedP
 
 /**
  * On an approval: opens a copy write for each approved part of `plan` on a running feature at the
- * originating change's current revision, `approvedNow` counted as approved. A mechanical or verify
- * part whose own write is not yet made copies the modules in that write, so it gets none. The claim
- * withdraws a copy write whose fork already holds every module.
+ * originating change's current revision, `approvedNow` counted as approved. A part whose own runner
+ * write is not yet made copies the modules in that write, so it gets none. The claim withdraws a copy
+ * write whose fork already holds every module.
  */
 export function openCopyWrites(grants: FixGrantStore, featureId: string, plan: Plan, approvedNow?: PlanPart): void {
   if (isMigrationPlanId(plan.planId)) return;
@@ -931,7 +932,9 @@ export function openCopyWrites(grants: FixGrantStore, featureId: string, plan: P
     const part = stored.partId === approvedNow?.partId ? approvedNow : stored;
     if (part.place.kind !== "feature" || part.approvalState !== "approved") continue;
     const own = grants.get(part.partId, part.revision);
-    if (part.kind !== "behavioural" && (own === undefined || own.state === "queued" || own.state === "granted")) continue;
+    // An agent's write carries no copies, so a part written that way still gets its copy write.
+    const ownCarries = own === undefined ? part.kind !== "behavioural" : own.writer === "runner";
+    if (ownCarries && (own === undefined || own.state === "queued" || own.state === "granted")) continue;
     grants.open(featureId, plan.planId, { partId: copyWriteKey(part.partId, source), revision: part.revision }, part.place.feature, "runner");
   }
 }
@@ -966,14 +969,18 @@ export async function copiesBehind(deps: FixWriteDeps, plan: Plan, targets: read
       continue;
     }
     deps.grants.open(plan.featureId, plan.planId, { partId: copyWriteKey(part.partId, source), revision: part.revision }, place, "runner");
-    behind.push(`feature ${place}'s fork does not yet hold ${read.copy?.paths.join(", ")} at revision ${source.slice(0, 12)}`);
+    // The runner claims no write into a fork whose caller items wait on its side: the land names that wait.
+    const callers = (await deps.callerWaits?.(plan.featureId, place)) ?? null;
+    const waits = callers === null ? "" : `; the copy waits because ${callers}`;
+    behind.push(`feature ${place}'s fork does not yet hold ${read.copy?.paths.join(", ")} at revision ${source.slice(0, 12)}${waits}`);
   }
   return behind;
 }
 
 /**
- * The check runner's claim: each queued write of a mechanical part that is still approved at its
- * revision, with its spec, held for FIX_WRITE_LEASE_MS. A write whose part moved on is withdrawn.
+ * The check runner's claim: each queued write of an approved part or a module copy that is still
+ * approved at its revision, with its spec, held for FIX_WRITE_LEASE_MS. A write whose part moved on is
+ * withdrawn.
  */
 export async function claimRunnerWrites(
   deps: FixWriteDeps,
@@ -986,8 +993,7 @@ export async function claimRunnerWrites(
     // A fork whose start waits on an overlap lock gets no token yet; the write stays queued.
     if (deps.locked?.(grant.targetFeatureId) === true) continue;
     const approved = await grantedWrite(deps, grant);
-    // The runner writes a behavioural part's copies, never its patch.
-    if (isRejection(approved) || (approved.part.kind === "behavioural" && approved.copiedFrom === undefined)) {
+    if (isRejection(approved)) {
       deps.grants.withdraw(grant.id);
       continue;
     }

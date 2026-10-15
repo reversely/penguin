@@ -42,7 +42,7 @@ import {
   type TestStanding,
 } from "../../services/project-agent/src/caller-items.ts";
 import { FeatureStore, signFeatureRecord, verifyFeatureRecord, type FeatureRecord } from "../../services/project-agent/src/feature-store.ts";
-import { agentFixGrant, claimRunnerWrites, FixGrantStore, type FixWriteDeps } from "../../services/project-agent/src/fix-write.ts";
+import { agentFixGrant, claimRunnerWrites, FixGrantStore, openFixWrite, type FixWriteDeps } from "../../services/project-agent/src/fix-write.ts";
 import type { SqlDatabase } from "../../services/project-agent/src/issue-index.ts";
 
 function memorySql(): SqlDatabase {
@@ -379,7 +379,7 @@ test("get_work's packet carries the calls as data and the other agent's words un
   assert.equal(origin?.originating[0]?.yourTurn, null, "the originating agent waits for the review");
 });
 
-test("a block run opens items when the agent never called check; a fix token and a runner write into a receiving fork wait for approval; the land is refused callers_pending", async () => {
+test("a block run opens items when the agent never called check; a runner write into a receiving fork waits for approval; the land is refused callers_pending", async () => {
   const w = await world();
   const opened = await replayReported(w.deps, "dependency-audit", section([caller("instant-payouts", "differs")]), { kind: "block", id: "dependency-audit/1", checkpoint: SHA("a") });
   assert.deepEqual(opened.map((item) => [item.feature, item.state, item.source.kind].join(" ")), ["instant-payouts differs block"], "a block run with no prior check opens the items");
@@ -407,12 +407,12 @@ test("a block run opens items when the agent never called check; a fix token and
     callerWaits: (origin: string, target: string) => writeWaits(w.deps, origin, target),
   } as unknown as FixWriteDeps;
   const heartbeat = w.deps.heartbeat;
+  // The approved behavioural part is the check runner's to write (#207): no agent gets a token for it.
+  openFixWrite(grants, "dependency-audit", plan, part);
   const refused = await agentFixGrant(fixDeps, heartbeat, "hugo", "session-dependency-audit", { feature: "dependency-audit", part: part.partId, revision: 1 });
-  assert.equal(refused.status === "rejected" ? refused.reason : refused.status, "callers_pending", "no token before the receiving side's signed approval");
-  // A runner's write into the same fork stays queued.
-  grants.open("dependency-audit", plan.planId, { ...part, kind: "verify" } as PlanPart, "instant-payouts", "runner");
-  const verifyPlan = { ...plan, parts: [{ ...part, kind: "verify", diff: { ...part.diff, source: "none", patch: null } }] } as unknown as Plan;
-  const claimed = await claimRunnerWrites({ ...fixDeps, keeper: () => ({ latestPlan: async () => verifyPlan }) as never }, { bridgeId: "runner-1", role: "runner" });
+  assert.equal(refused.status === "rejected" ? refused.reason : refused.status, "forbidden", "Penguin writes the fix, not the originating agent");
+  // The runner's write into the receiving fork stays queued until the receiving side's signed approval.
+  const claimed = await claimRunnerWrites(fixDeps, { bridgeId: "runner-1", role: "runner" });
   assert.deepEqual(claimed.status === "ok" ? claimed.writes : undefined, []);
   assert.equal(grants.allOpen()[0]?.state, "queued");
 

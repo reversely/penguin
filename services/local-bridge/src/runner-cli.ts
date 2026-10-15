@@ -5,7 +5,7 @@
 // repos (approval-run.ts), the submitted reviews it claims and runs the review harness on
 // (review-run.ts), the trials of each plan part revision it claims (part-trial-run.ts), the agents'
 // `impact`, `check` and `apply_fix` requests it claims and runs on feature forks (tool-run.ts), the
-// approved mechanical plan parts it writes into affected features' forks (fix-write.ts) and the block
+// approved plan parts and module copies it writes into affected features' forks (fix-write.ts) and the block
 // runs that check a feature merged onto main and every running fork before Penguin promotes it
 // (block-run.ts).
 
@@ -97,8 +97,8 @@ export const RUNNER_USAGE = `       penguin-bridge runner [--once] [--interval <
          Each impact, check and apply_fix an agent called is claimed too: the feature's fork and
          the other running features' forks are fetched, and the tool runs on the checkpoint. A fix
          commit stays in <path> and is not pushed.
-         Each approved mechanical part of a merge plan is claimed too, with a write token minted for
-         that part on the affected feature's fork: its patch becomes one commit on the fork head,
+         Each approved part of a merge plan, of any kind, is claimed too, with a write token minted for
+         that part on the affected feature's fork: its patch and the copied modules become one commit on the fork head,
          pushed as a fast-forward of the fork's main. The runner reports the commit to Penguin.
          Each block run Penguin asks for is claimed too: the base repo and every feature fork it
          names are fetched with read tokens, the feature's checkpoint is merged onto main and onto

@@ -1,9 +1,10 @@
 // Writing an approved plan part's fix into the affected feature's fork (PRD 0.4 section 4.4 step 1).
 //
-// The writer is the originating agent's bridge, through `penguin-bridge fix-write` with the answer of
-// the `fix_token` MCP tool, or the check runner for a mechanical or verify part, through the writes it
-// claims at POST /fix-writes/claim. Either way the writer holds a `FixWriteSpec` and a write token
-// minted for that one part on that one fork.
+// The writer is the check runner for every approved part and module copy, through the writes it
+// claims at POST /fix-writes/claim, or, for a write opened for an agent before #207, the originating
+// agent's bridge through `penguin-bridge fix-write` with the answer of the `fix_token` MCP tool.
+// Either way the writer holds a `FixWriteSpec` and a write token minted for that one part on that one
+// fork.
 //
 // The fix becomes one commit built without a checkout: the fork's `main` is fetched, its head must be
 // the spec's `parent`, each file the patch writes is read at the parent, patched with `applyPatchFile`
@@ -174,7 +175,7 @@ export interface FixWritePassResult {
   readonly durationMs: number;
 }
 
-/** Claims, writes and reports every approved mechanical part's fix once (runner mode). */
+/** Claims, writes and reports every claimed fix write and module copy once (runner mode). */
 export async function fixWritePass(options: FixWritePassOptions): Promise<FixWritePassResult> {
   const started = performance.now();
   const claimed = await options.claim();
