@@ -36,7 +36,7 @@ tag. It also maps each failing test to the commit that fixes it.
 Merging Priya's checkpoint with Jun's or Sam's checkpoint fails three tests. All three belong to Jun's
 and Sam's work. Case 1 names each test by module and test name without the `test_` prefix.
 
-| PRD test ID | Pytest node ID | Merged tree | Failure |
+| Case test ID | Pytest node ID | Merged tree | Failure |
 |---|---|---|---|
 | `test_retention::dau_stable` | `analytics/tests/test_retention.py::test_dau_stable` | `owner-priya-checkpoint` with `owner-jun-checkpoint` | A later login joins two of a past day's people into one. That day's daily active users drop from 2 to 1. |
 | `test_identity::shared_device_split` | `analytics/tests/test_identity.py::test_shared_device_split` | `owner-priya-checkpoint` with `owner-jun-checkpoint` | Three patrons log in on one library tablet. The login rule joins them into one person. |

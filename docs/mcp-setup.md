@@ -202,10 +202,8 @@ answer, in `get_work`'s shape. An entry whose state changed counts as new. With 
 timeout it answers `{ "state": "waiting", "next": "call wait_for_work again" }`, and the agent calls
 it again at once.
 
-A call answers within 50 seconds so that no client's default limit on a tool call ends it. In live
-run film-1015-r5, Claude Code 2.1.300 aborted every `wait_for_work` call after about two minutes
-without an answer, although Penguin sent a progress notification every 60 seconds. Penguin sends an
-MCP progress notification when the call starts and after each round, for a client that sent a
+A call answers within 50 seconds so that no client's default limit on a tool call ends it. Penguin
+sends an MCP progress notification when the call starts and after each round, for a client that sent a
 progress token (`services/mcp/src/wait-for-work.ts`). Waiting
 counts as the session's safe checkpoint
 ([Fix tasks and safe checkpoints](#fix-tasks-and-safe-checkpoints)) and as its heartbeat, so the
@@ -236,15 +234,12 @@ waiting. Waiting costs no CPU time. The Durable Object stays in memory while a r
 is open, which Cloudflare bills as duration. Each summary build makes about a dozen Durable Object
 calls; a Worker on the Free plan may make 1,000 calls to Cloudflare services per request
 ([Subrequests](https://developers.cloudflare.com/workers/platform/limits/#subrequests)), which
-sets the cap of 50 builds per call. Copies of these pages, fetched when the tool was built, are in
-`docs/research/` on the build machine (`cf-workers-platform-limits.md`,
-`cf-durable-objects-platform-limits.md`, `cf-durable-objects-concepts-durable-object-lifecycle.md`,
-`claude-code-mcp.md` and `codex-mcp.txt`).
+sets the cap of 50 builds per call.
 
 ### Client timeouts
 
 A call answers within 50 seconds, so no client needs a setting. Codex allows a tool call 60 seconds
-by default (`tool_timeout_sec`), and Claude Code aborted an idle call after about two minutes.
+by default (`tool_timeout_sec`).
 
 ## Fix tasks and safe checkpoints
 
@@ -340,7 +335,7 @@ with `revise_plan_part`. A session that submitted a review hears the check runne
 Penguin's check runner writes every approved part into its fork, behavioural parts included
 ([bridge-and-runner.md](bridge-and-runner.md#fix-writes)). No agent writes code in another person's
 fork. `fix_token` refuses every such part as `forbidden`. It answers only for a behavioural part whose
-write Penguin opened for the originating agent before the check runner wrote every part (#207):
+write is stored with the originating agent as its writer:
 
 | Tool | Input | Answer |
 |---|---|---|

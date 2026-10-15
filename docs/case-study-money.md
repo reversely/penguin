@@ -45,7 +45,7 @@ unit: `1000` charges 10 USD. `10` charges 10 JPY, because JPY is a zero-decimal 
 
 ## Open
 
-Every feature is its own fork of main in Artifacts. PRD cases 1 to 3 run on the same main first:
+Every feature is its own fork of main in Artifacts. Use cases 1 to 3 run on the same main first:
 Priya's shopper accounts, Hugo's structured logs and Hugo's HTTP client upgrade each reach main as
 a block ([fixture-money.md](fixture-money.md#cases-1-to-3)). Lena's promotion stacking reaches main
 after them, before Ines starts. Ines's agent opens the feature "Money in minor units" and declares its area: the money

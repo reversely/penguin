@@ -97,14 +97,12 @@ complete, step 4 picks the running features that call a name the checkpoint modi
 names a file it changes or a folder above one, each tested in the scopes it touches. A running
 feature with no complete list read at its latest checkpoint still goes by step 4's scope rule. When
 the list reaches it too, its run keeps those scopes. Without the checkpoint's complete list, the
-steps above run as written. Each run names the trigger's fork, `owner-<id>` or `feature-<id>`, which the runner fetches; a run from before #198
-names none and reads as its owner fork.
+steps above run as written. Each run names the trigger's fork, `owner-<id>` or `feature-<id>`,
+which the runner fetches; a run that names no fork reads as its owner fork.
 
 A run is keyed by the trigger, the target and the target's checkpoint, so reporting the same
 checkpoint twice schedules nothing new. A project with no `depends_on` entry reads no Git for a
 checkpoint without its complete caller list.
-A deploy that finds the `CombinedRun` table from before #104 moves each of its runs to its owner
-fork's target.
 
 Priya's checkpoint changes `identity-map`. `analytics` (Jun) and `messaging` (Sam) depend on it, so
 Penguin schedules a run for Jun with `test:analytics` and one for Sam with `test:messaging`.
@@ -222,11 +220,11 @@ Each newer checkpoint of an owner in an open Huddle schedules verification in th
 FeatureAgent (`services/project-agent/src/huddle-verify.ts`). On the Huddle issue, Penguin:
 
 1. Links the new checkpoint as a `fix` commit and, in the same operation, marks every current check
-   superseded. A superseded check no longer counts toward the close.
+   superseded. Only a current check counts toward the close.
 2. Moves the issue to `verifying`.
 3. Schedules one run. The run merges the latest checkpoint of every owner in the Huddle, trigger
-   owner first. It runs a test command for every scope the trigger changed or that depends on one. Any earlier run not yet
-   reported is marked superseded.
+   owner first. It runs a test command for every scope the trigger changed or that depends on one.
+   Any earlier run not yet reported is marked superseded.
 
 The runner lists runs on `GET /verifications`. For each, it merges the listed checkpoints onto the
 run's base with `git merge-tree`, pushes the result to the Huddle repo's `integration` branch, runs
@@ -242,7 +240,7 @@ merge whose tests fail keeps the issue out of review.
 When the combined tests pass, the Huddle's FeatureAgent collects reviews (`huddle-reviews.ts`). On each fix
 sub-issue, Penguin links the fixing owner's checkpoint that the passing run merged as the fix's head,
 a `fix` commit. It then asks each owner whose review counts to review that head, through a `review_requested`
-inbox item. A newer head asks again, because a review of an older commit no longer counts.
+inbox item. A newer head asks again, because only a review of the current head counts.
 
 Whose review counts (`packages/policies/src/review-rights.ts`):
 
@@ -297,7 +295,7 @@ The issue page's Close-out panel lists whatever still blocks the close. When not
    integration commit. The Worker cannot write a Git ref through the Artifacts binding, so the runner
    does it.
 2. The runner lists the request on `GET /approvals`, pushes `approved` and reports on
-   `POST /approvals/<issue>`. A report of a commit no longer requested answers 409.
+   `POST /approvals/<issue>`. A report of a commit other than the one requested answers 409.
 3. The Huddle's FeatureAgent evaluates again. If nothing changed, Penguin links the commit as `approved` and
    closes the Huddle with resolution `approved`.
 

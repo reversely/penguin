@@ -31,7 +31,7 @@ runner's block reports reach it directly through the Worker. It asks the team re
 record and to change the feature's state. Each feature has its own instance, so several features
 move toward main at once.
 
-The same class, under a Huddle's name, still runs the PRD 0.3 Huddle of an owner fork: it runs the
+The same class, under a Huddle's name, runs the Huddle of an owner fork: it runs the
 owners' tests together, collects each owner's review and decides when the Huddle can close. A
 feature's results never open a Huddle.
 
@@ -105,7 +105,7 @@ run's repos apart from production's; the prefix leads every name.
 | `base` | `POST /setup`, imported from the team's Git remote or created empty | The deployer, once, when setup created it empty. Then only a FeatureAgent, to promote a block | The team's main branch, with `penguin/scopes.json`, `penguin/teams.json`, `penguin/owners.json`, `penguin/identities.json` and `penguin/invariants.json` |
 | `owner-<id>` | `POST /setup`, one fork of `base` per owner | That owner's bridge only | The owner's published checkpoints, one branch per worktree branch |
 | `issues` | `POST /setup` | Every bridge and the runner | One signed file per issue operation, `issues/<issue>/ops/<op_id>.json` |
-| `record` | `POST /setup`. A project set up before it existed gets it from the ProjectAgent at its first record push | The ProjectAgent only, with a write token it mints for each push | One signed file per feature record, `records/<feature>/<author>-<writer>-<seq>.json`, on `main` |
+| `record` | `POST /setup`. A project with no `record` repo gets one from the ProjectAgent at its first record push | The ProjectAgent only, with a write token it mints for each push | One signed file per feature record, `records/<feature>/<author>-<writer>-<seq>.json`, on `main` |
 | `huddle-<id>` | The Worker, when a Huddle issue opens; `<id>` is the issue number padded to three digits, as in `huddle-031` | The runner only | The `integration` branch of each verification run and the `approved` branch at close |
 | `feature-<id>` | The Worker, when a person or an agent session opens the feature (`apps/worker/src/features.ts`); the ProjectAgent, for a feature Penguin opens itself, such as a migration plan's block | The feature's agent sessions, with tokens the Worker mints for them. For an approved merge plan part, also the runner, with a token minted for that part. For an edit task, the bridge that claimed it, with a token minted for that task | The feature's work, forked from main's branch, with each approved fix as one commit on `main` |
 
@@ -117,7 +117,7 @@ An agent session holds `write` on the fork of the feature it joined, for
 The Worker mints it only after the ProjectAgent confirms that the session is running and has joined
 that feature. A `write` token on another person's feature fork comes only with an approved merge plan
 part, for `PENGUIN_FIX_TOKEN_TTL_MINUTES`: to the runner's claim of the part's write, or through
-`fix_token` to the originating agent for a write Penguin opened for it before #207
+`fix_token` to the originating agent for a write Penguin opened for that agent
 ([Writing an approved fix](#writing-an-approved-fix), `apps/worker/src/tokens.ts`). A bridge's claim of
 an edit task carries a `write` token on that task's fork, for `PENGUIN_EDIT_RUN_MINUTES`.
 Write on `base` is minted only by a FeatureAgent, for one promotion, for
@@ -217,14 +217,14 @@ matches a pending operation clears its `PendingOp` row.
    the fork. An existing repo counts as forked, so a second open makes no second fork.
 3. For a session, the Worker asks the ProjectAgent for a grant and mints a `write` token on
    `feature-<id>`. The token goes back in the tool's answer and nowhere else. No overlapping start
-   waits, so the first `feature_token` call gets its token. A lock opened before #177 that is still
-   open holds the token until the covering person approves on the dashboard through
+   waits, so the first `feature_token` call gets its token. A lock that is still open holds the
+   token until the covering person approves on the dashboard through
    `POST /api/overlaps/approve`. The Worker names the approver from the session. The ProjectAgent
    checks that this person owns the covering feature and writes a signed `approve_overlap` record.
 4. Each checkpoint on the fork, from `report_checkpoint` or the bridge's `POST /checkpoints`, must be
    in the fork. The ProjectAgent diffs it against its baseline on main and adds the changed paths
-   and their scopes to the declared area. It also asks the check runner for the checkpoint's caller list: the names its own
-   changes use, which the ProjectAgent keeps so a later change finds the forks it reaches without
+   and their scopes to the declared area. It also asks the check runner for the checkpoint's caller
+   list: the names its own changes use, which the ProjectAgent keeps so a later change finds the forks it reaches without
    reading every fork.
 5. When the runner reports that list, the ProjectAgent schedules the checkpoint's combined runs: one
    for each other person's running feature that calls a name the checkpoint modifies or whose area
@@ -238,11 +238,12 @@ matches a pending operation clears its `PendingOp` row.
 
 1. An author approves a part of a merge plan on their running feature on the dashboard, or Penguin
    approves it. The approval queues a write for the runner, whatever the part's kind
-   (`services/project-agent/src/fix-write.ts`, #207).
+   (`services/project-agent/src/fix-write.ts`).
 2. The runner claims the queued write at `POST /fix-writes/claim`. A write Penguin opened for an
-   agent before #207 is still the originating agent's, through `fix_token`, or the affected feature's
-   builder's, through the part's fix task, which commits the approved patch unchanged. The
-   ProjectAgent checks that the part's current revision is approved and unwritten and that the patch writes only paths inside the part. It reads the affected fork's head
+   agent goes to the originating agent, through `fix_token`, or to the affected feature's builder,
+   through the part's fix task, which commits the approved patch unchanged. The ProjectAgent checks
+   that the part's current revision is approved and unwritten and that the patch writes only paths
+   inside the part. It reads the affected fork's head
    through the Artifacts binding. A head that moved past the patch's base still takes the write when
    the patch applies there unchanged. Otherwise the part goes back to the originating agent to revise.
    The Worker then mints a `write` token on that one fork. The runner's claim skips a write that waits

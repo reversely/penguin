@@ -36,9 +36,8 @@ Custom path rules and Place are one kind. The review policy keeps them as two ro
 let Penguin decide one and not the other. Overlapping starts is no row of the policy: an overlapping
 start never waits on a worktree owner's review.
 
-A scope file written before the rename may still name its custom path rules `protected_paths`. The
-scope map reads that key as `custom_paths`. The wire and record names keep the earlier word so that
-signed records still read: the kind `protected_paths_and_place`, the row `protected_paths`, the
+The scope map reads the key `protected_paths` in a scope file as `custom_paths`. The wire and record
+names use the word `protected` so that every signed record reads: the kind `protected_paths_and_place`, the row `protected_paths`, the
 routing reason and plan part ask `protected_path`, the inbox reason `protected_path`, the record
 `confirm_protected_change` and the route `POST /api/plan-parts/confirm-protected`.
 

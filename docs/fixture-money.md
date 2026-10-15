@@ -3,8 +3,8 @@
 The money-minor-units fixture is the Git repository of Larder, the sample grocery delivery site in
 [case-study-money.md](case-study-money.md). Two hundred people in four teams run 573 features as
 forks of main. Fourteen of them are DRI for Larder's 30 scopes and run the 41 features the cases are
-written around; [Scale](#scale) generates the other 186 people and their 532 features. The repository carries the four use cases of PRD
-section 1, which run in order on one main:
+written around; [Scale](#scale) generates the other 186 people and their 532 features. The
+repository carries the four use cases, which run in order on one main:
 
 1. Priya's shopper accounts merge a shopper's identities (`accounts-merge`): a merge plan with a
    broken invariant, two revisions, a backfill and a verify part.
@@ -38,8 +38,7 @@ whole file with every problem listed. It then writes every commit through one `g
 stream, with author, committer, date and file bytes taken from the data file. Penguin's updates of
 cases 1 and 3 are the exception: the builder writes them with Penguin's codemod and ruff, as the
 check runner does ([Penguin's updates](#penguins-updates)). It therefore runs under this
-repository's uv environment, which pins libcst and ruff. A build took about 4 seconds on an Apple
-silicon laptop. After `git gc` the built repository holds 3,960 objects in an 810 KiB pack.
+repository's uv environment, which pins libcst and ruff.
 
 ## The data file
 
@@ -108,7 +107,7 @@ that output, so they see every feature the build makes.
 |---|---|---|---|
 | `shopper-same` | 8 in analytics, loyalty and messaging | 1 | They count shoppers whose events carry one identity each, so their tests pass with Priya's change |
 | `shopper-cutover` | `new-shoppers-per-day`, `first-visit-cohorts`, `acquisition-by-day` | 1 | Like Jun's cohort report, a later login lowers a published day's count. Penguin's update (tag `cutover`) copies `accounts/shoppers.py` and rule `count-by-cutover` rewrites the key |
-| `shopper-consent` | `win-back-audience` | 1 | Like Sam's digest, an unsubscribe on another identity no longer holds. Penguin's update (tag `consent`) copies `accounts/shoppers.py` and `messaging/subscriptions.py` |
+| `shopper-consent` | `win-back-audience` | 1 | Like Sam's digest, an unsubscribe on another identity stops counting. Penguin's update (tag `consent`) copies `accounts/shoppers.py` and `messaging/subscriptions.py` |
 | `local-day` | 6 in store dashboard, fulfilment and messaging | 2 | Like Elif's holiday closures, 20:00 on Christmas at UTC-08:00 reads as 26 December until Hugo's revision at `utc-day` |
 
 Each case's callers file holds the words for these kinds under `kinds`, with `{title}` filled in by
@@ -291,7 +290,7 @@ conflict in the copied modules.
 Penguin copies Priya's modules from the change's newest commit, counting its fixes for code on main
 (`originRevision` in `fix-write.ts`), so Jun's fork takes `analytics/activity.py` with
 `counted_as()` already called. The update's trial merges that same commit (`trialCheckpoint` in
-`part-trial.ts`), so `test_dau_stable` passes and Penguin approves the part (#192).
+`part-trial.ts`), so `test_dau_stable` passes and Penguin approves the part.
 
 Loyalty's tests pass on every tree of the case, so loyalty's place is a verify part. Jun's
 analytics review has one form, `reviews/case1-analytics.json`: every invariant holds, and its cutover
@@ -327,8 +326,8 @@ weekly digest read a local day from `start_of_day()`.
 
 Both `structured-logs` commits carry `check`. No commit is written into Elif's or Sam's fork and
 Hugo's agent proposes no plan. At `utc-day` `start_of_day()` is byte for byte as on main, so the
-impact report no longer lists it. The caller replay still wraps it on both forks because the
-feature's open caller items name it (`heldReplay`, #193): their calls return what they return on
+impact report leaves it out. The caller replay still wraps it on both forks because the
+feature's open caller items name it (`heldReplay`): their calls return what they return on
 main, and both items come back `unaffected`.
 
 | Merged tree | Fails |
@@ -408,8 +407,7 @@ mkdir /tmp/merged && git -C /tmp/larder archive "$tree" | tar -x -C /tmp/merged
 ```
 
 The replay column calls `payouts_sent("po-2", "s-1", 480, lost_responses=1)` or
-`tip_charges("o-3", "cus_7", 62, lost_responses=1)` on the same tree. The runs below were made on
-an Apple silicon laptop with Python 3.13; each pytest run took under half a second.
+`tip_charges("o-3", "cus_7", 62, lost_responses=1)` on the same tree, with Python 3.13.
 
 | Originating commit | Merged onto | pytest | Replay |
 |---|---|---|---|
@@ -495,7 +493,7 @@ block: one for the whole-order step (`tax-per-line` breaks) and one for the revi
 invariants hold). Neither names a stored data marker. Tax only reads `orders.model.Line` and
 `Order` and stores nothing derived from them. The split changes no stored shape: the expand's
 impact report lists no stored data shape. Had the store's shape changed, the marker would belong on
-Ines's change, which owns the store, under PRD section 6 item 5.
+Ines's change, which owns the store.
 
 ## Checking the case with the bridge
 
@@ -581,10 +579,9 @@ date order up to the split's first commit:
 
 In step mode (`node scripts/preview/dashboard.ts --example money-minor-units --step`) each of these is
 its own step in `GET /preview/steps`, and each case's feature page reaches its last stage: Promoted
-for cases 1 to 3, Done for the split. A run that made every decision through the dashboard's API
-took 581 seconds on gn100.
+for cases 1 to 3, Done for the split.
 
-The run on gn100:
+What each case's plans decide:
 
 | Case | Rounds | People asked | Approved by Penguin |
 |---|---|---|---|
@@ -622,14 +619,14 @@ be evidence for the change, so the agent cites the call that file's earlier test
   replays the calls. No receiving agent reviews it.
 - Before the land, the originating agent calls `check` again (`check <feature> before the land`). The
   replay then runs on the forks as Penguin's updates left them. Each item whose calls changed resets,
-  each item the replay no longer reaches is withdrawn and each new one opens. The receiving builders
+  each item the replay does not reach is withdrawn and each new one opens. The receiving builders
   confirm each unaffected caller (`confirm_caller`). The rest of the land runs as above. A feature that
   wrote into no fork and already checked its head skips this check.
 - A land refused as `callers_pending`, or a promotion the block's own replay stops, gets the answers
   first and asks again. An item sent to the worktree owner waits for that person's approval, through
   the dashboard in step mode.
 
-The run on gn100 without the check runner's tools took 588 seconds:
+What the caller items hold in each case:
 
 | Case | Items opened at the first check | Before the writes | After the last check |
 |---|---|---|---|
@@ -641,9 +638,8 @@ The run on gn100 without the check runner's tools took 588 seconds:
 
 The split runs on main as cases 1 to 3 and Lena's stacking left it. `tests/cases/cases.test.ts`
 checks that the callers never rise and end at zero, that every migration plan lands or closes, that
-each retiring contract is removed and that Rahul is the one person asked. The counts below come
-from a seed run. A whole seed run of the four cases without the originating agents' `impact`
-took about 480 seconds on gn100.
+each retiring contract is removed and that Rahul is the one person asked. The counts below are
+the seed's run of the split.
 
 1. **Open.** Ines's feature declares money and orders. Four running features work there, so its
    start opens at once: Penguin approves it beside Hugo's `rounding-mode` and Tomas's `reorder`,
@@ -716,7 +712,7 @@ took about 480 seconds on gn100.
    removed, then the feature lands. Penguin closes the six retiring records under one
    `symbols_removed` record.
 
-The run shows one limit of today's rules:
+Penguin asks no one to confirm a person's own change:
 
 - **No custom path rule confirmation.** Jun's own steward writes the analytics block, so the change to
   `analytics/revenue_report.py` is Jun's own and Jun is not asked to confirm it.

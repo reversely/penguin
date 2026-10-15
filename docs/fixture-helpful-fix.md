@@ -105,7 +105,7 @@ second commit adds `start_of_local_day` to shared-dates.
 `features.json` lists Priya's feature "Start each day at UTC midnight in start_of_day" as the
 originating feature on the fork `owner-priya`. Its second commit, tagged `owner-priya-local-day`,
 carries `"plan": true`: the preview seed (`scripts/preview/seed.ts`) reports it as Priya's
-checkpoint and proposes the plan there, as PRD case 2 orders it. Jun's weekly report (`owner-jun`)
+checkpoint and proposes the plan there. Jun's weekly report (`owner-jun`)
 and Sam's reminder scheduling (`owner-sam`) are the running features. Jun's checkpoint adds the
 contract `weekly_report` with its examples file. Sam's checkpoint adds `next_reminder` and
 `reminder_times` with theirs. Jun's examples entry goes first in `penguin/invariants.json` and Sam's

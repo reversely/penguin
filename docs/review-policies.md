@@ -52,7 +52,7 @@ A sandbox that changes a row keeps its stage's name with "changed" after it, suc
 development policy, changed".
 
 The stored names are `local_development`, `central_development`, `pre_production` and `production`.
-Migration note: a policy or a route stored before #177 under `throwaway` or `dev` reads as
+A policy or a route stored under the earlier names `throwaway` or `dev` reads as
 `local_development` or `central_development` (`readPreset` in `validation.ts`). The
 `overlapping_starts` row such a policy names is ignored.
 
@@ -125,7 +125,7 @@ read until a newer record is stored, so each decision costs one lookup of the ne
 | Decision | Code | Under the policy |
 |---|---|---|
 | A plan part | `approveCleanParts` in `plan-approval.ts` | Penguin approves a pending part whose route names Penguin |
-| A rule-written migration part after its trial | `migrationTrialReported` in `migration-plans.ts` | A failing test still makes an edit task. Under Pre-production a side-by-side run that differs goes to its worktree owner for review. A type set to auto-merge no longer sends the part to its worktree owner. Production sends a part whose trial passed to one |
+| A rule-written migration part after its trial | `migrationTrialReported` in `migration-plans.ts` | A failing test makes an edit task. Under Pre-production a side-by-side run that differs goes to its worktree owner for review. A type set to auto-merge sends the part to no worktree owner. Production sends a part whose trial passed to one |
 | An overlapping start | `checkOverlap` in `overlap-lock.ts` | At every stage Penguin approves each new lock at once with a signed `approve_overlap` record that names the owner. The owner gets an `overlap_started` inbox item. No one is asked |
 | A caller item | `callerAction`, `sweepUnanswered` and `ownerCallerItems` in `caller-items.ts` | The stage's row in [Caller items](#caller-items): who decides, who is told and the wait |
 

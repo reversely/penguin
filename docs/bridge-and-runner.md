@@ -272,8 +272,8 @@ Each pass:
 8. **Clean up.** The bridge removes the worktree and its fetch ref, whatever happened.
 
 An approved fix needs no agent: its patch is fixed, so the bridge writes it with the fix-write code
-([Fix writes](#fix-writes)) and reports that commit. Penguin opens a fix task only for a write opened
-for an agent before the check runner wrote every part (#207); every later approval goes to the runner.
+([Fix writes](#fix-writes)) and reports that commit. Penguin opens a fix task only for a write whose
+writer is an agent; the check runner writes every other approved part.
 
 Penguin keeps a reported commit only when it has one parent, sits on the fork's `main` and changes
 only the task's allowed paths. Otherwise the task goes back to the owner with Penguin's reason.
@@ -459,9 +459,8 @@ from its subcommand (`artifactsGitOptions` in `git-remote.ts`). Fetch, clone and
 with `-c protocol.version=2`. A push runs with `-c protocol.version=1`, because Artifacts does not
 support protocol v2 for pushes
 ([Git protocol](https://developers.cloudflare.com/artifacts/api/git-protocol/)). Facts runs and block
-runs fetch every running fork into one runner repository. Over protocol v1, Artifacts answers some of
-those fetches with `fetch-pack: protocol error: bad band #78`. Over v2 every fetch succeeds (see
-[Runner fetch check](#runner-fetch-check)). Each command also clears `credential.helper` and
+runs fetch every running fork into one runner repository over protocol v2
+([Runner fetch check](#runner-fetch-check)). Each command also clears `credential.helper` and
 `core.askPass`. The token reaches Git through the command's environment only.
 
 ### Block runs
@@ -562,16 +561,11 @@ time of each fetch and deletes every repo it made. It needs a Wrangler login and
 PENGUIN_FETCH_E2E=1 node --test tests/e2e/runner-fetch.test.ts
 ```
 
-In two runs on 20 forks over protocol v2, every fetch succeeded. The first pass over the base repo and
-20 forks took 17.6 s and 19.2 s. The second pass took 7.9 s and 11.7 s. The same fetches over protocol
-v1 failed for 7 of the 20 forks with `bad band #78`, on both passes.
-
 ### Fix writes
 
 Once an author approves a part of a merge plan, its fix becomes one commit on the affected feature's
-fork. The check runner writes it, whatever the
-part's kind (#207). No agent writes code in another person's fork. The commit holds the part's
-approved patch: the plan's rules rewrite a mechanical part's call sites, and a behavioural part's patch
+fork. The check runner writes it, whatever the part's kind. No agent writes code in another
+person's fork. The commit holds the part's approved patch: the plan's rules rewrite a mechanical part's call sites, and a behavioural part's patch
 is the one its author approved. The same commit copies the originating change's modules the fork
 imports. The receiving feature's agent only approves; `get_work` tells it that Penguin writes the
 fix. The writers all use the same code (`fix-write.ts`):
@@ -583,7 +577,7 @@ fix. The writers all use the same code (`fix-write.ts`):
   carries a `write` token minted for that part on the named fork alone. A write into a fork whose
   caller items wait on the receiving side stays queued; a land refused as `copy_not_written` names
   that wait.
-- A write Penguin opened for an agent before #207 is still the agent's. The originating agent pipes
+- A write stored with an agent as its writer is the agent's. The originating agent pipes
   the answer of the `fix_token` MCP tool to `penguin-bridge fix-write`, which fetches the fork into
   `<state-dir>/fix-writes`, or `--repo <path>`, writes the fix and prints the commit as JSON for
   `report_fix_write`. Or the affected feature's builder takes the part's fix task
@@ -609,10 +603,6 @@ write. The writer refuses when the tree changes anything but the patch's files a
 commits with Penguin's message as author `Penguin` with no hook or signing. It pushes the commit to
 `main` with no force. The token reaches Git only in the push's environment. A fork whose head moved
 refuses the push; asking `fix_token` again rebases the write or sends the part back for revision.
-
-Building and pushing one fix commit took about 200 ms against a bare fork on local disk. Against
-Artifacts through local `wrangler dev` it took about 1 second; `fix_token` and `report_fix_write`
-took about 2 seconds each, most of it Artifacts reads.
 
 ### Plan facts runs
 
@@ -664,10 +654,6 @@ The report carries the impact report and each command's result with its fingerpr
 carries no log. `PLAN_FACTS_REPORT_SCHEMA` (`packages/protocol`) caps each docstring at 500
 characters and each assertion or error line at 300. A newer checkpoint of the feature supersedes a
 pending run. A report of a superseded run answers 409.
-
-On the helpful-fix fixture the facts run of Priya's checkpoint against Jun's and Sam's checkpoints
-takes between 1 and 3 seconds of wall time on an Apple silicon laptop, analysis and three merged
-trees included.
 
 ### Part trials
 
@@ -789,9 +775,6 @@ penguin-bridge impact --repo <path> --base main --head owner-priya-checkpoint \
 The text form lists each finding with its file and line, then each fork's uses and whether its
 tests run. `--json` prints the full report. `--python <path>` names another interpreter.
 
-On a test repository of 1,000 modules with 50 changed, the analysis of base, head and three forks
-takes about 1.8 seconds on an Apple silicon laptop. 5,000 modules take about 9.8 seconds.
-
 ### Side-by-side runs
 
 `analysis:side-by-side` runs a scope's public functions on main and on a fork for the review
@@ -836,9 +819,6 @@ exceptions for the scope's owner and each input that differs, with both outcomes
 full record as JSON. `--no-diff` leaves out the contract diff. The command exits 0 when the form is
 accepted and 1 when it is refused. Runner mode runs the same harness on every submitted review
 without this command. It reports the record the `--out` file would hold.
-
-On the identity-unification fixture one side of a run of two recorded examples takes about 110 ms
-of wall time on an Apple silicon laptop, worktree included. The two calls take under 1.5 ms together.
 
 ### Block checks
 
@@ -943,9 +923,6 @@ with the places Ana imports the client. The one failure is Ana's payment test:
     payments/tests/test_webhooks.py fails: test_timed_out_charge_is_charged_once
 ```
 
-On the three fixtures one combined run with every check takes 4 to 9 seconds on an Apple silicon
-laptop. pyright takes about 1 to 2.5 seconds of each target.
-
 ### Caller replay
 
 The caller replay tells the originating agent and each running feature's owner how a change moves
@@ -956,7 +933,7 @@ an impact graph runs it, so a `check` request and a block run carry it (`combine
 1. `replaySymbols` takes the impact report's modified, removed, renamed and moved functions and
    methods: at most 64, each with the module it imports as and the contract it belongs to. A `check`
    claim also carries `held`: the functions the feature's unsettled caller items name
-   (`heldReplay` in `services/project-agent/src/caller-items.ts`, #193). `withHeld` adds them, so a
+   (`heldReplay` in `services/project-agent/src/caller-items.ts`). `withHeld` adds them, so a
    revision that restores a function to main's bytes still replays its callers and shows them
    `unaffected` instead of withdrawing their items. The forks those items name run their tests even
    when the impact graph no longer selects them.
@@ -1041,10 +1018,6 @@ instant-payouts replay-650b3ccd297432b12a35 (payouts): 4 and 4 calls recorded, 5
   payouts/send.py:18 shared/platform/http.py::Client differs: 1 of 2 calls differ: result, exception, effects
     call-dcb27a7e9856d4d2d1d6 payouts/tests/test_send.py::test_timed_out_payout_is_paid_once: raised Timeout, 1 effects -> returned {"$type":"Response","json":{"id":"mv_2"},"status":200}, 2 effects
 ```
-
-On the Larder seed on gn100 the extra run on a fork head takes 130 to 182 ms per feature. Case 1's
-`check` replays nine features in 1,389 ms in all, `cohort-ltv` 182 ms of it. Case 3's replays four
-in 578 ms in all: `instant-payouts` 141 ms, `tip-jar` 150 ms.
 
 ### Resolution ladder
 
@@ -1138,8 +1111,7 @@ On the fixture's own trigger, `owner-priya-checkpoint`, Jun's and Sam's failing 
 to the stewards `@jun/steward` and `@sam/steward`, because the failing files lie outside
 `@priya/utc-day-start`'s charter. With an unused import added to Priya's `shared/dates.py`, lint
 fails on every target. The failure goes to step 1. One `fix:ruff-autofix` commit on Priya's
-checkpoint clears it on all three. On an Apple silicon laptop one codemod run takes about 1 second,
-most of it libcst's import. Each round of checks takes 8 to 12 seconds.
+checkpoint clears it on all three.
 
 ### Agent tools on the runner
 
