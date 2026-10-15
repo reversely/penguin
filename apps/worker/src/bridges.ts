@@ -109,6 +109,7 @@ import type {
   EditClaim,
   EditReportOutcome,
   FixWriteOutcome,
+  RuleUnmatched,
   PartTrialClaim,
   PartTrialOutcome,
   Delivery,
@@ -208,8 +209,8 @@ export interface BridgeDirectory {
     caller: BridgeCaller,
     repos: ProjectRepos,
   ): Promise<{ readonly status: "ok"; readonly writes: readonly { readonly spec: FixWriteSpec }[] } | { readonly status: "forbidden"; readonly message: string }>;
-  /** Checks and keeps the commit the runner pushed for write `writeId`, which it claimed. */
-  reportRunnerFixWrite(caller: BridgeCaller, writeId: number, body: unknown, repos: ProjectRepos): Promise<FixWriteOutcome>;
+  /** Checks and keeps the commit the runner pushed for write `writeId`, which it claimed, or a rule write's rules that rewrote nothing. */
+  reportRunnerFixWrite(caller: BridgeCaller, writeId: number, body: unknown, repos: ProjectRepos): Promise<FixWriteOutcome | RuleUnmatched>;
   /** Releases a run the runner failed and counts the failure; refused unless `caller` holds the run's claim. */
   reportRunFailure(caller: BridgeCaller, body: unknown): Promise<RunFailureOutcome>;
   /** The bridge's person's waiting edit tasks, up to the project's cap of background runs. */
@@ -862,6 +863,8 @@ async function reportFixWrite(request: Request, writeId: number, handlers: Bridg
   if (outcome.status === "rejected") {
     return json({ error: outcome.reason, message: outcome.message }, REVIEW_REJECTION_STATUS[outcome.reason] ?? 409);
   }
+  // A rule write whose rules rewrote nothing: nothing was pushed, and its items went back (#209).
+  if (outcome.status === "unmatched") return json({ status: "unmatched", writeId, items: outcome.items, message: outcome.message }, 200);
   const { write, durationMs } = outcome;
   return json({ status: "written", writeId, part: write.partId, revision: write.revision, fork: write.targetRepo, commit: write.commitSha, recordId: write.recordId, durationMs }, 200);
 }

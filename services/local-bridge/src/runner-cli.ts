@@ -51,6 +51,7 @@ import {
   reportRunFailure,
   reportCombinedRun,
   reportFixWrite,
+  reportRuleUnmatched,
   reportPartTrial,
   reportPlanFacts,
   reportReview,
@@ -345,12 +346,14 @@ async function testJobsPass(
       fixWritePass({
         claim: () => claimFixWrites(server, bridgeToken, fetchImpl),
         // The token Penguin minted for this part reaches Git only through the push's environment.
-        // A write that copies the originating change's modules reads them from the originating fork.
+        // A write that copies the originating change's modules reads them from the originating fork, and
+        // so does a rule write, whose rules' contract modules are there (#209).
         write: async ({ spec, token }) => {
-          if (spec.copy !== undefined) await fetchRepoBranches(repo, readRemotes, `feature-${spec.feature}`);
-          return writeFix({ repoPath: repo, remote: tokenRemote(penguinRemote(spec.fork), token) }, spec);
+          if (spec.copy !== undefined || spec.rewrite !== undefined) await fetchRepoBranches(repo, readRemotes, `feature-${spec.feature}`);
+          return writeFix({ repoPath: repo, remote: tokenRemote(penguinRemote(spec.fork), token), rewriter: fixes }, spec);
         },
         report: (writeId, commit) => reportFixWrite(server, bridgeToken, writeId, commit, fetchImpl),
+        unmatched: (writeId, reason) => reportRuleUnmatched(server, bridgeToken, writeId, reason, fetchImpl),
         fail,
       }),
     ),

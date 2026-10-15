@@ -6,9 +6,12 @@
 //
 // - `unaffected`: Penguin asks the receiving worktree's agent to confirm (`confirmation_requested`),
 //   and that agent confirms (`confirmed`).
-// - `broken`: the originating agent proposes a fix for the receiving branch (`fix_proposed`), a plan
-//   part placed on that feature. The receiving agent approves it (`fix_approved`) or rejects it
-//   (`fix_rejected`). Penguin's check runner writes an approved fix into the fork (`written`).
+// - `broken`: the originating agent proposes a fix for the receiving branch (`fix_proposed`): a plan
+//   part placed on that feature, or a rewrite rule (#209), the old call pattern and its replacement,
+//   which needs no read of the receiving fork. The receiving agent approves it (`fix_approved`) or
+//   rejects it (`fix_rejected`). Penguin's check runner writes an approved fix into the fork
+//   (`written`); for a rule it rewrites the matching call sites there, with the copied modules, in one
+//   write.
 // - `differs`: the originating agent explains the difference. It either revises its own change
 //   (`explained`, until the next replay resets the item) or calls the difference expected, which asks
 //   for a review (`review_requested`). The receiving agent approves (`approved`) or asks for changes
@@ -32,6 +35,7 @@
 // every item is `confirmed`, `written`, `approved` or `unaffected`.
 
 import type { CallerVerdict, CallerVerdictKind, ReplayCall, ReplayCallStatus, ReplaySide } from "./caller-replay.ts";
+import type { RewriteRuleImport } from "./rewrite-rule.ts";
 import { FEATURE_ID_MAX_LENGTH } from "./overlap.ts";
 import { IDENTITY_HANDLE_MAX_LENGTH, PERSON_ID_MAX_LENGTH, PERSON_ID_PATTERN, SEGMENT_PATTERN } from "./operation-schema.ts";
 import type { JsonSchema } from "./schema-check.ts";
@@ -251,14 +255,43 @@ export interface CallerExplanation {
   readonly at: string;
 }
 
-/** The plan part revision the originating agent proposes as a broken item's fix. */
+/**
+ * A rewrite rule the originating agent states as a broken item's fix (#209): each call matching
+ * `pattern` in the files of the item's broken call sites becomes `replacement`, as a plan's rewrite
+ * rules write (rewrite-rule.ts), scoped to the item's contract.
+ */
+export interface CallerFixRule {
+  readonly pattern: string;
+  readonly replacement: string;
+  readonly imports: readonly RewriteRuleImport[];
+  /** The files the rule may rewrite: those of the item's broken call sites. */
+  readonly sites: readonly string[];
+}
+
+/** A call site file the check runner's rule write changed, with the lines it wrote there. */
+export interface CallerRewrittenSite {
+  readonly path: string;
+  readonly lines: readonly number[];
+}
+
+/**
+ * The fix the originating agent proposes for a broken item: a plan part revision, or a rewrite rule
+ * (`rule`), kept as `rule:<item id>` with a revision per rule stated.
+ */
 export interface CallerFix {
   readonly partId: string;
   readonly revision: number;
   readonly note: string;
   readonly by: string;
   readonly at: string;
+  /** The rule a rule fix states; absent or null for a plan part. */
+  readonly rule?: CallerFixRule | null;
+  /** The sites the runner's rule write rewrote, once it is kept; absent before. */
+  readonly rewritten?: readonly CallerRewrittenSite[] | null;
 }
+
+/** The id a rule fix of item `itemId` is kept under as its `fix.partId`. */
+export const callerRuleFixId = (itemId: string): string => `rule:${itemId}`;
 
 /**
  * The receiving agent's verdict on one listed differing call. `evidence` is a pytest node id that ran
@@ -301,6 +334,8 @@ export interface CallerReview {
  * - `evidence_from_change`: a review cites a test the originating change added or edited.
  * - `evidence_not_on_main`: a review cites a test that was neither on main before the change nor
  *   written by the receiving feature.
+ * - `rule_matches_nothing`: the check runner applied a stated rule to the item's call sites and it
+ *   rewrote nothing, so nothing was written (#209).
  */
 export const CALLER_REFUSAL_CODES = [
   "run_not_on_item",
@@ -312,6 +347,7 @@ export const CALLER_REFUSAL_CODES = [
   "evidence_unknown",
   "evidence_from_change",
   "evidence_not_on_main",
+  "rule_matches_nothing",
 ] as const;
 export type CallerRefusalCode = (typeof CALLER_REFUSAL_CODES)[number];
 
@@ -333,6 +369,7 @@ export const CALLER_REFUSAL_LABEL: Readonly<Record<CallerRefusalCode, string>> =
   evidence_unknown: "Evidence not in the replay",
   evidence_from_change: "Test written by the change",
   evidence_not_on_main: "Test not on main or this worktree",
+  rule_matches_nothing: "Rule matches no call site",
 };
 
 /** One replay run an item's callers came from, without the recorded values. */
@@ -439,7 +476,15 @@ export interface CallerItemView {
   /** Answers Penguin refused since the item last moved, newest last. */
   readonly refusals: readonly CallerRefusal[];
   readonly explanation: { readonly kind: CallerExplanation["kind"]; readonly text: string; readonly by: string } | null;
-  readonly fix: { readonly partId: string; readonly revision: number; readonly note: string } | null;
+  readonly fix: {
+    readonly partId: string;
+    readonly revision: number;
+    readonly note: string;
+    /** A rule fix's pattern and replacement; null for a plan part. */
+    readonly rule: { readonly pattern: string; readonly replacement: string } | null;
+    /** The call sites a kept rule write rewrote; empty before it. */
+    readonly rewritten: readonly CallerRewrittenSite[];
+  } | null;
   readonly review: { readonly verdict: CallerReview["verdict"]; readonly text: string; readonly by: string } | null;
   readonly openedAt: string;
   readonly updatedAt: string;
@@ -480,7 +525,16 @@ export function callerItemView(item: CallerItem, people: { readonly origin: stri
     })),
     refusals: item.refusals ?? [],
     explanation: item.explanation === null ? null : { kind: item.explanation.kind, text: item.explanation.text, by: item.explanation.by },
-    fix: item.fix === null ? null : { partId: item.fix.partId, revision: item.fix.revision, note: item.fix.note },
+    fix:
+      item.fix === null
+        ? null
+        : {
+            partId: item.fix.partId,
+            revision: item.fix.revision,
+            note: item.fix.note,
+            rule: item.fix.rule == null ? null : { pattern: item.fix.rule.pattern, replacement: item.fix.rule.replacement },
+            rewritten: item.fix.rewritten ?? [],
+          },
     review: item.review === null ? null : { verdict: item.review.verdict, text: item.review.text, by: item.review.by },
     openedAt: item.openedAt,
     updatedAt: item.updatedAt,
@@ -541,7 +595,15 @@ const VIEW_FIELDS = {
     items: record({ code: { type: "string", enum: [...CALLER_REFUSAL_CODES] }, by: BY, at: text(64, 1) }),
   },
   explanation: nullable(record({ kind: { type: "string", enum: ["expected", "revising"] }, text: text(CALLER_ITEM_LIMITS.textLength), by: BY })),
-  fix: nullable(record({ partId: text(128, 1), revision: { type: "integer", minimum: 1 }, note: text(CALLER_ITEM_LIMITS.textLength) })),
+  fix: nullable(
+    record({
+      partId: text(128, 1),
+      revision: { type: "integer", minimum: 1 },
+      note: text(CALLER_ITEM_LIMITS.textLength),
+      rule: nullable(record({ pattern: text(500, 1), replacement: text(500, 1) })),
+      rewritten: { type: "array", items: record({ path: text(1_024, 1), lines: { type: "array", items: { type: "integer", minimum: 1 } } }) },
+    }),
+  ),
   review: nullable(record({ verdict: { type: "string", enum: ["approve", "request_changes"] }, text: text(CALLER_ITEM_LIMITS.textLength), by: BY })),
   openedAt: text(64, 1),
   updatedAt: text(64, 1),

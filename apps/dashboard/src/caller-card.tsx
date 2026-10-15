@@ -96,10 +96,25 @@ export function CallerCard({ item, title, navigate, decide, told = false }: Prop
       {item.fix === null ? null : (
         <blockquote className="approval-quote">
           {item.fix.note === "" ? null : <p>{item.fix.note}</p>}
-          <footer className="muted">
-            Fix in part {item.fix.partId} revision {item.fix.revision}
-          </footer>
+          {item.fix.rule === null ? null : (
+            <p>
+              <code className="code-chip">{item.fix.rule.pattern}</code> becomes <code className="code-chip">{item.fix.rule.replacement}</code>
+            </p>
+          )}
+          <footer className="muted">{item.fix.rule === null ? `Fix in part ${item.fix.partId} revision ${item.fix.revision}` : `Rule ${item.fix.revision}, applied by Penguin's check runner`}</footer>
         </blockquote>
+      )}
+      {item.fix === null || item.fix.rewritten.length === 0 ? null : (
+        <ul className="code-list caller-sites" aria-label="Rewritten sites">
+          {item.fix.rewritten.map((site) => (
+            <li key={site.path}>
+              <code className="code-chip">
+                {site.path}:{site.lines.join(", ")}
+              </code>
+              <span className="muted">Rewritten by the rule</span>
+            </li>
+          ))}
+        </ul>
       )}
       {item.review === null ? null : (
         <blockquote className="approval-quote">

@@ -114,6 +114,7 @@ export {
   reportEditTask,
   fixWriteSpecOf,
   reportFixWrite,
+  reportRuleUnmatched,
   COMBINED_RUN_CLAIM_ROUTE,
   COMBINED_RUN_ROUTE,
   fetchApprovals,

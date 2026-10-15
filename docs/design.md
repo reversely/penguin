@@ -873,6 +873,11 @@ that also fails another check stays with its author. Its stored data reason is l
   revision the originating change has moved past. The commit message reads "copy the originating modules of merge
   plan part ...". A kept copy write is a signed `fix_write` record with `copied_from` and `copied`. It
   keeps no `FixWrite` row, since the part's row is its own write's.
+- **Rule writes.** A broken caller's approved rule is written by a runner write with no patch, kept as
+  `rules:<feature>`, which carries the call sites' rewrite and the copies in one commit
+  ([Caller items in the build](#caller-items-in-the-build)). The spec's `rewrite` names the rules, the
+  originating revision and the call sites' files. The commit message reads "rewrite broken call sites
+  by rule". A kept rule write is a signed `fix_write` record and keeps no `FixWrite` row.
 - **Refreshing the copies.** A kept runner write keeps each module it copied with the blob it wrote
   (`FixGrantStore.copiedInto`). A fork that holds a module at a revision Penguin copied earlier takes
   the current revision byte for byte, so every write of a later revision refreshes the copies.
@@ -1521,13 +1526,33 @@ rejects before the originating feature changes its fork or reaches main.
   | Verdict | States | Who moves it |
   |---|---|---|
   | `unaffected` | `confirmation_requested`, then `confirmed` | The receiving agent confirms with `confirm_caller`, naming the replay run it read |
-  | `broken` | `broken`, `fix_proposed`, then `fix_approved` or `fix_rejected`, then `written` | The originating agent names a part of its newest plan, placed on the receiving feature, with `propose_caller_fix`. The receiving agent approves or rejects it with `review_caller`. Penguin marks the item `written` when that part revision's fix is kept in the fork |
+  | `broken` | `broken`, `fix_proposed`, then `fix_approved` or `fix_rejected`, then `written` | The originating agent states a rewrite rule with `propose_caller_fix`, or names a part of its newest plan placed on the receiving feature. The receiving agent approves or rejects the fix with `review_caller`. Penguin marks the item `written` when the check runner's write of the rule, or of that part revision, is kept in the fork |
   | `differs` | `differs`, `explained`, then `review_requested`, then `approved` or `changes_requested` | The originating agent calls `explain_difference` and classifies every differing call. `revising` keeps the item at `explained` until the next replay. `expected` asks for the review at once. The receiving agent approves or asks for changes with `review_caller`, giving each differing call a verdict with evidence |
   | `unknown_reach` | `unknown_reach`, then `approved` or `changes_requested` | The worktree owner decides on the dashboard |
 
   A `changes_requested` item goes back to the originating agent, which explains again or revises. A
-  `fix_rejected` item takes a new proposal, usually a revised part. A part revision already written
-  into the fork cannot be proposed again: it did not fix the callers.
+  `fix_rejected` item takes a new proposal: another rule or a revised part. A part revision already
+  written into the fork cannot be proposed again: it did not fix the callers.
+- **Rule fixes.** The originating agent cannot read the receiving fork, so a broken caller's fix is
+  usually a rule (`propose_caller_fix` with `rule`). The rule is the old call pattern and its
+  replacement, written as a plan's rewrite rules are (`packages/protocol/src/rewrite-rule.ts`). On Larder,
+  case 1's rule for `cohort-ltv` is `$counts[ShopperMap.resolve($map, $event)]` becoming
+  `$counts[$map.counted_as($event)]`. Penguin checks the rule's form, scopes it to the item's contract
+  and keeps the files of the item's broken call sites as the only files it may change. The replay
+  already named those files, so the agent reads none of them. The feature needs a merge plan first,
+  since the write copies its modules. The fix is kept as `rule:<item id>` with a revision per rule
+  stated. Once the receiving side approves the rule, Penguin opens one check runner write into that
+  fork, keyed `rules:<feature>` (`openRuleWrite`). The write carries every approved rule of the
+  originating feature on that fork. A queued write of the same feature that only copies modules, a
+  copy write or a verify part's, is withdrawn, since the rule write copies them too. The fork gets one
+  write. The runner applies the rules to the call sites' files at the fork head with Penguin's codemod,
+  each rule's contract module read at the originating revision. It commits the rewrite with the module
+  copies on the write token minted for that fork alone. Penguin keeps the commit only when it changes
+  at least one of those files and the copies and nothing else (`commitProblem`). It then marks each
+  item `written` with the lines the commit changed in each file. The feature page lists them under the
+  item as the rewritten sites. Rules that rewrite nothing make no commit: the runner reports the write
+  `unmatched`. Penguin withdraws it, signs `fix_write_refused` with the reason `rule_matches_nothing`
+  and returns each item to `broken` with that refusal. The originating agent then states another rule.
 - **Roles.** Only a live agent session of the receiving feature, owned by its person, confirms,
   approves or rejects. Only a session of the originating feature proposes or explains. Penguin refuses
   any other session as `forbidden`. It refuses an action the item's state does not allow as `conflict`.
@@ -1582,7 +1607,8 @@ rejects before the originating feature changes its fork or reaches main.
   `decide_caller`. Each names the item, the receiving feature, the contract, the action, the states
   before and after, the verdict, the owner's reason, the rejections, the fingerprint and the replay
   run ids. A confirmation adds the run it cited, an explanation each call's classification and a
-  review each call's verdict and evidence. The agent's or person's words are in the record as written.
+  review each call's verdict and evidence. A rule fix's record adds the rule. The `write` that settles
+  a rule fix adds the commit and the rewritten lines. The agent's or person's words are in the record as written.
 - **Writes into the receiving fork.** A write of the originating feature's fix into a fork waits until
   every item there is `confirmed`, `fix_approved`, `written`, `approved` or `unaffected`, with no owner's decision
   pending (`writeWaits`). The check runner's claim leaves the write queued, a copy write included,
@@ -1599,13 +1625,14 @@ rejects before the originating feature changes its fork or reaches main.
   the originating plan's contract diff, the call sites with the tests that reached them, each
   differing call old and new with its arguments, result or exception and effects, the count of
   differing calls past the list (`unlistedCalls`), the replay runs with their commits and test tallies
-  and the proposed fix's part. `yourTurn` names the tool the session's side answers with. The
-  explanation with each call's reason, the patch, the fix note and the review with each call's
-  evidence are under `personWritten`. The recorded calls are what the code under test returned and sent, which the
+  and the proposed fix: its part, or for a rule the kind `rule`, the files it may change and the lines
+  it rewrote once written. `yourTurn` names the tool the session's side answers with. The explanation
+  with each call's reason, the patch, the rule, the fix note and the review with each call's evidence
+  are under `personWritten`. The recorded calls are what the code under test returned and sent, which the
   agent reads as data too.
 
-Items use plan parts where a part already means the same thing: a broken caller's fix is a plan part
-placed on the receiving feature, written by the check runner once approved. A part covers a whole fork,
+Items use plan parts where a part already means the same thing: a broken caller's fix may be a plan
+part placed on the receiving feature, written by the check runner once approved. A part covers a whole fork,
 while an item covers one contract's callers in it. The `unaffected` and `differs` paths carry no patch
 at all. The items therefore keep their own states beside the parts. The part's own approval still
 follows the review policy. The item adds the receiving agent's signed consent before the write. The
@@ -1630,7 +1657,7 @@ Agents call these tools through MCP. Each tool answers with facts or applies one
 | `propose_plan` | Submits a merge plan; Penguin fills in the facts and returns what is missing |
 | `submit_review` | Submits the review form for a plan part ([Review harness](#review-harness)) |
 | `confirm_caller`, `review_caller` | The receiving worktree's agent confirms an unaffected caller, or approves or rejects a proposed fix or an explained difference ([Caller items in the build](#caller-items-in-the-build)) |
-| `propose_caller_fix`, `explain_difference` | The originating agent names the plan part that fixes a broken caller, or explains why calls differ |
+| `propose_caller_fix`, `explain_difference` | The originating agent states the rule, or names the plan part, that fixes a broken caller, or explains why calls differ |
 
 #### Tools in the build
 

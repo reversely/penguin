@@ -314,11 +314,11 @@ export function joinedPlanFields(joined: readonly JoinedPlan[]): Record<string, 
 /**
  * What a fix writer needs besides its token: the commit's parent, the files, the message Penguin built
  * from validated fields and the approved patch, which the originating agent wrote and so is echoed
- * only inside `personWritten`.
+ * only inside `personWritten`, as are a rule write's rules (#209).
  */
 export function fixWriteFields(spec: FixWriteSpec): Record<string, unknown> {
-  const { patch, ...fields } = spec;
-  return { ...fields, paths: [...spec.paths], personWritten: { patch } };
+  const { patch, rewrite, ...fields } = spec;
+  return { ...fields, paths: [...spec.paths], personWritten: { patch, ...(rewrite === undefined ? {} : { rewrite }) } };
 }
 
 /** The token fields an agent receives: the plaintext once, the fork's Git remote and its expiry. */

@@ -247,7 +247,14 @@ export interface CallerPacketView {
 /** One call of a caller tool, as the ProjectAgent's `callerAction` takes it. */
 export type CallerCallView =
   | { readonly action: "confirm"; readonly item: string; readonly run: string }
-  | { readonly action: "propose_fix"; readonly item: string; readonly part: string; readonly revision: number; readonly note?: string | undefined }
+  | {
+      readonly action: "propose_fix";
+      readonly item: string;
+      readonly part?: string | undefined;
+      readonly revision?: number | undefined;
+      readonly rule?: { readonly pattern: string; readonly replacement: string; readonly imports?: readonly { readonly module: string; readonly name: string }[] | undefined } | undefined;
+      readonly note?: string | undefined;
+    }
   | {
       readonly action: "explain";
       readonly item: string;
@@ -980,8 +987,20 @@ const confirmCallerInput = z.strictObject({
 const proposeCallerFixInput = z.strictObject({
   sessionId,
   item: callerItem,
-  part: z.string().min(1).max(128).describe("The part of your feature's newest plan, placed on the receiving feature, whose patch is the fix."),
-  revision: z.number().int().min(1).describe("The part's current revision."),
+  part: z.string().min(1).max(128).optional().describe("The part of your feature's newest plan, placed on the receiving feature, whose patch is the fix. Leave out when you state a rule."),
+  revision: z.number().int().min(1).optional().describe("The part's current revision; with `part` only."),
+  rule: z
+    .strictObject({
+      pattern: z.string().min(1).max(500).describe("The old call as a Python expression with `$name` placeholders, such as `$counts[ShopperMap.resolve($map, $event)]`. It names a use of the item's contract and matches however the file imports it."),
+      replacement: z.string().min(1).max(500).describe("The new call, using the pattern's placeholders, such as `$counts[$map.counted_as($event)]`."),
+      imports: z
+        .array(z.strictObject({ module: z.string().min(1).max(512), name: z.string().min(1).max(128) }))
+        .max(8)
+        .optional()
+        .describe("Names the replacement needs, each `from <module> import <name>`, from the contract's module or the standard library."),
+    })
+    .optional()
+    .describe("Instead of a part: the rewrite rule that fixes the broken calls. You never read the receiving worktree; Penguin's check runner applies the rule to the item's call sites."),
   note: callerText.optional().describe("What the fix changes in the receiving worktree and why, for its agent."),
 });
 const explainDifferenceInput = z.strictObject({
@@ -2217,14 +2236,17 @@ function registerCallerTools(server: McpServer, owner: string, project: McpProje
     {
       title: "Propose caller fix",
       description:
-        "For the originating agent, when your change breaks a caller in another worktree (`broken`): names the part of " +
-        "your feature's newest plan, placed on that worktree's feature, whose patch fixes the caller. Propose the patch " +
-        "with propose_plan or revise_plan_part first. The receiving agent then approves or rejects it; once approved, " +
-        "Penguin's check runner writes it into that fork.",
+        "For the originating agent, when your change breaks a caller in another worktree (`broken`). State a `rule`: the " +
+        "old call pattern from the packet's call sites and its replacement in your change's terms, as a plan's rewrite rules " +
+        "are written. You do not read that worktree: Penguin's check runner rewrites every matching call in the item's call " +
+        "sites' files, with your modules copied, in one write. Or name a part of your feature's newest plan, placed on " +
+        "that worktree's feature, whose patch fixes the caller (`part` and `revision`). The receiving agent approves or " +
+        "rejects the fix; once approved, the check runner writes it. A rule that matches no call comes back to you as " +
+        "`broken` with the refusal `rule_matches_nothing`.",
       inputSchema: proposeCallerFixInput,
       annotations: write,
     },
-    async ({ sessionId: id, item, part, revision, note }) => call(id, { action: "propose_fix", item, part, revision, note }),
+    async ({ sessionId: id, item, part, revision, rule, note }) => call(id, { action: "propose_fix", item, part, revision, rule, note }),
   );
   server.registerTool(
     "explain_difference",

@@ -48,6 +48,15 @@
 //   revision, and by a land whose affected forks do not hold that revision's modules. A copy write of a
 //   revision the originating change has moved past is withdrawn. A fork that changed a copied module
 //   itself sends the part back to the originating agent with the fork's lines (`copy_conflict`).
+// - Rule writes (#209). Once the receiving side approves a rewrite rule the originating agent stated for
+//   a broken caller item (caller-items.ts), one runner write into that fork is opened, keyed
+//   `rules:<target>` (`openRuleWrite`); it carries every approved rule of that originating feature on
+//   the fork, so the fork gets one write, and queued copy writes beside it are withdrawn since it
+//   copies their modules. Its spec names the rules and the call sites' files (`FixWriteSpec.rewrite`)
+//   and no patch: the runner applies the rules at the fork head with Penguin's codemod. Penguin keeps
+//   the commit only when it changes some of those files and the copies and nothing else, then marks
+//   the items `written` with the lines it rewrote. Rules that rewrite nothing come back as `unmatched`
+//   (`runnerFixReport`): no write is made and the items go back to the originating agent.
 
 import {
   applyPatchFile,
@@ -58,10 +67,12 @@ import {
   RUNNER_WRITER,
   type FixWriter,
   type FixWriteSpec,
+  type CallerItem,
   type ModuleCopy,
   type Plan,
   type PlanFileDiff,
   type PlanPart,
+  type RewriteRule,
 } from "@penguin/protocol";
 import { scopeForPath, type ScopeMap } from "@penguin/scope-map";
 
@@ -72,7 +83,7 @@ import type { PlanRouteStore } from "./plan-approval.ts";
 import type { FixWrite, PlanKeeper } from "./plan-store.ts";
 import { readCopy, type CopyReading } from "./module-copy.ts";
 import { newestRevision } from "./part-trial.ts";
-import { changedFiles, readFileText, type GitObjectReader } from "./repo-diff.ts";
+import { changedFiles, lineHunks, readFileText, splitLines, type GitObjectReader } from "./repo-diff.ts";
 import { notStopped, RUN_FAILURE_SCHEMA, type StoreRelease } from "./run-failures.ts";
 import type { SessionOutcome } from "./session-store.ts";
 
@@ -113,6 +124,7 @@ const GRANT_COLUMNS: readonly (readonly [string, string])[] = [
   ["retrial_trial", "retrial_trial INTEGER"],
   ["trialled_head", "trialled_head TEXT"],
   ["copies", "copies TEXT"],
+  ["rule_items", "rule_items TEXT"],
 ];
 
 /** The states in which a write still waits to be made: it holds the fork's order. */
@@ -137,6 +149,14 @@ export function copyWriteOf(grant: Pick<FixGrant, "partId">): { readonly partId:
   const match = COPY_KEY.exec(grant.partId);
   return match === null ? undefined : { source: match[1] as string, partId: match[2] as string };
 }
+
+const RULE_KEY = /^rules:(.+)$/u;
+
+/** The key a rule write into `target`'s fork is kept under (#209); its revision counts the writes. */
+export const ruleWriteKey = (target: string): string => `rules:${target}`;
+
+/** Whether a write is a rule write. */
+export const isRuleWrite = (grant: Pick<FixGrant, "partId">): boolean => RULE_KEY.test(grant.partId);
 
 /** The plan part a write writes: a copy write's part, or the write's own key. */
 export const writtenPart = (grant: Pick<FixGrant, "partId">): string => copyWriteOf(grant)?.partId ?? grant.partId;
@@ -175,11 +195,14 @@ export interface FixGrant {
   readonly trialledHead: string | null;
   /** Each module a kept write copied, with the blob it wrote; empty when it copied none. */
   readonly copies: ReadonlyMap<string, string>;
+  /** For a rule write: the caller items whose rules its claim carries; null before its claim. */
+  readonly ruleItems: readonly string[] | null;
 }
 
 /** A write as a waiting message names it. */
 function writeName(grant: FixGrant): string {
   if (grant.writer === "task") return `the run of edit task ${grant.partId.slice("task:".length)}`;
+  if (isRuleWrite(grant)) return `the rule write ${grant.partId} revision ${grant.revision}`;
   const copy = copyWriteOf(grant);
   if (copy !== undefined) return `the copy of the originating change's modules for part ${copy.partId} revision ${grant.revision}`;
   return `the write of part ${grant.partId} revision ${grant.revision}`;
@@ -214,6 +237,7 @@ function grantOf(row: Row): FixGrant {
     retrialTrial: number("retrial_trial"),
     trialledHead: nullable("trialled_head"),
     copies: copiesOf(row["copies"]),
+    ruleItems: typeof row["rule_items"] === "string" ? (JSON.parse(row["rule_items"]) as string[]) : null,
   };
 }
 
@@ -247,6 +271,23 @@ export class FixGrantStore {
       this.#now(),
     );
     return this.get(part.partId, part.revision) as FixGrant;
+  }
+
+  /**
+   * The open rule write of `featureId`'s rules into `target`'s fork, or a new one queued for the runner
+   * at the next revision of its key, which stays unique whichever feature asks.
+   */
+  openRules(featureId: string, planId: string, target: string): FixGrant {
+    const key = ruleWriteKey(target);
+    const [open] = this.#db.exec(`SELECT * FROM FixWriteGrant WHERE part_id = ? AND feature_id = ? AND state = 'queued' ORDER BY id LIMIT 1`, key, featureId);
+    if (open !== undefined) return grantOf(open);
+    const [last] = this.#db.exec(`SELECT MAX(revision) AS revision FROM FixWriteGrant WHERE part_id = ?`, key);
+    return this.open(featureId, planId, { partId: key, revision: Number(last?.["revision"] ?? 0) + 1 }, target, "runner");
+  }
+
+  /** The caller items whose rules claimed write `id` carries. */
+  noteRuleItems(id: number, items: readonly string[]): void {
+    this.#db.exec(`UPDATE FixWriteGrant SET rule_items = ? WHERE id = ?`, JSON.stringify(items), id);
   }
 
   get(partId: string, revision: number): FixGrant | undefined {
@@ -455,6 +496,12 @@ export interface FixWriteDeps {
   readonly callerWaits?: (originId: string, targetId: string) => Promise<string | null>;
   /** Called once a part's own write is kept, so the caller items it answers become `written`. */
   readonly partWritten?: (originId: string, partId: string, revision: number) => Promise<void>;
+  /** The caller items of `originId` on `targetId` whose approved rule a rule write carries (caller-items.ts `ruleItems`). Absent, none. */
+  readonly ruleItems?: (originId: string, targetId: string) => Promise<readonly CallerItem[]>;
+  /** A rule write was kept: its items become `written` with the lines it changed in each call site file. */
+  readonly rulesWritten?: (originId: string, itemIds: readonly string[], rewritten: ReadonlyMap<string, readonly number[]>, commit: string) => Promise<void>;
+  /** The runner's rules rewrote nothing: the items go back to the originating agent. */
+  readonly rulesUnmatched?: (originId: string, itemIds: readonly string[]) => Promise<void>;
 }
 
 /** What fix writes read and tell about a migration part (migration-plans.ts). */
@@ -485,6 +532,9 @@ export type FixWriteOutcome =
     }
   | FixRejection;
 
+/** The runner's report of a rule write whose rules rewrote nothing: no write, and the items go back. */
+export type RuleUnmatched = { readonly status: "unmatched"; readonly message: string; readonly items: readonly string[] };
+
 /** The part a write names, as the agent or a grant names it. */
 export interface FixPartInput {
   readonly feature: unknown;
@@ -509,6 +559,8 @@ export interface ApprovedWrite {
   readonly target: Feature & { readonly repo: string };
   /** For a copy write: the originating change's revision its modules come from. It carries no patch. */
   readonly copiedFrom?: string;
+  /** For a rule write: the rules, the call sites' files they may change and the items they settle. It carries no patch. */
+  readonly rewrite?: { readonly rules: readonly RewriteRule[]; readonly paths: readonly string[]; readonly items: readonly string[] };
 }
 
 export interface ApprovedPart extends ApprovedWrite {
@@ -569,6 +621,7 @@ export async function approvedPart(deps: FixWriteDeps, input: FixPartInput): Pro
 
 /** The approved write a grant names: a migration part's, or a plan part's current revision. */
 export async function grantedWrite(deps: FixWriteDeps, grant: FixGrant): Promise<ApprovedWrite | FixRejection> {
+  if (isRuleWrite(grant)) return ruleWrite(deps, grant);
   const copy = copyWriteOf(grant);
   if (copy !== undefined) return copyWrite(deps, grant, copy);
   if (!isMigrationPlanId(grant.planId)) return approvedPart(deps, { feature: grant.featureId, part: grant.partId, revision: grant.revision });
@@ -597,6 +650,68 @@ async function copyWrite(deps: FixWriteDeps, grant: FixGrant, copy: { readonly p
   const head = await forkHead(deps, approved.target.repo);
   if (head === null) return rejected("not_found", `feature ${approved.target.id}'s fork has no ${FIX_WRITE_BRANCH} branch`);
   return { ...approved, patch: "", base: head, copiedFrom: source };
+}
+
+/**
+ * The rule write a grant names (#209): every caller item of the originating feature on the fork whose
+ * rule the receiving side approved, each rule scoped to its item's contract, written onto the fork's
+ * head with no patch. Once claimed, the write carries exactly the items its claim named; one that moved
+ * since withdraws it.
+ */
+async function ruleWrite(deps: FixWriteDeps, grant: FixGrant): Promise<ApprovedPart | FixRejection> {
+  const ready = (await deps.ruleItems?.(grant.featureId, grant.targetFeatureId)) ?? [];
+  const items = grant.ruleItems === null ? ready : ready.filter((item) => grant.ruleItems?.includes(item.itemId));
+  if (items.length === 0 || (grant.ruleItems !== null && items.length !== grant.ruleItems.length)) {
+    return rejected("not_approved", `no approved rule for feature ${grant.targetFeatureId}'s callers waits for this write`);
+  }
+  const plan = await deps.keeper(grant.featureId).latestPlan(grant.featureId);
+  if (plan === undefined) return rejected("not_found", `feature ${grant.featureId} has no plan whose modules the rule write copies`);
+  const target = deps.features.get(grant.targetFeatureId);
+  if (target?.repo == null) return rejected("not_found", `feature ${grant.targetFeatureId} has no fork`);
+  for (const feature of [target, deps.features.get(grant.featureId)]) {
+    const readOnly = feature === undefined ? undefined : readOnlyReason(feature);
+    if (readOnly !== undefined) return rejected("conflict", readOnly);
+  }
+  const head = await forkHead(deps, target.repo);
+  if (head === null) return rejected("not_found", `feature ${target.id}'s fork has no ${FIX_WRITE_BRANCH} branch`);
+  const ids = items.map((item) => item.itemId).sort();
+  const rules: RewriteRule[] = items.map((item, index) => ({
+    id: `caller-fix-${index + 1}`,
+    contract: item.contract,
+    kind: "expression",
+    pattern: item.fix?.rule?.pattern as string,
+    replacement: item.fix?.rule?.replacement as string,
+    imports: item.fix?.rule?.imports ?? [],
+  }));
+  const paths = [...new Set(items.flatMap((item) => item.fix?.rule?.sites ?? []))].sort();
+  const approvedBy = [...new Set(items.map((item) => item.review?.by ?? target.personId))].join(", ");
+  // The write is no plan part: it stands in as a mechanical one, keyed by the grant, so the shared
+  // checks (scopes, copies, token, commit) run as for any runner write.
+  const part = {
+    partId: grant.partId,
+    revision: grant.revision,
+    kind: "mechanical",
+    scopes: [],
+    approvedBy,
+    place: { kind: "feature", feature: target.id },
+    diff: { files: [], ref: `rules:${ids.join(",")}` },
+  } as unknown as ApprovedPart["part"];
+  return { featureId: grant.featureId, plan, part, patch: "", base: head, target: target as ApprovedPart["target"], rewrite: { rules, paths, items: ids } };
+}
+
+/**
+ * On the receiving side's approval of a rule fix: the rule write of `plan`'s feature's rules into
+ * `target`'s fork, queued for the runner. A queued write of the same feature into that fork that only
+ * copies modules, a copy write or a verify part's, is withdrawn: the rule write copies them too, so the
+ * fork gets one write.
+ */
+export function openRuleWrite(grants: FixGrantStore, plan: Pick<Plan, "featureId" | "planId" | "parts">, target: string): FixGrant {
+  const copiesOnly = new Set(plan.parts.filter((part) => part.kind === "verify").map((part) => JSON.stringify([part.partId, part.revision])));
+  for (const other of grants.openOn(target)) {
+    if (other.featureId !== plan.featureId || other.state !== "queued") continue;
+    if (copyWriteOf(other) !== undefined || copiesOnly.has(JSON.stringify([other.partId, other.revision]))) grants.withdraw(other.id);
+  }
+  return grants.openRules(plan.featureId, plan.planId, target);
 }
 
 /** The fork's head on its `main`, or null when the branch has no commit. */
@@ -740,6 +855,7 @@ async function prepare(
     paths: files.map((file) => file.path),
     patch: approved.patch,
     ...(copy === null ? {} : { copy }),
+    ...(approved.rewrite === undefined ? {} : { rewrite: { source: originRevision(approved.plan as Plan), rules: approved.rewrite.rules, paths: approved.rewrite.paths } }),
     message: fixCommitMessage({
       partId: part.partId,
       revision: part.revision,
@@ -877,7 +993,9 @@ async function copyFor(deps: FixWriteDeps, approved: ApprovedPart, head: string,
   const origin = deps.features.get(approved.featureId);
   if (origin?.repo == null) return { status: "refused", message: `feature ${approved.featureId} has no fork` };
   const scopeMap = await deps.scopeMap();
-  const scopePaths = approved.part.scopes.flatMap((scope) => scopeMap.scopes.get(scope)?.paths ?? []);
+  // A rule write imports what its call sites' files and the plan's parts on the fork import.
+  const scopes = approved.rewrite === undefined ? approved.part.scopes : approved.plan.parts.filter((part) => part.place.kind === "feature" && part.place.feature === approved.target.id).flatMap((part) => part.scopes);
+  const scopePaths = [...(approved.rewrite?.paths ?? []), ...scopes.flatMap((scope) => scopeMap.scopes.get(scope)?.paths ?? [])];
   // The originating change as it now stands: its newest revision, which holds the checkpoint and
   // every revision before it, so the fork's copies are the bytes main will take.
   const checkpoint = originRevision(approved.plan);
@@ -1016,11 +1134,12 @@ export async function claimRunnerWrites(
       continue;
     }
     // A verify part or a copy write whose fork already holds every module it imports has nothing to write.
-    if (prepared.spec.patch === "" && prepared.spec.copy === undefined) {
+    if (prepared.spec.patch === "" && prepared.spec.copy === undefined && prepared.spec.rewrite === undefined) {
       deps.grants.withdraw(grant.id);
       continue;
     }
     deps.grants.grant(grant.id, prepared.spec.parent, prepared.spec.rebased, caller.bridgeId, now() + FIX_WRITE_LEASE_MS);
+    if (approved.rewrite !== undefined) deps.grants.noteRuleItems(grant.id, approved.rewrite.items);
     writes.push(prepared);
   }
   return { status: "ok", writes };
@@ -1049,14 +1168,41 @@ export async function agentFixReport(
   return recordFixWrite(deps, grant, live.session.handle, input.commit);
 }
 
-/** The check runner reports the commit it pushed for write `writeId`, which it claimed. */
-export async function runnerFixReport(deps: FixWriteDeps, caller: BridgeCaller, writeId: number, body: unknown): Promise<FixWriteOutcome> {
+/**
+ * The check runner reports the commit it pushed for write `writeId`, which it claimed. For a rule
+ * write it may instead report `unmatched`: the rules rewrote nothing at the fork head, so it pushed
+ * nothing. The write is withdrawn and its items go back to the originating agent.
+ */
+export async function runnerFixReport(deps: FixWriteDeps, caller: BridgeCaller, writeId: number, body: unknown): Promise<FixWriteOutcome | RuleUnmatched> {
   if (caller.role !== "runner") return rejected("forbidden", `bridge ${caller.bridgeId} does not hold the runner role`);
   const grant = deps.grants.byId(writeId);
   if (grant === undefined || grant.writer !== "runner") return rejected("not_found", `no write ${writeId}`);
   if (grant.claimedBy !== caller.bridgeId) return rejected("forbidden", `write ${writeId} is claimed by another runner`);
-  const commit = typeof body === "object" && body !== null ? (body as { commit?: unknown }).commit : undefined;
-  return recordFixWrite(deps, grant, RUNNER_WRITER, commit);
+  const fields = typeof body === "object" && body !== null ? (body as { commit?: unknown; unmatched?: unknown }) : {};
+  if (fields.unmatched !== undefined) return ruleUnmatched(deps, grant);
+  return recordFixWrite(deps, grant, RUNNER_WRITER, fields.commit);
+}
+
+/** A claimed rule write whose rules rewrote nothing: withdrawn with a signed record, its items sent back. */
+async function ruleUnmatched(deps: FixWriteDeps, grant: FixGrant): Promise<FixRejection | RuleUnmatched> {
+  if (!isRuleWrite(grant) || grant.ruleItems === null) return rejected("invalid", `write ${grant.id} is no claimed rule write; report its commit`);
+  if (grant.state !== "granted") return rejected("conflict", `write ${grant.id} is ${grant.state}, not granted`);
+  const items = grant.ruleItems;
+  const refused = await deps.sign(
+    deps.features.draftRecord(grant.featureId, "fix_write_refused", { penguin: true }, {
+      plan_id: grant.planId,
+      part_id: grant.partId,
+      revision: grant.revision,
+      target_repo: `feature-${grant.targetFeatureId}`,
+      written_by: RUNNER_WRITER,
+      reason: "rule_matches_nothing",
+      items,
+    }),
+  );
+  deps.features.addRecord(refused);
+  deps.grants.withdraw(grant.id);
+  await deps.rulesUnmatched?.(grant.featureId, items);
+  return { status: "unmatched", message: `the rules of ${items.join(", ")} rewrote nothing in feature ${grant.targetFeatureId}'s call sites; they went back to the originating agent`, items };
 }
 
 /**
@@ -1096,7 +1242,8 @@ async function recordFixWrite(deps: FixWriteDeps, grant: FixGrant, writtenBy: st
     if (read.status !== "ok") return rejected("conflict", read.message);
     copies = read.copy === null ? new Map() : new Map(read.copy.paths.map((path) => [path, read.hashes.get(path) as string]));
   }
-  const problem = await deps.readFork(approved.target.repo, (reader) => commitProblem(reader, { commit, parent, message, files, copies }));
+  const rewritable = approved.rewrite === undefined ? undefined : new Set(approved.rewrite.paths);
+  const problem = await deps.readFork(approved.target.repo, (reader) => commitProblem(reader, { commit, parent, message, files, copies, ...(rewritable === undefined ? {} : { rewritable }) }));
   const targetRepo = `feature-${approved.target.id}`;
   const fields = {
     plan_id: approved.plan.planId,
@@ -1133,14 +1280,19 @@ async function recordFixWrite(deps: FixWriteDeps, grant: FixGrant, writtenBy: st
     writtenAt: new Date(now).toISOString(),
   };
   const migration = isMigrationPlanId(grant.planId) ? deps.migration : undefined;
-  // A copy write is kept on its grant alone: the part's FixWrite row is its own write's.
-  if (migration === undefined && approved.copiedFrom === undefined && !(await deps.keeper(grant.featureId).keepFixWrite(write))) {
+  // A copy write and a rule write are kept on their grant alone: a FixWrite row is a plan part's own write.
+  const ownPart = migration === undefined && approved.copiedFrom === undefined && approved.rewrite === undefined;
+  if (ownPart && !(await deps.keeper(grant.featureId).keepFixWrite(write))) {
     return rejected("conflict", `revision ${grant.revision} of part ${grant.partId} is already written`);
   }
   deps.features.addRecord(record);
   deps.grants.written(grant.id, commit, record.record_id, copies);
   await migration?.written(grant.partId, commit, record.record_id);
-  if (migration === undefined && approved.copiedFrom === undefined) await deps.partWritten?.(grant.featureId, partId, grant.revision);
+  if (ownPart) await deps.partWritten?.(grant.featureId, partId, grant.revision);
+  if (approved.rewrite !== undefined && rewritable !== undefined) {
+    const lines = await deps.readFork(approved.target.repo, (reader) => rewrittenLines(reader, parent, commit, rewritable));
+    await deps.rulesWritten?.(grant.featureId, approved.rewrite.items, lines, commit);
+  }
   deps.notify(approved.target.personId);
   deps.notify(approved.plan.person);
   // The fork moved: each write still waiting there is tried on the new head before its turn.
@@ -1148,9 +1300,28 @@ async function recordFixWrite(deps: FixWriteDeps, grant: FixGrant, writtenBy: st
   return { status: "ok", write, durationMs: Math.max(0, now - grant.createdAt) };
 }
 
+/** The lines `commit` wrote in each of `paths` it changed against `parent`, by the new file's line numbers. */
+async function rewrittenLines(reader: ForkReader, parent: string, commit: string, paths: ReadonlySet<string>): Promise<Map<string, number[]>> {
+  const [before, after] = await Promise.all([reader.readCommit(parent), reader.readCommit(commit)]);
+  const lines = new Map<string, number[]>();
+  if (before === null || after === null) return lines;
+  for (const file of await changedFiles(reader, before.treeHash, after.treeHash)) {
+    if (!paths.has(file.path)) continue;
+    const [old, now] = await Promise.all([readFileText(reader, before.treeHash, file.path), readFileText(reader, after.treeHash, file.path)]);
+    const hunks = lineHunks(splitLines(old ?? ""), splitLines(now ?? ""), 0);
+    lines.set(
+      file.path,
+      hunks.flatMap((hunk) => (hunk.newLines === 0 ? [Math.max(hunk.newStart, 1)] : Array.from({ length: hunk.newLines }, (_, index) => hunk.newStart + index))),
+    );
+  }
+  return lines;
+}
+
 /**
  * Why `commit` is not exactly the approved patch applied to `parent` as one commit on the fork's
- * `main` with `message`, or null when it is.
+ * `main` with `message`, or null when it is. For a rule write, `rewritable` names the call sites'
+ * files the rules may change: the commit must change at least one of them, and no other file but the
+ * copies.
  */
 export async function commitProblem(
   reader: ForkReader,
@@ -1161,6 +1332,8 @@ export async function commitProblem(
     readonly files: readonly PlanFileDiff[];
     /** Each module copied from the originating checkpoint, with the blob it must hold. */
     readonly copies?: ReadonlyMap<string, string>;
+    /** For a rule write: the call sites' files its rules may change. */
+    readonly rewritable?: ReadonlySet<string>;
   },
 ): Promise<string | null> {
   const { commit, parent, message, files } = expected;
@@ -1173,10 +1346,17 @@ export async function commitProblem(
   if (pushed.message.trim() !== message.trim()) return "the commit message is not the one Penguin built for the part";
   const base = await reader.readCommit(parent);
   if (base === null) return `the parent ${parent} is not in the fork`;
-  const wanted = new Set([...files.map((file) => file.path), ...copies.keys()]);
+  const rewritable = expected.rewritable ?? new Set<string>();
+  const wanted = new Set([...files.map((file) => file.path), ...copies.keys(), ...rewritable]);
   const changed = await changedFiles(reader, base.treeHash, pushed.treeHash);
   const outside = changed.find((file) => !wanted.has(file.path));
   if (outside !== undefined) return `the commit changes ${outside.path}, outside the approved part and the originating change's copied modules`;
+  if (expected.rewritable !== undefined) {
+    const sites = changed.filter((file) => rewritable.has(file.path));
+    if (sites.length === 0) return "the commit rewrites no call site the rules name";
+    const removed = sites.find((file) => file.newHash === null);
+    if (removed !== undefined) return `the commit removes ${removed.path}; a rule only rewrites its calls`;
+  }
   for (const [path, hash] of copies) {
     if (changed.find((file) => file.path === path)?.newHash !== hash) return `${path} is not the originating checkpoint's module, byte for byte`;
   }

@@ -852,8 +852,8 @@ export const FIX_WRITE_ROUTE = "/fix-writes";
 export function fixWriteSpecOf(value: unknown): FixWriteSpec | undefined {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
   const { personWritten, token: _token, ...fields } = value as Record<string, unknown>;
-  const patch = typeof personWritten === "object" && personWritten !== null ? (personWritten as { patch?: unknown }).patch : undefined;
-  const spec = { ...fields, patch };
+  const written = typeof personWritten === "object" && personWritten !== null ? (personWritten as { patch?: unknown; rewrite?: unknown }) : {};
+  const spec = { ...fields, patch: written.patch, ...(written.rewrite === undefined ? {} : { rewrite: written.rewrite }) };
   return checkFixWriteSpec(spec).length === 0 ? (spec as unknown as FixWriteSpec) : undefined;
 }
 
@@ -880,6 +880,22 @@ export async function claimFixWrites(server: string, bridgeToken: string, fetchI
 export async function reportFixWrite(server: string, bridgeToken: string, writeId: number, commit: string, fetchImpl: Fetch = fetch): Promise<FixWriteReply> {
   const { status, body } = await runnerRequest(server, bridgeToken, `${FIX_WRITE_ROUTE}/${writeId}`, { commit }, fetchImpl);
   if (status === 200) return body as unknown as FixWriteReply;
+  const message = typeof body["message"] === "string" ? `: ${body["message"]}` : "";
+  if ([400, 404, 409].includes(status)) throw new RemoteRefusedError(`Penguin refused fix write ${writeId} (HTTP ${status})${message}`);
+  throw new RemoteUnavailableError(`Penguin could not take fix write ${writeId} (HTTP ${status})${message}`);
+}
+
+/** Penguin's answer to a rule write reported unmatched: no write, and its items went back to the originating agent. */
+export interface RuleUnmatchedReply {
+  readonly status: "unmatched";
+  readonly items: readonly string[];
+  readonly message: string;
+}
+
+/** Reports that a claimed rule write's rules rewrote nothing at the fork head, so nothing was pushed (#209). */
+export async function reportRuleUnmatched(server: string, bridgeToken: string, writeId: number, reason: string, fetchImpl: Fetch = fetch): Promise<RuleUnmatchedReply> {
+  const { status, body } = await runnerRequest(server, bridgeToken, `${FIX_WRITE_ROUTE}/${writeId}`, { unmatched: reason.slice(0, 300) }, fetchImpl);
+  if (status === 200 && body["status"] === "unmatched") return body as unknown as RuleUnmatchedReply;
   const message = typeof body["message"] === "string" ? `: ${body["message"]}` : "";
   if ([400, 404, 409].includes(status)) throw new RemoteRefusedError(`Penguin refused fix write ${writeId} (HTTP ${status})${message}`);
   throw new RemoteUnavailableError(`Penguin could not take fix write ${writeId} (HTTP ${status})${message}`);

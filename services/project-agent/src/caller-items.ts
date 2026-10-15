@@ -12,6 +12,12 @@
 // - Agents move the items with four tools (`callerAction`): `confirm_caller`, `review_caller` (the
 //   receiving branch's agent), `propose_caller_fix` and `explain_difference` (the originating agent).
 //   The worktree owner decides on the dashboard (`ownerDecision`).
+// - A broken item's fix is a plan part placed on the receiving feature, or a rewrite rule the
+//   originating agent states without reading the receiving fork (#209): the old call pattern and its
+//   replacement. Once the receiving side approves a rule, the check runner applies it to the item's
+//   call sites with the copied modules in one write (fix-write.ts `openRuleWrite`); a kept write makes
+//   the item `written` with the sites it rewrote (`rulesWritten`). A rule that rewrites nothing goes
+//   back to the originating agent as `broken` with that refusal (`rulesUnmatched`).
 // - Every transition is a signed record on the originating feature, signed before the item is kept,
 //   and kept only while the item still stands at the record it was read at.
 // - A write into a receiving fork waits until every item there is approved from the receiving side
@@ -30,6 +36,7 @@ import {
   CALLER_REJECTION_LIMIT,
   CALLER_STAGES,
   callerItemSettled,
+  callerRuleFixId,
   callerItemView,
   callerWaitingOn,
   itemVerdict,
@@ -37,6 +44,7 @@ import {
   ownerRequestedChanges,
   REPLAY_CALL_ID_PATTERN,
   REPLAY_RUN_ID_PATTERN,
+  rewriteRuleProblem,
   type Author,
   type CallerCallClass,
   type HeldReplay,
@@ -47,14 +55,17 @@ import {
   type CallerItemRequest,
   type CallerItemState,
   type CallerItemView,
+  type CallerFixRule,
   type CallerOwnerReason,
   type CallerRefusalCode,
   type CallerReplaySection,
   type CallerUnlistedClass,
   type CallerUnlistedVerdict,
   type CallerVerdict,
+  type CallerRewrittenSite,
   type Plan,
   type ReviewPreset,
+  type RewriteRuleImport,
 } from "@penguin/protocol";
 
 import type { Delegates } from "@penguin/issues";
@@ -180,6 +191,11 @@ export interface CallerItemDeps {
   /** Tells a person's open dashboards that their inbox or a feature they follow changed. */
   readonly notify: (personId: string) => void;
   readonly now?: () => number;
+  /**
+   * Called once the receiving side approves a rule fix (#209), so the check runner's rule write into
+   * its fork is opened (fix-write.ts `openRuleWrite`). Absent, nothing writes it.
+   */
+  readonly ruleApproved?: (item: CallerItem) => Promise<void>;
 }
 
 export interface CallerActionDeps extends CallerItemDeps {
@@ -389,8 +405,13 @@ async function transition(
     const person = deps.features.get(feature)?.personId;
     if (person !== undefined) deps.notify(person);
   }
+  // An approved rule is the runner's to write: its write opens now (#209).
+  if (ruleReady(item)) await deps.ruleApproved?.(item);
   return item;
 }
+
+/** Whether `item` holds a rule fix the receiving side approved, which the check runner writes. */
+export const ruleReady = (item: CallerItem): boolean => item.state === "fix_approved" && item.ownerAsked === null && item.fix?.rule != null;
 
 /** Who the worktree owner is asked by after the receiving side answers or rejects, on `stage`. */
 function ownerAfter(stage: ReviewPreset, state: CallerItemState, rejections: number): CallerOwnerReason | null {
@@ -551,7 +572,7 @@ export async function contractsUnchanged(
  */
 export type CallerCall =
   | { readonly action: "confirm"; readonly item: unknown; readonly run?: unknown }
-  | { readonly action: "propose_fix"; readonly item: unknown; readonly part: unknown; readonly revision: unknown; readonly note?: unknown }
+  | { readonly action: "propose_fix"; readonly item: unknown; readonly part?: unknown; readonly revision?: unknown; readonly rule?: unknown; readonly note?: unknown }
   | { readonly action: "explain"; readonly item: unknown; readonly kind: unknown; readonly text: unknown; readonly calls?: unknown; readonly unlisted?: unknown }
   | { readonly action: "review"; readonly item: unknown; readonly verdict: unknown; readonly text?: unknown; readonly calls?: unknown; readonly unlisted?: unknown };
 
@@ -772,8 +793,9 @@ export async function callerAction(deps: CallerActionDeps, caller: string, sessi
       if (refusal !== undefined) return refusal;
       const note = boundedText(call.note, "the note", false);
       if (isRejection(note)) return note;
+      if (call.rule !== undefined) return done(await proposeRule(deps, item, handle, call, note));
       if (typeof call.part !== "string" || typeof call.revision !== "number" || !Number.isInteger(call.revision)) {
-        return rejected("invalid", "name the plan part and its revision that carry the fix");
+        return rejected("invalid", "name the plan part and its revision that carry the fix, or state a rule");
       }
       const plan = await deps.plan(item.origin);
       const part = plan?.parts.find((each) => each.partId === call.part);
@@ -863,6 +885,98 @@ export async function callerAction(deps: CallerActionDeps, caller: string, sessi
     default:
       return rejected("invalid", "the action must be confirm, propose_fix, explain or review");
   }
+}
+
+/** The most call site files one rule fix may rewrite. */
+const RULE_SITE_LIMIT = 64;
+
+/** A rule's `imports` as `{ module, name }` pairs, or why not. */
+function ruleImports(value: unknown): RewriteRuleImport[] | string {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) return "rule.imports must be a list of { module, name }";
+  return value.map((each) => asRecord(each) ?? {}).map((each) => ({ module: each["module"], name: each["name"] }) as RewriteRuleImport);
+}
+
+/**
+ * `propose_caller_fix` with a rule (#209): the old call pattern and its replacement, checked as a plan's
+ * rewrite rule scoped to the item's contract. The rule may rewrite only the files of the item's broken
+ * call sites, which the replay already named, so the originating agent never reads the receiving fork.
+ * The rule write copies the originating change's modules, so the feature needs a plan first.
+ */
+async function proposeRule(
+  deps: CallerActionDeps,
+  item: CallerItem,
+  handle: string,
+  call: { readonly part?: unknown; readonly revision?: unknown; readonly rule?: unknown },
+  note: string,
+): Promise<CallerItem | CallerRejection> {
+  if (call.part !== undefined || call.revision !== undefined) return rejected("invalid", "name a plan part or state a rule, not both");
+  const fields = asRecord(call.rule);
+  if (fields === undefined) return rejected("invalid", "the rule must be { pattern, replacement, imports }");
+  const extra = Object.keys(fields).find((key) => !["pattern", "replacement", "imports"].includes(key));
+  if (extra !== undefined) return rejected("invalid", `the rule has an unknown field ${extra.slice(0, 64)}`);
+  const imports = ruleImports(fields["imports"]);
+  if (typeof imports === "string") return rejected("invalid", imports);
+  const problem = rewriteRuleProblem({ id: "caller-fix", contract: item.contract, kind: "expression", pattern: fields["pattern"], replacement: fields["replacement"], imports });
+  if (problem !== null) return rejected("invalid", problem.replace(/^rule caller-fix: /u, "the rule: "));
+  const sites = [...new Set(item.callers.filter((caller) => caller.verdict === "broken" && caller.path.endsWith(".py")).map((caller) => caller.path))].sort();
+  if (sites.length === 0) return rejected("conflict", `item ${item.itemId} has no broken Python call site for a rule to rewrite`);
+  if (sites.length > RULE_SITE_LIMIT) return rejected("invalid", `item ${item.itemId}'s broken call sites span over ${RULE_SITE_LIMIT} files; fix them with a plan part`);
+  if ((await deps.plan(item.origin)) === undefined) {
+    return rejected("conflict", `feature ${item.origin} has no merge plan yet; the rule write copies its modules, so propose a plan first`);
+  }
+  const rule: CallerFixRule = { pattern: fields["pattern"] as string, replacement: fields["replacement"] as string, imports, sites };
+  const partId = callerRuleFixId(item.itemId);
+  const revision = item.fix?.partId === partId ? item.fix.revision + 1 : 1;
+  const fix = { partId, revision, note, by: handle, at: iso(deps), rule, rewritten: null };
+  const ownerAsked = ownerAfter(await deps.stage(), "fix_proposed", item.rejections);
+  return transition(deps, item, { ...item, state: "fix_proposed", fix, review: null, ownerAsked }, "propose_fix", handle, {
+    part_id: partId,
+    revision,
+    note,
+    rule: { pattern: rule.pattern, replacement: rule.replacement, imports: rule.imports, sites },
+  });
+}
+
+/** The items of `originId` on `targetId` whose approved rule the check runner writes, in item id order. */
+export async function ruleItems(deps: Pick<CallerItemDeps, "keeper">, originId: string, targetId: string): Promise<CallerItem[]> {
+  return (await deps.keeper(originId).callerItems(originId)).filter((item) => item.feature === targetId && ruleReady(item));
+}
+
+/**
+ * The check runner's rule write of `itemIds` was kept: each item still holding its approved rule is
+ * `written`, with the lines the write changed in its call sites' files.
+ */
+export async function rulesWritten(deps: CallerItemDeps, originId: string, itemIds: readonly string[], rewritten: ReadonlyMap<string, readonly number[]>, commit: string): Promise<CallerItem[]> {
+  const written: CallerItem[] = [];
+  for (const item of await deps.keeper(originId).callerItems(originId)) {
+    if (!itemIds.includes(item.itemId) || !ruleReady(item) || item.fix === null) continue;
+    const sites: CallerRewrittenSite[] = (item.fix.rule?.sites ?? []).flatMap((path) => {
+      const lines = rewritten.get(path);
+      return lines === undefined ? [] : [{ path, lines: [...lines] }];
+    });
+    const fix = { ...item.fix, rewritten: sites };
+    const kept = await transition(deps, item, { ...item, state: "written", fix }, "write", "penguin", { part_id: item.fix.partId, revision: item.fix.revision, commit_sha: commit, rewritten: sites });
+    if (!isRejection(kept)) written.push(kept);
+  }
+  return written;
+}
+
+/**
+ * The check runner applied the approved rules of `itemIds` and they rewrote nothing: each goes back to
+ * the originating agent as `broken`, the refusal kept on it, so the agent states another rule.
+ */
+export async function rulesUnmatched(deps: CallerItemDeps, originId: string, itemIds: readonly string[]): Promise<CallerItem[]> {
+  const returned: CallerItem[] = [];
+  for (const item of await deps.keeper(originId).callerItems(originId)) {
+    if (!itemIds.includes(item.itemId) || !ruleReady(item)) continue;
+    const kept = await transition(deps, item, { ...item, state: "broken", ownerAsked: null }, "reset", "penguin", { refused: "rule_matches_nothing" });
+    if (isRejection(kept)) continue;
+    const refusals = [{ code: "rule_matches_nothing" as const, by: "penguin", at: iso(deps) }];
+    const refused = { ...kept, refusals };
+    if (await deps.keeper(originId).keepCallerItem(refused, kept.recordId)) returned.push(refused);
+  }
+  return returned;
 }
 
 function done(kept: CallerItem | CallerRejection, earlier: readonly string[] = []): CallerOutcome {
@@ -1042,7 +1156,17 @@ export interface CallerPacket {
   readonly unlistedCalls: number;
   /** The replay runs: the commits compared and the test tallies on each tree. */
   readonly runs: CallerItem["runs"];
-  readonly fix: { readonly part: string; readonly revision: number; readonly kind: string | null; readonly files: readonly string[] } | null;
+  /**
+   * The proposed fix: a plan part's kind and files, or for a rule fix (#209) `kind` `rule`, the files
+   * it may rewrite and, once written, the lines it rewrote there.
+   */
+  readonly fix: {
+    readonly part: string;
+    readonly revision: number;
+    readonly kind: string | null;
+    readonly files: readonly string[];
+    readonly rewritten: readonly CallerRewrittenSite[];
+  } | null;
   readonly personWritten: {
     readonly explanation: {
       readonly kind: string;
@@ -1054,6 +1178,8 @@ export interface CallerPacket {
     readonly fixNote: string | null;
     /** The proposed fix's patch against the receiving fork, as the originating agent submitted it. */
     readonly patch: string | null;
+    /** A rule fix's pattern, replacement and imports, as the originating agent stated them. */
+    readonly rule: { readonly pattern: string; readonly replacement: string; readonly imports: readonly RewriteRuleImport[] } | null;
     readonly review: { readonly verdict: string; readonly text: string; readonly calls: readonly CallerCallVerdict[]; readonly unlisted: CallerUnlistedVerdict | null; readonly by: string } | null;
   };
 }
@@ -1115,7 +1241,12 @@ function packetOf(item: CallerItem, plan: Plan | undefined, side: CallerSide): C
     calls: item.callers.flatMap((caller) => caller.differing),
     unlistedCalls: differingOf(item).unlisted,
     runs: item.runs,
-    fix: item.fix === null ? null : { part: item.fix.partId, revision: item.fix.revision, kind: part?.kind ?? null, files: part?.diff.files.map((file) => file.path) ?? [] },
+    fix:
+      item.fix === null
+        ? null
+        : item.fix.rule != null
+          ? { part: item.fix.partId, revision: item.fix.revision, kind: "rule", files: item.fix.rule.sites, rewritten: item.fix.rewritten ?? [] }
+          : { part: item.fix.partId, revision: item.fix.revision, kind: part?.kind ?? null, files: part?.diff.files.map((file) => file.path) ?? [], rewritten: [] },
     personWritten: {
       explanation:
         item.explanation === null
@@ -1123,6 +1254,7 @@ function packetOf(item: CallerItem, plan: Plan | undefined, side: CallerSide): C
           : { kind: item.explanation.kind, text: item.explanation.text, calls: item.explanation.calls ?? [], unlisted: item.explanation.unlisted ?? null, by: item.explanation.by },
       fixNote: item.fix?.note ?? null,
       patch: part !== undefined && part.revision === item.fix?.revision ? part.diff.patch : null,
+      rule: item.fix?.rule == null ? null : { pattern: item.fix.rule.pattern, replacement: item.fix.rule.replacement, imports: item.fix.rule.imports },
       review: item.review === null ? null : { verdict: item.review.verdict, text: item.review.text, calls: item.review.calls ?? [], unlisted: item.review.unlisted ?? null, by: item.review.by },
     },
   };

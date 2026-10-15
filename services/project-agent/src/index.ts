@@ -144,6 +144,9 @@ import {
   heldReplay,
   contractsUnchanged,
   replayReported,
+  ruleItems,
+  rulesUnmatched,
+  rulesWritten,
   sweepUnanswered,
   testStandingOf,
   writeWaits,
@@ -175,6 +178,7 @@ import {
   FixGrantStore,
   openCopyWrites,
   openFixWrite,
+  openRuleWrite,
   parseFixTokenLease,
   runnerFixReport,
   writtenPart,
@@ -183,6 +187,7 @@ import {
   type FixWriteDeps,
   type FixWriteOutcome,
   type ForkReader,
+  type RuleUnmatched,
 } from "./fix-write.ts";
 import { retrialReported, retryWaitingWrites } from "./fix-retrial.ts";
 import { EditRoster } from "./edit-roster.ts";
@@ -491,6 +496,9 @@ export {
   ownerCallerItems,
   ownerDecision,
   replayReported,
+  ruleItems,
+  rulesUnmatched,
+  rulesWritten,
   sweepUnanswered,
   testStandingOf,
   writeWaits,
@@ -628,8 +636,10 @@ export {
   FixGrantStore,
   openCopyWrites,
   openFixWrite,
+  openRuleWrite,
   originRevision,
   returnCopyConflict,
+  ruleWriteKey,
   runnerFixReport,
   type FixGrant,
   type FixGrantOutcome,
@@ -639,6 +649,7 @@ export {
   type FixWriteOutcome,
   type ForkReader,
   type ForkReading,
+  type RuleUnmatched,
 } from "./fix-write.ts";
 export {
   coverMidway,
@@ -3076,7 +3087,7 @@ export class ProjectAgent extends Agent {
   }
 
   /** The check runner reports the commit of write `writeId`, which it claimed. */
-  async reportRunnerFixWrite(caller: BridgeCaller, writeId: number, body: unknown, repos: ProjectRepos): Promise<FixWriteOutcome> {
+  async reportRunnerFixWrite(caller: BridgeCaller, writeId: number, body: unknown, repos: ProjectRepos): Promise<FixWriteOutcome | RuleUnmatched> {
     const outcome = await this.#featuresChanging(this.#planStep(() => runnerFixReport(this.#fixWriteDeps(repos), caller, writeId, body)));
     // A migration part written into a block feature may be its last (penguin-land.ts).
     if (outcome.status === "ok") await this.#landPenguinFeatures(repos);
@@ -3110,6 +3121,14 @@ export class ProjectAgent extends Agent {
       partWritten: async (originId, partId, revision) => {
         await fixWritten(this.#callerDeps(), originId, partId, revision);
       },
+      // A broken caller's approved rule is written by the runner, its items settled by the write (#209).
+      ruleItems: (originId, targetId) => ruleItems(this.#callerDeps(), originId, targetId),
+      rulesWritten: async (originId, itemIds, rewritten, commit) => {
+        await rulesWritten(this.#callerDeps(), originId, itemIds, rewritten, commit);
+      },
+      rulesUnmatched: async (originId, itemIds) => {
+        await rulesUnmatched(this.#callerDeps(), originId, itemIds);
+      },
     };
     return deps;
   }
@@ -3129,6 +3148,11 @@ export class ProjectAgent extends Agent {
       sign: async (record) => signFeatureRecord(record, (await this.#loadServiceKey()).privateKey),
       stage: async () => (await this.#policyInForce()).policy.preset,
       notify: (personId) => sendToOwner(this.getConnections<{ owner?: string }>(), personId, inboxChangedMessage()),
+      // The receiving side approved a rule fix: the runner's one write into its fork opens (#209).
+      ruleApproved: async (item) => {
+        const plan = await this.#planKeeper(item.origin).latestPlan(item.origin);
+        if (plan !== undefined) openRuleWrite(this.#fixGrantStore(), plan, item.feature);
+      },
     };
   }
 

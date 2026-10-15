@@ -13,7 +13,13 @@
 // byte for byte, once the writer has checked it is a file the originating change itself added or
 // changed (`git diff-tree` from the change's base to the checkpoint). The tree is committed with the
 // spec's message. The commit must change exactly the patch's files and the copies; anything else
-// stops the write before any push. The
+// stops the write before any push.
+//
+// A rule write (#209) carries the originating agent's rewrite rules in `rewrite` and no patch. Once the
+// fork's head is the parent, the writer applies the rules to the call sites' files at the parent with
+// Penguin's codemod (`FixApplier.rewrite`), each rule's contract module read at the originating
+// revision, and the rewrite becomes the patch. Rules that rewrite nothing make no write: the result is
+// `unmatched`, which the runner reports so the items go back to the originating agent. The
 // push fast-forwards `main` with no force, so a fork whose head moved refuses it and nothing is
 // overwritten. No hook, editor or credential helper runs.
 
@@ -22,8 +28,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { runGit } from "@penguin/git-analysis";
-import { checkFixWriteSpec, copyProblem, parsePatch, type FixWriteSpec, type ModuleCopy, type PlanFileDiff } from "@penguin/protocol";
+import { checkFixWriteSpec, copyProblem, parsePatch, rewriteRuleContractPath, type FixRewrite, type FixWriteSpec, type ModuleCopy, type PlanFileDiff } from "@penguin/protocol";
 
+import type { FixApplier } from "./apply-fix.ts";
 import type { GitRemote } from "./git-remote.ts";
 import { patchedTree } from "./patch-tree.ts";
 import { failureText, noteFailure, type FailRun, type FailureNote } from "./run-failure.ts";
@@ -33,7 +40,9 @@ export type FixWriteResult =
   /** The fork's head is not the spec's parent: ask Penguin again, which rebases or sends the part back. */
   | { readonly status: "moved"; readonly head: string; readonly durationMs: number }
   /** The spec or the patch does not hold; nothing was pushed. */
-  | { readonly status: "refused"; readonly reason: string; readonly durationMs: number };
+  | { readonly status: "refused"; readonly reason: string; readonly durationMs: number }
+  /** A rule write's rules rewrote nothing at the parent; nothing was pushed. */
+  | { readonly status: "unmatched"; readonly reason: string; readonly durationMs: number };
 
 export interface FixWriterOptions {
   /** A Git repository the fork is fetched into; the commit is built from its objects. */
@@ -41,6 +50,8 @@ export interface FixWriterOptions {
   /** The affected fork, reached with the token minted for this part. */
   readonly remote: GitRemote;
   readonly scratchDir?: string;
+  /** Applies a rule write's rules; without it a rule write is refused. */
+  readonly rewriter?: Pick<FixApplier, "rewrite">;
 }
 
 /** The commit's author and committer: the fix is the plan's, written for it. */
@@ -60,20 +71,27 @@ export async function writeFix(options: FixWriterOptions, spec: FixWriteSpec): P
 
   const problems = checkFixWriteSpec(spec);
   if (problems.length > 0) return refused(`the write is malformed at ${problems[0]?.path || "the top"}: ${problems[0]?.message}`);
-  const parsed: { ok: true; files: readonly PlanFileDiff[] } | { ok: false; message: string } = spec.patch === "" ? { ok: true, files: [] } : parsePatch(spec.patch);
+  if (spec.rewrite !== undefined && (spec.patch !== "" || spec.paths.length > 0)) return refused("a rule write carries no patch of its own");
+  let parsed: { ok: true; files: readonly PlanFileDiff[] } | { ok: false; message: string } = spec.patch === "" ? { ok: true, files: [] } : parsePatch(spec.patch);
   if (!parsed.ok) return refused(`the patch does not parse: ${parsed.message}`);
-  if (parsed.files.length === 0 && spec.copy === undefined) return refused("the write carries neither a patch nor a copy");
-  const paths = parsed.files.map((file) => file.path).sort();
+  if (parsed.files.length === 0 && spec.copy === undefined && spec.rewrite === undefined) return refused("the write carries neither a patch nor a copy");
+  let paths = parsed.files.map((file) => file.path).sort();
   if (paths.join("\n") !== [...spec.paths].sort().join("\n")) return refused("the spec's paths are not the patch's files");
   const copies = [...(spec.copy?.paths ?? [])].sort();
-  const both = copies.find((path) => paths.includes(path));
-  if (both !== undefined) return refused(`the patch and the copy both write ${both}`);
 
   const { repoPath, remote } = options;
   const ref = `refs/penguin/fix-writes/${spec.writeId}`;
   await remote.git(repoPath, (url) => ["fetch", "--quiet", "--no-tags", "--end-of-options", url, `+refs/heads/${spec.branch}:${ref}`]);
   const head = (await runGit(repoPath, ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`])).trim();
   if (head !== spec.parent) return { status: "moved", head, durationMs: elapsed() };
+  if (spec.rewrite !== undefined) {
+    const rewritten = await ruleRewrite(options, spec.parent, spec.rewrite);
+    if (rewritten.status !== "ok") return rewritten.status === "unmatched" ? { status: "unmatched", reason: rewritten.reason, durationMs: elapsed() } : refused(rewritten.reason);
+    parsed = { ok: true, files: rewritten.files };
+    paths = rewritten.files.map((file) => file.path).sort();
+  }
+  const both = copies.find((path) => paths.includes(path));
+  if (both !== undefined) return refused(`the patch and the copy both write ${both}`);
 
   const scratch = await mkdtemp(join(options.scratchDir ?? tmpdir(), "penguin-fix-write-"));
   try {
@@ -101,6 +119,34 @@ export async function writeFix(options: FixWriterOptions, spec: FixWriteSpec): P
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }
+}
+
+/**
+ * A rule write's rules applied at `parent` to the call sites' files only: the files they change as a
+ * parsed patch, `unmatched` when they change none, or why they could not run.
+ */
+async function ruleRewrite(
+  options: FixWriterOptions,
+  parent: string,
+  rewrite: FixRewrite,
+): Promise<{ readonly status: "ok"; readonly files: readonly PlanFileDiff[] } | { readonly status: "unmatched" | "refused"; readonly reason: string }> {
+  if (options.rewriter === undefined) return { status: "refused", reason: "this runner applies no rewrite rules" };
+  const contracts: Record<string, string> = {};
+  for (const path of new Set(rewrite.rules.map(rewriteRuleContractPath))) {
+    const source = await runGit(options.repoPath, ["show", `${rewrite.source}:${path}`]).catch(() => null);
+    if (source === null) return { status: "refused", reason: `${path} is not at the originating revision ${rewrite.source}` };
+    contracts[path] = source;
+  }
+  const outcome = await options.rewriter.rewrite({ commit: parent, paths: rewrite.paths, allowed: rewrite.paths, rules: rewrite.rules, contracts });
+  if (outcome.error !== null) return { status: "refused", reason: `the rules could not run: ${outcome.error}` };
+  const [first] = outcome.refused;
+  if (first !== undefined) return { status: "refused", reason: `the codemod refused rule ${first.rule}: ${first.message}` };
+  if (outcome.patch == null || outcome.files.length === 0) return { status: "unmatched", reason: `the rules match no call in ${rewrite.paths.join(", ")}` };
+  const parsed = parsePatch(outcome.patch);
+  if (!parsed.ok) return { status: "refused", reason: `the rules' rewrite does not parse: ${parsed.message}` };
+  const stray = parsed.files.find((file) => !rewrite.paths.includes(file.path));
+  if (stray !== undefined) return { status: "refused", reason: `the rules changed ${stray.path}, which is no call site's file` };
+  return { status: "ok", files: parsed.files };
 }
 
 const REGULAR_MODES = new Set(["100644", "100755"]);
@@ -153,6 +199,8 @@ export interface FixWritePassOptions {
   readonly claim: () => Promise<readonly ClaimedFixWrite[]>;
   readonly write: (claimed: ClaimedFixWrite) => Promise<FixWriteResult>;
   readonly report: (writeId: number, commit: string) => Promise<FixWriteReply>;
+  /** Reports a rule write whose rules rewrote nothing; absent, it counts as a stopped write. */
+  readonly unmatched?: (writeId: number, reason: string) => Promise<unknown>;
   /** Reports a run the pass stopped on, such as `reportRunFailure` bound to the bridge token; absent, it waits out its lease. */
   readonly fail?: FailRun;
 }
@@ -191,6 +239,15 @@ export async function fixWritePass(options: FixWritePassOptions): Promise<FixWri
       await stop({ ...base, result: null, reply: null, error: (error as Error).message });
       continue;
     }
+    if (result.status === "unmatched" && options.unmatched !== undefined) {
+      try {
+        await options.unmatched(each.spec.writeId, result.reason);
+        writes.push({ ...base, result, reply: null, error: null, failure: null });
+      } catch (error) {
+        await stop({ ...base, result, reply: null, error: (error as Error).message });
+      }
+      continue;
+    }
     if (result.status !== "written") {
       await stop({ ...base, result, reply: null, error: result.status === "moved" ? `the fork moved to ${result.head}` : result.reason });
       continue;
@@ -208,6 +265,7 @@ export function formatFixWritePass(result: FixWritePassResult): string {
   const lines = result.writes.map(({ writeId, partId, fork, result: written, reply, error, failure }) => {
     const name = `Fix write ${writeId} (part ${partId}) on ${fork}`;
     if (written?.status === "written" && reply !== null) return `${name}: ${written.commit.slice(0, 12)} kept as ${reply.recordId} (${written.durationMs} ms).`;
+    if (written?.status === "unmatched" && error === null) return `${name}: ${written.reason}; nothing written, and the rules went back to the originating agent.`;
     return `${name} stopped; ${failureText(failure)}: ${error ?? "unknown"}`;
   });
   lines.push(`${result.claimed} fix write${result.claimed === 1 ? "" : "s"} claimed (${result.durationMs} ms).`);

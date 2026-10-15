@@ -9,6 +9,12 @@
 // Artifacts binding and keeps a signed `fix_write` record of it only when the commit's parent, message
 // and files are exactly the approved patch and the copies applied to `parent`.
 //
+// A rule write (#209) carries no patch: the spec's `rewrite` names the rewrite rules the originating
+// agent stated for broken callers in the fork and the call sites' files they may change. The check
+// runner applies the rules there with Penguin's codemod at `parent` and commits what they write with
+// the copies. Penguin then keeps the commit only when it changes some of those files and the copies
+// and nothing else.
+//
 // The commit message is built here from validated fields only: ids, a revision number, an identity
 // handle and the fix's reference. No text an agent or a person wrote reaches it.
 
@@ -17,6 +23,7 @@ import { FEATURE_ID_MAX_LENGTH } from "./overlap.ts";
 import { SEGMENT_PATTERN } from "./operation-schema.ts";
 import { PATCH_LIMITS } from "./patch.ts";
 import { PLAN_PART_KINDS, type PlanPartKind } from "./plan.ts";
+import { REWRITE_RULE_KINDS, REWRITE_RULE_LIMITS, type RewriteRule } from "./rewrite-rule.ts";
 import { checkSchema, type JsonSchema, type SchemaError } from "./schema-check.ts";
 
 /** The branch of a feature's fork that a fix fast-forwards. */
@@ -54,7 +61,18 @@ export interface FixWriteSpec {
   readonly patch: string;
   /** The originating change's modules Penguin copies into the fork; absent when it copies none. */
   readonly copy?: ModuleCopy;
+  /** For a rule write: the rules the runner applies and the files they may change; absent otherwise. */
+  readonly rewrite?: FixRewrite;
   readonly message: string;
+}
+
+/** The rules of a rule write and where they apply (#209). */
+export interface FixRewrite {
+  /** The originating change's revision, which holds each rule's contract module. */
+  readonly source: string;
+  readonly rules: readonly RewriteRule[];
+  /** The broken call sites' files: the only files the rules may change. */
+  readonly paths: readonly string[];
 }
 
 /** The fields a fix commit's message is built from; every one is checked before it gets here. */
@@ -74,6 +92,16 @@ export interface FixMessageFields {
 
 /** The one commit message a fix may carry. */
 export function fixCommitMessage(fields: FixMessageFields): string {
+  if (fields.ref.startsWith("rules:")) {
+    return [
+      `fix(${fields.target}): rewrite broken call sites by rule (${fields.partId} revision ${fields.revision})`,
+      "",
+      `Rules approved by ${fields.approvedBy}.`,
+      `Fix ${fields.ref}.`,
+      `Written by ${fields.writtenBy}.`,
+      "",
+    ].join("\n");
+  }
   if (fields.copiedFrom !== undefined) {
     return [
       `fix(${fields.target}): copy the originating modules of merge plan part ${fields.partId} revision ${fields.revision}`,
@@ -127,6 +155,37 @@ export const FIX_WRITE_SPEC_SCHEMA: JsonSchema = {
         source: SHA,
         base: SHA,
         paths: { type: "array", minItems: 1, maxItems: MODULE_COPY_LIMIT, items: { type: "string", minLength: 1, maxLength: PATCH_LIMITS.pathLength } },
+      },
+    },
+    rewrite: {
+      type: "object",
+      additionalProperties: false,
+      required: ["source", "rules", "paths"],
+      properties: {
+        source: SHA,
+        rules: {
+          type: "array",
+          minItems: 1,
+          maxItems: REWRITE_RULE_LIMITS.rules,
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["id", "contract", "kind", "pattern", "replacement", "imports"],
+            properties: {
+              id: { type: "string", pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$", maxLength: REWRITE_RULE_LIMITS.id },
+              contract: { type: "string", minLength: 1, maxLength: 1_024 },
+              kind: { type: "string", enum: [...REWRITE_RULE_KINDS] },
+              pattern: { type: "string", minLength: 1, maxLength: REWRITE_RULE_LIMITS.text },
+              replacement: { type: "string", minLength: 1, maxLength: REWRITE_RULE_LIMITS.text },
+              imports: {
+                type: "array",
+                maxItems: REWRITE_RULE_LIMITS.imports,
+                items: { type: "object", additionalProperties: false, required: ["module", "name"], properties: { module: { type: "string", minLength: 1, maxLength: 512 }, name: { type: "string", minLength: 1, maxLength: 128 } } },
+              },
+            },
+          },
+        },
+        paths: { type: "array", minItems: 1, maxItems: PATCH_LIMITS.files, items: { type: "string", minLength: 1, maxLength: PATCH_LIMITS.pathLength } },
       },
     },
     message: { type: "string", minLength: 1, maxLength: 2_048 },
