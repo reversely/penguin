@@ -45,7 +45,7 @@ export interface CallerListed {
   readonly runId: number;
   /** The names the checkpoint's change modifies, removes, renames or moves, with each one's module. */
   readonly changed: readonly string[];
-  /** False when the change touches files the analysis cannot read, so its reach is unknown. */
+  /** False when the change touches Python files the analysis cannot read or a list was truncated, so its reach is unknown. */
   readonly complete: boolean;
 }
 
@@ -191,5 +191,16 @@ export function callsReported(store: CallerListStore, run: AgentToolRun): boolea
   const impact = run.outcome.impact;
   const calls = impact?.forks.find((fork) => fork.id === run.featureId)?.calls;
   if (impact === null || impact === undefined || calls === undefined) return false;
-  return store.listed(run.featureId, run.checkpointSha, run.id, calls, changedNames(impact), impact.complete);
+  return store.listed(run.featureId, run.checkpointSha, run.id, calls, changedNames(impact), listComplete(impact));
+}
+
+/**
+ * Whether a list answers every caller of the change: nothing was truncated and every changed file the
+ * analysis could not read is a file other than Python, such as `penguin/scopes.json`. Python code
+ * reaches such a file through no name, so its reach is the forks that change the same file, which a
+ * block finds by overlap (block-land.ts `reachedTargets`). A Python file the analysis could not read
+ * may have callers, so the list is incomplete.
+ */
+function listComplete(impact: ImpactReport): boolean {
+  return !impact.truncated && impact.unanalysed.every((path) => !path.endsWith(".py"));
 }

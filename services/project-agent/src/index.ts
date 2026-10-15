@@ -209,6 +209,7 @@ import {
   featureLanded,
   landFailed,
   ancestorsFound,
+  reachedTargets,
   mainState,
   requestLand,
   requestPenguinLand,
@@ -2448,6 +2449,8 @@ export class ProjectAgent extends Agent {
         identity: (identityId) => this.readIdentity(identityId),
         // `check` merges onto each fork's head with its written fixes, as a land does.
         targets: (own) => blockTargets({ features, readRepo }, own),
+        // `check` merges onto the forks its change reaches, as a land of the feature targets them (#196).
+        checkTargets: async (own) => (await reachedTargets({ features, readRepo, callerLists: this.#callerListStore() }, own)).targets,
         held: (featureId) => heldReplay(this.#callerDeps(), featureId),
       },
       caller,
@@ -3536,6 +3539,8 @@ export class ProjectAgent extends Agent {
       copiesBehind: (plan, targets) => copiesBehind(this.#fixWriteDeps(repos), plan, targets),
       // A land waits until every affected caller is confirmed, written or approved (#188).
       callersPending: async (featureId) => landPending(this.#callerDeps(), featureId),
+      // A block targets only the running features its change reaches (#196).
+      callerLists: this.#callerListStore(),
       sign: async (record) => signFeatureRecord(record, (await this.#loadServiceKey()).privateKey),
       notify: (personId) => sendToOwner(this.getConnections<{ owner?: string }>(), personId, inboxChangedMessage()),
     };

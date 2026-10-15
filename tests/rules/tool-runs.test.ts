@@ -81,7 +81,7 @@ test("a checkpoint's caller list puts its feature among a name's callers, and a 
   const store = new AgentToolStore(sql);
   const lists = new CallerListStore(sql);
   const feature = { id: "cohort-ltv", repo: "feature-cohort-ltv" } as Feature;
-  const report = (checkpoint: string, calls: readonly string[]) => {
+  const report = (checkpoint: string, calls: readonly string[], unanalysed: readonly string[] = []) => {
     const runId = requestCallerList(store, feature, checkpoint, BASE) as number;
     const impact = {
       schemaVersion: 1,
@@ -96,9 +96,9 @@ test("a checkpoint's caller list puts its feature among a name's callers, and a 
       contracts: [],
       headUses: [],
       forks: [{ id: feature.id, sha: checkpoint, scopes: [], since: BASE, mergeBase: BASE, carried: 0, uses: [], errors: [], calls }],
-      unanalysed: [],
+      unanalysed,
       errors: [],
-      complete: true,
+      complete: unanalysed.length === 0,
       truncated: false,
       files: { base: 1, head: 1, parsed: 1 },
     };
@@ -112,4 +112,9 @@ test("a checkpoint's caller list puts its feature among a name's callers, and a 
   assert.deepEqual(lists.callersOf(["accounts.shopper"]), [], "a name never matches a longer name it only starts");
   report("d".repeat(40), ["accounts.shoppers.Event"]);
   assert.deepEqual(lists.callersOf(["accounts.shoppers.ShopperMap.resolve"]), []);
+  // #196: a changed file other than Python reaches forks only by overlap, so the list stays complete.
+  report("e".repeat(40), [], ["penguin/scopes.json"]);
+  assert.equal(lists.listedAt("cohort-ltv")?.complete, true);
+  report("f".repeat(40), [], ["accounts/broken.py"]);
+  assert.equal(lists.listedAt("cohort-ltv")?.complete, false, "a Python file the analysis could not read may have callers");
 });

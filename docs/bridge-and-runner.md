@@ -436,8 +436,10 @@ those fetches with `fetch-pack: protocol error: bad band #78`. Over v2 every fet
 A feature reaches main as a block ([design.md](design.md#block-promotion-in-the-build)). Each pass
 claims the waiting block runs from `POST /blocks/claim` under a 30-minute lease (`block-run.ts`). A
 claim names the run, its purpose (`land` or `plan_check`), the feature's fork and checkpoint, main's
-head and branch, every other running feature's fork with its head and the originating identity's
-charter. The bridge checks each commit is a full object ID and the branch a plain branch name before
+head and branch, the targets with each fork's head and the originating identity's charter. The
+targets are the running features the change reaches: those that call what it modifies, by the caller
+list, with those that change the same files. A claim with no targets is checked on main alone: the
+runner fetches only `base` and the feature's fork, merges onto main only and runs no caller replay. The bridge checks each commit is a full object ID and the branch a plain branch name before
 it uses them.
 
 For each run the runner fetches `base`, the feature's fork and every target's fork with read tokens.
@@ -1102,7 +1104,9 @@ Each round of checks takes 8 to 12 seconds.
 Runner mode answers the `impact`, `check` and `apply_fix` calls agents make through MCP
 ([design.md](design.md#tools-on-the-runner)). Each pass claims the waiting requests from
 `POST /tool-runs/claim` under a 30-minute lease. For each request the runner fetches `feature-<id>`
-and every other running feature's fork with read tokens into the runner's repository:
+and the other running features' forks with read tokens into the runner's repository. `impact` and
+`apply_fix` name every other running fork. `check` names the forks its change reaches, as a land of
+the feature targets them:
 
 - `impact` runs the [impact analysis](#impact-analysis) on the checkpoint's baseline and the
   checkpoint, with each other fork, keyed by its feature id, searched in its person's scopes. While

@@ -1085,8 +1085,23 @@ No view carries an agent's transcript. A task's `outcome` is one line the bridge
   stops the promotion as any fix does. A caller item not yet confirmed, written or approved refuses
   the land as `callers_pending` ([Caller items in the build](#caller-items-in-the-build)).
 - **The block run.** One run checks the checkpoint merged onto main's head and onto the head of the
-  `main` branch of every other running feature's fork. That head carries each fix written into the
-  fork. The check runner claims the run at `POST /blocks/claim` and runs the [checks](#checks) on each
+  `main` branch of each running feature's fork the change reaches. That head carries each fix written
+  into the fork. The targets are chosen by `reachedTargets` (`block-land.ts`) from the
+  [caller list](#caller-list):
+  - every running feature `callersOf` returns for the names the latest checkpoint's change modifies;
+  - every running feature whose area holds a path that is, contains or lies inside a path of the
+    landing feature's area, since each checkpoint adds its changed files to the area;
+  - every running feature the plan places a part in, with, for a plan check, the feature whose checkpoint
+    asked for it.
+
+  Every running feature is a target when the lists cannot answer: the landing feature has no list for
+  its latest checkpoint, its list reads only part of the change, a running feature has no list yet or
+  the landing feature's area reached the path cap. A running feature whose area reached the cap is
+  always a target. A change that reaches no running feature is checked on main alone: no fork is
+  fetched or merged and no caller replays. The `land_requested` and `plan_check_requested` records
+  say how the targets were chosen under `reach`: `callers`, `none` with "no running feature calls what
+  the change modifies or changes the same files", or `every_fork` with the reason. An agent's `check`
+  merges onto the same targets. An expand run targets every running fork. The check runner claims the run at `POST /blocks/claim` and runs the [checks](#checks) on each
   merged tree. It runs every scope's tests on main's merged tree. Main moves to exactly that tree, so
   each scope's tests must pass there. The runner reports to `POST /blocks/<feature>/<n>`, which the
   Worker hands to the feature's FeatureAgent. Penguin keeps the report only when it answers the claimed
@@ -1299,7 +1314,11 @@ every fork for that costs time for every running feature, so Penguin keeps a cal
    changed. The runner reports each request with its own fork's names under `calls`. An incomplete
    read is reported as an error and keeps no list.
 2. **Store.** The ProjectAgent replaces the feature's rows (`ForkCall`) with the reported names. A
-   report older than the stored one is ignored.
+   report older than the stored one is ignored. A list is complete when nothing was truncated and
+   every changed file the analysis could not read is a file other than Python, such as
+   `penguin/scopes.json`. Python code reaches such a file through no name, so the forks it reaches
+   are those that change the same file. A Python file the analysis could not read leaves the list
+   incomplete.
 3. **Read.** `callersOf(names)` answers from the rows alone which features use any of the names. A
    name matches itself and every name inside it, so a changed module matches every use of its names,
    as the impact graph counts a module's uses.
@@ -1321,6 +1340,10 @@ is missed:
   changed scope.
 - An owner fork keeps no list: its checkpoint picks its targets by scope dependencies, and a person
   with no running feature is reached through their owner fork.
+
+A land, a plan check and a `check` read the list to choose their targets
+([Block promotion in the build](#block-promotion-in-the-build), the block run): the running
+features that call what the change modifies, with those that change the same files.
 
 #### Scope dependencies from the code
 

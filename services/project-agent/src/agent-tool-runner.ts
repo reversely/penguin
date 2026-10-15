@@ -3,8 +3,9 @@
 // claims waiting requests under a lease, as it claims reviews (review-record.ts): an unreported claim
 // is handed out again after the lease. Each claim names the feature's fork, the checkpoint, its
 // baseline, the caller's charter and the other running features' forks the checks merge with. Each
-// fork is named at its head, with every fix written into it, as a land names it (block-land.ts
-// `blockTargets`), so `check` and `land` merge onto the same commits.
+// fork is named at its head, with every fix written into it, as a land names it. A `check` names the
+// forks its change reaches, as a land of the feature targets them (block-land.ts `reachedTargets`),
+// so `check` and `land` merge onto the same commits; `impact` and `apply_fix` name every running fork.
 //
 // The report attaches the runner's result to the request. The first report wins. The result reaches
 // the requesting session at its next safe checkpoint (AgentToolStore.deliver).
@@ -87,6 +88,11 @@ export interface ToolRunnerDeps {
    * (block-land.ts `blockTargets`). Absent, each fork counts at its latest checkpoint.
    */
   readonly targets?: (own: string) => Promise<readonly BlockRunTarget[]>;
+  /**
+   * The forks a `check` of feature `own` merges onto: those its change reaches, as a land of it would
+   * target them (block-land.ts `reachedTargets`). Absent, `targets`.
+   */
+  readonly checkTargets?: (own: string) => Promise<readonly BlockRunTarget[]>;
   /** The functions a feature's unsettled caller items name (caller-items.ts `heldReplay`). Absent, none. */
   readonly held?: (featureId: string) => Promise<readonly HeldReplay[]>;
 }
@@ -136,14 +142,16 @@ export async function claimToolRuns(deps: ToolRunnerDeps, caller: BridgeCaller):
   if (listing.status === "forbidden") return listing;
   const features = deps.features.list();
   const forksOf = new Map<string, ClaimedFork[]>();
-  const forks = async (own: string): Promise<ClaimedFork[]> => {
-    const known = forksOf.get(own);
+  const forks = async (own: string, check = false): Promise<ClaimedFork[]> => {
+    const key = `${check ? "check" : "all"}:${own}`;
+    const known = forksOf.get(key);
     if (known !== undefined) return known;
+    const targets = check ? (deps.checkTargets ?? deps.targets) : deps.targets;
     const read =
-      deps.targets === undefined
+      targets === undefined
         ? otherForks(features, own)
-        : (await deps.targets(own)).map(({ feature, person, fork, sha }) => ({ feature, person, fork, checkpoint: sha }));
-    forksOf.set(own, read);
+        : (await targets(own)).map(({ feature, person, fork, sha }) => ({ feature, person, fork, checkpoint: sha }));
+    forksOf.set(key, read);
     return read;
   };
   const runs: ClaimedToolRun[] = [];
@@ -178,7 +186,7 @@ export async function claimToolRuns(deps: ToolRunnerDeps, caller: BridgeCaller):
         scopes: [...identity.charterScopes],
         paths: [...identity.charterPaths],
       },
-      forks: await forks(feature.id),
+      forks: await forks(feature.id, run.tool === "check"),
       ...(run.tool === "check" && deps.held !== undefined ? { held: await deps.held(feature.id) } : {}),
     });
   }

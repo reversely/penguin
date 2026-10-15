@@ -27,7 +27,7 @@ checks every action before accepting it and signs every record with the service 
 
 The feature record (`FeatureAgent`, one per feature) follows one feature from its merge plan to main:
 the plan and each part's approval, the fixes written into other features' forks, the block runs that
-check the feature against main and every running fork and the promotion that moves main. The check
+check the feature against main and the running forks it reaches and the promotion that moves main. The check
 runner's block reports reach it directly through the Worker. It asks the team record to sign each
 record and to change the feature's state. Each feature has its own instance, so several features
 move toward main at once.
@@ -252,7 +252,11 @@ matches a pending operation clears its `PendingOp` row.
    person whose custom path rule the feature's own change writes under confirmed the lines. Each fix for a
    running feature must be written and still under that fork's head. Each fix for code on main must be
    in the checkpoint. It then asks the FeatureAgent to open a block run: the checkpoint merged onto
-   main and onto every other running feature's fork head. The feature is `landing`.
+   main and onto the fork head of each running feature the change reaches. Those targets are the
+   features the caller list names as calling what the change modifies, with the features whose
+   changed files meet the change's files. A change that reaches no running feature is checked on main
+   alone and promotes in one push. When the caller lists cannot answer, every running fork is a
+   target ([design.md](design.md#block-promotion-in-the-build)). The feature is `landing`.
 2. The runner claims the run at `POST /blocks/claim`, runs the checks with every scope's tests on
    main's merged tree and reports to `POST /blocks/<feature>/<n>`. The Worker hands the report to the
    FeatureAgent, which keeps it as a signed `block_checked` record.

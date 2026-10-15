@@ -6,8 +6,10 @@
 //    change touches confirmed its lines (protected-change.ts), each fix for a running feature is
 //    written into that feature's fork (fix-write.ts) and still sits under the fork's head, and each
 //    fix for code on main is in the checkpoint. It then asks the feature's FeatureAgent to open a block run: the
-//    checkpoint merged onto main and onto every other running feature's fork head. The feature is
-//    `landing` and a signed `land_requested` record names the run.
+//    checkpoint merged onto main and onto the fork head of each running feature the change reaches
+//    (`reachedTargets`): the features that call what it modifies, by the caller lists (caller-list.ts),
+//    and those that change the same files. A change no running feature reaches is checked on main
+//    alone. The feature is `landing` and a signed `land_requested` record names the run and its targets.
 // 2. The check runner claims the run (POST /blocks/claim) and runs the checks of section 5.1 on every
 //    merged tree, with every scope's tests on main's (block-run.ts on the bridge). It reports to the
 //    FeatureAgent directly (POST /blocks/<run id>). Each failure carries its one next step from the
@@ -45,7 +47,8 @@ import {
 
 import type { BlockOpenOutcome, BlockRun, BlockRunInput, BlockRunState, BlockStore } from "./block-store.ts";
 import type { FeatureRejectReason } from "./feature-open.ts";
-import { parseFeatureId, readOnlyReason, type Feature, type FeatureRecord, type FeatureRecordType, type FeatureStore, type UnsignedFeatureRecord } from "./feature-store.ts";
+import type { CallerListStore } from "./caller-list.ts";
+import { FEATURE_LIMITS, parseFeatureId, readOnlyReason, type Feature, type FeatureRecord, type FeatureRecordType, type FeatureStore, type UnsignedFeatureRecord } from "./feature-store.ts";
 import type { ForkReader, ForkReading } from "./fix-write.ts";
 import type { BridgeCaller, SqlDatabase } from "./issue-index.ts";
 import type { FastForwardOutcome } from "./main-push.ts";
@@ -193,6 +196,11 @@ export interface LandDeps {
    * line (caller-items.ts `landPending`). Absent, no land waits on a caller.
    */
   readonly callersPending?: (featureId: string) => Promise<readonly string[]>;
+  /**
+   * The names each running feature's changes use (caller-list.ts), which choose a block's targets
+   * (`reachedTargets`). Absent, every running feature is a target.
+   */
+  readonly callerLists?: Pick<CallerListStore, "listedAt" | "callersOf">;
   readonly sign: (record: UnsignedFeatureRecord) => Promise<FeatureRecord>;
   readonly notify: (personId: string) => void;
   readonly now?: () => number;
@@ -245,21 +253,107 @@ async function forkHead(deps: Pick<LandDeps, "readRepo">, repo: string): Promise
   return head?.hash ?? null;
 }
 
-/**
- * Every other running feature's fork head, in feature id order: the block's targets besides main. A
- * fork head holds every fix written into the fork; a fork with no head yet counts at its latest
- * checkpoint. `check` merges onto the same targets (agent-tool-runner.ts), so check and land agree.
- */
-export async function blockTargets(deps: Pick<LandDeps, "features" | "readRepo">, own: string): Promise<BlockRunTarget[]> {
-  const running = deps.features
+/** Every other running feature with a fork, in feature id order: the features a block may target. */
+function runningOthers(deps: Pick<LandDeps, "features">, own: string): Feature[] {
+  return deps.features
     .list()
     .filter((feature) => feature.id !== own && RUNNING_STATES.has(feature.state) && feature.repo !== null)
     .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-  const heads = await Promise.all(running.map(async (feature) => (await forkHead(deps, feature.repo as string)) ?? feature.latestCheckpointSha));
-  return running.flatMap((feature, index) => {
+}
+
+/** Each of `features` at its fork head; a fork with no head yet counts at its latest checkpoint. */
+async function targetsAt(deps: Pick<LandDeps, "readRepo">, features: readonly Feature[]): Promise<BlockRunTarget[]> {
+  const heads = await Promise.all(features.map(async (feature) => (await forkHead(deps, feature.repo as string)) ?? feature.latestCheckpointSha));
+  return features.flatMap((feature, index) => {
     const sha = heads[index];
     return sha == null ? [] : [{ feature: feature.id, person: feature.personId, fork: `feature-${feature.id}`, sha }];
   });
+}
+
+/**
+ * Every other running feature's fork head, in feature id order. A fork head holds every fix written
+ * into the fork; a fork with no head yet counts at its latest checkpoint. A land, a plan check and a
+ * `check` fall back to these targets when the caller lists cannot say which forks a change reaches
+ * (`reachedTargets`); an expand checks against all of them.
+ */
+export async function blockTargets(deps: Pick<LandDeps, "features" | "readRepo">, own: string): Promise<BlockRunTarget[]> {
+  return targetsAt(deps, runningOthers(deps, own));
+}
+
+/** How a block's targets were chosen, as its `land_requested` or `plan_check_requested` record says. */
+export interface BlockReach {
+  /**
+   * `callers`: the running features that call what the change modifies or change the same files.
+   * `none`: no running feature calls what the change modifies or changes the same files.
+   * `every_fork`: the caller lists cannot answer, so every running feature is a target.
+   */
+  readonly kind: "callers" | "none" | "every_fork";
+  readonly why: string;
+}
+
+/** Every path of `paths` with each directory above it, so a containing path is found by one lookup. */
+function withParents(paths: readonly string[]): Set<string> {
+  const all = new Set<string>();
+  for (const path of paths) {
+    const segments = path.split("/");
+    for (let index = 1; index <= segments.length; index += 1) all.add(segments.slice(0, index).join("/"));
+  }
+  return all;
+}
+
+/** Whether a path of `paths` is, contains or lies inside a path of `own`, given `own` and `own` with its parents. */
+function pathsMeet(paths: readonly string[], own: ReadonlySet<string>, ownWithParents: ReadonlySet<string>): boolean {
+  return paths.some((path) => {
+    if (ownWithParents.has(path)) return true;
+    const segments = path.split("/");
+    return segments.some((_, index) => own.has(segments.slice(0, index + 1).join("/")));
+  });
+}
+
+/**
+ * The block's targets for feature `featureId`'s latest checkpoint (#196): the running features
+ * `callersOf` returns for the names the checkpoint's change modifies (`listedAt(featureId).changed`);
+ * every running feature whose area holds a path that is, contains or lies inside a path of the
+ * feature's area, since an area grows by each checkpoint's changed files and so names the forks that
+ * change the same files; and each running feature in `also`, such as one a plan wrote a fix into.
+ *
+ * Nothing is ever missed. Every running feature is a target, as `blockTargets` answers, when no
+ * caller list is kept, when the feature's list is not of its latest checkpoint or reads only part of
+ * the change, when any running feature has no list yet, or when the feature's area reached the path
+ * cap. A running feature whose list reads only part of its change, or whose area reached the cap,
+ * may call or change what its list and area do not record, so it is always a target.
+ */
+export async function reachedTargets(
+  deps: Pick<LandDeps, "features" | "readRepo" | "callerLists">,
+  featureId: string,
+  also: Iterable<string> = [],
+): Promise<{ readonly targets: BlockRunTarget[]; readonly reach: BlockReach }> {
+  const running = runningOthers(deps, featureId);
+  const every = async (why: string) => ({ targets: await targetsAt(deps, running), reach: { kind: "every_fork", why } as const });
+  const lists = deps.callerLists;
+  if (lists === undefined) return every("no caller list is kept");
+  const feature = deps.features.get(featureId);
+  const listed = lists.listedAt(featureId);
+  if (feature === undefined || listed === undefined || listed.checkpoint !== feature.latestCheckpointSha) {
+    return every(`the caller list of ${featureId}'s latest checkpoint is not reported yet`);
+  }
+  if (!listed.complete) return every(`${featureId}'s latest checkpoint changes files the analysis cannot read`);
+  const capped = (paths: readonly string[]) => paths.length >= FEATURE_LIMITS.recordedPaths;
+  if (capped(feature.area.paths)) return every(`${featureId}'s area holds more changed paths than it records`);
+  const unlisted = running.filter((each) => lists.listedAt(each.id) === undefined).map((each) => each.id);
+  if (unlisted.length > 0) {
+    return every(`${unlisted.length} running feature${unlisted.length === 1 ? " has" : "s have"} no caller list yet: ${unlisted.slice(0, 10).join(", ")}`);
+  }
+  const reached = new Set([...lists.callersOf(listed.changed), ...also]);
+  const own = new Set(feature.area.paths);
+  const ownWithParents = withParents(feature.area.paths);
+  const targets = await targetsAt(
+    deps,
+    running.filter((each) => reached.has(each.id) || lists.listedAt(each.id)?.complete === false || capped(each.area.paths) || pathsMeet(each.area.paths, own, ownWithParents)),
+  );
+  if (targets.length === 0) return { targets, reach: { kind: "none", why: "no running feature calls what the change modifies or changes the same files" } };
+  const why = targets.length === 1 ? "1 running feature calls what the change modifies or changes the same files" : `${targets.length} running features call what the change modifies or change the same files`;
+  return { targets, reach: { kind: "callers", why } };
 }
 
 /**
@@ -282,6 +376,7 @@ interface Prepared {
   readonly plan: Plan | undefined;
   readonly mainBefore: string;
   readonly targets: readonly BlockRunTarget[];
+  readonly reach: BlockReach;
 }
 
 /**
@@ -332,7 +427,8 @@ async function prepareLand(deps: LandDeps, feature: Feature, checkpoint: unknown
     return rejected("fix_not_in_block", `the fixes for code on main ${missingFix.map(short).join(", ")} are not in checkpoint ${short(latest)}`);
   }
 
-  const targets = await blockTargets(deps, feature.id);
+  // Every fork the plan places a part in is a target, so its fixes and copies are checked with the change.
+  const { targets, reach } = await reachedTargets(deps, feature.id, planFeatures(plan));
   for (const part of featureParts) {
     if (part.place.kind !== "feature") continue;
     const write = written.get(`${part.partId}@${part.revision}`) as FixWrite;
@@ -352,12 +448,22 @@ async function prepareLand(deps: LandDeps, feature: Feature, checkpoint: unknown
   }
   const callers = (await deps.callersPending?.(feature.id)) ?? [];
   if (callers.length > 0) return rejected("callers_pending", callersPendingMessage(callers));
-  return { feature: feature as Prepared["feature"], plan, mainBefore: main.head, targets };
+  return { feature: feature as Prepared["feature"], plan, mainBefore: main.head, targets, reach };
 }
 
 /** Why a feature may not reach main while caller items wait, naming each. */
 function callersPendingMessage(callers: readonly string[]): string {
   return `every affected caller must be confirmed, its fix written or its difference approved first; read each in get_work's callerItems: ${callers.slice(0, 20).join("; ")}`;
+}
+
+/** The running features a plan places a part in. */
+function planFeatures(plan: Plan | undefined): string[] {
+  return plan?.parts.flatMap((part) => (part.place.kind === "feature" ? [part.place.feature] : [])) ?? [];
+}
+
+/** How a block's targets were chosen, as its request record keeps it. */
+export function reachFields(reach: BlockReach): Record<string, unknown> {
+  return { reach: { kind: reach.kind, why: reach.why } };
 }
 
 export function targetFields(targets: readonly BlockRunTarget[]): Record<string, unknown>[] {
@@ -391,7 +497,7 @@ export function callerReplayFields(section: CallerReplaySection | undefined): Re
 
 /** Opens the land run of a prepared feature and records the request; the feature is then `landing`. */
 async function openLand(deps: LandDeps, prepared: Prepared, charter: CharterView, author: Author, requestedBy: string): Promise<LandOutcome> {
-  const { feature, plan, mainBefore, targets } = prepared;
+  const { feature, plan, mainBefore, targets, reach } = prepared;
   const opened = await deps.agent(feature.id).openBlockRun({
     featureId: feature.id,
     planId: plan?.planId ?? null,
@@ -413,6 +519,7 @@ async function openLand(deps: LandDeps, prepared: Prepared, charter: CharterView
       main_before: mainBefore,
       branch: deps.branch,
       targets: targetFields(targets),
+      ...reachFields(reach),
       superseded: [...opened.superseded],
     }),
   );
@@ -481,8 +588,9 @@ export async function retryLand(deps: LandDeps, featureId: string, previous: { r
 
 /**
  * A plan check (PRD 4.4 step 3): the block of `featureId`'s announced plan, checked at its latest
- * checkpoint on main's head and every running feature's fork head. Never promotes. Undefined when the
- * feature has no checkpoint, plan or charter, or a land run already holds it.
+ * checkpoint on main's head and the fork head of each running feature it reaches (`reachedTargets`),
+ * the triggering feature always among them. Never promotes. Undefined when the feature has no
+ * checkpoint, plan or charter, or a land run already holds it.
  */
 export async function requestPlanCheck(deps: LandDeps, featureId: string, trigger: { readonly feature: string; readonly checkpoint: string }): Promise<BlockRun | undefined> {
   const feature = deps.features.get(featureId);
@@ -492,7 +600,7 @@ export async function requestPlanCheck(deps: LandDeps, featureId: string, trigge
   const charter = deps.charter(plan.proposedBy, feature.personId);
   const main = await mainState(deps);
   if (charter === undefined || main.head === null) return undefined;
-  const targets = await blockTargets(deps, featureId);
+  const { targets, reach } = await reachedTargets(deps, featureId, [...planFeatures(plan), trigger.feature]);
   const opened = await deps.agent(featureId).openBlockRun({
     featureId,
     planId: plan.planId,
@@ -513,6 +621,7 @@ export async function requestPlanCheck(deps: LandDeps, featureId: string, trigge
       checkpoint: feature.latestCheckpointSha,
       main_before: main.head,
       targets: targetFields(targets),
+      ...reachFields(reach),
       trigger: { feature: trigger.feature, checkpoint: trigger.checkpoint },
     }),
   );

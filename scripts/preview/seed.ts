@@ -151,7 +151,7 @@ import {
 } from "../../services/project-agent/src/protected-change.ts";
 import { fileDiffs } from "../../services/project-agent/src/repo-diff.ts";
 import { edgesReported, requestScopeEdges, ScopeEdgeStore } from "../../services/project-agent/src/scope-edges.ts";
-import { CallerListStore, callsReported, listedCheckpoint, requestCallerList } from "../../services/project-agent/src/caller-list.ts";
+import { CallerListStore, callsReported, isCallerListRequest, listedCheckpoint, requestCallerList } from "../../services/project-agent/src/caller-list.ts";
 import { closeRemoved, countReported, requestRetiringCount, type CountOutcome, type RetiringCountDeps } from "../../services/project-agent/src/retiring-count.ts";
 import { EditRoster } from "../../services/project-agent/src/edit-roster.ts";
 import { EditTaskStore } from "../../services/project-agent/src/edit-tasks.ts";
@@ -159,6 +159,7 @@ import { blockReported, editRouting, editTaskView, syncEditWork, type EditWorkDe
 import {
   BlockQueueStore,
   blockTargets,
+  reachedTargets,
   featureLanded,
   landFailed,
   reportBlockRun,
@@ -883,6 +884,7 @@ export class PreviewProject {
     this.tick();
     const feature = this.features.get(featureId);
     if (feature === undefined) throw new Error(`no feature ${featureId}`);
+    await this.listCallers();
     const asked = await requestLand(this.landDeps(), feature.personId, this.sessionOf.get(featureId) as string, { feature: featureId });
     if (asked.status === "rejected" && (asked.reason === "copy_not_written" || asked.reason === "callers_pending")) return asked.reason;
     if (asked.status === "rejected") throw new Error(`land ${featureId}: ${asked.message}`);
@@ -1081,6 +1083,8 @@ export class PreviewProject {
     this.tick();
     const feature = this.features.get(featureId);
     if (feature === undefined) throw new Error(`no feature ${featureId}`);
+    // A `check` claimed with caller lists still waiting would target every fork.
+    await this.listCallers();
     const requested = await requestTool(this.toolDeps(), feature.personId, this.sessionOf.get(featureId) as string, tool, { ...input, feature: featureId });
     if (requested.status === "rejected") throw new Error(`${tool} on ${featureId}: ${requested.message}`);
     await this.runnerPass();
@@ -1111,6 +1115,21 @@ export class PreviewProject {
     );
   }
 
+  /**
+   * The check runner reports every waiting caller list, as it would long before an agent lands, so a
+   * block targets only the forks its change reaches (block-land.ts `reachedTargets`). A claim takes at
+   * most TOOL_RUN_CLAIM_LIMIT requests, so the runner passes until no list waits or a pass reports none.
+   */
+  async listCallers(): Promise<void> {
+    const waiting = () => this.features.list().reduce((count, feature) => count + this.tools.list(feature.id).filter((run) => isCallerListRequest(run) && run.result === "waiting").length, 0);
+    for (let left = waiting(); left > 0; ) {
+      await this.runnerPass();
+      const now = waiting();
+      if (now >= left) return;
+      left = now;
+    }
+  }
+
   /** The check runner claims and runs every waiting tool request, such as a checkpoint's retiring-calls check. */
   async runnerPass(): Promise<void> {
     const repo = await this.#runner();
@@ -1120,7 +1139,7 @@ export class PreviewProject {
       claim: async () => {
         // `check` merges onto each fork's head with its written fixes, as a land does and the ProjectAgent's claim does.
         const land = this.landDeps();
-        const claimed = await claimToolRuns({ runs: this.tools, features: this.features, identity: (id) => this.identities.get(id), targets: (own) => blockTargets(land, own), held: (featureId) => heldReplay(this.callerDeps(), featureId) }, RUNNER);
+        const claimed = await claimToolRuns({ runs: this.tools, features: this.features, identity: (id) => this.identities.get(id), targets: (own) => blockTargets(land, own), checkTargets: async (own) => (await reachedTargets(land, own)).targets, held: (featureId) => heldReplay(this.callerDeps(), featureId) }, RUNNER);
         return claimed.status === "ok" ? claimed.runs : [];
       },
       report: async (runId, result) => {
@@ -1359,6 +1378,8 @@ export class PreviewProject {
       copiesBehind: (plan, targets) => copiesBehind(this.fixWriteDeps(), plan, targets),
       // A land waits until every affected caller is confirmed, written or approved (#188).
       callersPending: async (id) => landPending(this.callerDeps(), id),
+      // A block targets only the running features its change reaches (#196).
+      callerLists: this.callerLists,
       sign: (record) => this.#sign(record),
       notify: this.#notify,
     };
