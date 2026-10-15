@@ -11,7 +11,7 @@ import test from "node:test";
 import { Client } from "@modelcontextprotocol/client";
 import { InMemoryTransport } from "@modelcontextprotocol/server";
 
-import { createPenguinMcpServer, type CallerPacketView, type CallerSummaryView, type McpProject, type PlanWorkView } from "../../services/mcp/src/tools.ts";
+import { INSTRUCTIONS, createPenguinMcpServer, type CallerPacketView, type CallerSummaryView, type McpProject, type PlanWorkView } from "../../services/mcp/src/tools.ts";
 
 const LARDER = JSON.parse(readFileSync(new URL("../../examples/money-minor-units/larder.json", import.meta.url), "utf8")) as {
   readonly features: readonly { readonly id: string; readonly owner: string; readonly role: string; readonly area: readonly string[] }[];
@@ -220,4 +220,11 @@ test("get_work_item gives one listed entry's details to its own session alone", 
   const jun = await connect("jun", reads);
   const theirs = await jun("get_work_item", { sessionId: SESSION, entry: { kind: "caller_item", item: first?.item } });
   assert.equal(theirs.value["error"], "forbidden", "another person cannot read through Priya's session");
+});
+
+test("the server's instructions carry Penguin's working guide", () => {
+  for (const point of ["never sleep or poll", "get_work_item", "never parse saved tool output", "Never put a token", "Never edit another person's branch", "propose_caller_fix", "a few sentences", "personWritten"]) {
+    assert.ok(INSTRUCTIONS.includes(point), point);
+  }
+  assert.ok(INSTRUCTIONS.length < 4000, `${INSTRUCTIONS.length} characters`);
 });

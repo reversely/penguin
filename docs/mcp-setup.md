@@ -49,6 +49,19 @@ rm /tmp/penguin-deployer-header
 The response holds `tokenId`, `owner`, `token` and `issuedAt`. The deployer hands `token` to the owner
 over a private channel and keeps `tokenId` to revoke it later with `DELETE /mcp/tokens/<tokenId>`.
 
+## What Penguin tells every agent
+
+The server's instructions, which every MCP client hands its agent when it connects, end with Penguin's
+working guide:
+
+1. After `check`, or any answer whose state is waiting, call `wait_for_work`; never sleep or poll.
+2. Read work with `get_work` and one entry's details with `get_work_item`; never parse saved tool output
+   with scripts.
+3. Never put a token in a command, a file or a message.
+4. Never edit another person's branch: answer each difference with `explain_difference` or revise your
+   own change, and for a broken call site in another branch state a rule with `propose_caller_fix`.
+5. Keep messages to your person to a few sentences: what Penguin found and what you did.
+
 ## Claude Code
 
 Claude Code connects to an HTTP MCP server with a bearer header
