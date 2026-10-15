@@ -1,7 +1,7 @@
 # Demo story: one person's seat
 
 The demo shows Penguin from Priya's dashboard while use case 1 (identity unification) runs through
-the procedure in [design.md](design.md#procedure). Each frame answers one question a viewer would ask,
+the merge plan procedure. Each frame answers one question a viewer would ask,
 in that order. A frame passes only if someone who has never seen Penguin can read the answer off the
 screen without a caption.
 

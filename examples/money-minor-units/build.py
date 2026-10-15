@@ -721,7 +721,7 @@ def invariants_file(larder: Larder, declared: Declares = NOTHING_DECLARED) -> di
         for scope, file, names in declared.examples
     ]
     return {
-        "$comment": "Each scope's declared invariants and recorded examples, generated from larder.json by build.py. Format in docs/design.md, Invariants and examples.",
+        "$comment": "Each scope's declared invariants and recorded examples, generated from larder.json by build.py. Format in packages/scope-map/src/invariants.ts.",
         "invariants": larder.raw.get("invariants", []),
         "examples": base + added,
     }

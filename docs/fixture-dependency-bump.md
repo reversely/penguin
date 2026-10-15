@@ -61,7 +61,7 @@ scope.
 
 ## Under the new procedure
 
-In the approved design ([design.md](design.md#procedure)) this case runs as follows:
+In the approved design this case runs as follows:
 
 1. **Open.** Hugo's agent opens "Upgrade the HTTP client" to fix a bug in Hugo's integration.
    Penguin's dependency diff shows that Ana's payments scope uses the library.
@@ -80,7 +80,7 @@ In the approved design ([design.md](design.md#procedure)) this case runs as foll
 ## Invariants, contracts and features
 
 The base commit's `penguin/invariants.json` declares one protected invariant for Ana's scope, in the
-format in [design.md](design.md#invariants-and-examples): `charged-at-most-once`, "A payment is
+invariants format: `charged-at-most-once`, "A payment is
 charged at most once". `main` has no webhook, so `main` names no examples file. Ana's fork adds
 `payments/examples/placed_orders.json` with three recorded orders: one the processor answers at
 once, a declined card and an order whose charge response times out.

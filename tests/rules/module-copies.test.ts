@@ -1,7 +1,7 @@
-// Penguin's copies of the originating change's modules in each affected fork (#179, design.md Fix
-// writes): every write refreshes them to the change's current revision, every part on a running feature
-// gets them, a land waits until each affected fork holds them, and a fork that changed a copied module
-// itself goes back to the originating agent with its lines.
+// Penguin's copies of the originating change's modules in each affected fork (#179): every write
+// refreshes them to the change's current revision, every part on a running feature gets them,
+// a land waits until each affected fork holds them, and a fork that changed a copied module itself
+// goes back to the originating agent with its lines.
 
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";

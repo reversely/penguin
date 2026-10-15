@@ -1,6 +1,6 @@
 # Issues
 
-> **Design change.** This page describes the current build. In [design.md](design.md#model), typed
+> **Design change.** This page describes the current build. In the design, typed
 > records take over from issue operations: feature declarations, merge plans, approvals, check results
 > and promotions. Each record is a signed file in the `record` repo. The signing and validation
 > described here stay.

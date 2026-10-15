@@ -70,8 +70,7 @@ waits on a person and a scope that is not clean take the attention colour. A tab
 takes an attention edge. On a phone each row of the org, Members and Scopes tables stacks into a
 block under its name, with each cell beside its column's name.
 
-Each feature counts at its current stage of its pipeline
-([design.md](design.md#the-merge-as-a-pipeline-in-the-build)). A feature whose current stage needs a
+Each feature counts at its current stage of its pipeline. A feature whose current stage needs a
 person or failed, or that carries an exception, counts in its own stage pill in the attention colour,
 apart from the same stage's running features. A feature that needs no plan counts under Building
 until its agent asks to land: its own changes reach no one else, so the facts run of its latest
@@ -242,7 +241,7 @@ the latest step first:
 | planning | The facts run of its latest checkpoint shows a place its change reaches and no plan is stored, or a plan is stored and a newer checkpoint's facts run waits or found no plan parts, or the plan was returned over the break limit, or a part waits on the agent's revision |
 | building | Anything else, including a feature whose facts run shows no place or still waits for the runner while no plan is stored |
 | promoted | Main moved to the feature's checkpoint; its fork is read-only |
-| closed | A block feature Penguin opened was left with no part to carry and closed; nothing landed and its fork is read-only ([design.md](design.md#migration-plans-in-the-build)) |
+| closed | A block feature Penguin opened was left with no part to carry and closed; nothing landed and its fork is read-only |
 
 On the person page a feature carries each exception PRD
 section 7 routes to a person as a line in the attention colour, with an attention edge on its row.
@@ -262,8 +261,8 @@ feature page shows the last reason on the run's failed job.
 |---|---|
 | Breadcrumb | Org, the person's team, the feature's person, the feature, then the part and the file an anchor or a link opened. The part reads its number and place, such as `#3 tax`; the file reads its name. Each opens its fold on the page |
 | Title | The feature's name, its person as a pill in the person's hue and its scopes as pills in their owners' hues |
-| Timeline bar | One node per stage of the feature's pipeline ([design.md](design.md#the-merge-as-a-pipeline-in-the-build)): split features run Open, Expand, Migrate, Contract and Done; the rest run Open, Plan, Review, Fixes written, Block checks and Promoted. Each node shows its status as a dot and its count of passed jobs, such as `2 of 4`, with Needs the worktree owner or Failed when a job is. The current stage is ringed. A node opens its stage in the Pipeline view |
-| Branches | One line per person per stage holds the work that reached the person and has not settled. That work is their parts, starts and confirmations plus the open edit tasks the feature raised ([design.md](design.md#edit-tasks-in-the-build)). The line shows the person's agent, the count by kind (such as `2 parts 1 task`) and the most urgent tag. It shows the person instead when no agent or several agents took the work. A part, start or confirmation is tagged sent, reviewing, waiting (its fix waits for its turn on the fork), fix written, approved or needs the worktree owner's review; a task is tagged running, queued, waiting (its write waits for its turn on the fork) or asked. Opening the line lists each item with its tag and its part's number and place, which opens its diff, or the task's kind and place, such as `Review form analytics`. An item names its agent when the items' agents differ. A task names `builder` when a builder took it. A line of one item shows the item itself and opens to its fact: the job's fact, why the task's person is asked or how its run ended. Within a stage, lines needing the worktree owner (needs the worktree owner's review, asked) come first, then running lines (reviewing, running), then waiting lines (sent, waiting, queued); the latest stage's lines come first. On a plan a task hangs from Review (a review form), Fixes written (a fix) or Block checks (a next step); on a split a contract step hangs from Contract and any other task from Migrate. A task another feature raised in this feature's fork hangs from that feature's timeline. Another feature's fix waiting for its turn on this feature's fork hangs from the current stage under that feature's person, tagged waiting. A settled branch has rejoined the bar as the person's avatar under its stage. Six lines show before a button counts the rest |
+| Timeline bar | One node per stage of the feature's pipeline: split features run Open, Expand, Migrate, Contract and Done; the rest run Open, Plan, Review, Fixes written, Block checks and Promoted. Each node shows its status as a dot and its count of passed jobs, such as `2 of 4`, with Needs the worktree owner or Failed when a job is. The current stage is ringed. A node opens its stage in the Pipeline view |
+| Branches | One line per person per stage holds the work that reached the person and has not settled. That work is their parts, starts and confirmations plus the open edit tasks the feature raised. The line shows the person's agent, the count by kind (such as `2 parts 1 task`) and the most urgent tag. It shows the person instead when no agent or several agents took the work. A part, start or confirmation is tagged sent, reviewing, waiting (its fix waits for its turn on the fork), fix written, approved or needs the worktree owner's review; a task is tagged running, queued, waiting (its write waits for its turn on the fork) or asked. Opening the line lists each item with its tag and its part's number and place, which opens its diff, or the task's kind and place, such as `Review form analytics`. An item names its agent when the items' agents differ. A task names `builder` when a builder took it. A line of one item shows the item itself and opens to its fact: the job's fact, why the task's person is asked or how its run ended. Within a stage, lines needing the worktree owner (needs the worktree owner's review, asked) come first, then running lines (reviewing, running), then waiting lines (sent, waiting, queued); the latest stage's lines come first. On a plan a task hangs from Review (a review form), Fixes written (a fix) or Block checks (a next step); on a split a contract step hangs from Contract and any other task from Migrate. A task another feature raised in this feature's fork hangs from that feature's timeline. Another feature's fix waiting for its turn on this feature's fork hangs from the current stage under that feature's person, tagged waiting. A settled branch has rejoined the bar as the person's avatar under its stage. Six lines show before a button counts the rest |
 | Summary | At most three lines: the contract change with its counts of changes, breaking signatures and incompatible entries; how many features and people the feature reaches; the first place needing a person, else the first failed job. Each line opens what it sums up |
 
 **Views.** Four tabs, each with its own anchor, so a link can open one: `#changes`, `#pipeline`,
@@ -364,7 +363,7 @@ custom path rule card links to its Changes view and a review exception to its re
 
 | Group | Holds | Controls |
 |---|---|---|
-| Overlapping starts | Each feature that started beside one of the person's running features, its person and the scopes, contracts and paths where the two areas meet, tagged Approved by Penguin. An expand checkpoint that adds to the person's scopes shows here too, with the scopes and paths it adds to ([design.md](design.md#expand-in-the-build)) | None for a start Penguin approved. For an expand, Approve addition, `POST /api/overlaps/approve` with `feature` set to `owner:<person>`. A start on a lock opened before #177 that still waits carries Approve start |
+| Overlapping starts | Each feature that started beside one of the person's running features, its person and the scopes, contracts and paths where the two areas meet, tagged Approved by Penguin. An expand checkpoint that adds to the person's scopes shows here too, with the scopes and paths it adds to | None for a start Penguin approved. For an expand, Approve addition, `POST /api/overlaps/approve` with `feature` set to `owner:<person>`. A start on a lock opened before #177 that still waits carries Approve start |
 | Plans | One card per merge plan with parts for the person: the originating feature and person, why the plan needs the person in person, each review the parts carry and then each of the person's parts. A part Penguin approved for the person is listed too, until its block reaches main | Per part waiting on the person: Approve revision, `POST /api/plan-parts/approve`; Request change, which opens a field whose text posts `POST /api/plan-parts/request-change`. Per part Penguin approved: Reverse approval, `POST /api/plan-parts/reverse` |
 | Custom path rules | Each feature whose own change, since its merge base with main, writes a path under one of the person's custom path rules (`custom_paths` in `penguin/scopes.json`): the feature and its person, the checkpoint, each custom path and the changed lines of each file under it | Confirm lines, `POST /api/plan-parts/confirm-protected` with `{ feature, owner, checkpoint }`. A confirmed card stays, marked Confirmed, until a later checkpoint changes the lines |
 | Callers in your worktrees | Each caller item on one of the person's running features, or on a feature of a person who named them delegate, that the review policy's stage shows them ([Caller items](#caller-items)). An item sent to the worktree owner asks for a decision. Under every stage but Local development, each open `broken` or `differs` item also shows, tagged No decision needed | Per item sent to the worktree owner: Approve, `POST /api/plan-parts/decide-caller` with `{ item, verdict: "approve", text: "" }`; Request changes, which opens a field whose text posts the same route with `verdict: "request_changes"` |
@@ -412,13 +411,12 @@ carries five examples per set.
 
 Request change puts its field in focus; Escape or Cancel closes it and returns focus to Request
 change. While a decision sends, its button keeps focus and reads Approving or Sending. The server
-names the approver and the decider from the session
-([design.md](design.md#advance-notice-in-the-build)).
+names the approver and the decider from the session.
 
 ### Caller items
 
 A caller item is one running feature's call sites of one contract that another feature's change
-reaches, with the caller replay's verdict ([design.md](design.md#caller-replay)). The feature page and
+reaches, with the caller replay's verdict. The feature page and
 the inbox draw each item as the same card (`caller-card.tsx`). The card names the receiving worktree
 and its worktree owner on the originating feature's page and in the inbox. On the receiving
 feature's page it names the originating feature and its person. Below the name it shows:
@@ -462,7 +460,7 @@ recorded argument. The tag for each state:
 | Changes requested | `changes_requested` | The receiving side asked the originating agent for changes |
 | No test reaches it | `unknown_reach` | No test of the worktree reaches the call; the worktree owner decides |
 
-Each refusal reason tag ([design.md](design.md#caller-items-in-the-build)):
+Each refusal reason tag:
 
 | Tag | Code | Refused answer |
 |---|---|---|
@@ -659,7 +657,7 @@ soon as the project exists, before the first step, so a recording shows each ste
 On identity unification the plan is stored with four parts: Priya's fix commits for analytics' and
 messaging's code on main, and the patches for Jun's and Sam's forks. Jun's and Sam's agents submit
 the fixture's review forms from `examples/identity-unification/reviews/`. Each part's trial runs the
-forms on its trial tree ([design.md](design.md#part-trials)). Penguin approves none of the four.
+forms on its trial tree. Penguin approves none of the four.
 Sam's review is accepted on both of Sam's trial trees: messaging only reads the reshaped `Profile`,
 which identity-map owns. Priya's change carries no migration or backfill for it, so both of Sam's
 parts wait on Priya as `stored_data` asks in Priya's inbox. Sam is not asked. Jun's

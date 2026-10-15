@@ -1,4 +1,4 @@
-// Fix writes that wait on a fork another write moved (#133 and #142, design.md Build step 4).
+// Fix writes that wait on a fork another write moved (#133 and #142).
 //
 // Writes into one fork are made one at a time, in approval order (fix-write.ts `waitsFor`). When a
 // write is kept, the fork's head moves to its commit. Every other write still waiting on that fork was

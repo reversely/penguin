@@ -26,11 +26,9 @@ sets how much of the review Penguin does and how much people do
 Data matching also has a check that needs no examples file: the caller replay. Each running feature
 that calls a function the change modifies runs its own tests on its fork head and on the merged
 tree with that function wrapped. Each call site gets `unaffected`, `broken`, `differs` or
-`unknown_reach` from the calls' results, exceptions and effects
-([design.md](design.md#caller-replay)). The verdicts sit in the `check` result, the block run's report
+`unknown_reach` from the calls' results, exceptions and effects. The verdicts sit in the `check` result, the block run's report
 and its `block_checked` record. Each opens a caller item that the receiving worktree's agent confirms
-or approves before the change writes into its fork or reaches main
-([design.md](design.md#caller-items-in-the-build)). The review policy's stage decides when the
+or approves before the change writes into its fork or reaches main. The review policy's stage decides when the
 worktree owner decides items too ([review-policies.md](review-policies.md#caller-items)).
 
 Custom path rules and Place are one kind. The review policy keeps them as two rows, so a sandbox may

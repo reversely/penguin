@@ -1,4 +1,4 @@
-// Penguin's update of an affected running feature's fork (#178, design.md Fix writes). No agent writes
+// Penguin's update of an affected running feature's fork (#178). No agent writes
 // code into another person's fork. Penguin's check runner copies the originating change's new or
 // changed modules that the fork imports, byte for byte from the originating checkpoint, and the
 // plan's rewrite rules rewrite the fork's own call sites (the part's patch). Once the originating

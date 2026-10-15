@@ -1,16 +1,14 @@
 # Penguin docs
 
-One page per subject. [design.md](design.md) describes the approved design. The case study and the
-demo story follow that design. The other pages describe what the code on `main` builds today. Where
-the design changes one of those pages, the page opens with a note naming the part that changes and
-the design section that replaces it.
+One page per subject. The case study and the demo story follow the merge plan design. The other
+pages describe what the code on `main` builds today. Where the design changes one of those pages,
+the page opens with a note naming the part that changes.
 
 | Page | Subject |
 |---|---|
 | [../README.md](../README.md) | What Penguin is, the four use cases and what is built today |
 | [validation.md](validation.md) | The six kinds of validation: what each checks, the tool that runs it and who decides it |
 | [review-policies.md](review-policies.md) | The sandbox's review policy: presets, rows, who changes it and the measured split |
-| [design.md](design.md) | The approved design: model, procedure, checks and routing, review harness, exceptions, interface |
 | [case-study-money.md](case-study-money.md) | One breaking change across fourteen people and forty running features, split into expand, migration blocks and contract |
 | [demo-story.md](demo-story.md) | The demo frames from one person's seat |
 | [architecture.md](architecture.md) | The pieces, who owns which state and how data moves between them |

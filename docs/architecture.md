@@ -1,7 +1,7 @@
 # Architecture
 
-> **Design change.** This page describes the current build. The design in
-> [design.md](design.md#pieces) changes the repos. Each feature gets its own fork `feature-*` in
+> **Design change.** This page describes the current build. The design
+> changes the repos. Each feature gets its own fork `feature-*` in
 > place of the per-owner forks `owner-<id>`. The build opens feature forks
 > ([Opening a feature](#opening-a-feature)) and promotes each feature's block to `main`
 > ([Landing a feature](#landing-a-feature)). The owner forks still carry the Huddle flow. The
@@ -224,7 +224,7 @@ matches a pending operation clears its `PendingOp` row.
    in the fork. The ProjectAgent diffs it against its baseline on main and adds the changed paths
    and their scopes to the declared area. It also asks the check runner for the checkpoint's caller list: the names its own
    changes use, which the ProjectAgent keeps so a later change finds the forks it reaches without
-   reading every fork ([design.md](design.md#caller-list)).
+   reading every fork.
 5. When the runner reports that list, the ProjectAgent schedules the checkpoint's combined runs: one
    for each other person's running feature that calls a name the checkpoint modifies or whose area
    names a file it changes or a folder above one. Without the checkpoint's complete list, scope
@@ -252,8 +252,6 @@ matches a pending operation clears its `PendingOp` row.
    ProjectAgent reads it back and keeps it as a signed `fix_write` record when it is exactly the
    approved patch on the granted head. No branch or repo is made.
 
-[design.md](design.md#steps-1-and-3-in-the-build) has the rules.
-
 ### Landing a feature
 
 1. The feature's agent calls `land_feature`. The ProjectAgent checks that the feature's latest
@@ -265,7 +263,7 @@ matches a pending operation clears its `PendingOp` row.
    features the caller list names as calling what the change modifies, with the features whose
    changed files meet the change's files. A change that reaches no running feature is checked on main
    alone and promotes in one push. When the caller lists cannot answer, every running fork is a
-   target ([design.md](design.md#block-promotion-in-the-build)). A fork whose head cannot be read is
+   target. A fork whose head cannot be read is
    never left out of the targets: each failed read is logged as `fork_read_failed` with its fork, and
    the land, plan check or `check` claim fails with an error naming every such fork, so no check runs
    on fewer forks than the change reaches. The feature is `landing`.
@@ -282,7 +280,6 @@ matches a pending operation clears its `PendingOp` row.
 
 A checkpoint of a running feature whose area meets another feature's announced plan asks for a
 `plan_check` run of that plan's block. It runs the same checks and never moves main.
-[design.md](design.md#block-promotion-in-the-build) has the rules.
 
 ### Records to the record repo
 
@@ -327,8 +324,6 @@ working on the rest in the same fork.
 5. While symbols are retiring, each promotion (a land or an expand) records one `impact` request of
    Penguin's own that counts their callers on main and in every running feature's own changes. At
    zero Penguin approves removing a symbol on its originating feature (`retiring-count.ts`).
-
-[design.md](design.md#expand-in-the-build) has the rules.
 
 ### Checkpoints to Huddles
 

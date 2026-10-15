@@ -1,4 +1,4 @@
-// Rule fixes for broken callers (#209, design.md Caller items): the originating agent states a rewrite
+// Rule fixes for broken callers (#209): the originating agent states a rewrite
 // rule without reading the receiving fork, the receiving agent approves it, and Penguin's check runner
 // rewrites the matching call sites with the copied modules in one write on that fork alone. A rule that
 // rewrites nothing comes back to the originating agent.

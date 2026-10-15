@@ -59,7 +59,7 @@ Migration note: a policy or a route stored before #177 under `throwaway` or `dev
 ## Caller items
 
 A caller item asks the receiving worktree's agent to confirm or approve before another feature's
-change writes into its fork or reaches main ([design.md](design.md#caller-items-in-the-build)). The
+change writes into its fork or reaches main. The
 stage decides when the worktree owner sees items at all and how long an item waits on the agent
 (`CALLER_STAGES` in `packages/protocol/src/caller-items.ts`):
 

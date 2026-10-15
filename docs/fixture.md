@@ -78,7 +78,7 @@ because the tablet's three patrons are under the limit.
 
 ## Under the new procedure
 
-In the approved design ([design.md](design.md#procedure)) this case runs as follows:
+In the approved design this case runs as follows:
 
 1. **Open.** Priya's agent opens "Add person_id with merge rules". Its area is the identity map with
    the `person_id` contract. No running feature works in that area, so the feature starts at once.
@@ -105,8 +105,7 @@ In the approved design ([design.md](design.md#procedure)) this case runs as foll
 
 ## Invariants, contracts and features
 
-The base commit's `penguin/invariants.json` holds three invariants in the format in
-[design.md](design.md#invariants-and-examples). Their wording follows the tests that check them.
+The base commit's `penguin/invariants.json` holds three invariants in Penguin's invariants format. Their wording follows the tests that check them.
 
 | Id | Scope | Statement | Protected | Recorded examples |
 |---|---|---|---|---|
@@ -206,8 +205,7 @@ The DRI and every fallback must be members of the team. The fallback order names
 leaves out the DRI. A scope names either `owner` or `team` and `dri`. A scope that names only an
 `owner` reads as that owner's one-person team, `person:<owner>`. Penguin refuses the whole scope
 file when any of these rules fails. `tests/fixtures/team-scopes/penguin/` holds a two-person team with
-a DRI and a fallback, a lead outside the team and one scope that still names an owner. The routing
-rules are in [design.md](design.md#teams-dris-and-routing).
+a DRI and a fallback, a lead outside the team and one scope that still names an owner.
 
 `penguin/identities.json` gives each person one steward, `@<person>/steward`, chartered on every
 scope the person is DRI for. Each feature has one builder, `@<person>/<feature>`, chartered on the

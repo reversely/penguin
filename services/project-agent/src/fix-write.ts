@@ -21,7 +21,7 @@
 //   new head: if every hunk still applies at its line, the head is the parent (a clean rebase); if not,
 //   the part goes back to the originating agent with Penguin's request to revise it against the new
 //   head. Its author approves the revision again.
-// - One write per fork at a time (#133, design.md Build step 4). Every approved part on a running feature
+// - One write per fork at a time (#133). Every approved part on a running feature
 //   opens its write at approval, so the writes into one fork stand in approval order. A write is
 //   granted only when no other write into that fork holds a token, no write approved earlier still
 //   waits there, and, after another write landed in the fork, the part's trial on the new head passed

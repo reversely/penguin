@@ -596,7 +596,7 @@ The run on gn100:
 Jun's analytics form names Priya's `shopper_id_cutover()` as its cutover marker, which the trial of analytics' code on main holds, so the form is accepted and Penguin approves the part. The cohort report part is tried on Priya's fix for analytics' code on main (`trialCheckpoint` in `part-trial.ts`), which its copied `analytics/activity.py` comes from, so its tests pass and Penguin approves it. `japan-launch` fails its yen test on its fork head alone, so the block checks of cases 2 and 3 do not
 count it. In case 3 the agent's `check` reports the dependency diff with the
 places `instant-payouts` and `tip-jar` import the client, and Hugo's own `retry-budget` and
-`rounding-mode`. Its caller replay ([design.md](design.md#caller-replay)) reports `differs` for
+`rounding-mode`. Its caller replay reports `differs` for
 `instant-payouts` and `tip-jar`: the timed-out payout and tip are sent twice. Case 1's agent also
 calls `check` at its first checkpoint, whose caller replay reports `differs` for `cohort-ltv` and
 `weekly-digest`. Case 3's block, with Penguin's updates in both forks, reports every caller of
@@ -604,7 +604,7 @@ calls `check` at its first checkpoint, whose caller replay reports `differs` for
 
 ### Caller items on the preview seed
 
-Each check's caller replay opens caller items ([design.md](design.md#caller-items-in-the-build)). The
+Each check's caller replay opens caller items. The
 agents answer them with the words of `callers/case<N>.json`: the originating agent's explanation of each
 receiving feature's differing calls, the reason under `calls` that classifies each of those calls as
 `intended` or `incidental` and, for an intended difference, that feature's agent's review note. A call

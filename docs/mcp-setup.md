@@ -1,10 +1,9 @@
 # Connecting agent sessions to Penguin
 
-> **Design change.** This page describes the current build. In
-> [design.md](design.md#mcp-for-agent-sessions), a session works on one feature. The build serves
+> **Design change.** This page describes the current build. In the design, a session works on one
+> feature. The build serves
 > `whats_near`, `impact`, `check`, `apply_fix` ([Agent tools for a feature](#agent-tools-for-a-feature)),
-> `submit_review` and the caller tools ([Caller items](#caller-items)). It gains `propose_plan`
-> ([design.md](design.md#tools-for-agents)).
+> `submit_review` and the caller tools ([Caller items](#caller-items)). It gains `propose_plan`.
 
 An owner's Claude Code or Codex session reads the issues assigned to one of the owner's identities and
 writes comments, linked commits and state changes back to them. The session reaches Penguin's MCP
@@ -305,8 +304,7 @@ needs or a person who replied.
 
 ## Overlapping starts
 
-A feature whose declared area another person's running feature covers starts at once
-([design.md](design.md#step-3-in-the-build)). Penguin approves the start with a signed
+A feature whose declared area another person's running feature covers starts at once. Penguin approves the start with a signed
 `approve_overlap` record. The `open_feature` answer carries the write token and lists each covering
 feature under `overlap.approvedBy`, with `penguin` as the approver. `get_work` reports the same under
 `feature.approvedBy`. The covering feature's worktree owner gets an `overlap_started` item in the
@@ -320,7 +318,7 @@ names it and `report_checkpoint` lists it under `newOverlaps`. `get_work` lists 
 ## Merge plan parts
 
 A merge plan part that touches the developer's code reaches each of the developer's running sessions
-once, at their next safe checkpoint ([design.md](design.md#advance-notice-in-the-build)). The hook
+once, at their next safe checkpoint. The hook
 answer names it. `report_checkpoint` lists it under `newPlanParts`. `get_work` lists it under
 `planPartsNeedingYou` with the scopes the agent reviews through `submit_review`. Penguin approves the
 part itself once every check is clean, the agent's review included. Otherwise the developer approves
@@ -336,7 +334,7 @@ with `revise_plan_part`. A session that submitted a review hears the check runne
 `reviewResults`.
 
 Once an author approves a behavioural part, the originating agent writes its fix into the author's
-feature fork ([design.md](design.md#steps-1-and-3-in-the-build)):
+feature fork:
 
 | Tool | Input | Answer |
 |---|---|---|
@@ -359,8 +357,7 @@ plan's gets a part in that plan; `report_checkpoint` lists it under `plansJoined
 ## Caller items
 
 When the originating feature's `check` or block run replays another running feature's calls into a
-changed function ([design.md](design.md#caller-replay)), Penguin opens one caller item per running feature and contract
-([design.md](design.md#caller-items-in-the-build)). Each side answers its own steps:
+changed function, Penguin opens one caller item per running feature and contract. Each side answers its own steps:
 
 | Tool | Who calls it | Input | Answer |
 |---|---|---|---|
@@ -406,8 +403,7 @@ characters answers `invalid`. A proposal of a part revision already written into
 twice, every later proposal or review request goes to the developer of the receiving worktree, who
 decides on the dashboard.
 
-Each answer cites the replay. Penguin refuses one that does not, with its code as `error`
-([design.md](design.md#caller-items-in-the-build)):
+Each answer cites the replay. Penguin refuses one that does not, with its code as `error`:
 
 | Error | Answer |
 |---|---|
@@ -430,8 +426,7 @@ until the item next moves.
 Penguin creates a steward for each person who owns a scope, `@<person>/steward`, chartered on every
 scope the person owns. It creates a builder for each feature at open, `@<person>/<feature>`,
 chartered on the feature's declared area. Register a session as either identity to take its edit
-tasks. Every edit Penguin needs goes to one of them by charter
-([design.md](design.md#edit-tasks-and-who-runs-them)): a review form, an approved fix to write, a
+tasks. Every edit Penguin needs goes to one of them by charter: a review form, an approved fix to write, a
 next step after a failed block check or a migration part.
 
 A waiting task reaches a running session of its identity at the session's next safe checkpoint. A
@@ -475,8 +470,7 @@ SHA-256 hash.
 
 ## Agent tools for a feature
 
-A session that works on a feature calls four tools for facts and deterministic fixes
-([design.md](design.md#tools-for-agents)). Each call is recorded with its tool, its caller's
+A session that works on a feature calls four tools for facts and deterministic fixes. Each call is recorded with its tool, its caller's
 identity, its input, its answer and its duration, so the feature page and a demo show every use.
 
 | Tool | Input | Answer |
@@ -522,8 +516,7 @@ repository or an edit whose names are not Python names. A refused call records n
 
 ## Contract sort and split
 
-Penguin sorts the contract diff of each checkpoint a feature reports
-([design.md](design.md#sorting-and-splitting-in-the-build)). `get_work` summarizes the sort of the
+Penguin sorts the contract diff of each checkpoint a feature reports. `get_work` summarizes the sort of the
 feature's latest checkpoint under `contract`: its state, decision, counts, the number of entries, the
 split's state, each retiring symbol's state and callers, each migration plan's state and number of
 parts, and `nextStep`. `get_work_item` with `{ "kind": "contract" }` answers the full sort:
@@ -535,7 +528,7 @@ parts, and `nextStep`. `get_work_item` with `{ "kind": "contract" }` answers the
 | `counts`, `entries` | Each entry's `sort` (`additive`, `compatible`, `incompatible` or `behaviour`), its `breaks` (`rename`, `move`, `keyword-rename`, `removed`, `signature` or `type`), its `callers` outside your developer's scopes and a one-sentence `reason`. At most 100 entries, incompatible first; `omitted` counts the rest |
 | `split` | The feature's split: `expand_first`, then `retiring` once the expand reached main, with each retiring name and its replacement |
 | `contractStep` | Each symbol your feature retires with its callers at Penguin's count after the last promotion: on main and in each running feature's own changes. `ownUses` and `ownFiles` are the uses in the defining module and its scope's tests: no callers, removed with the symbol. `state` is `counting`, `callers_left`, `no_callers`, `approved` or `removed`. `carrier` names the feature Penguin opened from main to carry the removal once your feature no longer runs |
-| `migration` | The migration plans Penguin proposed for your retiring symbols, one per owner group, each with its parts: the place, its uses, the writer (`runner` or `task`), the reason and the state ([design.md](design.md#migration-plans-in-the-build)) |
+| `migration` | The migration plans Penguin proposed for your retiring symbols, one per owner group, each with its parts: the place, its uses, the writer (`runner` or `task`), the reason and the state |
 | `nextStep` | What to do next, in one paragraph |
 
 An incompatible entry makes the next step start with "Expand first" and list the entries. For a
@@ -578,8 +571,7 @@ place the facts show unaffected (`not_affected`, with the reason), two parts for
 patch that names another base, writes outside the place's scopes or does not apply at the head. A
 running feature is affected only by its own changes: the files it added or changed since its merge
 base with main. A caller in a file it carries unchanged from main is main's, so a feature with no
-caller of its own and no break needs no part. A part needs a person when one of Penguin's checks fails
-([design.md](design.md#penguins-approval-in-the-build)). A plan with more such parts than the
+caller of its own and no break needs no part. A part needs a person when one of Penguin's checks fails. A plan with more such parts than the
 project's break limit answers `returned`, with their places under `inPerson`. A review the author's
 agent has yet to submit does not count.
 
@@ -599,8 +591,7 @@ checkpoint whose own changes call a retiring symbol gets a next step naming the 
 
 When you wrote the expand first, before any incompatible change, propose a plan with no part at the
 expand checkpoint and declare in `retiring` each old contract it replaces. While your feature has
-no split, Penguin records the split from that declaration
-([design.md](design.md#sorting-and-splitting-in-the-build), Expand written first). Each contract
+no split, Penguin records the split from that declaration. Each contract
 must exist on main, have a caller outside your scopes, and have its replacement in the checkpoint;
 one that fails comes back in `missing` as `retiring_refused` with the reason. The contracts retire
 when the expand reaches main, each with the plan's rules for it.
@@ -608,13 +599,12 @@ when the expand reaches main, each with the plan's rules for it.
 A complete
 plan answers `stored` with its id, facts and parts. Every `missing` or `returned` answer is marked as
 a tool error. Text from the repository and the run, such as the commit subject, docstrings, assertion
-lines, diff lines and the agent's own note, arrives only inside `personWritten`
-([design.md](design.md#steps-1-to-5-in-the-build)).
+lines, diff lines and the agent's own note, arrives only inside `personWritten`.
 
 ## Landing a feature
 
 A session of a feature asks Penguin to move main to the feature's latest checkpoint with
-`land_feature` ([design.md](design.md#block-promotion-in-the-build)).
+`land_feature`.
 
 | Tool | Input | Answer |
 |---|---|---|
@@ -634,7 +624,7 @@ not yet confirmed, written or approved; the message names each item, whose entry
 already being checked).
 
 With `expand: true`, Penguin promotes only the latest checkpoint, the expand step of a split. The
-feature keeps building on its fork ([design.md](design.md#expand-in-the-build)). The checkpoint must
+feature keeps building on its fork. The checkpoint must
 hold main's head and only add. A change to a path another person protects waits on
 `protected_path_unconfirmed` as a land does. The expand's own refusals are `waiting_for_runner`
 (Penguin scheduled the impact run; call again once the check runner reported it), `impact_failed`,

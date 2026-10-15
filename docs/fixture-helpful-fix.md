@@ -59,7 +59,7 @@ the changes in their own scopes.
 
 ## Under the new procedure
 
-In the approved design ([design.md](design.md#procedure)) this case runs as follows:
+In the approved design this case runs as follows:
 
 1. **Open.** The feature's area is `shared/dates` with the `start_of_day()` contract. Penguin lists
    Jun's weekly report and Sam's reminders as callers.
@@ -81,8 +81,7 @@ In the approved design ([design.md](design.md#procedure)) this case runs as foll
 
 ## Invariants, contracts and features
 
-The base commit's `penguin/invariants.json` holds two invariants in the format in
-[design.md](design.md#invariants-and-examples). Each statement follows the test that checks it.
+The base commit's `penguin/invariants.json` holds two invariants in Penguin's invariants format. Each statement follows the test that checks it.
 That test's one-line docstring repeats the statement, so a merge plan states each break in the
 invariant's words.
 

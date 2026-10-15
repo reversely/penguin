@@ -1,9 +1,9 @@
-// Which of the originating change's modules Penguin copies into an affected fork (#178, design.md Fix
-// writes), read through the Artifacts binding. The originating change's own files are its baseline on
-// main compared with its checkpoint, in the originating fork. The fork's side is the Python files of
-// the part's scopes at the fork head, with the part's patch applied: every module of the change they
-// import, then every module of the change those import (`copiedModules` in packages/protocol), is
-// copied byte for byte. A module the fork already holds at the checkpoint's bytes is left out.
+// Which of the originating change's modules Penguin copies into an affected fork (#178), read
+// through the Artifacts binding. The originating change's own files are its baseline on main compared
+// with its checkpoint, in the originating fork. The fork's side is the Python files of the part's
+// scopes at the fork head, with the part's patch applied: every module of the change they import,
+// then every module of the change those import (`copiedModules` in packages/protocol), is copied
+// byte for byte. A module the fork already holds at the checkpoint's bytes is left out.
 //
 // A module the fork holds at an earlier revision Penguin copied into it (`earlier`) takes the newer
 // revision, so every write refreshes the copies (#179). A module the fork changed itself is overwritten

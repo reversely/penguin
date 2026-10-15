@@ -1,4 +1,4 @@
-// The caller protocol (#188, design.md Caller items): one item per running feature and contract a
+// The caller protocol (#188): one item per running feature and contract a
 // caller replay reaches, each moved only by its own side and signed at every transition. A write into
 // the receiving fork waits for that side's approval; the originating feature lands only once every
 // item is confirmed, written or approved. Each agent answer cites the replay (#189): a confirmation its

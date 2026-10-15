@@ -39,3 +39,6 @@ docs/research/
 # Playwright walkthrough output: screenshots, videos and traces (npm run walkthrough)
 test-results/
 playwright-report/
+
+# design reference kept local, not committed
+docs/design.md

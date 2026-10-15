@@ -1,7 +1,7 @@
 # Huddle flow
 
 > **Design change.** This page describes the current build. The design replaces the Huddle with the
-> procedure in [design.md](design.md#procedure). A feature declares its area at open. A change that
+> merge plan procedure. A feature declares its area at open. A change that
 > others depend on carries a merge plan, which each affected author approves in advance through the
 > review form. The originating agent writes each approved fix into the affected feature's fork.
 > Penguin promotes the whole set to main in one push.
@@ -9,15 +9,15 @@
 > The merge plan's first step is built. An agent of the feature calls `propose_plan`. The check
 > runner's facts run gives the contract diff, the callers and each break with its test's docstring
 > and failing line. The Worker reads each part's changed lines through the Artifacts binding.
-> Penguin keeps the signed plan in the feature's own Durable Object
-> ([design.md](design.md#steps-1-to-5-in-the-build)). Each stored plan's parts then reach their
+> Penguin keeps the signed plan in the feature's own Durable Object.
+> Each stored plan's parts then reach their
 > authors and the authors' running sessions at once. Each author approves a part or asks for a
 > change on the dashboard. The originating agent answers a requested change with
-> `revise_plan_part` ([design.md](design.md#advance-notice-in-the-build)). Each approved fix is then
-> written into the affected feature's fork ([design.md](design.md#steps-1-and-3-in-the-build)).
+> `revise_plan_part`. Each approved fix is then
+> written into the affected feature's fork.
 > The feature then reaches main as a block. The check runner checks it merged onto main and onto
-> every running fork. Its FeatureAgent then moves main in one push
-> ([design.md](design.md#block-promotion-in-the-build)). The block replaces the Huddle for features:
+> every running fork. Its FeatureAgent then moves main in one push.
+> The block replaces the Huddle for features:
 > a feature's failing check stays with its block run and opens no Huddle. A combined run on owner
 > forks still opens a Huddle as described below. The FeatureAgent class runs that Huddle too, under a
 > Huddle's instance name.
@@ -104,8 +104,7 @@ For each recorded checkpoint, `scheduleCombinedRuns` (`services/project-agent/sr
    their id in the trigger's fork with the trigger checkpoint itself as the target's checkpoint. The
    runner tests those scopes on the checkpoint with no merge, since it already holds their code.
 
-A feature's checkpoint is scheduled when the runner reports its caller list
-([design.md](design.md#caller-list)). With that list complete, step 4 picks the running features
+A feature's checkpoint is scheduled when the runner reports its caller list. With that list complete, step 4 picks the running features
 that call a name the checkpoint modifies, or whose area names a file it changes or a folder above
 one, each tested in the scopes it touches. A running feature with no complete list read at its
 latest checkpoint still goes by step 4's scope rule. When the list reaches it too, its run keeps those scopes. Without the checkpoint's complete list, the steps above run as written. Each run names
