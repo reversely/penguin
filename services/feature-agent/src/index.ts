@@ -229,12 +229,13 @@ export class FeatureAgent extends Agent implements HuddleVerifier, HuddleReviewe
     if (ttl === undefined) {
       return { status: "failed", reason: `PENGUIN_PROMOTION_TOKEN_TTL_MINUTES must be a whole number of minutes from 1 to ${PROMOTION_TOKEN_TTL_MAX_MINUTES}`, head: null, durationMs: 0 };
     }
+    const forkName = `${repos.prefix}${run.request.fork}`;
     const base = await this.env.ARTIFACTS.get(repos.base);
-    const fork = await this.env.ARTIFACTS.get(`${repos.prefix}${run.request.fork}`);
-    const minted: { repo: ArtifactsRepo; id: string }[] = [];
+    const fork = await this.env.ARTIFACTS.get(forkName);
+    const minted: { repo: ArtifactsRepo; name: string; id: string }[] = [];
     try {
       const [write, read, baseInfo, forkInfo] = await Promise.all([base.createToken("write", ttl), fork.createToken("read", ttl), base.info(), fork.info()]);
-      minted.push({ repo: base, id: write.id }, { repo: fork, id: read.id });
+      minted.push({ repo: base, name: repos.base, id: write.id }, { repo: fork, name: forkName, id: read.id });
       return await fastForwardMain({
         source: { remote: forkInfo.remote, token: read.plaintext },
         target: { remote: baseInfo.remote, token: write.plaintext },
@@ -243,8 +244,13 @@ export class FeatureAgent extends Agent implements HuddleVerifier, HuddleReviewe
         after: run.checkpoint,
       });
     } finally {
-      // Each token is revoked by its id; a revocation that fails still expires with the token's TTL.
-      await Promise.allSettled(minted.map(({ repo, id }) => repo.revokeToken(id)));
+      // Each token is revoked by its id; a revocation that fails still expires with the token's TTL,
+      // and is logged, never dropped.
+      await Promise.all(
+        minted.map(({ repo, name, id }) =>
+          repo.revokeToken(id).catch((error: unknown) => console.error(JSON.stringify({ event: "token_revoke_failed", repo: name, token: id, error: String(error).slice(0, 200) }))),
+        ),
+      );
       base[Symbol.dispose]();
       fork[Symbol.dispose]();
     }

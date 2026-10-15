@@ -126,3 +126,17 @@ test("a land whose own checkpoint has no caller list yet targets every running f
   const w = await world({ path: "accounts/shoppers.py" });
   assert.deepEqual(targetsOf(await w.landNow()), ["cohort-ltv", "weekly-report"]);
 });
+
+test("a land whose fork head cannot be read fails naming the fork and logs the read, never checking fewer forks", async (t) => {
+  const w = await world({ path: "accounts/shoppers.py" });
+  const logged = t.mock.method(console, "error", () => {});
+  const land: LandDeps = {
+    ...w.land,
+    readRepo: (repo, use) => (repo === "feature-weekly-report" ? Promise.reject(new Error("internal error; reference = x")) : w.land.readRepo(repo, use)),
+  };
+  await assert.rejects(requestLand(land, "priya", "session-1", { feature: "shopper-map" }), /could not read the head of 1 of 2 forks: feature-weekly-report \(Error: internal error; reference = x\)/u);
+  assert.deepEqual(
+    logged.mock.calls.map((call) => JSON.parse(call.arguments[0] as string)),
+    [{ event: "fork_read_failed", call: "log main", repo: "feature-weekly-report", error: "Error: internal error; reference = x" }],
+  );
+});

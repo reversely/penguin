@@ -270,11 +270,21 @@ function runningOthers(deps: Pick<LandDeps, "features">, own: string): Feature[]
     .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }
 
-/** Each of `features` at its fork head; a fork with no head yet counts at its latest checkpoint. */
+/**
+ * Each of `features` at its fork head; a fork with no head yet counts at its latest checkpoint. A fork
+ * whose head cannot be read is never left out, which would check the change on fewer forks than it
+ * reaches: each failed read is logged with its fork, and the whole read rejects naming every one.
+ */
 async function targetsAt(deps: Pick<LandDeps, "readRepo">, features: readonly Feature[]): Promise<BlockRunTarget[]> {
-  const heads = await Promise.all(features.map(async (feature) => (await forkHead(deps, feature.repo as string)) ?? feature.latestCheckpointSha));
+  const heads = await Promise.allSettled(features.map(async (feature) => (await forkHead(deps, feature.repo as string)) ?? feature.latestCheckpointSha));
+  const failed = features.flatMap((feature, index) => {
+    const head = heads[index] as PromiseSettledResult<string | null>;
+    return head.status === "rejected" ? [{ repo: feature.repo as string, error: String(head.reason).slice(0, 200) }] : [];
+  });
+  for (const { repo, error } of failed) console.error(JSON.stringify({ event: "fork_read_failed", call: `log ${FIX_WRITE_BRANCH}`, repo, error }));
+  if (failed.length > 0) throw new Error(`could not read the head of ${failed.length} of ${features.length} forks: ${failed.map(({ repo, error }) => `${repo} (${error})`).join("; ")}`);
   return features.flatMap((feature, index) => {
-    const sha = heads[index];
+    const sha = (heads[index] as PromiseFulfilledResult<string | null>).value;
     return sha == null ? [] : [{ feature: feature.id, person: feature.personId, fork: `feature-${feature.id}`, sha }];
   });
 }

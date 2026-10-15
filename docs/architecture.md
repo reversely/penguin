@@ -259,7 +259,10 @@ matches a pending operation clears its `PendingOp` row.
    features the caller list names as calling what the change modifies, with the features whose
    changed files meet the change's files. A change that reaches no running feature is checked on main
    alone and promotes in one push. When the caller lists cannot answer, every running fork is a
-   target ([design.md](design.md#block-promotion-in-the-build)). The feature is `landing`.
+   target ([design.md](design.md#block-promotion-in-the-build)). A fork whose head cannot be read is
+   never left out of the targets: each failed read is logged as `fork_read_failed` with its fork, and
+   the land, plan check or `check` claim fails with an error naming every such fork, so no check runs
+   on fewer forks than the change reaches. The feature is `landing`.
 2. The runner claims the run at `POST /blocks/claim`, runs the checks with every scope's tests on
    main's merged tree and reports to `POST /blocks/<feature>/<n>`. The Worker hands the report to the
    FeatureAgent, which keeps it as a signed `block_checked` record.

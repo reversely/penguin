@@ -175,3 +175,16 @@ run to 98 tail events. Every event was the binding's WebSocket session
 seconds of wall time, with three exceptions each. All 21 steps passed in that run. The count varies
 between runs of the same code from 21 to 423 lines per run. The reference ids appear in no log of the local
 `workerd` processes, including with `--verbose`.
+
+The lines arrive in bursts, up to 210 lines between two request lines and 40 at one millisecond. A
+burst is many tail events delivered together and printed in one pass, not one Penguin operation
+fanning out calls that fail together. Five finished film runs of 2026-10-15 (real Claude Code
+agents, `wrangler dev` with remote Artifacts) hold 12,417 such lines in 1,500 bursts. Every burst
+is a multiple of three lines, three exceptions per tail event; a fan-out of failing per-fork reads
+would give one line per failed call. The same runs answered 19,343 requests with no 5xx status and
+logged no Penguin failure event.
+
+Penguin's own code does not drop a failed Artifacts call either. A fork head that cannot be read
+fails the land or `check` with every such fork named and logs `fork_read_failed`
+([architecture.md](architecture.md)). A token revocation that fails, which only expires with the
+token's TTL, logs `token_revoke_failed` with the repo and token.

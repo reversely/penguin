@@ -2206,8 +2206,8 @@ export class ProjectAgent extends Agent {
       return {
         endpoint: { remote: info.remote, token: token.plaintext },
         close: async () => {
-          // A revocation that fails still expires with the token's TTL.
-          await Promise.allSettled([repo.revokeToken(token.id)]);
+          // A revocation that fails still expires with the token's TTL; it is logged, never dropped.
+          await repo.revokeToken(token.id).catch((error: unknown) => console.error(JSON.stringify({ event: "token_revoke_failed", repo: this.#recordRepoName(), token: token.id, error: String(error).slice(0, 200) })));
           repo[Symbol.dispose]();
         },
       };
