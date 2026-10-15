@@ -104,11 +104,18 @@ with the first changed call side by side.
 
 ## Try it
 
-- **On your machine:** `node scripts/preview/dashboard.ts --example money-minor-units` serves the
-  dashboard over a seeded demo project, Larder, an online grocery service. Build the dashboard first
-  with `npm run build -w @penguin/dashboard`.
-- **On your own Cloudflare account:** [docs/deploy.md](docs/deploy.md) sets up the Worker, its Durable
-  Objects, the Artifacts namespace and the secrets.
+This runs the dashboard over Larder, a demo grocery service, on your machine. It needs Node.js 22.18,
+Git 2.38 and [uv](https://docs.astral.sh/uv/):
+
+```sh
+git clone https://github.com/reversely/penguin && cd penguin
+npm install && uv sync
+npm run build -w @penguin/dashboard
+node scripts/preview/dashboard.ts --example money-minor-units
+```
+
+Open http://127.0.0.1:8792 once it prints the address. To deploy on Cloudflare, see
+[docs/deploy.md](docs/deploy.md).
 
 ## Documentation
 
