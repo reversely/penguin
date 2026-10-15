@@ -221,6 +221,10 @@ matches a pending operation clears its `PendingOp` row.
    and their scopes to the declared area. It also asks the check runner for the checkpoint's caller list: the names its own
    changes use, which the ProjectAgent keeps so a later change finds the forks it reaches without
    reading every fork ([design.md](design.md#caller-list)).
+5. When the runner reports that list, the ProjectAgent schedules the checkpoint's combined runs: one
+   for each other person's running feature that calls a name the checkpoint modifies or whose own
+   changes hold a file it changes. Without the checkpoint's complete list, scope dependencies pick
+   the targets, as for an owner fork's checkpoint.
 
 ### Writing an approved fix
 
@@ -317,7 +321,9 @@ working on the rest in the same fork.
    `report_checkpoint`.
 2. The ProjectAgent confirms the commit exists in that fork, records it as the fork's latest
    checkpoint and schedules a combined run for each running feature, or owner fork, that reads a
-   scope the checkpoint changed. Each of a person's features is a run of its own.
+   scope the checkpoint changed. Each of a person's features is a run of its own. An owner fork keeps
+   no caller list, so scope dependencies pick its targets; a feature's checkpoint picks them from its
+   caller list ([Opening a feature](#opening-a-feature), step 5).
 3. The runner claims the runs, merges the checkpoints, runs the allowlisted tests and reports the
    results. A failure opens a Huddle issue with one fix sub-issue per failing test.
 4. Fix tasks reach agent sessions at safe checkpoints. Each newer checkpoint of an owner in the Huddle

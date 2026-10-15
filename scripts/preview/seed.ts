@@ -90,7 +90,13 @@ import {
   type CallerCall,
   type CallerItemDeps,
 } from "../../services/project-agent/src/caller-items.ts";
-import { checkpointBaseline, checkpointChange, type RepoHistoryReader } from "../../services/project-agent/src/combined-run-schedule.ts";
+import {
+  checkpointBaseline,
+  checkpointChange,
+  CombinedRunStore,
+  scheduleCombinedRuns,
+  type RepoHistoryReader,
+} from "../../services/project-agent/src/combined-run-schedule.ts";
 import { contractWork, ContractSplitStore, recordSplit, retireSplit, scheduleSort, type ContractSplitDeps } from "../../services/project-agent/src/contract-split.ts";
 import { buildFeaturePage, buildFeaturePlan, buildPersonScopes, buildTeamView, type DashboardViewDeps } from "../../services/project-agent/src/dashboard-views.ts";
 import { openFeature, recordFeatureRepo, recordPenguinCheckpoint, reportFeatureCheckpoint, type FeatureDeps } from "../../services/project-agent/src/feature-open.ts";
@@ -144,7 +150,7 @@ import {
 } from "../../services/project-agent/src/protected-change.ts";
 import { fileDiffs } from "../../services/project-agent/src/repo-diff.ts";
 import { edgesReported, requestScopeEdges, ScopeEdgeStore } from "../../services/project-agent/src/scope-edges.ts";
-import { CallerListStore, callsReported, requestCallerList } from "../../services/project-agent/src/caller-list.ts";
+import { CallerListStore, callsReported, listedCheckpoint, requestCallerList } from "../../services/project-agent/src/caller-list.ts";
 import { closeRemoved, countReported, requestRetiringCount, type CountOutcome, type RetiringCountDeps } from "../../services/project-agent/src/retiring-count.ts";
 import { EditRoster } from "../../services/project-agent/src/edit-roster.ts";
 import { EditTaskStore } from "../../services/project-agent/src/edit-tasks.ts";
@@ -351,6 +357,8 @@ export class PreviewProject {
   /** Main's scope dependencies from the last derivation, as the ProjectAgent keeps them. */
   readonly scopeEdges: ScopeEdgeStore;
   readonly callerLists: CallerListStore;
+  /** The combined runs each feature checkpoint schedules once its caller list is reported. */
+  readonly combinedRuns: CombinedRunStore;
   readonly splits: ContractSplitStore;
   readonly migrations: MigrationStore;
   readonly editTasks: EditTaskStore;
@@ -422,6 +430,9 @@ export class PreviewProject {
     this.retiring = new RetiringStore(this.sql, now);
     this.scopeEdges = new ScopeEdgeStore(this.sql, now);
     this.callerLists = new CallerListStore(this.sql, now);
+    // A database of its own: its BlockCheck table is the ProjectAgent's, which shares the name of the
+    // FeatureAgents' table this database already holds.
+    this.combinedRuns = new CombinedRunStore(memoryDatabase(), { now });
     this.splits = new ContractSplitStore(this.sql, now);
     this.migrations = new MigrationStore(this.sql, now);
     this.editTasks = new EditTaskStore(this.sql, { now });
@@ -854,7 +865,7 @@ export class PreviewProject {
     const kept = await this.#runnerClaim(
       (grant, spec) =>
         (target === undefined || grant.targetFeatureId === target) &&
-        (copyWriteOf(grant) !== undefined || (verifyInto.has(grant.targetFeatureId) && spec.copy !== undefined && spec.patch === "")),
+        (copyWriteOf(grant) !== undefined || (verifyInto.has(grant.targetFeatureId) && spec.patch === "")),
     );
     return kept.map(({ grant }) => `${writtenPart(grant)} into ${grant.targetFeatureId}`);
   }
@@ -1073,6 +1084,30 @@ export class PreviewProject {
     return requested.runId;
   }
 
+  /**
+   * Schedules the combined runs of the feature checkpoint whose caller list `run` reported, as the
+   * ProjectAgent does (combined-run-schedule.ts). The fixture's repository stands in for every fork.
+   */
+  async scheduleListedRuns(run: Parameters<typeof listedCheckpoint>[1]): Promise<void> {
+    const listed = listedCheckpoint(this.features, run);
+    if (listed === undefined) return;
+    const history = gitHistory(this.repo);
+    await scheduleCombinedRuns(
+      {
+        scopeMap: this.scopeMap,
+        fork: history,
+        base: history,
+        latestCheckpoint: (ownerId) => this.forks.get(ownerId)?.latestCheckpointSha ?? undefined,
+        features: () => this.features.list(),
+        callers: this.callerLists,
+        runs: this.combinedRuns,
+      },
+      listed.personId,
+      listed.sha,
+      listed.featureId,
+    );
+  }
+
   /** The check runner claims and runs every waiting tool request, such as a checkpoint's retiring-calls check. */
   async runnerPass(): Promise<void> {
     const repo = await this.#runner();
@@ -1092,6 +1127,8 @@ export class PreviewProject {
         edgesReported(this.scopeEdges, recorded.run);
         // A checkpoint's caller list goes to the stored lists, as the ProjectAgent's report does.
         callsReported(this.callerLists, recorded.run);
+        // The report, kept or not, schedules the checkpoint's combined runs, as the ProjectAgent's report does.
+        await this.scheduleListedRuns(recorded.run);
         // A check's caller replay opens or moves the feature's caller items, as the ProjectAgent's report does.
         const replay = recorded.run.tool === "check" ? recorded.run.outcome?.callerReplay : undefined;
         if (replay !== undefined && recorded.run.featureId !== null) {
@@ -2198,7 +2235,7 @@ async function landOrigin(preview: PreviewProject, feature: LarderFeature, words
         // A verify part on a running feature the fixture holds no update of, such as a generated caller
         // whose calls come out the same, is written by the check runner as the copies themselves.
         const updated = new Set(larderExpanded().larder.features.filter((each) => each.commits.some((commit) => commit.update?.from === feature.id)).map((each) => each.id));
-        const verifyInto = new Set(preview.callerItemsOf(feature.id).map((item) => item.feature).filter((each) => !updated.has(each)));
+        const verifyInto = new Set(larderExpanded().larder.features.map((each) => each.id).filter((each) => !updated.has(each)));
         const copied = await preview.step(`check runner copies ${feature.id}'s modules into its affected forks`, () => preview.writeCopies(undefined, verifyInto));
         if (copied.length === 0) throw new Error(`${feature.id}'s land waits for copies the check runner did not write: ${(await landPending(preview.callerDeps(), feature.id)).join("; ").slice(0, 2_000)}; claimable writes: ${JSON.stringify(await Promise.all(preview.fixGrants.claimable().map(async (grant) => [grant.targetFeatureId, grant.partId, preview.fixGrants.waitsFor(grant), (await preview.fixWriteDeps().callerWaits?.(grant.featureId, grant.targetFeatureId)) ?? null, preview.fixWriteDeps().locked?.(grant.targetFeatureId) ?? null]))).slice(0, 3_000)}`);
       } else {

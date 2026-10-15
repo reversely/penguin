@@ -1307,6 +1307,21 @@ every fork for that costs time for every running feature, so Penguin keeps a cal
 On the 200-person Larder, the list finds exactly the forks that reading every fork's own changes
 finds for case 1's and case 2's changes (`tests/test_fixtures.py`).
 
+A feature checkpoint's combined runs take their targets from the list
+(`services/project-agent/src/combined-run-schedule.ts`, #198). When the runner reports the
+checkpoint's list, Penguin schedules one run for each running feature of another person that calls a
+name the checkpoint modifies, and one for each whose own changes hold a file the checkpoint changes.
+Each run tests the scopes its feature touches. Scope dependencies (`depends_on`) no longer pick these
+targets; they stay in the merge plan's facts. Three cases still go by scope dependencies, so nothing
+is missed:
+
+- The checkpoint's list is an error or incomplete: every running feature in a scope that depends on
+  a changed scope is a target, as before the list.
+- A running feature has no complete list of its own yet: it is a target when its scopes depend on a
+  changed scope.
+- An owner fork keeps no list: its checkpoint picks its targets by scope dependencies, and a person
+  with no running feature is reached through their owner fork.
+
 #### Scope dependencies from the code
 
 A person's role on the dashboard lists the scopes they own, the scopes those read and the scopes that

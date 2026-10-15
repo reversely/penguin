@@ -11,6 +11,7 @@
 //    land of the feature looks up with `callersOf`. A report older than the stored one is ignored, so a late report
 //    never overwrites a newer checkpoint's list. The runner reports an incomplete read as an error,
 //    which keeps no list: a feature with no list stays a target of every land until one is kept.
+//    The report, kept or not, then schedules the checkpoint's combined runs (combined-run-schedule.ts).
 // 3. **Read.** `callersOf` answers which features call any of a change's names from the rows alone:
 //    a name matches itself and every name inside it, so a changed module matches every use of the
 //    module's names, as the impact graph counts a module's uses.
@@ -92,6 +93,11 @@ export class CallerListStore {
         };
   }
 
+  /** The features whose stored list is complete, so `callersOf` decides whether a change reaches them. */
+  completeLists(): Set<string> {
+    return new Set(this.#db.exec(`SELECT feature_id FROM ForkCallList WHERE complete = 1`).map((row) => String(row["feature_id"])));
+  }
+
   /**
    * The features whose own changes use any of `names`, sorted: a name matches itself and every name
    * inside it (`accounts.shoppers` matches `accounts.shoppers.ShopperMap.resolve`).
@@ -159,6 +165,21 @@ export function requestCallerList(runs: AgentToolStore, feature: Feature, sha: s
     durationMs: 0,
     baseSha,
   }).id;
+}
+
+/**
+ * The feature checkpoint whose combined runs wait on `run` (combined-run-schedule.ts): the checkpoint
+ * a caller list request read, kept or not, while it is still its feature's latest. Undefined for any
+ * other request, a feature with no fork or a checkpoint a newer one replaced.
+ */
+export function listedCheckpoint(
+  features: { get(id: string): Feature | undefined },
+  run: AgentToolRun,
+): { readonly featureId: string; readonly personId: string; readonly repo: string; readonly sha: string } | undefined {
+  if (!isCallerListRequest(run) || run.featureId === null || run.checkpointSha === null) return undefined;
+  const feature = features.get(run.featureId);
+  if (feature === undefined || feature.repo === null || feature.latestCheckpointSha !== run.checkpointSha) return undefined;
+  return { featureId: feature.id, personId: feature.personId, repo: feature.repo, sha: run.checkpointSha };
 }
 
 /**

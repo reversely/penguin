@@ -33,6 +33,7 @@ one Cloudflare primitive. A test whose subject leaves the product is deleted wit
 | `run-failures.test.ts` | Section 7: a failed run is freed at once and stops at the project's failure limit |
 | `tool-runs.test.ts` | 5.2: only the check runner reports a tool result, once, for the request's own checkpoint |
 | `caller-items.test.ts` | The caller protocol (#188): a check's replay opens an item per running feature and contract in its verdict's first state; only the receiving agent confirms, approves or rejects and only the originating agent proposes or explains; two rejections, an unanswered item and Production send an item to the worktree owner; a replay that changes the calls resets an item and one that no longer reaches it withdraws it; a fix token and a runner write into the fork wait for the receiving side's approval; a land with an open item is refused `callers_pending`; the context packet carries the other agent's words under `personWritten`; every transition is a signed record. #189: a confirmation is refused for a run that is not the item's or has a call that did not match; an explanation for a call left out, an unknown call id or an incidental call sent to review; a review for evidence the replay did not run, from a test the change added or edited or from a test neither on main nor written by the receiving feature; the calls past the list are answered as one group with their exact count; a refusal stays on the item until it moves; `testStandingOf` reads a test's standing from the merge base's tree and both changes' files, keeping the earlier tests of a file the change only appends tests to |
+| `combined-runs.test.ts` | #198: a checkpoint in a depended-on scope that changes a function one fork calls schedules one combined run, from the caller list; with no list of the checkpoint stored, every feature in a dependent scope is scheduled as before |
 | `caller-replay.test.ts` | 5.1, the caller replay: one test per verdict (`unaffected`, `differs`, `broken`, `unknown_reach`) from recordings shaped as the plugin writes them; ids stay the same across runs of the same trees; Penguin refuses a section whose caller names a missing run, whose verdict its calls contradict, whose value is over its cap or whose run replays a fork the block did not name |
 
 ## Running
@@ -65,7 +66,7 @@ run and deletes its repositories at the end.
 The last two need Claude Code logged in on the machine that runs them, so they run on a person's laptop; the test machine runs the others. `tests/walkthrough` runs the four use cases through the same stack (docs/walkthrough.md).
 
 Combined runs and Huddles predate PRD 0.5. Their code is still wired into the ProjectAgent until its
-removal and has no tests.
+removal. Only the choice of a checkpoint's targets has tests (`combined-runs.test.ts`).
 
 ## Rules for adding tests
 

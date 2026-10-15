@@ -112,7 +112,7 @@ async function runBatch(options: CombinedPassOptions, runs: readonly ClaimedComb
   const base = { trigger, runIds: runs.map((run) => run.runId) };
   const refused: RefusedCommand[] = [];
   try {
-    await options.fetchForks([...new Set([`owner-${trigger.ownerId}`, ...runs.map((run) => run.fork)])]);
+    await options.fetchForks([...new Set([trigger.fork, ...runs.map((run) => run.fork)])]);
     // Each run is one target; its scopes are those of its allowlisted commands, so two targets of
     // one person can run different scopes. The changer's own run is no fork target: the combined run
     // tests the changer's own dependent scopes on the trigger itself.

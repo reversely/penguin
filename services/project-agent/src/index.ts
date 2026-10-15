@@ -199,7 +199,7 @@ import {
 import { coverMidway, handOver, meeting, PlanCoverageStore } from "./plan-coverage.ts";
 import { RetiringStore } from "./retiring-store.ts";
 import { edgesReported, requestScopeEdges, ScopeEdgeStore } from "./scope-edges.ts";
-import { CallerListStore, callsReported, requestCallerList } from "./caller-list.ts";
+import { CallerListStore, callsReported, listedCheckpoint, requestCallerList } from "./caller-list.ts";
 import { contractWork, ContractSplitStore, recordSplit, retireSplit, scheduleSort, type ContractSplitDeps } from "./contract-split.ts";
 import type { BlockRun } from "./block-store.ts";
 import {
@@ -1831,9 +1831,10 @@ export class ProjectAgent extends Agent {
    * Schedules the combined runs a recorded checkpoint calls for, reading the checkpoint's history
    * from `fork` and the scope map and baseline from the base repo. The checkpoint stays recorded when
    * this fails: a later report of the same checkpoint schedules again, and runs already scheduled
-   * are not repeated.
+   * are not repeated. With `feature`, the checkpoint is that feature's, and its caller list picks the
+   * targets once it is kept.
    */
-  async #scheduleCombinedRuns(owner: string, sha: string, fork: string, repos: ProjectRepos): Promise<void> {
+  async #scheduleCombinedRuns(owner: string, sha: string, fork: string, repos: ProjectRepos, feature?: string): Promise<void> {
     try {
       const scopeMap = await this.#scopeMap(repos);
       const forks = this.#ownerForks();
@@ -1846,10 +1847,12 @@ export class ProjectAgent extends Agent {
               base: baseRepo,
               latestCheckpoint: (ownerId) => forks.get(ownerId)?.latestCheckpointSha ?? undefined,
               features: () => this.#featureStore().list(),
+              callers: this.#callerListStore(),
               runs: this.#combinedRunStore(),
             },
             owner,
             sha,
+            feature,
           ),
         ),
       );
@@ -2461,6 +2464,11 @@ export class ProjectAgent extends Agent {
     const outcome = recordToolResult(this.#toolStore(), caller, runId, result);
     if (outcome.status === "recorded" && edgesReported(this.#scopeEdgeStore(), outcome.run)) this.#liveFeed().featuresChanged();
     if (outcome.status === "recorded") callsReported(this.#callerListStore(), outcome.run);
+    // A checkpoint's caller list, kept or not, schedules the checkpoint's combined runs (combined-run-schedule.ts).
+    const listed = outcome.status === "recorded" ? listedCheckpoint(this.#featureStore(), outcome.run) : undefined;
+    if (listed !== undefined && repos !== undefined) {
+      await this.#scheduleCombinedRuns(listed.personId, listed.sha, listed.repo, repos, listed.featureId);
+    }
     // A check's caller replay opens or moves the feature's caller items (caller-items.ts).
     const replay = outcome.status === "recorded" && outcome.run.tool === "check" ? outcome.run.outcome?.callerReplay : undefined;
     if (outcome.status === "recorded" && replay !== undefined && outcome.run.featureId !== null) {

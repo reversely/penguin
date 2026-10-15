@@ -383,8 +383,8 @@ export const COMBINED_RUN_CLAIM_ROUTE = "/combined-runs/claim";
 /** A combined run Penguin scheduled and this runner claimed. It names commands by ID only. */
 export interface ClaimedCombinedRun {
   readonly runId: string;
-  /** The published checkpoint that changed a depended-on scope, and the commit it was made from. */
-  readonly trigger: { readonly ownerId: string; readonly sha: string; readonly baselineSha: string };
+  /** The published checkpoint, the commit it was made from and the fork that holds it, `owner-<id>` or `feature-<id>`. */
+  readonly trigger: { readonly ownerId: string; readonly sha: string; readonly baselineSha: string; readonly fork: string };
   /** The target merged with the trigger: a running feature's id, or the person's id for an owner fork. */
   readonly target: string;
   /** The target's fork, `feature-<id>` or `owner-<id>`, without the deployment's prefix. */
@@ -435,6 +435,8 @@ export async function claimCombinedRuns(
 function claimedRun(entry: unknown): ClaimedCombinedRun {
   const { runId, trigger, ownerId, ownerCheckpoint, commandIds } = (entry ?? {}) as Record<string, unknown>;
   const { ownerId: triggerOwner, sha, baselineSha } = (trigger ?? {}) as Record<string, unknown>;
+  // A server from before #198 names no trigger fork: every trigger was an owner fork's checkpoint.
+  const { fork: triggerFork = `owner-${String(triggerOwner)}` } = (trigger ?? {}) as Record<string, unknown>;
   const owner = (value: unknown) => typeof value === "string" && OWNER_ID.test(value);
   const commit = (value: unknown) => typeof value === "string" && COMMIT.test(value);
   // A server from before #104 names no target: the run is the owner fork of `ownerId`.
@@ -444,6 +446,8 @@ function claimedRun(entry: unknown): ClaimedCombinedRun {
     !owner(triggerOwner) ||
     !commit(sha) ||
     !commit(baselineSha) ||
+    typeof triggerFork !== "string" ||
+    !COMBINED_RUN_FORK.test(triggerFork) ||
     !owner(ownerId) ||
     typeof target !== "string" ||
     !TARGET_ID.test(target) ||
@@ -457,7 +461,7 @@ function claimedRun(entry: unknown): ClaimedCombinedRun {
   }
   return {
     runId,
-    trigger: { ownerId: triggerOwner as string, sha: sha as string, baselineSha: baselineSha as string },
+    trigger: { ownerId: triggerOwner as string, sha: sha as string, baselineSha: baselineSha as string, fork: triggerFork },
     target,
     fork,
     ownerId: ownerId as string,

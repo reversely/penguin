@@ -35,7 +35,7 @@ export interface ForkTarget {
   /** The fork's latest checkpoint, as a full object ID. */
   readonly checkpoint: string;
   /**
-   * The scopes whose tests run on the target's merged tree, of those that depend on the change.
+   * The scopes whose tests run on the target's merged tree, whether or not they depend on the change.
    * When absent, the dependent scopes the target's person owns.
    */
   readonly scopes?: readonly string[];
@@ -351,8 +351,9 @@ export function testChecks(results: readonly CombinedResult[], origin: string): 
 /**
  * Layer 1's combined run (PRD section 4): finds the scopes that depend on the scopes a checkpoint
  * changes, merges the checkpoint with each target fork's latest checkpoint using
- * `git merge-tree --write-tree`, and runs the dependent scopes' allowlisted tests on each merged
- * commit in a throwaway worktree. Targets are keyed by feature, not by person: each of a person's
+ * `git merge-tree --write-tree`, and runs the dependent scopes' allowlisted tests, and each fork's
+ * named scopes' tests, on each merged commit in a throwaway worktree. Targets are keyed by feature,
+ * not by person: each of a person's
  * running features is merged and tested on its own. Every step is a local Git or test command; nothing calls a
  * model or the network.
  */
@@ -391,6 +392,16 @@ export class CombinedRunner {
         targets.push({ target: owner, ownerId: owner, scopeId, commandId, ownerCheckpoint: own ? checkpointSha : undefined, own });
       }
       for (const fork of covering) {
+        targets.push({ target: fork.id, ownerId: fork.person, scopeId, commandId, ownerCheckpoint: fork.checkpoint, own: false });
+      }
+    }
+    // A scheduled run names its scopes: a fork the caller list reached runs the tests of the scopes
+    // it touches, whether or not they depend on a changed scope (combined-run-schedule.ts).
+    const planned = new Set(targets.map((target) => `${target.target} ${target.scopeId}`));
+    for (const fork of forks) {
+      for (const scopeId of fork.scopes ?? []) {
+        const commandId = testCommandId(scopeId);
+        if (!scopeMap.scopes.has(scopeId) || planned.has(`${fork.id} ${scopeId}`) || (wanted !== undefined && !wanted.has(commandId))) continue;
         targets.push({ target: fork.id, ownerId: fork.person, scopeId, commandId, ownerCheckpoint: fork.checkpoint, own: false });
       }
     }

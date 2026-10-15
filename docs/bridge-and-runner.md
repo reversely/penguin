@@ -712,7 +712,9 @@ The script reads only Git objects. It never checks out a tree or imports the cod
 A combined run (`CombinedRunner`) takes its targets as forks, each with an id, a person and a
 checkpoint. A running feature's fork is a target keyed by its feature id, so one person's two
 features are two targets. An owner fork is a target keyed by its owner's id. A target is tested in
-the dependent scopes it names, or in its person's dependent scopes when it names none. A dependent
+the scopes it names, or in its person's dependent scopes when it names none. A named scope need not
+depend on a changed one: a scheduled run whose target the caller list picked names the scopes its
+feature touches ([design.md](design.md#caller-list)). A dependent
 scope that no target covers gets a `no-checkpoint` result, unless its DRI is the person who made
 the checkpoint, named as the request's `changer`. The checkpoint already holds that scope's code,
 so its tests run on the checkpoint itself, with no merge, and report `passed` or `failed` with the

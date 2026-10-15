@@ -1,11 +1,18 @@
-// Layer 1's trigger for combined runs (PRD section 4): when an owner's checkpoint is recorded, find
-// the scopes it changes, and schedule one combined run per target that may read them. A target is
-// one running feature's fork (PRD 0.4 section 1: a person owns n features, each its own fork), so a
-// person with two running features gets two runs, keyed by feature id. A person who depends on a
-// changed scope and runs no feature with a checkpoint keeps one target: their owner fork. The
-// integration runner claims each run, merges the checkpoint with the target's latest checkpoint and
-// runs the allowlisted tests on the merged tree, then reports the result to POST /combined-runs,
-// which opens a Huddle when an owner fork's tests failed (huddle-open.ts).
+// Layer 1's trigger for combined runs (PRD section 4): when a checkpoint is recorded, find the running
+// features it may break and schedule one combined run per target. A target is one running feature's
+// fork (PRD 0.4 section 1: a person owns n features, each its own fork), so a person with two running
+// features gets two runs, keyed by feature id. The integration runner claims each run, merges the
+// checkpoint with the target's latest checkpoint and runs the allowlisted tests on the merged tree,
+// then reports the result to POST /combined-runs, which opens a Huddle when an owner fork's tests
+// failed (huddle-open.ts).
+//
+// A feature's checkpoint picks its targets from the caller list (caller-list.ts, #198): the running
+// features that call a name the checkpoint modifies, plus those whose own changes hold a file it
+// changes. Its runs are scheduled when the runner reports the checkpoint's list. Without that list,
+// or with an incomplete one, the scopes the checkpoint changes pick the targets as for an owner
+// fork's checkpoint, which keeps no list: each running feature or owner fork in a scope whose
+// `depends_on` names a changed scope. A running feature with no complete list of its own is still
+// picked that way, so a list not reported yet misses nothing.
 //
 // Everything here reads Git objects through the Artifacts binding and the agent's SQL store; nothing
 // calls a model.
@@ -27,6 +34,7 @@ import {
 import { affectedOwners, type ScopeMap } from "@penguin/scope-map";
 
 import { BASE_BRANCH } from "./base-repo.ts";
+import type { CallerListStore } from "./caller-list.ts";
 import type { Feature } from "./feature-store.ts";
 import type { BridgeCaller, SqlDatabase, SqlValue } from "./issue-index.ts";
 import { RUNNING_STATES } from "./overlap-lock.ts";
@@ -41,7 +49,7 @@ export const COMBINED_RUN_SCHEMA: readonly string[] = [
     run_id TEXT PRIMARY KEY, trigger_owner TEXT NOT NULL, trigger_sha TEXT NOT NULL, baseline_sha TEXT NOT NULL,
     target TEXT NOT NULL, fork TEXT NOT NULL, owner_id TEXT NOT NULL, owner_checkpoint TEXT NOT NULL,
     command_ids TEXT NOT NULL, status TEXT NOT NULL, claimed_by TEXT, claimed_at INTEGER, completed_at INTEGER,
-    scheduled_at INTEGER NOT NULL, UNIQUE (trigger_owner, trigger_sha, target, owner_checkpoint))`,
+    scheduled_at INTEGER NOT NULL, trigger_fork TEXT, UNIQUE (trigger_owner, trigger_sha, target, owner_checkpoint))`,
   // One row per section 5.1 check on one merged tree of a trigger. A later report of the same check
   // on the same target commit replaces it.
   `CREATE TABLE IF NOT EXISTS BlockCheck (
@@ -71,6 +79,15 @@ function migrateToTargets(db: SqlDatabase): void {
   });
 }
 
+/**
+ * Adds the trigger's fork to a CombinedRun table from before #198, when every trigger was an owner
+ * fork's checkpoint: a run with none reads as `owner-<trigger owner>`.
+ */
+function addTriggerFork(db: SqlDatabase): void {
+  const columns = new Set(db.exec(`PRAGMA table_info(CombinedRun)`).map((row) => row["name"]));
+  if (!columns.has("trigger_fork")) db.exec(`ALTER TABLE CombinedRun ADD COLUMN trigger_fork TEXT`);
+}
+
 /** How long a claimed run stays with its runner before another claim may take it again. */
 export const COMBINED_RUN_LEASE_MS = 30 * 60_000;
 
@@ -92,8 +109,11 @@ export type CombinedRunStatus = "scheduled" | "claimed" | "passed" | "failed" | 
 
 export interface CombinedRun {
   readonly runId: string;
-  /** The checkpoint whose change to a depended-on scope scheduled the run. */
-  readonly trigger: { readonly ownerId: string; readonly sha: string; readonly baselineSha: string };
+  /**
+   * The checkpoint whose change scheduled the run, with the fork that holds it, `owner-<id>` or
+   * `feature-<id>`, without the deployment's prefix.
+   */
+  readonly trigger: { readonly ownerId: string; readonly sha: string; readonly baselineSha: string; readonly fork: string };
   /** The running feature's id, or the person's id for their owner fork. */
   readonly target: string;
   /** The target's fork, `feature-<id>` or `owner-<id>`, without the deployment's prefix. */
@@ -102,7 +122,7 @@ export interface CombinedRun {
   readonly ownerId: string;
   /** The target's latest checkpoint, merged with the trigger. */
   readonly ownerCheckpoint: string;
-  /** The target's allowlisted test commands, `test:<scope id>`, one per dependent scope. */
+  /** The target's allowlisted test commands, `test:<scope id>`, one per scope the run tests. */
   readonly commandIds: readonly string[];
   readonly status: CombinedRunStatus;
   readonly claimedBy: string | null;
@@ -136,6 +156,7 @@ export class CombinedRunStore {
     this.#leaseMs = options.leaseMs ?? COMBINED_RUN_LEASE_MS;
     migrateToTargets(db);
     for (const statement of [...COMBINED_RUN_SCHEMA, ...RUN_FAILURE_SCHEMA]) db.exec(statement);
+    addTriggerFork(db);
   }
 
   get(runId: string): CombinedRun | undefined {
@@ -159,14 +180,15 @@ export class CombinedRunStore {
   ): CombinedRun | undefined {
     const runId = this.#newId();
     this.#db.exec(
-      `INSERT INTO CombinedRun (run_id, trigger_owner, trigger_sha, baseline_sha, target, fork, owner_id, owner_checkpoint,
-         command_ids, status, scheduled_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled', ?)
+      `INSERT INTO CombinedRun (run_id, trigger_owner, trigger_sha, baseline_sha, trigger_fork, target, fork, owner_id,
+         owner_checkpoint, command_ids, status, scheduled_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled', ?)
        ON CONFLICT (trigger_owner, trigger_sha, target, owner_checkpoint) DO NOTHING`,
       runId,
       run.trigger.ownerId,
       run.trigger.sha,
       run.trigger.baselineSha,
+      run.trigger.fork,
       run.target ?? run.ownerId,
       run.fork ?? `owner-${run.ownerId}`,
       run.ownerId,
@@ -346,6 +368,7 @@ function combinedRun(row: Row): CombinedRun {
       ownerId: row["trigger_owner"] as string,
       sha: row["trigger_sha"] as string,
       baselineSha: row["baseline_sha"] as string,
+      fork: (row["trigger_fork"] as string | null) ?? `owner-${String(row["trigger_owner"])}`,
     },
     target: row["target"] as string,
     fork: row["fork"] as string,
@@ -378,16 +401,20 @@ export interface ScheduleDeps {
   latestCheckpoint(ownerId: string): string | undefined;
   /** Every feature; the running ones with a checkpoint are targets. Absent: owner forks only. */
   readonly features?: () => readonly Feature[];
+  /** The caller list, which picks a feature checkpoint's targets once it holds the checkpoint's list. Absent: scope dependencies pick them. */
+  readonly callers?: Pick<CallerListStore, "listedAt" | "callersOf" | "completeLists">;
   readonly runs: CombinedRunStore;
 }
 
 export interface ScheduleOutcome {
-  /** The commit the checkpoint was made from, or null when no dependency made it worth finding. */
+  /** The commit the checkpoint was made from, or null when nothing made it worth finding. */
   readonly baselineSha: string | null;
   /** Scopes the checkpoint changes. */
   readonly changedScopes: readonly string[];
-  /** Scopes that depend on a changed scope and that a run tests, or whose owner has no checkpoint. */
-  readonly dependentScopes: readonly string[];
+  /** Scopes a run tests, or that depend on a changed scope and whose owner has no checkpoint. */
+  readonly testedScopes: readonly string[];
+  /** True when the checkpoint's caller list picked the running features; false when scope dependencies did. */
+  readonly fromCallerList: boolean;
   /** Runs this call scheduled, one per target. */
   readonly scheduled: readonly CombinedRun[];
   /** Dependent owners with no running feature and no owner fork checkpoint to merge with, so no run. */
@@ -397,20 +424,28 @@ export interface ScheduleOutcome {
 const NOTHING: ScheduleOutcome = {
   baselineSha: null,
   changedScopes: [],
-  dependentScopes: [],
+  testedScopes: [],
+  fromCallerList: false,
   scheduled: [],
   withoutCheckpoint: [],
 };
 
 /**
- * Schedules the combined runs that `owner`'s checkpoint `sha` calls for, one per target:
+ * Schedules the combined runs that `owner`'s checkpoint `sha` calls for, one per target. `feature`
+ * names the feature whose fork holds the checkpoint; absent, it is the owner fork's. Each running
+ * feature with a checkpoint is a target, tested in the scopes it touches, when:
  *
- * - each running feature with a checkpoint whose person owns, or whose area touches, a scope that
- *   depends on a scope the checkpoint changes, tested in those scopes;
- * - for a person who owns such a scope and runs no such feature, their owner fork's latest
- *   checkpoint, tested in the scopes they own;
+ * - the caller list holds the complete list of checkpoint `sha` of `feature`, and the feature calls a
+ *   name the checkpoint modifies or its own changes hold a file the checkpoint changes;
+ * - otherwise, or when the feature has no complete list of its own, its person owns or its area
+ *   touches a scope that depends on a scope the checkpoint changes, tested in those scopes.
+ *
+ * As before the caller list, scope dependencies also pick two more targets:
+ *
+ * - for a person who owns such a scope and runs no feature the rules above decide, their owner
+ *   fork's latest checkpoint, tested in the scopes they own;
  * - for the checkpoint's owner, when they own such a scope, the checkpoint itself, keyed by their
- *   owner fork and tested in the scopes they own with no merge.
+ *   id in the trigger's fork and tested in the scopes they own with no merge.
  *
  * The checkpoint owner's own forks are never merged with the checkpoint. Runs already scheduled for
  * the same trigger, target and target checkpoint are kept, not repeated.
@@ -418,12 +453,18 @@ const NOTHING: ScheduleOutcome = {
  * Raises:
  *   Error: when the checkpoint is not in the fork, no baseline is found, or the diff is too large.
  */
-export async function scheduleCombinedRuns(deps: ScheduleDeps, owner: string, sha: string): Promise<ScheduleOutcome> {
-  // A project with no declared dependency has nothing to run: skip every Git read.
-  if (deps.scopeMap.dependents.size === 0) return NOTHING;
+export async function scheduleCombinedRuns(deps: ScheduleDeps, owner: string, sha: string, feature?: string): Promise<ScheduleOutcome> {
+  const listed = feature === undefined ? undefined : deps.callers?.listedAt(feature);
+  // The names the checkpoint's change modifies, when its own complete list is stored.
+  const reach = listed !== undefined && listed.checkpoint === sha && listed.complete ? listed.changed : undefined;
+  // With no list and no declared dependency, nothing picks a target: skip every Git read.
+  if (reach === undefined && deps.scopeMap.dependents.size === 0) return NOTHING;
   const { baselineSha, baselineTree, checkpointTree } = await findBaseline(deps, sha);
   const changed = await changedPaths(deps.fork, baselineTree, checkpointTree);
   const affected = affectedOwners(deps.scopeMap, changed);
+  const callers = reach === undefined ? undefined : new Set(deps.callers?.callersOf(reach));
+  const listedFeatures = reach === undefined ? new Set<string>() : (deps.callers?.completeLists() ?? new Set<string>());
+  const changedFiles = new Set(changed);
 
   const byOwner = new Map<string, string[]>();
   for (const scopeId of affected.dependentScopes) {
@@ -432,7 +473,7 @@ export async function scheduleCombinedRuns(deps: ScheduleDeps, owner: string, sh
     byOwner.set(scopeOwner, [...(byOwner.get(scopeOwner) ?? []), scopeId]);
   }
 
-  const trigger = { ownerId: owner, sha, baselineSha };
+  const trigger = { ownerId: owner, sha, baselineSha, fork: feature === undefined ? `owner-${owner}` : `feature-${feature}` };
   const scheduled: CombinedRun[] = [];
   const withoutCheckpoint: string[] = [];
   const tested = new Set<string>();
@@ -443,16 +484,25 @@ export async function scheduleCombinedRuns(deps: ScheduleDeps, owner: string, sh
     .filter((feature) => RUNNING_STATES.has(feature.state) && feature.repo !== null && feature.latestCheckpointSha !== null)
     .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   const withFeature = new Set<string>();
-  for (const feature of running) {
-    if (feature.personId === owner) continue;
-    const touched = touchedScopes(feature, deps.scopeMap);
-    const scopes = [...dependents].filter((scopeId) => scopeOwner(scopeId) === feature.personId || touched.has(scopeId));
+  for (const other of running) {
+    if (other.personId === owner) continue;
+    const touched = touchedScopes(other, deps.scopeMap);
+    // A feature with its own complete list is reached or not by the trigger's list; one without
+    // a list may call anything, so scope dependencies decide it.
+    const decided = listedFeatures.has(other.id);
+    const reached = callers !== undefined && (callers.has(other.id) || other.area.paths.some((path) => changedFiles.has(path)));
+    if (decided) withFeature.add(other.personId);
+    const scopes = reached
+      ? [...touched].sort()
+      : decided
+        ? []
+        : [...dependents].filter((scopeId) => scopeOwner(scopeId) === other.personId || touched.has(scopeId));
     const commandIds = scopes.map(testCommandId).filter((id): id is string => id !== undefined);
     if (commandIds.length === 0) continue;
-    withFeature.add(feature.personId);
+    withFeature.add(other.personId);
     for (const scopeId of scopes) tested.add(scopeId);
-    const ownerCheckpoint = feature.latestCheckpointSha as string;
-    const target = { target: feature.id, fork: `feature-${feature.id}`, ownerId: feature.personId };
+    const ownerCheckpoint = other.latestCheckpointSha as string;
+    const target = { target: other.id, fork: `feature-${other.id}`, ownerId: other.personId };
     const run = deps.runs.schedule({ trigger, ...target, ownerCheckpoint, commandIds });
     if (run !== undefined) scheduled.push(run);
   }
@@ -462,7 +512,7 @@ export async function scheduleCombinedRuns(deps: ScheduleDeps, owner: string, sh
   const ownCommands = own.map(testCommandId).filter((id): id is string => id !== undefined);
   if (ownCommands.length > 0) {
     for (const scopeId of own) tested.add(scopeId);
-    const run = deps.runs.schedule({ trigger, ownerId: owner, ownerCheckpoint: sha, commandIds: ownCommands });
+    const run = deps.runs.schedule({ trigger, ownerId: owner, fork: trigger.fork, ownerCheckpoint: sha, commandIds: ownCommands });
     if (run !== undefined) scheduled.push(run);
   }
   for (const [ownerId, scopes] of [...byOwner].sort(([a], [b]) => a.localeCompare(b))) {
@@ -481,7 +531,8 @@ export async function scheduleCombinedRuns(deps: ScheduleDeps, owner: string, sh
   return {
     baselineSha,
     changedScopes: affected.changedScopes,
-    dependentScopes: [...tested].sort(),
+    testedScopes: [...tested].sort(),
+    fromCallerList: callers !== undefined,
     scheduled,
     withoutCheckpoint,
   };

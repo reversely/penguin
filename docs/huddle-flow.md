@@ -101,11 +101,20 @@ For each recorded checkpoint, `scheduleCombinedRuns` (`services/project-agent/sr
 5. Schedules one run on the owner fork `owner-<id>`, at its latest checkpoint, for each owner of a
    dependent scope who runs no such feature. An owner with neither gets no run.
 6. Schedules one run for the checkpoint owner's own dependent scopes, when there are any, keyed by
-   their owner fork with the trigger checkpoint itself as the target's checkpoint. The runner tests
-   those scopes on the checkpoint with no merge, since it already holds their code.
+   their id in the trigger's fork with the trigger checkpoint itself as the target's checkpoint. The
+   runner tests those scopes on the checkpoint with no merge, since it already holds their code.
+
+A feature's checkpoint is scheduled when the runner reports its caller list
+([design.md](design.md#caller-list)). With that list complete, step 4 picks the running features
+that call a name the checkpoint modifies, or whose own changes hold a file it changes, each tested in
+the scopes it touches. A running feature with no complete list of its own still goes by step 4's
+scope rule. Without the checkpoint's complete list, the steps above run as written. Each run names
+the trigger's fork, `owner-<id>` or `feature-<id>`, which the runner fetches; a run from before #198
+names none and reads as its owner fork.
 
 A run is keyed by the trigger, the target and the target's checkpoint, so reporting the same
-checkpoint twice schedules nothing new. A project with no `depends_on` entry reads no Git at all.
+checkpoint twice schedules nothing new. A project with no `depends_on` entry reads no Git for a
+checkpoint without its complete caller list.
 A deploy that finds the `CombinedRun` table from before #104 moves each of its runs to its owner
 fork's target.
 
