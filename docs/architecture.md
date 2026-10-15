@@ -1,11 +1,10 @@
 # Architecture
 
-> **Design change.** This page describes the current build. The design
-> changes the repos. Each feature gets its own fork `feature-*` in
-> place of the per-owner forks `owner-<id>`. The build opens feature forks
-> ([Opening a feature](#opening-a-feature)) and promotes each feature's block to `main`
-> ([Landing a feature](#landing-a-feature)). The owner forks still carry the Huddle flow. The
-> `record` repo takes over from `issues`.
+Penguin keeps two kinds of fork. Each feature has its own fork `feature-<id>`, which Penguin opens
+([Opening a feature](#opening-a-feature)) and promotes to `main` as one block
+([Landing a feature](#landing-a-feature)). Each owner also has a fork `owner-<id>`, which carries the
+Huddle flow ([Checkpoints to Huddles](#checkpoints-to-huddles)). Feature records are signed files in
+the `record` repo; issue operations are signed files in the `issues` repo.
 
 Code ships through five stages: local development, central development, test, pre-production and
 production. Penguin runs a sandbox where the work coding agents do in local development merges. A
@@ -64,7 +63,7 @@ flowchart TB
   Bridge -- "git push checkpoints" --> Forks
   Bridge -- "git push signed operations" --> Issues
   Browser -- "/api/*, /api/live" --> Worker
-  Runner -- "HTTPS: pending operations,<br/>combined runs, plan facts, block runs, verifications" --> Worker
+  Runner -- "HTTPS: pending operations, combined runs,<br/>plan facts, reviews, trials, tool runs,<br/>fix writes, block runs, verifications" --> Worker
   Runner -- "git fetch" --> Forks
   Runner -- "git push operations" --> Issues
   Runner -- "git push integration, approved" --> Huddle
@@ -87,9 +86,9 @@ flowchart TB
 | FeatureAgent | `services/feature-agent/src/index.ts` | One feature, or one owner-fork Huddle under a Huddle's name | The feature's plan, fix writes, block runs and promotion; a Huddle's verification runs, fix review standing, threads and approved-branch request |
 | Artifacts repos | One namespace, `penguin` | Every Git client and the Worker | Versioned source, the issue operation log and the signed feature records |
 | `penguin-bridge` | `services/local-bridge/src/` | One owner on one machine | Checkpoint publishing with consent, the issue command line, the safe-checkpoint hook, the outbound spool |
-| Integration runner | `penguin-bridge runner` on a designated machine | The project | Pushing queued operations, combined runs, plan facts runs, block runs, verification runs, the `approved` branch |
-| Dashboard | `apps/dashboard/src/` | People in a browser | The team map, the approvals inbox with one card per merge plan, the feature page, the issue page, the identities page |
-| MCP tools | `services/mcp/src/tools.ts` | Agent sessions | `register_session`, `get_work`, `get_issue`, `post_update`, `report_checkpoint`, `open_feature`, `feature_token`, `declare_area`, `submit_review`, `propose_plan`, `revise_plan_part`, `fix_token`, `report_fix_write`, `land_feature` |
+| Integration runner | `penguin-bridge runner` on a designated machine | The project | Pushing queued operations, combined runs, plan facts runs, reviews, part trials, agent tool runs, fix writes, block runs, verification runs, the `approved` branch |
+| Dashboard | `apps/dashboard/src/` | People in a browser | The org, team and person pages, the approvals inbox, the feature page, the issue page, the identities page and the review policy (`apps/dashboard/src/routes.ts`) |
+| MCP tools | `services/mcp/src/tools.ts` | Agent sessions | `register_session`, `get_work`, `get_work_item`, `wait_for_work`, `get_issue`, `post_update`, `report_checkpoint`, `open_feature`, `feature_token`, `declare_area`, `submit_review`, `whats_near`, `impact`, `check`, `apply_fix`, `propose_plan`, `revise_plan_part`, `fix_token`, `report_fix_write`, `land_feature`, `confirm_caller`, `review_caller`, `propose_caller_fix`, `explain_difference` |
 
 Shared rules live in packages that both the Worker and the bridge import: the operation schema and
 wire formats in `packages/protocol`, the scope map in `packages/scope-map`, charters, review rights,
@@ -103,22 +102,24 @@ run's repos apart from production's; the prefix leads every name.
 
 | Repo | Made by | Written by | Holds |
 |---|---|---|---|
-| `base` | `POST /setup`, imported from the team's Git remote or created empty | The deployer, once, when setup created it empty. Then only a FeatureAgent, to promote a block | The team's main branch, with `penguin/scopes.json`, `penguin/owners.json` and `penguin/identities.json` |
+| `base` | `POST /setup`, imported from the team's Git remote or created empty | The deployer, once, when setup created it empty. Then only a FeatureAgent, to promote a block | The team's main branch, with `penguin/scopes.json`, `penguin/teams.json`, `penguin/owners.json`, `penguin/identities.json` and `penguin/invariants.json` |
 | `owner-<id>` | `POST /setup`, one fork of `base` per owner | That owner's bridge only | The owner's published checkpoints, one branch per worktree branch |
 | `issues` | `POST /setup` | Every bridge and the runner | One signed file per issue operation, `issues/<issue>/ops/<op_id>.json` |
 | `record` | `POST /setup`. A project set up before it existed gets it from the ProjectAgent at its first record push | The ProjectAgent only, with a write token it mints for each push | One signed file per feature record, `records/<feature>/<author>-<writer>-<seq>.json`, on `main` |
 | `huddle-<id>` | The Worker, when a Huddle issue opens; `<id>` is the issue number padded to three digits, as in `huddle-031` | The runner only | The `integration` branch of each verification run and the `approved` branch at close |
-| `feature-<id>` | The Worker, when a person or an agent session opens the feature (`apps/worker/src/features.ts`) | The feature's agent sessions, with tokens the Worker mints for them. For an approved merge plan part, also the plan's originating agent or the runner, with a token minted for that part | The feature's work, forked from main's branch, with each approved fix as one commit on `main` |
+| `feature-<id>` | The Worker, when a person or an agent session opens the feature (`apps/worker/src/features.ts`); the ProjectAgent, for a feature Penguin opens itself, such as a migration plan's block | The feature's agent sessions, with tokens the Worker mints for them. For an approved merge plan part, also the runner, with a token minted for that part. For an edit task, the bridge that claimed it, with a token minted for that task | The feature's work, forked from main's branch, with each approved fix as one commit on `main` |
 
 The Worker mints short-lived Artifacts tokens per repo (`apps/worker/src/tokens.ts`). A bridge may
 hold `write` on its own fork and on `issues`. It holds `read` on every other repo, so the runner reads
-a feature's fork to run its submitted reviews. A runner bridge also holds `write` on Huddle repos. An agent session holds `write` on the fork of the feature it joined,
-for `PENGUIN_FEATURE_TOKEN_TTL_MINUTES`. It gets the token from `open_feature` or `feature_token`.
+a feature's fork to run its submitted reviews. A runner bridge also holds `write` on Huddle repos.
+An agent session holds `write` on the fork of the feature it joined, for
+`PENGUIN_FEATURE_TOKEN_TTL_MINUTES`. It gets the token from `open_feature` or `feature_token`.
 The Worker mints it only after the ProjectAgent confirms that the session is running and has joined
 that feature. A `write` token on another person's feature fork comes only with an approved merge plan
-part, for `PENGUIN_FIX_TOKEN_TTL_MINUTES`: through `fix_token` to the plan's originating agent or to
-the session holding the part's fix task, or to the runner's claim of a mechanical part
-([Writing an approved fix](#writing-an-approved-fix)).
+part, for `PENGUIN_FIX_TOKEN_TTL_MINUTES`: to the runner's claim of the part's write, or through
+`fix_token` to the originating agent for a write Penguin opened for it before #207
+([Writing an approved fix](#writing-an-approved-fix), `apps/worker/src/tokens.ts`). A bridge's claim of
+an edit task carries a `write` token on that task's fork, for `PENGUIN_EDIT_RUN_MINUTES`.
 Write on `base` is minted only by a FeatureAgent, for one promotion, for
 `PENGUIN_PROMOTION_TOKEN_TTL_MINUTES`. It never leaves the FeatureAgent: `/tokens` holds every bridge
 to `read` on `base`. No MCP tool or dashboard route mints a token on it. Once a feature's block
@@ -235,12 +236,13 @@ matches a pending operation clears its `PendingOp` row.
 
 ### Writing an approved fix
 
-1. An author approves a part of a merge plan on their running feature on the dashboard. A mechanical
-   part's approval queues a write for the runner.
-2. The plan's originating agent calls `fix_token`, or the affected feature's builder does through
-   the part's fix task, or the runner claims the queued write at `POST /fix-writes/claim`. A fix task
-   commits the originating agent's approved patch unchanged. The ProjectAgent checks that the part's current revision is approved and
-   unwritten and that the patch writes only paths inside the part. It reads the affected fork's head
+1. An author approves a part of a merge plan on their running feature on the dashboard, or Penguin
+   approves it. The approval queues a write for the runner, whatever the part's kind
+   (`services/project-agent/src/fix-write.ts`, #207).
+2. The runner claims the queued write at `POST /fix-writes/claim`. A write Penguin opened for an
+   agent before #207 is still the originating agent's, through `fix_token`, or the affected feature's
+   builder's, through the part's fix task, which commits the approved patch unchanged. The
+   ProjectAgent checks that the part's current revision is approved and unwritten and that the patch writes only paths inside the part. It reads the affected fork's head
    through the Artifacts binding. A head that moved past the patch's base still takes the write when
    the patch applies there unchanged. Otherwise the part goes back to the originating agent to revise.
    The Worker then mints a `write` token on that one fork. The runner's claim skips a write that waits
@@ -256,17 +258,19 @@ matches a pending operation clears its `PendingOp` row.
 
 1. The feature's agent calls `land_feature`. The ProjectAgent checks that the feature's latest
    checkpoint already holds main's head, that every part of its plan is approved and that every
-   person whose custom path rule the feature's own change writes under confirmed the lines. Each fix for a
-   running feature must be written and still under that fork's head. Each fix for code on main must be
-   in the checkpoint. It then asks the FeatureAgent to open a block run: the checkpoint merged onto
-   main and onto the fork head of each running feature the change reaches. Those targets are the
-   features the caller list names as calling what the change modifies, with the features whose
-   changed files meet the change's files. A change that reaches no running feature is checked on main
-   alone and promotes in one push. When the caller lists cannot answer, every running fork is a
-   target. A fork whose head cannot be read is
-   never left out of the targets: each failed read is logged as `fork_read_failed` with its fork, and
-   the land, plan check or `check` claim fails with an error naming every such fork, so no check runs
-   on fewer forks than the change reaches. The feature is `landing`.
+   person whose custom path rule the feature's own change writes under confirmed the lines. Each fix
+   for a running feature must be written and still under that fork's head. Each fix for code on main
+   must be in the checkpoint. Each affected fork must hold the originating change's modules
+   (`copy_not_written` otherwise) and every caller item must be settled (`callers_pending`
+   otherwise). It then asks the FeatureAgent to open a block run: the checkpoint merged onto main
+   and onto the fork head of each running feature the change reaches. Those targets are the features
+   the caller list names as calling what the change modifies, with the features whose changed files
+   meet the change's files. A change that reaches no running feature is checked on main alone and
+   promotes in one push. When the caller lists cannot answer, every running fork is a target. A fork
+   whose head cannot be read is never left out of the targets: each failed read is logged as
+   `fork_read_failed` with its fork, and the land, plan check or `check` claim fails with an error
+   naming every such fork, so no check runs on fewer forks than the change reaches. The feature is
+   `landing`.
 2. The runner claims the run at `POST /blocks/claim`, runs the checks with every scope's tests on
    main's merged tree and reports to `POST /blocks/<feature>/<n>`. The Worker hands the report to the
    FeatureAgent, which keeps it as a signed `block_checked` record.

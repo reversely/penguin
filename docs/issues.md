@@ -1,12 +1,10 @@
 # Issues
 
-> **Design change.** This page describes the current build. In the design, typed
-> records take over from issue operations: feature declarations, merge plans, approvals, check results
-> and promotions. Each record is a signed file in the `record` repo. The signing and validation
-> described here stay.
-
-Every coordination action in Penguin is an issue operation: a person opening an issue, an agent
-commenting, Penguin attaching a failing test. Owners, agent sessions and Penguin itself write to the
+Issues carry the work people and agents discuss and the Huddle flow of owner forks: a person opening
+an issue, an agent commenting, Penguin attaching a failing test. Each of these is an issue operation.
+A feature's work is recorded differently: its declaration, merge plans, approvals, check results and
+promotions are signed feature records in the `record` repo
+([architecture.md](architecture.md#records-to-the-record-repo)). Owners, agent sessions and Penguin itself write to the
 same issues, so each reader sees the same history. This page covers how operations are stored,
 signed, judged and applied. [architecture.md](architecture.md) places the issues repo among the
 other pieces.

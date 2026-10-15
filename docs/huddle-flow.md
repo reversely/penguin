@@ -1,26 +1,10 @@
 # Huddle flow
 
-> **Design change.** This page describes the current build. The design replaces the Huddle with the
-> merge plan procedure. A feature declares its area at open. A change that
-> others depend on carries a merge plan, which each affected author approves in advance through the
-> review form. The originating agent writes each approved fix into the affected feature's fork.
-> Penguin promotes the whole set to main in one push.
->
-> The merge plan's first step is built. An agent of the feature calls `propose_plan`. The check
-> runner's facts run gives the contract diff, the callers and each break with its test's docstring
-> and failing line. The Worker reads each part's changed lines through the Artifacts binding.
-> Penguin keeps the signed plan in the feature's own Durable Object.
-> Each stored plan's parts then reach their
-> authors and the authors' running sessions at once. Each author approves a part or asks for a
-> change on the dashboard. The originating agent answers a requested change with
-> `revise_plan_part`. Each approved fix is then
-> written into the affected feature's fork.
-> The feature then reaches main as a block. The check runner checks it merged onto main and onto
-> every running fork. Its FeatureAgent then moves main in one push.
-> The block replaces the Huddle for features:
-> a feature's failing check stays with its block run and opens no Huddle. A combined run on owner
-> forks still opens a Huddle as described below. The FeatureAgent class runs that Huddle too, under a
-> Huddle's instance name.
+Huddles come only from owner forks `owner-<id>`. A feature reaches main as one block
+([architecture.md](architecture.md#landing-a-feature)): a failing check of a feature stays with its
+block run and opens no Huddle. A combined run whose target is an owner fork still opens a Huddle as
+described below. The `FeatureAgent` class runs each Huddle under a Huddle's instance name,
+`<project>-huddle-<issue>` (`services/feature-agent/src/index.ts`).
 
 A Huddle is the issue Penguin opens when one owner's checkpoint breaks another owner's tests before
 either change reaches the main branch. It brings in only the owners whose work is involved, hands
@@ -51,14 +35,15 @@ stateDiagram-v2
 
 ## Worked examples
 
-Three fixtures under `examples/` reproduce the three use cases. `npm run walkthrough` runs each one
-through the real Worker ([walkthrough.md](walkthrough.md)). The steps below use the first.
+Three fixtures under `examples/` hold owner-fork checkpoints, such as `owner-priya-checkpoint`
+(`examples/identity-unification/pins.json`), that reproduce a Huddle. The steps below use the
+first.
 
 | Fixture | Trigger | Fixes | Upstream |
 |---|---|---|---|
 | [Identity unification](fixture.md) | Priya's merge rules for `person_id` in `identity-map` | Jun fixes `test_dau_stable`; Priya fixes `test_shared_device_split`; Sam fixes `test_unsubscribe_survives` | Jun's session sends `test_shared_device_split` upstream to Priya |
 | [Helpful fix](fixture-helpful-fix.md) | Priya's UTC `start_of_day()` in `ingestion` | Jun and Sam each switch to Priya's `start_of_local_day()` | None |
-| [Dependency bump](fixture-dependency-bump.md) | Hugo's wire 2.0.0 upgrade in `platform` | Ana adds idempotency keys in `payments` | None |
+| [Dependency bump](fixture-dependency-bump.md) | Hugo's wire 2.0.0 upgrade in `http-client` | Ana adds idempotency keys in `payments` | None |
 
 ## 1. Checkpoint report
 
@@ -73,15 +58,18 @@ In the identity-unification fixture, Priya's bridge publishes `owner-priya-check
 
 ## 2. Combined-run scheduling
 
-The scope map in the base repo's `penguin/scopes.json` lists each scope's owner, paths, test command
-and `depends_on` entries:
+The scope map in the base repo's `penguin/scopes.json` lists each scope's team and DRI, its paths,
+test command and `depends_on` entries (`examples/identity-unification/base/penguin/scopes.json`):
 
 ```json
 {
   "id": "analytics",
   "name": "Analytics models",
-  "owner": "jun",
+  "team": "data",
+  "dri": "jun",
+  "fallback": ["priya"],
   "paths": ["analytics/"],
+  "contracts": ["analytics/models.py::daily_active_users"],
   "test_command": "python -m pytest analytics",
   "depends_on": [{ "scope": "identity-map", "kind": "imports" }]
 }
@@ -104,11 +92,12 @@ For each recorded checkpoint, `scheduleCombinedRuns` (`services/project-agent/sr
    their id in the trigger's fork with the trigger checkpoint itself as the target's checkpoint. The
    runner tests those scopes on the checkpoint with no merge, since it already holds their code.
 
-A feature's checkpoint is scheduled when the runner reports its caller list. With that list complete, step 4 picks the running features
-that call a name the checkpoint modifies, or whose area names a file it changes or a folder above
-one, each tested in the scopes it touches. A running feature with no complete list read at its
-latest checkpoint still goes by step 4's scope rule. When the list reaches it too, its run keeps those scopes. Without the checkpoint's complete list, the steps above run as written. Each run names
-the trigger's fork, `owner-<id>` or `feature-<id>`, which the runner fetches; a run from before #198
+A feature's checkpoint is scheduled when the runner reports its caller list. With that list
+complete, step 4 picks the running features that call a name the checkpoint modifies, or whose area
+names a file it changes or a folder above one, each tested in the scopes it touches. A running
+feature with no complete list read at its latest checkpoint still goes by step 4's scope rule. When
+the list reaches it too, its run keeps those scopes. Without the checkpoint's complete list, the
+steps above run as written. Each run names the trigger's fork, `owner-<id>` or `feature-<id>`, which the runner fetches; a run from before #198
 names none and reads as its owner fork.
 
 A run is keyed by the trigger, the target and the target's checkpoint, so reporting the same
@@ -187,13 +176,14 @@ its next safe checkpoint on, so the task never arrives in the middle of a step. 
 | Registering | The agent's `register_session` call |
 | Before the agent's next tool action | The bridge's PreToolUse hook, `penguin-bridge session-checkpoint --hook` |
 | A reported checkpoint | The agent's `report_checkpoint` call |
+| Waiting | The agent's `wait_for_work` call |
 | A bridge publish | `penguin-bridge checkpoint`, after it pushes |
 | By hand | `penguin-bridge session-checkpoint` in the worktree |
 
 `get_work` gives a fix task its pinned base (the trigger, its baseline and the checkpoint to start
 from), the failing test with its fingerprint and the acceptance criteria (`fix-task.ts`). With no
-running session of the identity, the owner's inbox gets a "start a session" item and the issue stays
-in `fixing`. A session that goes offline leaves the sub-issue open and assigned; the next session of
+running session of the identity, the owner's inbox gets a `start_session` item, shown as Session to
+start, and the issue stays in `fixing`. A session that goes offline leaves the sub-issue open and assigned; the next session of
 the identity receives it when it registers.
 
 An identity that does not accept assignments automatically waits for its owner's acceptance before
@@ -251,8 +241,8 @@ merge whose tests fail keeps the issue out of review.
 
 When the combined tests pass, the Huddle's FeatureAgent collects reviews (`huddle-reviews.ts`). On each fix
 sub-issue, Penguin links the fixing owner's checkpoint that the passing run merged as the fix's head,
-a `fix` commit. It then asks each owner whose review counts to review that head, through a "review
-requested" inbox item. A newer head asks again, because a review of an older commit no longer counts.
+a `fix` commit. It then asks each owner whose review counts to review that head, through a `review_requested`
+inbox item. A newer head asks again, because a review of an older commit no longer counts.
 
 Whose review counts (`packages/policies/src/review-rights.ts`):
 
@@ -276,7 +266,7 @@ A counting review that requests changes opens a thread on the fix sub-issue
 
 From there:
 
-- Each person the thread needs gets a "thread" inbox item.
+- Each person the thread needs gets a `thread` inbox item.
 - Each of those people's running sessions hears of it once, at its next safe checkpoint. The hook
   answer names the issue; `report_checkpoint` lists it under `newThreads`.
 - `get_work` lists every open thread that needs the session's developer under `threadsNeedingYou`.

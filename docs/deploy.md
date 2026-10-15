@@ -70,9 +70,16 @@ node -e 'crypto.subtle.generateKey("Ed25519", true, ["sign", "verify"])
 | `PENGUIN_DASHBOARD_OWNERS` | `vars` in `wrangler.jsonc` | none | `<github login>:<owner id>` pairs, comma-separated. Without it nobody can sign in |
 | `PENGUIN_REPO_PREFIX` | Optional | empty | Leads every repo name and the ProjectAgent's name, so a test run's repos stay apart from production's |
 | `PENGUIN_TOKEN_TTL_SECONDS` | Optional | 3600 | Lifetime of the Artifacts tokens the Worker mints, 60 to 31,536,000. A value outside the range makes `/tokens` refuse to mint |
+| `PENGUIN_FEATURE_FORK_DEFAULT_BRANCH_ONLY` | `vars` in `wrangler.jsonc` | none | `true` or `false`: whether a feature's fork copies only main (`fork()`'s `defaultBranchOnly`). Any other value makes opening a feature refuse |
+| `PENGUIN_FEATURE_TOKEN_TTL_MINUTES` | `vars` in `wrangler.jsonc` | none | Lifetime of a feature agent's write token on its feature's fork, in minutes. Unset, or outside 1 minute to 365 days, makes opening a feature refuse |
 | `PENGUIN_FIX_TOKEN_TTL_MINUTES` | `vars` in `wrangler.jsonc` | 10 | Lifetime of a write token on an affected feature's fork for one approved plan part, 1 to 60 minutes. Any other value refuses every fix token |
 | `PENGUIN_PROMOTION_TOKEN_TTL_MINUTES` | `vars` in `wrangler.jsonc` | 5 | Lifetime of the write token on main a FeatureAgent mints for one promotion and revokes after the push, 1 to 15 minutes. Any other value refuses every promotion |
 | `PENGUIN_RUN_FAILURE_LIMIT` | `vars` in `wrangler.jsonc` | 3 | Failures of one claimed run the check runner may report before Penguin stops handing it out and routes it to the feature's person, 1 to 20. Any other value refuses every failure report, so each failed run waits out its lease |
+| `PENGUIN_PLAN_BREAK_LIMIT` | `vars` in `wrangler.jsonc` | 10 | Parts needing a person past which a merge plan goes back to its author. Any value other than a positive whole number refuses every plan |
+| `PENGUIN_PLAN_ROUND_LIMIT` | `vars` in `wrangler.jsonc` | 3 | Requested changes to one plan part before it goes to the originating feature's person. Any value other than a positive whole number refuses every requested change |
+| `PENGUIN_PLAN_ADMIN_MODE` | `vars` in `wrangler.jsonc` | off | `on` makes a person approve every plan part. Unset, empty or `off` is off; any other value counts as on |
+| `PENGUIN_BACKGROUND_RUN_CAP` | `vars` in `wrangler.jsonc` | 2 | Edit tasks one person's bridge runs at once, 1 to 8. Any other value means 2 |
+| `PENGUIN_EDIT_RUN_MINUTES` | `vars` in `wrangler.jsonc` | 20 | Minutes a claimed edit task and its write token last, 1 to 60. Any other value refuses every claim |
 | `PENGUIN_SESSION_OFFLINE_SECONDS` | Optional | 90 | Seconds without an MCP call before an agent session goes offline |
 | `PENGUIN_LOCAL_DEV_UNAUTHENTICATED` | `wrangler dev --var` only | unset | `true` opens the raw agent routes on a loopback hostname; ignored on any other host |
 | `PENGUIN_GITHUB_BASE_URL` | Local testing only | unset | A local GitHub OAuth test double's address; honoured on a loopback hostname only |
@@ -126,9 +133,11 @@ team's main branch. When `base` started empty, push its first commit with a writ
 `npx wrangler artifacts repos issue-token base --namespace penguin --scope write`, then run setup
 again.
 
-The base repo's `main` must hold `penguin/scopes.json`. It should also hold `penguin/owners.json`
-and `penguin/identities.json`. The ProjectAgent reads the first two on every operation it judges: a base
-repo without a scope file has no scopes, so no review counts and no combined run is scheduled. The
+The base repo's `main` must hold `penguin/scopes.json`. It should also hold `penguin/teams.json`,
+`penguin/owners.json`, `penguin/identities.json` and `penguin/invariants.json`. The ProjectAgent
+reads the scope, teams and owners files on every operation it judges
+(`services/project-agent/src/scope-file.ts`): a base repo without a scope file has no scopes, so no
+review counts and no combined run is scheduled. The
 fixtures' files are examples of each format (`examples/identity-unification/base/penguin/`).
 
 ## Handing out access

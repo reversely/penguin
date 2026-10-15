@@ -1,7 +1,10 @@
 # How Penguin reaches each person's agents
 
-Each person on a team runs their own Claude Code or Codex on their own machine. Penguin never runs,
-starts or reads those agents. It reaches them by three paths only. [README.md](README.md)
+Each person on a team runs their own Claude Code or Codex on their own machine. Penguin's server
+never runs, starts or reads those agents. It reaches them by three paths only. The one program that
+starts an agent is the person's own bridge: while the person runs `penguin-bridge edits`, it runs an
+edit task no session took as a headless run on their machine
+([bridge-and-runner.md](bridge-and-runner.md#edit-tasks)). [README.md](README.md)
 lists the other docs; [architecture.md](architecture.md) places these paths among Penguin's pieces.
 
 ```mermaid
@@ -30,7 +33,8 @@ these tools, among others:
 |---|---|
 | `register_session` | Says which of its person's agent identities it works as, such as `@jun/reports` |
 | `get_work` | Reads the issues and fix tasks assigned to that identity; also the threads and overlapping starts that need its person and whether its feature waits to start |
-| `wait_for_work` | Holds while the agent has nothing to do, in place of ending its turn; answers with the `get_work` entries that arrive ([mcp-setup.md](mcp-setup.md#waiting-for-new-work)) |
+| `get_work_item` | Reads the details of one entry `get_work` listed, such as a caller item or a plan part |
+| `wait_for_work` | Holds while the agent has nothing to do, in place of ending its turn; answers with the `get_work` entries that arrive, or `waiting` after at most 50 seconds ([mcp-setup.md](mcp-setup.md#waiting-for-new-work)) |
 | `get_issue` | Reads one issue in full |
 | `post_update` | Comments, links a commit, changes state, replies in a thread, sends a fix upstream |
 | `report_checkpoint` | Reports a checkpoint on its person's owner fork or on its feature's fork; the answer lists any task or thread that arrived |
@@ -38,8 +42,11 @@ these tools, among others:
 | `feature_token` | Gets a fresh write token on its feature's fork once no overlap lock holds its start |
 | `declare_area` | Replaces its feature's declared scopes, paths and contracts |
 | `submit_review` | Submits the review form for its own scope on another feature's change; the answer keeps it pending for the check runner or lists every reason it is refused |
-| `fix_token` | Gets a short-lived write token on an affected feature's fork for one approved part of its own feature's merge plan |
-| `report_fix_write` | Reports the fix commit it pushed with that token; Penguin keeps it only when it is the approved patch |
+| `whats_near`, `impact`, `check`, `apply_fix` | Asks for the running features near some paths or scopes, the impact of its checkpoint, the checks of its change merged onto other forks, or one deterministic fix |
+| `propose_plan`, `revise_plan_part` | Proposes its feature's merge plan, or revises one part a person asked to change |
+| `land_feature` | Asks Penguin to check its feature's block and move main to its latest checkpoint |
+| `confirm_caller`, `review_caller`, `propose_caller_fix`, `explain_difference` | Answers a caller item: the receiving side confirms or reviews, the originating side proposes a fix or explains a difference |
+| `fix_token`, `report_fix_write` | Gets a write token for one approved part's fix and reports the commit, only for a write Penguin opened for the originating agent before its check runner wrote every part; the runner writes every other approved part |
 
 Penguin answers only when the agent calls a tool. The token decides whose identities the session may
 use: Sam's token cannot register as `@jun/reports`.
@@ -60,18 +67,21 @@ products are in [mcp-setup.md](mcp-setup.md#fix-tasks-and-safe-checkpoints).
 
 ## 3. The person's inbox
 
-An agent with nothing to do calls `wait_for_work`. Penguin answers that call when new work arrives. An agent that is not running, or that ended its turn to wait for its person, makes no tool
-calls, so neither path above reaches it. Penguin cannot start an agent or a new turn. On a Claude plan nothing can
+An agent with nothing to do calls `wait_for_work`. Penguin answers that call when new work arrives,
+or with `waiting` after at most 50 seconds, and the agent calls again. An agent that is not running,
+or that ended its turn to wait for its person, makes no tool calls, so neither path above reaches
+it. Penguin cannot start an agent or a new turn. On a Claude plan nothing can
 post into a session's window from outside. Penguin puts the item in the person's inbox on the
-dashboard instead: "Start a session" for a task assigned to an identity with no running session,
-"Waiting for your reply" for a thread, "Waiting for your review" for a fix. The person then starts a
+dashboard instead, marked with what it waits for: "Session to start" for a task assigned to an
+identity with no running session, "Reply" for a thread, "Review" for a fix
+(`apps/dashboard/src/inbox-view.ts`). The person then starts a
 session or tells their agent.
 
 ## What each person installs
 
 | Piece | Where | What it does |
 |---|---|---|
-| `penguin-bridge` | Their machine, from this repo (`services/local-bridge`; see [bridge-and-runner.md](bridge-and-runner.md)) | Publishes their checkpoints to Penguin after showing them the exact changes, runs the project's allowed test commands, provides the hook command |
+| `penguin-bridge` | Their machine, from this repo (`services/local-bridge`; see [bridge-and-runner.md](bridge-and-runner.md)) | Publishes their checkpoints to Penguin after showing them the exact changes, runs the project's allowed test commands, provides the hook command, runs edit tasks headless with `penguin-bridge edits` |
 | One MCP server entry | Their Claude Code or Codex settings | Path 1 |
 | One hook entry | The project's `.claude/settings.json` or `.codex/hooks.json` | Path 2 |
 | A dashboard sign-in | Their browser, through GitHub | Path 3 |
@@ -79,7 +89,7 @@ session or tells their agent.
 ## What Penguin does not do
 
 - Read an agent's conversation: transcripts stay on the person's machine.
-- Start or stop an agent, or start a turn: it answers only a tool call the agent made, `wait_for_work`
-  included.
+- Start or stop an agent session, or start a turn in one: it answers only a tool call the agent
+  made, `wait_for_work` included.
 - Push code for an agent: each agent's work reaches Penguin only as a checkpoint its person's bridge
   publishes.

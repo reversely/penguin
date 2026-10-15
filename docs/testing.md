@@ -9,7 +9,7 @@ one Cloudflare primitive. A test whose subject leaves the product is deleted wit
 | Layer | Where | What it proves | Runs in |
 |---|---|---|---|
 | Rules | `tests/rules/` | One decision rule per test, run as a pure function with no I/O | under a second |
-| Copy | `apps/dashboard/test/copy-style.test.ts` | No dashboard string uses a house-style banned word or pattern | under a second |
+| Dashboard | `apps/dashboard/test/` | No dashboard string uses a house-style banned word or pattern (`copy-style.test.ts`); the caller card shows what Penguin replayed (`caller-card.test.ts`); a page reads its data once per burst of live messages (`live-reads.test.ts`); an agent's avatar is the owner's crop of Penguin's logo (`penguin-face.test.ts`) | under a second |
 | Use cases | `tests/cases/cases.test.ts` | The four PRD use cases run in order on one build of Larder (`examples/money-minor-units`), through Penguin's own code with real git and pytest: who is asked, what Penguin approves, who is told, case 3's dependency diff, the caller replay's `differs` for case 1's and case 3's affected features before Penguin's update (with case 3's second payout and charge as effects) with `unaffected` for case 3's after it, that case 2's agent answers both differences `revising` and its revision's replay shows both callers `unaffected`, each confirmed by its worktree's builder, with no plan and no write into another fork, that cases 1 and 3 run the caller protocol (each unaffected caller confirmed by its worktree's builder, each difference explained with the case's words and approved, each write into a receiving fork after its approval), that cases 1 to 3 each write their approved fixes, copy the originating change's modules into each affected fork before the land is asked, pass every block check and are promoted in order, and for case 4 that main moves block by block until no caller is left. Case 1's plan is also routed under each of the four stages of the review policy. The starts of cases 1 to 3 open with no owner asked: Penguin approves each and tells its owner ([review-policies.md](review-policies.md)). Case 1's feature page and Jun's inbox are rendered on the server (`tests/cases/render.tsx`, bundled with esbuild) and must name each kind of validation on its results and each route of a decision or write | about 10 minutes on gn100 |
 | Analysis tools | `tests/test_analysis.py` | Each deterministic tool on a small real repository: the impact graph and contract diff, a batch request that fails alone, the codemod, the dependency diff, side-by-side runs and the caller replay's pytest plugin (calls, outcomes, effects, capped and approximate values) | about 2 seconds |
 | Fixtures | `tests/test_fixtures.py` | Each fixture builds to its pinned commits; each scope's DRI is on its team; each agent changes only its person's scopes; on Larder, each merged tree of cases 1 to 3 fails exactly its case's tests and passes once the case's fix or revision is in; each fork Penguin updates in cases 1 and 3 holds the originating change's modules byte for byte, passes its own tests alone and takes the promoted change with no conflict | about 4 seconds, plus a Larder build in the fast run |
@@ -40,14 +40,15 @@ one Cloudflare primitive. A test whose subject leaves the product is deleted wit
 | `owner-bridge.test.ts` | #219, section 8: an owner's bridge creates the owner's identity and approves the owner's waiting start with `penguin-bridge identity create` and `start approve`, one request each, and Penguin signs the approval as it does the dashboard's; a runner bridge, another owner's bridge, a signature by another key, an old signature and a signature made for another route are refused; invalid input gets the dashboard route's status and answer. The real Worker and ProjectAgent run under Node with a base repo double that serves the scope map |
 | `caller-rules.test.ts` | Rule fixes for broken callers (#209): the originating agent states a rule, checked as a plan's rewrite rule; once the receiving agent approves it, one runner write into that fork carries the rule, its call sites' files and the module copies, and the verify part's copy-only write is withdrawn; a commit that changes another file is refused; the kept commit marks the item `written` with its rewritten lines and the land goes past `copy_not_written` and `callers_pending`; a rule that rewrites nothing makes no write and returns the item as `broken` with `rule_matches_nothing` |
 | `combined-runs.test.ts` | #198: a checkpoint in a depended-on scope that changes a function one fork calls schedules one combined run, from the caller list; with no list of the checkpoint stored, every feature in a dependent scope is scheduled as before. #200: a feature checkpoint's Huddle reads its trigger from the feature's fork; a feature whose list predates its latest checkpoint goes by scope dependencies; a declared area folder holding a changed file is reached; a reached feature without a current list keeps its person's dependent scopes; a feature that lands or is closed loses its caller list |
+| `block-targets.test.ts` | #196: a land checks the change on main and on the running forks it reaches by the caller lists and shared files; a change no fork reaches is checked on main alone; when the lists cannot answer, every running fork is a target |
 | `caller-replay.test.ts` | 5.1, the caller replay: one test per verdict (`unaffected`, `differs`, `broken`, `unknown_reach`) from recordings shaped as the plugin writes them; ids stay the same across runs of the same trees; Penguin refuses a section whose caller names a missing run, whose verdict its calls contradict, whose value is over its cap or whose run replays a fork the block did not name |
 
 ## Running
 
 | Command | Runs |
 |---|---|
-| `npm test` | the fast tier: rules, copy check, walkthrough guard |
-| `npm run test:copy` | the copy check |
+| `npm test` | the fast tier: rules, dashboard tests, walkthrough guard (`tests/walkthrough/no-literals.test.ts`) |
+| `npm run test:copy` | the dashboard tests, the copy check among them |
 | `npm run test:slow` | the four use cases on Larder |
 | `npm run test:live` | the live Cloudflare tests (each skips without its `PENGUIN_*_E2E` flag) |
 | `uv run pytest` | the analysis tools and fixtures; `-m "not slow"` leaves out the fixture builds |
@@ -63,16 +64,18 @@ run and deletes its repositories at the end.
 | File | Flag | What it proves |
 |---|---|---|
 | `runner-fetch.test.ts` | `PENGUIN_FETCH_E2E` | The check runner fetches 20 forks into one repository over Git protocol v2 |
-| `block-landing.test.ts` | `PENGUIN_BLOCK_E2E` | A block's merge commit is pushed to main and the base repository moves |
+| `block-landing.test.ts` | `PENGUIN_BLOCK_E2E` | Several features land on the helpful-fix fixture; each passing block moves main to its checkpoint in one push and main's tests pass after each |
 | `expand-promotion.test.ts` | `PENGUIN_EXPAND_E2E` | An expand checkpoint is promoted to main on its own |
 | `record-repo.test.ts` | `PENGUIN_RECORD_E2E` | Signed records are committed to the record repository |
 | `edit-task-run.test.ts` | `PENGUIN_EDIT_E2E` | A person's bridge runs an edit task with `claude -p` and publishes the result after consent |
 | `review-task-run.test.ts` | `PENGUIN_REVIEW_E2E` | Each author's bridge fills in a review form with `claude -p` through Penguin's MCP server |
 
-The last two need Claude Code logged in on the machine that runs them, so they run on a person's laptop; the test machine runs the others. `tests/walkthrough` runs the four use cases through the same stack (docs/walkthrough.md).
+The last two need Claude Code logged in on the machine that runs them, so they run on a person's
+laptop; the test machine runs the others. `tests/walkthrough` runs the four use cases through the
+same stack ([walkthrough.md](walkthrough.md)).
 
-Combined runs and Huddles predate PRD 0.5. Their code is still wired into the ProjectAgent until its
-removal. Only the choice of a checkpoint's targets has tests (`combined-runs.test.ts`).
+Combined runs and Huddles predate PRD 0.5 and stay wired into the ProjectAgent. Only the choice of a
+checkpoint's targets and the trigger fork a Huddle reads have tests (`combined-runs.test.ts`).
 
 ## Rules for adding tests
 
