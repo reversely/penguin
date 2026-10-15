@@ -105,7 +105,7 @@ export class Dashboard {
   }
 
   /**
-   * One frame of docs/demo-story.md: `person`'s screen at `path`, captured as `<n>-<name>.png`. With
+   * One frame of docs/walkthrough.md: `person`'s screen at `path`, captured as `<n>-<name>.png`. With
    * `region` the shot holds that part of the page, the part the frame's question is answered in.
    */
   async frame(name: string, question: string, person: string, path: string, region?: ((page: Page) => Locator) & { readonly view?: string }): Promise<string> {

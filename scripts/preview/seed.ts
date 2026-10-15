@@ -2002,8 +2002,8 @@ interface IdentityFeature {
 }
 
 /**
- * Use cases 1 to 3 from the fixture's `features.json`, up to frame 5 of docs/demo-story.md: every
- * feature open at its checkpoint, the originating agent's whats_near, impact and check, its merge plan
+ * Use cases 1 to 3 from the fixture's `features.json`, up to the review frame of docs/walkthrough.md:
+ * every feature open at its checkpoint, the originating agent's whats_near, impact and check, its merge plan
  * with one part per affected place, each running feature's agent reviewing its scope with the
  * fixture's form, and each author whose review raised nothing approving.
  */

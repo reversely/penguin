@@ -3,7 +3,7 @@
  * notice, build and land. Agents are scripted MCP sessions; people decide on the dashboard in the
  * browser; the check runner runs in-process. Every feature, commit, part, form and person comes from
  * the case's fixture (fixture.ts) or the system's answers; the run records what PRD section 11 counts
- * (metrics.ts) and captures the frames of docs/demo-story.md from the dashboard as the person each
+ * (metrics.ts) and captures the frames of docs/walkthrough.md from the dashboard as the person each
  * frame names.
  */
 

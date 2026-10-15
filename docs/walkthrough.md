@@ -25,6 +25,8 @@ by folder name, separated by commas.
   and calls the tools a live agent calls.
 - **People** decide on the dashboard in Playwright's Chromium. The walkthrough presses Approve start,
   Approve revision, Request change and Send request on the inbox page as the person a case names.
+  An expand's addition to a person's scope is approved with that person's session through
+  `POST /api/overlaps/approve`.
   Between frames and decisions the page sits on `about:blank`, so the app's reads on each live
   message do not add remote-binding calls to the agents' own.
 - **The check runner** is `penguin-bridge runner --once --combined`, run in-process between steps.
@@ -33,15 +35,17 @@ by folder name, separated by commas.
 
 1. **Open.** Every running feature's agent opens its feature, one at a time in the fixture's order.
    A start that waits on an overlap lock is approved on the dashboard by the lock's person. The agents
-   then publish their first checkpoints, six at a time. Each feature the fixture promotes first lands
-   through `land_feature`. The originating agent opens its feature, publishes its first commit and
-   calls `whats_near`, `impact` and `check`.
-2. **Plan.** The originating agent pushes the fixture's fix commits for code on main into its fork.
-   It calls `propose_plan` with no parts until the facts run reports. Penguin's answer then names every
-   affected place. The agent sends one part per place: the fixture's fix commit for a scope, or the
-   running feature's fixture fix as a patch against the fork head the facts tested. It then reports
-   its pushed commits as a checkpoint. A plan over the project's break limit goes back to its person.
-   The case then ends at the returned plan.
+   then publish their first checkpoints, six at a time. When the fixture lists features promoted
+   before the originating one, main then moves to the head of the last of them as setup
+   ([Where the cases stop](#where-the-cases-stop)). The originating agent opens its feature,
+   publishes its first commit and calls `whats_near`, `impact` and `check`.
+2. **Plan.** The originating agent publishes its commits up to the first one the fixture marks as a
+   revision and reports the last as a checkpoint, so the plan's checkpoint defines every symbol the
+   parts import. It calls `propose_plan` with no parts until the facts run reports. Penguin's answer
+   then names every affected place. The agent sends one part per place: the fixture's fix commit for
+   a scope, or the running feature's fixture fix as a patch against the fork head the facts tested. A
+   plan over the project's break limit goes back to its person. The case then ends at the returned
+   plan.
 3. **Advance notice.** Each affected author's agent reads its parts through `get_work` and submits the
    form from the fixture's `reviews/` for its scope. Authors approve on the dashboard. The originating
    commits that the fixture marks as revisions (`revises` in `features.json`, kind `revision` in
@@ -53,8 +57,8 @@ by folder name, separated by commas.
 4. **Build.** The check runner the walkthrough starts claims each approved part, behavioural and
    mechanical, at `POST /fix-writes/claim` and writes it into the affected fork with the copied
    modules (#207). No agent writes into another person's fork, and none needs `penguin-bridge` on
-   its path. The walkthrough waits for each write on the feature page and checks that every written commit's tree equals the fixture's own
-   fix tree. Each affected feature's agent reports the written commit as its next checkpoint.
+   its path. The walkthrough waits for each write on the feature page and checks that every written
+   commit's tree equals the fixture's fix tree. Each affected feature's agent reports the written commit as its next checkpoint.
 5. **Land.** The originating agent publishes its remaining commits, calls `check` and then
    `land_feature`. The walkthrough runs every scope's test command on main's new head.
 
@@ -73,9 +77,10 @@ Case 4 is a split, so it runs these steps in place of steps 2 to 5:
 3. **Contract.** Once Penguin's contract step is approved on every retiring contract, the originating
    agent publishes its last commit, which removes the old shape. It then lands the commit.
 
-Each case also runs two refusals. A person who does not own a part posts an approval of it. Its owner
-posts an approval that names its own approver. Before landing, the originating agent pushes to main
-with its fork token. After landing, it asks for a token on the landed fork.
+Each case that keeps a merge plan also checks four refusals. A person who does not own a part posts
+an approval of it. Its owner posts an approval that names its approver. Before landing, the
+originating agent pushes to main with its fork token. After landing, it asks for a token on the
+landed fork.
 
 The walkthrough reads every person, handle, scope, feature, commit, test and review form from the
 case's fixture (`tests/walkthrough/support/fixture.ts`). Part ids and numbers come from Penguin's
@@ -113,8 +118,8 @@ Each case writes to `test-results/walkthrough/<fixture>/`, or to `<dir>/<fixture
 
 | File | Content |
 |---|---|
-| `<n>-<frame>.png` | One screenshot per frame of [demo-story.md](demo-story.md), as the person the frame names |
-| `results.json` | The metrics, the evidence they were counted from and each frame's person and question |
+| `<n>-<frame>.png` | One screenshot per [frame](#frames), as the person the frame names, numbered in capture order |
+| `results.json` | The metrics, the evidence they were counted from and each frame's person, page and question |
 | `metrics.md` | The metrics with their definitions, people's decisions, time per phase, fix writes and notes |
 | `runner.log` | Each runner pass's summary, with remote URLs cut to the repo name |
 | `worker.log` | The Worker's console output, with the generated secrets removed |
@@ -122,6 +127,41 @@ Each case writes to `test-results/walkthrough/<fixture>/`, or to `<dir>/<fixture
 
 A case that stops partway still writes `results.json` and `metrics.md`, with the failure in its
 notes. `test-results/walkthrough/report.json` holds each phase's result and duration.
+
+### Frames
+
+Each frame is one screenshot of the dashboard from the seat of the person it names
+(`tests/walkthrough/walkthrough.spec.ts`, `support/dashboard.ts`). A frame of a feature page or an
+inbox section holds that view or section only; the others hold the whole page. A frame whose
+condition does not hold in a case is not captured. In a case that keeps a merge plan:
+
+| Frame | Seat | Shows |
+|---|---|---|
+| `team` | The originating person | The team page |
+| `start-waits` | The person whose running feature covers the area | The start in that person's Overlapping starts, before the approval; only when the start waits on a lock |
+| `open` | The originating person | The feature page's Pipeline view after the first checkpoint |
+| `returned` | The originating person | The inbox's returned plans, when the plan went back over the break limit; the case ends there |
+| `plan` | The originating person | The feature page's Changes view with the stored plan |
+| `review` | The author | The author's inbox card for the plan. With no change asked for in the case, it shows the first reviewed part its author approves |
+| `approvals` | The originating person | The Changes view once the authors who ask for no change have decided |
+| `review` | The author who asks for a change | The author's inbox card before the request |
+| `revision` | The author | The card after a revision that still gets a change request, one per such revision |
+| `revision-passes` | The author | The card after the last revision |
+| `midway` | The originating person | The Changes view after the midway feature's part is approved |
+| `fixes` | The originating person | The Changes view with the fixes written into other forks, when any |
+| `block-checks` | The originating person | The Pipeline view after the last `check` before landing |
+| `promoted` | The originating person | The whole feature page after the promotion, with its record |
+
+Case 4 is a split, so its frames after `team`, `start-waits` and `open` follow the split's steps:
+
+| Frame | Seat | Shows |
+|---|---|---|
+| `expand-waits` | The DRI of a scope the expand adds to | The expand in that person's Overlapping starts, before the approval |
+| `expand` | The originating person | The Pipeline view once main holds the expand |
+| `migrations` | The originating person | The Changes view with the migration plans Penguin proposed |
+| `midway` | The originating person | The Changes view after the midway feature's checkpoint called a retiring function |
+| `review`, `revision-passes` | The block's owner | The whole inbox once the runner recorded the review of a block commit that has a review form; `revision-passes` when the commit revises an earlier one |
+| `promoted` | The originating person | The whole feature page after the contract lands, with its record |
 
 ## Where the cases stop
 

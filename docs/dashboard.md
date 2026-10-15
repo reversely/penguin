@@ -6,11 +6,11 @@ engineering manager's home: each member's features by stage, their agents and wh
 then the scopes the team owns. The approvals inbox
 holds what waits on the signed-in person with the facts behind each item. A feature page tells one
 feature's story from its declaration to its record. People also act on issues there: open and
-assign issues, review fixes, answer threads and manage their agent identities. The issue pages stay
-as they were until a ticket replaces them.
-Every action it takes is an issue operation or an identity change sent to the ProjectAgent. The
-Worker serves it from the same origin as its API. The code is in `apps/dashboard/src/`; the Worker's
-routes for it are in `apps/worker/src/dashboard.ts`.
+assign issues, review fixes, answer threads and manage their agent identities. Every action it takes
+goes to the ProjectAgent through the Worker's API: an issue operation, an inbox item marked read,
+an identity change, or a decision on a start, a plan part, a custom path rule confirmation, a
+caller item or the review policy. The Worker serves it from the same origin as its API. The code
+is in `apps/dashboard/src/`; the Worker's routes for it are in `apps/worker/src/dashboard.ts`.
 
 ## Pages
 
@@ -32,8 +32,7 @@ The shell has three panes: a sidebar with the navigation (Org, Team, Inbox with 
 waiting, Identities), the page's list and the signed-in person's account menu; the centre; and a
 details panel for the issue page. From 1100px the panel docks beside the centre; below that it opens
 as a drawer. Below 760px the sidebar becomes a phone header. No page in the navigation links to the
-New issue form or lists issue items: those belong to the issue pages, which stay until a ticket
-replaces them.
+New issue form or lists issue items: those belong to the issue pages.
 
 ## Sign-in
 
@@ -115,8 +114,9 @@ team's name and its lead, the Members table holds the lead first, then each memb
 | Waiting on them | Every item waiting on the member, linking to their page, then the two features holding the most as pills with their counts, then a link such as `2 more` |
 
 What waits on a person is each plan part routed to them that waits or passed the round limit, each
-custom path rule confirmation they owe, each edit task they are asked about and each expand
-addition they approve.
+custom path rule confirmation they owe, each edit task they are asked about and each start or
+expand addition that waits for their approval (`tallyWaiting` in
+`services/project-agent/src/dashboard-views.ts`).
 
 The Scopes table holds every scope the team owns, those not clean first:
 
@@ -280,8 +280,8 @@ feature page shows the last reason on the run's failed job.
 waits on them, with its files when it has two or fewer, and, for the feature's person, each stage
 that needs a person or failed. A fold's body renders only while it is open.
 
-Each deterministic tool shows by name beside its output, as [demo-story.md](demo-story.md#tools-on-screen)
-asks. A part's changed lines go only to the feature's person, the part's owner and that owner's
+Each deterministic tool shows by name beside its output, with its command ID where it has one. A
+part's changed lines go only to the feature's person, the part's owner and that owner's
 delegate; anyone else sees the part's place, state and facts.
 
 The page answer carries the first 80 diff lines of each file (`FEATURE_PAGE_LIMITS.fileLines`) with
@@ -342,11 +342,11 @@ Create, Edit and Duplicate open a form in the centre:
 | Handle | `@<your id>/<name>`, lowercase letters and digits joined by hyphens; must be free |
 | Name | Up to 80 characters |
 | Avatar | PNG, JPEG, GIF or WebP up to 64 KiB, stored in the ProjectAgent's SQLite; SVG is refused |
-| Team identity | Shared with up to 16 other owners, each of whom may edit it |
+| Team identity | Shared by 2 to 16 owners, the person among them, each of whom may edit it |
 | Auto-accept assignments | Takes each assignment without the owner accepting it |
 | Job | What the identity works on, up to 1,000 characters |
 | Works in | Scopes from the scope map that the owner holds |
-| Paths and rules | Up to 64 path prefixes and 32 rules |
+| On paths, Follows | Up to 64 path prefixes (one per line) and 32 rules |
 
 Duplicate copies the charter under a new handle; the issue history stays with the original. A scope's
 test command shows read-only: owners change it in `penguin/scopes.json`.
@@ -634,8 +634,10 @@ fixture's repository with its own `build.py` and goes through the modules the Pr
 identities from `penguin/identities.json`, each feature opened by its agent with its declared area
 and overlap check, each checkpoint, `whats_near`, `impact` and `check` run by the check runner's
 programs, the merge plan with a real facts run, each review with the review harness, Penguin's
-approval of each part whose checks are clean and each person's decision on the rest. A request signs in as the owner its `X-Preview-Owner` header names, or as the
-`--as` owner, or as the originating person; `/preview/as/<owner>` switches a browser's seat.
+approval of each part whose checks are clean and each person's decision on the rest. A request
+signs in as the owner its `X-Preview-Owner` header names, else as the owner its `preview-owner`
+cookie names, else as the `--as` owner or the originating person. `/preview/as/<owner>` sets that
+cookie and opens the team page, so a browser switches seats.
 
 By default the seed runs to the end before the server listens. With `--step` the server listens as
 soon as the project exists, before the first step, so a recording shows each step happen:
@@ -643,9 +645,9 @@ soon as the project exists, before the first step, so a recording shows each ste
 - `POST /preview/step` runs the next step and answers once it has run. After each step the preview
   sends every open dashboard the live feed's `penguin.inbox-changed` and `penguin.features-changed`
   messages. Each dashboard then reads its inbox and team view again.
-- `GET /preview/steps` answers `{ steps, next, waitingFor, finished }`. `steps` lists the names of the
-  steps run so far plus the next one. `next` is the index of the next one. The seed decides its steps
-  as it runs, so the list ends at the next step.
+- `GET /preview/steps` answers `{ steps, next, waitingFor, finished }`, with `failed` once a step
+  failed. `steps` lists the names of the steps run so far plus the next one. `next` is the index of
+  the next one. The seed decides its steps as it runs, so the list ends at the next step.
 - A step whose action is a person's decision waits for that person to make it on the dashboard. The
   decisions are a plan part's approval or change request, a confirmation of custom path rule
   lines and a worktree owner's decision on a caller item. `POST /preview/step` answers with

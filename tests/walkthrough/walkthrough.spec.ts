@@ -9,7 +9,7 @@
  * runtime (support/fixture.ts); ids and numbers come from the system's answers.
  * tests/walkthrough/no-literals.test.ts fails when this source names any fixture value.
  *
- * Each case is one serial group of five phases and a metrics step. Each frame of docs/demo-story.md
+ * Each case is one serial group of five phases and a metrics step. Each frame of docs/walkthrough.md
  * is one screenshot from the dashboard as the person the frame names. Each case writes its frames,
  * `results.json`, `metrics.md`, `runner.log`, `worker.log` and `cleanup.json` to its own folder.
  */

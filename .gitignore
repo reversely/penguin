@@ -40,5 +40,7 @@ docs/research/
 test-results/
 playwright-report/
 
-# design reference kept local, not committed
+# design reference and internal planning notes kept local, not committed
 docs/design.md
+docs/demo-story.md
+docs/use-case-status.md

@@ -104,7 +104,7 @@ with the first changed call side by side.
 
 ## Try it
 
-- **On your machine:** `node scripts/preview/dashboard.ts --example identity-unification` serves the
+- **On your machine:** `node scripts/preview/dashboard.ts --example money-minor-units` serves the
   dashboard over a seeded demo project, Larder, an online grocery service. Build the dashboard first
   with `npm run build -w @penguin/dashboard`.
 - **On your own Cloudflare account:** [docs/deploy.md](docs/deploy.md) sets up the Worker, its Durable
