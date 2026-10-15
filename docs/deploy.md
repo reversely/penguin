@@ -87,11 +87,15 @@ id must match `penguin/owners.json`. Penguin asks GitHub for no scope.
 
 ## Deploying
 
-From the repo root:
+From the Worker's directory:
 
 ```sh
-npx wrangler deploy -c apps/worker/wrangler.jsonc
+cd apps/worker && npx wrangler deploy
 ```
+
+The config's build step sets `"cwd": "../.."`, which wrangler resolves against the directory it is run
+from, not the config file: run from the repo root with `-c apps/worker/wrangler.jsonc`, the build looks
+for `package.json` two levels above the repo and fails.
 
 The config's build step runs `npm run build -w @penguin/dashboard` first, so the deploy carries the
 current dashboard. `GET /health` answers `{"status":"ok"}` once the Worker is up.
