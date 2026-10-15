@@ -1770,7 +1770,11 @@ export class ProjectAgent extends Agent {
    * own the session; the author is the session's identity. The call counts as a heartbeat. A
    * send_upstream that applies is followed by Penguin's reassignment (upstream.ts).
    */
-  async sessionUpdate(
+  sessionUpdate(caller: string, sessionId: string, update: SessionUpdate, repos: ProjectRepos): Promise<SessionUpdateOutcome> {
+    return this.#sessionCall(caller, sessionId, () => this.#sessionUpdate(caller, sessionId, update, repos));
+  }
+
+  async #sessionUpdate(
     caller: string,
     sessionId: string,
     update: SessionUpdate,
@@ -1817,7 +1821,11 @@ export class ProjectAgent extends Agent {
    * A recorded checkpoint is the session's safe checkpoint: its waiting fix tasks are delivered. It
    * then schedules its combined runs; see `#scheduleCombinedRuns`.
    */
-  async reportCheckpoint(
+  reportCheckpoint(caller: string, sessionId: string, sha: string, fork: string, repos: ProjectRepos): Promise<SessionCheckpointOutcome> {
+    return this.#sessionCall(caller, sessionId, () => this.#reportCheckpoint(caller, sessionId, sha, fork, repos));
+  }
+
+  async #reportCheckpoint(
     caller: string,
     sessionId: string,
     sha: string,
@@ -1908,7 +1916,11 @@ export class ProjectAgent extends Agent {
    * signed `open_feature` record (feature-open.ts). With `sessionId`, the owner's session opens it and
    * joins it. The Worker then forks main and calls `recordFeatureRepo`.
    */
-  async openFeature(owner: string, input: FeatureOpenInput, sessionId: string | null, repos: ProjectRepos): Promise<FeatureOpenOutcome> {
+  openFeature(owner: string, input: FeatureOpenInput, sessionId: string | null, repos: ProjectRepos): Promise<FeatureOpenOutcome> {
+    return this.#sessionCall(owner, sessionId, () => this.#openFeature(owner, input, sessionId, repos));
+  }
+
+  async #openFeature(owner: string, input: FeatureOpenInput, sessionId: string | null, repos: ProjectRepos): Promise<FeatureOpenOutcome> {
     const outcome = await this.#featuresChanging(openFeature(this.#featureDeps(repos), owner, input, sessionId));
     // Each feature gets its builder at open, chartered on its declared area (edit-roster.ts).
     if (outcome.status === "opened") this.#editRosterStore().builder(outcome.feature, await this.#scopeMap(repos));
@@ -1937,7 +1949,7 @@ export class ProjectAgent extends Agent {
     sessionId: string | null,
     repos: ProjectRepos,
   ): Promise<FeatureOutcome> {
-    return this.#featuresChanging(declareArea(this.#featureDeps(repos), owner, featureId, area, sessionId));
+    return this.#sessionCall(owner, sessionId, () => this.#featuresChanging(declareArea(this.#featureDeps(repos), owner, featureId, area, sessionId)));
   }
 
   /**
@@ -1946,7 +1958,17 @@ export class ProjectAgent extends Agent {
    * must be in the feature's fork. The declared area grows by what the checkpoint changed against its
    * baseline on main; `durationMs` is how long that update took.
    */
-  async reportFeatureCheckpoint(
+  reportFeatureCheckpoint(
+    owner: string,
+    sessionId: string | null,
+    featureId: string,
+    sha: string,
+    repos: ProjectRepos,
+  ): Promise<FeatureCheckpointOutcome & { readonly planChecks?: readonly { readonly feature: string; readonly runId: string }[] }> {
+    return this.#sessionCall(owner, sessionId, () => this.#reportFeatureCheckpoint(owner, sessionId, featureId, sha, repos));
+  }
+
+  async #reportFeatureCheckpoint(
     owner: string,
     sessionId: string | null,
     featureId: string,
@@ -2265,7 +2287,7 @@ export class ProjectAgent extends Agent {
    * on main and the evidence in the feature's fork at its latest checkpoint.
    */
   submitReview(owner: string, sessionId: string, input: ReviewInput, repos: ProjectRepos): Promise<ReviewOutcome> {
-    return this.#submitReview(owner, sessionId, input, repos, (caller, session) => this.sessionHeartbeat(caller, session));
+    return this.#sessionCall(owner, sessionId, () => this.#submitReview(owner, sessionId, input, repos, (caller, session) => this.sessionHeartbeat(caller, session)));
   }
 
   #submitReview(owner: string, sessionId: string, input: ReviewInput, repos: ProjectRepos, heartbeat: (caller: string, sessionId: string) => SessionOutcome): Promise<ReviewOutcome> {
@@ -2422,7 +2444,7 @@ export class ProjectAgent extends Agent {
    * names, each with its person and agent sessions. The call is recorded.
    */
   whatsNear(owner: string, sessionId: string, input: { readonly paths?: unknown; readonly scopes?: unknown }, repos: ProjectRepos): Promise<WhatsNearOutcome> {
-    return whatsNear(this.#agentToolDeps(repos), owner, sessionId, input);
+    return this.#sessionCall(owner, sessionId, () => whatsNear(this.#agentToolDeps(repos), owner, sessionId, input));
   }
 
   /**
@@ -2436,7 +2458,7 @@ export class ProjectAgent extends Agent {
     input: { readonly feature?: unknown; readonly kind?: unknown; readonly paths?: unknown; readonly edits?: unknown; readonly rules?: unknown },
     repos: ProjectRepos,
   ): Promise<ToolRequestOutcome> {
-    return requestTool(this.#agentToolDeps(repos), owner, sessionId, tool, input);
+    return this.#sessionCall(owner, sessionId, () => requestTool(this.#agentToolDeps(repos), owner, sessionId, tool, input));
   }
 
   /**
@@ -2754,6 +2776,10 @@ export class ProjectAgent extends Agent {
    * plan and has the feature's own Durable Object keep it. Proposals run one at a time.
    */
   proposePlan(owner: string, sessionId: string, input: ProposePlanInput, repos: ProjectRepos): Promise<ProposePlanOutcome> {
+    return this.#sessionCall(owner, sessionId, () => this.#proposePlan(owner, sessionId, input, repos));
+  }
+
+  #proposePlan(owner: string, sessionId: string, input: ProposePlanInput, repos: ProjectRepos): Promise<ProposePlanOutcome> {
     const run = this.#planSteps.then(async () => {
       const outcome = await proposePlan(
         {
@@ -2928,6 +2954,10 @@ export class ProjectAgent extends Agent {
    * approves the revision at once when its checks are clean.
    */
   revisePlanPart(owner: string, sessionId: string, input: RevisionInput, repos: ProjectRepos): Promise<PartDecisionOutcome> {
+    return this.#sessionCall(owner, sessionId, () => this.#revisePlanPart(owner, sessionId, input, repos));
+  }
+
+  #revisePlanPart(owner: string, sessionId: string, input: RevisionInput, repos: ProjectRepos): Promise<PartDecisionOutcome> {
     return this.#featuresChanging(
       this.#planStep(async () => {
         const deps = this.#planApprovalDeps(repos);
@@ -2958,7 +2988,11 @@ export class ProjectAgent extends Agent {
    * Advance notice for `get_work`: the parts waiting on `caller`, the plan of the feature the session
    * works on and the runner's verdicts on the session's reviews; undefined for another owner's session.
    */
-  async planWork(caller: string, sessionId: string, repos: ProjectRepos): Promise<PlanWork | undefined> {
+  planWork(caller: string, sessionId: string, repos: ProjectRepos): Promise<PlanWork | undefined> {
+    return this.#sessionCall(caller, sessionId, () => this.#planWork(caller, sessionId, repos));
+  }
+
+  async #planWork(caller: string, sessionId: string, repos: ProjectRepos): Promise<PlanWork | undefined> {
     if (this.sessionHeartbeat(caller, sessionId).status !== "ok") return undefined;
     const inForce = await this.#policyInForce();
     const deps = {
@@ -3079,12 +3113,12 @@ export class ProjectAgent extends Agent {
    * repo alone, so its plaintext never reaches this agent. Runs after the plan steps before it.
    */
   fixWriteGrant(owner: string, sessionId: string, input: FixPartInput, repos: ProjectRepos): Promise<FixGrantOutcome> {
-    return this.#planStep(() => agentFixGrant(this.#fixWriteDeps(repos), (caller, session) => this.sessionHeartbeat(caller, session), owner, sessionId, input));
+    return this.#sessionCall(owner, sessionId, () => this.#planStep(() => agentFixGrant(this.#fixWriteDeps(repos), (caller, session) => this.sessionHeartbeat(caller, session), owner, sessionId, input)));
   }
 
   /** `report_fix_write`: checks the commit the originating agent pushed and keeps it as a signed record. */
   reportFixWrite(owner: string, sessionId: string, input: FixPartInput & { readonly commit: unknown }, repos: ProjectRepos): Promise<FixWriteOutcome> {
-    return this.#featuresChanging(this.#planStep(() => agentFixReport(this.#fixWriteDeps(repos), (caller, session) => this.sessionHeartbeat(caller, session), owner, sessionId, input)));
+    return this.#sessionCall(owner, sessionId, () => this.#featuresChanging(this.#planStep(() => agentFixReport(this.#fixWriteDeps(repos), (caller, session) => this.sessionHeartbeat(caller, session), owner, sessionId, input))));
   }
 
   /** The check runner's claim of the mechanical parts' writes; refused unless `caller` holds the runner role. */
@@ -3198,17 +3232,17 @@ export class ProjectAgent extends Agent {
    * `caller`'s session; each tool is limited to its side of the item. Runs after the plan steps before it.
    */
   callerItemCall(caller: string, sessionId: string, call: CallerCall, repos: Pick<ProjectRepos, "base">): Promise<CallerOutcome> {
-    return this.#featuresChanging(this.#planStep(() => callerAction(this.#callerActionDeps(repos), caller, sessionId, call)));
+    return this.#sessionCall(caller, sessionId, () => this.#featuresChanging(this.#planStep(() => callerAction(this.#callerActionDeps(repos), caller, sessionId, call))));
   }
 
   /** For `get_work`: a summary per caller item on the session's worktree or opened by its change. */
   callerWork(caller: string, sessionId: string): Promise<CallerWork | undefined> {
-    return this.#planStep(() => callerWork(this.#callerWorkDeps(), caller, sessionId));
+    return this.#sessionCall(caller, sessionId, () => this.#planStep(() => callerWork(this.#callerWorkDeps(), caller, sessionId)));
   }
 
   /** For `get_work_item`: one caller item's context packet, when `get_work` lists it for the session. */
   callerPacket(caller: string, sessionId: string, itemId: string): Promise<CallerPacket | undefined> {
-    return this.#planStep(() => callerPacket(this.#callerWorkDeps(), caller, sessionId, itemId));
+    return this.#sessionCall(caller, sessionId, () => this.#planStep(() => callerPacket(this.#callerWorkDeps(), caller, sessionId, itemId)));
   }
 
   /** The worktree owner, or their delegate, decides an item sent to them on the dashboard. */
@@ -3230,7 +3264,11 @@ export class ProjectAgent extends Agent {
   // Edit tasks (PRD 0.5 section 4.4a, edit-work.ts).
 
   /** For `get_work`: the edit tasks delivered to `caller`'s session and the person's queue; undefined for another person's session. */
-  async editTaskWork(caller: string, sessionId: string, repos: ProjectRepos): Promise<{ readonly tasks: EditTaskView[]; readonly queue: EditQueue } | undefined> {
+  editTaskWork(caller: string, sessionId: string, repos: ProjectRepos): Promise<{ readonly tasks: EditTaskView[]; readonly queue: EditQueue } | undefined> {
+    return this.#sessionCall(caller, sessionId, () => this.#editTaskWork(caller, sessionId, repos));
+  }
+
+  async #editTaskWork(caller: string, sessionId: string, repos: ProjectRepos): Promise<{ readonly tasks: EditTaskView[]; readonly queue: EditQueue } | undefined> {
     if (this.sessionHeartbeat(caller, sessionId).status !== "ok") return undefined;
     await this.#syncEditWork(repos);
     return { tasks: this.#editTaskStore().forSession(sessionId).map((task) => editTaskView(task)), queue: this.#editTaskStore().queue(caller, this.#backgroundRunCap()) };
@@ -3460,7 +3498,11 @@ export class ProjectAgent extends Agent {
    * on, its split and its next step (contract-split.ts). A sort that splits is recorded first.
    * Undefined when the session works on no feature or is not the caller's.
    */
-  async contractWork(caller: string, sessionId: string, repos: ProjectRepos): Promise<ContractWorkView | undefined> {
+  contractWork(caller: string, sessionId: string, repos: ProjectRepos): Promise<ContractWorkView | undefined> {
+    return this.#sessionCall(caller, sessionId, () => this.#contractWork(caller, sessionId, repos));
+  }
+
+  async #contractWork(caller: string, sessionId: string, repos: ProjectRepos): Promise<ContractWorkView | undefined> {
     if (this.sessionHeartbeat(caller, sessionId).status !== "ok") return undefined;
     const featureId = this.#featureStore().featureOfSession(sessionId);
     const feature = featureId === undefined ? undefined : this.#featureStore().get(featureId);
@@ -3690,6 +3732,10 @@ export class ProjectAgent extends Agent {
    * steps before it.
    */
   landFeature(owner: string, sessionId: string, input: LandInput & { readonly expand?: unknown; readonly retiring?: unknown }, repos: ProjectRepos): Promise<LandAnswer> {
+    return this.#sessionCall(owner, sessionId, () => this.#landFeature(owner, sessionId, input, repos));
+  }
+
+  #landFeature(owner: string, sessionId: string, input: LandInput & { readonly expand?: unknown; readonly retiring?: unknown }, repos: ProjectRepos): Promise<LandAnswer> {
     const { expand, ...rest } = input;
     if (expand !== undefined && typeof expand !== "boolean") return Promise.resolve({ status: "rejected", reason: "invalid", message: "expand must be true or false" });
     if (rest.retiring !== undefined && expand !== true) return Promise.resolve({ status: "rejected", reason: "invalid", message: "only an expand names retiring replacements" });
@@ -3803,7 +3849,11 @@ export class ProjectAgent extends Agent {
   }
 
   /** For `get_work`: the landing of the feature `caller`'s session works on, or undefined. */
-  async landWork(caller: string, sessionId: string): Promise<LandingView | undefined> {
+  landWork(caller: string, sessionId: string): Promise<LandingView | undefined> {
+    return this.#sessionCall(caller, sessionId, () => this.#landWork(caller, sessionId));
+  }
+
+  async #landWork(caller: string, sessionId: string): Promise<LandingView | undefined> {
     if (this.sessionHeartbeat(caller, sessionId).status !== "ok") return undefined;
     const featureId = this.#featureStore().featureOfSession(sessionId);
     return featureId === undefined ? undefined : this.landing(featureId);
@@ -3821,10 +3871,21 @@ export class ProjectAgent extends Agent {
 
   /** Makes sure a sweep is scheduled after a session registered or sent a heartbeat. */
   #armSweep<T extends { readonly status: string }>(outcome: T): T {
-    if (outcome.status === "ok") {
-      this.#scheduleSweep().catch((error: unknown) => console.error("scheduling the session sweep failed", error));
-    }
+    if (outcome.status === "ok") this.#rearmSweep();
     return outcome;
+  }
+
+  #rearmSweep(): void {
+    this.#scheduleSweep().catch((error: unknown) => console.error("scheduling the session sweep failed", error));
+  }
+
+  /**
+   * Runs one call of `caller`'s session `sessionId`, holding the session online until the call answers
+   * (SessionStore.during, #216); the answer schedules the sweep again, since it passed over the
+   * session while the call ran. A call with no session runs as it is.
+   */
+  #sessionCall<T>(caller: string, sessionId: string | null, run: () => Promise<T>): Promise<T> {
+    return sessionId === null ? run() : this.#sessionStore().during(caller, sessionId, run, () => this.#rearmSweep());
   }
 
   /** Sweeps now and keeps a later sweep scheduled while any session runs; see `scheduleSweep`. */

@@ -136,7 +136,10 @@ identity in the first prompt, for example:
 
 `register_session` returns a `sessionId`. The agent passes it to `get_work`, `get_work_item`, `wait_for_work`,
 `get_issue`, `post_update` and `report_checkpoint`. Each of those calls keeps the session running. After about 90 seconds without
-one, Penguin marks the session offline and the agent registers again. Once a session registers, the
+one, Penguin marks the session offline and the agent registers again. Every tool call that carries the `sessionId`
+refreshes the session when it starts and again when it answers, and Penguin never marks a session offline while one of
+its calls is running, so a `propose_plan` that runs longer than 90 seconds leaves the session running. Only calls made
+with the token of the session's owner count. Once a session registers, the
 identity's agent box in its owner's square on the team map leaves "No session". The identity's agent
 card lists the session with its vendor, branch and worktree ([dashboard.md](dashboard.md#agent-card)).
 

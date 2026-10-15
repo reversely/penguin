@@ -15,6 +15,10 @@
 // heartbeats goes offline on connected dashboards without anyone reading. A SessionListener hears when
 // a session goes online or offline and when an issue's route changes, for the live feed.
 //
+// A session with a call in flight is never marked offline (#216): `during` holds the session, in
+// memory only, while one of its owner's calls runs, and the call's answer refreshes its heartbeat. A
+// call queued behind other work, such as a plan proposal, can run past the offline window.
+//
 // A fix task (a Huddle's fix sub-issue, PRD section 4, Layer 2) routes the same way but reaches the
 // session only at its next safe checkpoint, so it never lands in the middle of the session's other
 // work: until then it waits in PendingDelivery and `work` leaves it out. A checkpoint is the bridge's
@@ -330,6 +334,8 @@ export class SessionStore implements AssignmentListener {
   readonly #settledFor: (sessionId: string) => readonly SettledRef[];
   readonly #toolResultsFor: (sessionId: string) => readonly ToolResultRef[];
   readonly #planNotices: PlanNoticeSources;
+  /** How many calls each held session has in flight (`during`). Memory only: an eviction ends every call. */
+  readonly #inFlight = new Map<string, number>();
 
   /** Create after the IssueIndex on the same handle: routing reads and writes its Assignment table. */
   constructor(db: SqlDatabase, identities: IdentityStore, options: SessionStoreOptions = {}) {
@@ -399,6 +405,54 @@ export class SessionStore implements AssignmentListener {
     });
   }
 
+  /**
+   * Runs one call of `caller`'s session `sessionId` and keeps the session online until the call
+   * answers: the sweep passes over a session with a call in flight, and the answer refreshes the
+   * session's heartbeat, then `answered` runs. The call's own heartbeat refreshes it at the start.
+   * Only a call by an owner of the session's identity, on a running session, holds it; any other
+   * call runs without holding, and is refused by its own heartbeat. The refresh writes only when the
+   * last heartbeat is older than a third of the offline window, the agents' heartbeat interval, so a
+   * short call adds no storage write.
+   */
+  async during<T>(caller: string, sessionId: string, run: () => Promise<T>, answered?: () => void): Promise<T> {
+    if (!this.#hold(caller, sessionId)) return run();
+    try {
+      return await run();
+    } finally {
+      this.#release(sessionId);
+      answered?.();
+    }
+  }
+
+  #hold(caller: string, sessionId: string): boolean {
+    return this.#db.transaction(() => {
+      this.#expire();
+      const found = this.#ownSession(caller, sessionId, "call for");
+      if (found.status === "rejected" || found.session.status === "offline") return false;
+      this.#inFlight.set(sessionId, (this.#inFlight.get(sessionId) ?? 0) + 1);
+      return true;
+    });
+  }
+
+  #release(sessionId: string): void {
+    const left = (this.#inFlight.get(sessionId) ?? 1) - 1;
+    if (left > 0) this.#inFlight.set(sessionId, left);
+    else this.#inFlight.delete(sessionId);
+    const now = this.#now();
+    this.#db.exec(
+      `UPDATE Session SET last_seen = ? WHERE id = ? AND status = 'running' AND last_seen < ?`,
+      now,
+      sessionId,
+      now - this.#offlineAfterMs / 3,
+    );
+  }
+
+  /** `AND id NOT IN (...)` over the sessions with a call in flight, and its bindings. */
+  #notHeld(): [string, string[]] {
+    const held = [...this.#inFlight.keys()];
+    return held.length === 0 ? ["", held] : [` AND id NOT IN (${held.map(() => "?").join(", ")})`, held];
+  }
+
   /** The session with this id, or undefined. */
   get(sessionId: string): Session | undefined {
     return this.#db.transaction(() => {
@@ -441,12 +495,14 @@ export class SessionStore implements AssignmentListener {
 
   /**
    * Marks the sessions whose offline window has passed, and returns when the next running session's
-   * window ends, in epoch milliseconds, or undefined when no session is running.
+   * window ends, in epoch milliseconds, or undefined when no session is running. A session with a call
+   * in flight counts from its call's answer, which schedules the sweep again.
    */
   sweep(): number | undefined {
     return this.#db.transaction(() => {
       this.#expire();
-      const [row] = this.#db.exec(`SELECT MIN(last_seen) AS oldest FROM Session WHERE status = 'running'`);
+      const [notHeld, held] = this.#notHeld();
+      const [row] = this.#db.exec(`SELECT MIN(last_seen) AS oldest FROM Session WHERE status = 'running'${notHeld}`, ...held);
       const oldest = row?.["oldest"];
       return oldest === null || oldest === undefined ? undefined : Number(oldest) + this.#offlineAfterMs;
     });
@@ -737,13 +793,16 @@ export class SessionStore implements AssignmentListener {
   }
 
   /**
-   * Marks running sessions past the offline window as offline. Their issues stay open and assigned;
-   * each routes again, to another running session of its identity or to a request to start one.
+   * Marks running sessions past the offline window as offline, except a session with a call in
+   * flight. Their issues stay open and assigned; each routes again, to another running session of its
+   * identity or to a request to start one.
    */
   #expire(): void {
+    const [notHeld, held] = this.#notHeld();
     const expired = this.#db.exec(
-      `UPDATE Session SET status = 'offline' WHERE status = 'running' AND last_seen < ? RETURNING id, identity_id`,
+      `UPDATE Session SET status = 'offline' WHERE status = 'running' AND last_seen < ?${notHeld} RETURNING id, identity_id`,
       this.#now() - this.#offlineAfterMs,
+      ...held,
     );
     if (expired.length === 0) return;
     const identities = new Set<string>();
