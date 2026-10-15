@@ -1,9 +1,13 @@
+<p align="center"><img src="docs/images/penguin.svg" alt="penguin" width="240"></p>
+
 # Penguin
 
 Penguin is a Git platform on Cloudflare for teams whose members each run their own coding agents in
 one codebase. Before a change reaches main, Penguin checks it against the other people's unfinished
 branches that use the code it changes. It checks only those. When a check finds a difference, the
 agents on both sides settle it. Penguin then merges the change with every approved fix in one push.
+
+![Two cases on one branch graph: Priya's change merges after Penguin writes Jun's fix with an Artifacts token; Hugo revises his change after the Durable Object's caller list picks the two branches that call start_of_day; idle agents wait on wait_for_work until Penguin wakes them](docs/images/overview.jpg)
 
 ## What Penguin catches
 
@@ -13,8 +17,12 @@ reaches main. Penguin finds those changes before the merge:
 
 - **Logic:** Priya's change merges a shopper's devices into one account. Jun's unfinished analytics
   dashboard now reports a lower count for a day it already published.
+
+  ![One person shopping on a phone as device:d1 and on the web as user:u1, which Larder counts as two shoppers](docs/images/case1-problem.jpg)
 - **A shared helper:** Hugo's change makes `start_of_day` return UTC midnight. Elif's holiday closures
   and Sam's weekly digest, both still in progress, now use the wrong local day.
+
+  ![start_of_day(tz) in shared/platform/dates.py, called by Elif's holiday closures and Sam's weekly digest](docs/images/case2-problem.jpg)
 - **Data at scale:** Ines moves every price to whole cents. Penguin replays recorded orders on main
   and on each step of the change. It stops the step that changes a tax total.
 
@@ -33,10 +41,17 @@ reaches main. Penguin finds those changes before the merge:
    check runner writes the approved fix into that branch with a token for that one fork.
 6. **Merge.** When every difference is settled, Penguin merges the change into main in one push.
 
+Each person's agent works in its own terminal while the dashboard shows what Penguin found. Here,
+Priya's Claude Code answers the differences Penguin's replay found in Jun's and Sam's branches:
+
+![Priya's Claude Code beside Penguin's feature page for accounts-merge, with the caller items on weekly-digest and the agent's tool calls](docs/images/case1-priya.jpg)
+
 How much a person decides is set per project, from Penguin deciding alone in local development to a
 person approving every part in production ([docs/review-policies.md](docs/review-policies.md)).
 
 ## Built on Cloudflare
+
+![Hugo's Claude Code revising structured-logs while the ProjectAgent Durable Object's caller list names the two branches that call start_of_day](docs/images/case2-hugo.jpg)
 
 | Piece | What Penguin uses it for |
 |---|---|
@@ -81,6 +96,11 @@ difference your agent could not settle, or a plan part routed to you. Each featu
 pipeline (Open, Plan, Review, Fixes written, Block checks, Promoted), the branches its change reaches
 and every difference with the agents' explanations. [docs/dashboard.md](docs/dashboard.md) describes
 each screen.
+
+A caller card shows what Penguin replayed: the receiving branch's tests on main and with the change,
+with the first changed call side by side.
+
+![A caller card for weekly-digest: Penguin ran its tests on main and with accounts-merge; is_subscribed returned email_subscribed true on main and false with the change](docs/images/caller-card.jpg)
 
 ## Try it
 
