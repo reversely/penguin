@@ -269,22 +269,42 @@ export async function blockReported(
   }
   const scopeMap = await deps.scopeMap();
   deps.roster.sync(scopeMap, deps.features.list());
-  const sources = nextStepSources(deps, featureId, run, decisions);
+  const sources = nextStepSources(deps, featureId, run, decisions, await unwrittenTargets(deps, featureId));
   const routing = editRouting(deps, scopeMap, availability(deps));
   deps.tasks.replace(prefix, sources, adjust === undefined ? routing : adjust(routing), "dropped", `block run ${run.runId} no longer shows the failure`);
   for (const person of new Set(deps.tasks.forFeature(featureId).map((task) => task.person))) deps.notify(person);
 }
 
-/** The sources a failed block run's agent steps ask for, one per failing target and check. */
+/**
+ * The running features on which a part of the feature's plan places a fix not yet written at its
+ * current revision. A failure on such a fork waits on that part, which get_work and a refused land
+ * name with who it waits on (#203).
+ */
+export async function unwrittenTargets(deps: Pick<EditWorkDeps, "plan" | "fix">, featureId: string): Promise<Set<string>> {
+  const plan = await deps.plan?.(featureId);
+  if (plan === undefined) return new Set();
+  const written = new Set((await deps.fix.keeper(featureId).fixWrites(featureId)).map((write) => `${write.partId}@${write.revision}`));
+  return new Set(
+    plan.parts.flatMap((part) => (part.place.kind === "feature" && part.kind !== "verify" && !written.has(`${part.partId}@${part.revision}`) ? [part.place.feature] : [])),
+  );
+}
+
+/**
+ * The sources a failed block run's agent steps ask for, one per failing target and check. A target in
+ * `awaiting` holds a plan part whose fix is not written yet, so its failure opens no task: the only
+ * edit left to the receiving agent would weaken its tests.
+ */
 export function nextStepSources(
   deps: Pick<EditWorkDeps, "features">,
   featureId: string,
   run: { readonly runId: string; readonly checkpoint: string },
   decisions: readonly LadderDecision[],
+  awaiting: ReadonlySet<string> = new Set(),
 ): EditSource[] {
   const sources = new Map<string, EditSource>();
   for (const decision of decisions) {
     if (decision.step !== 4 && decision.step !== 5) continue;
+    if (awaiting.has(decision.target)) continue;
     const targetId = decision.target === MAIN_TARGET ? featureId : decision.target;
     const target = deps.features.get(targetId);
     if (target === undefined || !RUNNING_STATES.has(target.state)) continue;

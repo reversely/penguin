@@ -1,11 +1,15 @@
 // PRD 0.5 section 4.4: writes into one running feature's fork take turns. One write holds the fork at
 // a time, in approval order; a write waiting behind another is tried again on the head the other
-// moved before it goes in.
+// moved before it goes in. A failure on a fork whose plan fix is not yet written waits on that fix
+// and opens no edit task for the fork's agent (#203).
 
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
+import type { LadderDecision, Plan } from "@penguin/protocol";
+
+import { nextStepSources, unwrittenTargets, type EditWorkDeps } from "../../services/project-agent/src/edit-work.ts";
 import { FixGrantStore } from "../../services/project-agent/src/fix-write.ts";
 import type { SqlDatabase } from "../../services/project-agent/src/issue-index.ts";
 
@@ -56,4 +60,27 @@ test("an expired hold no longer blocks the fork", () => {
   now = 3_000;
   assert.doesNotMatch(grants.waitsFor(behind) ?? "", /holds/);
   assert.deepEqual(grants.claimable().map((grant) => grant.id), [holder.id], "the runner's expired claim can be taken again");
+});
+
+test("a failure on a fork whose plan fix is not written yet opens no edit task; once written, it does", async () => {
+  const fix = { partId: "accounts-merge/v1#4", revision: 1, place: { kind: "feature", feature: "weekly-digest" }, kind: "behavioural" };
+  const plan = { featureId: "accounts-merge", parts: [fix] } as unknown as Plan;
+  let writes: { partId: string; revision: number }[] = [];
+  const deps = {
+    plan: () => plan,
+    fix: { keeper: () => ({ fixWrites: () => writes }) },
+    features: { get: () => ({ id: "weekly-digest", personId: "sam", state: "building", area: { scopes: ["messaging"] } }) },
+  } as unknown as EditWorkDeps;
+  const failed = {
+    target: "weekly-digest",
+    check: "tests",
+    step: 5,
+    nextStep: "The agent of the scope's owner adapts",
+    reason: "messaging/tests/test_consent.py lies outside the charter",
+    evidence: { summary: "1 failing test", findings: [{ path: "messaging/tests/test_consent.py", line: null, code: null, message: "fails: test_unsubscribe_survives" }] },
+  } as unknown as LadderDecision;
+  const run = { runId: "accounts-merge/1", checkpoint: "a".repeat(40) };
+  assert.deepEqual(nextStepSources(deps, "accounts-merge", run, [failed], await unwrittenTargets(deps, "accounts-merge")), []);
+  writes = [{ partId: fix.partId, revision: 1 }];
+  assert.equal(nextStepSources(deps, "accounts-merge", run, [failed], await unwrittenTargets(deps, "accounts-merge")).length, 1);
 });
