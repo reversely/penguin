@@ -6,7 +6,7 @@
 // changed or when the call's time is up; the ProjectAgent wakes it from the same events that update
 // the dashboards, so no round reads storage while it waits. When a round reports a change, the call
 // builds the session's get_work summary again and answers with the entries the agent has not read.
-// With nothing new it answers `waiting` within 90 seconds (#215): in live run film-1015-r5, Claude
+// With nothing new it answers `waiting` within 50 seconds (#215): in live run film-1015-r5, Claude
 // Code 2.1.300 aborted every call left idle for about two minutes although progress notifications
 // went out every minute, so a call answers before that and the agent calls again.
 //
@@ -14,8 +14,11 @@
 // summary is one entry, and each object's own scalar fields are one more; an entry's key is its path
 // and a hash of its fields, so an entry whose state moved counts as new.
 
-/** The longest one call waits, and its default: below the two minutes after which Claude Code aborted an idle call. */
-export const WAIT_MAX_SECONDS = 90;
+/**
+ * The longest one call waits, and its default: below the 60 seconds Codex allows a tool call by
+ * default (`tool_timeout_sec`) and the two minutes after which Claude Code aborted an idle call.
+ */
+export const WAIT_MAX_SECONDS = 50;
 
 /**
  * The most times one call builds the summary again. Each build makes about a dozen Durable Object

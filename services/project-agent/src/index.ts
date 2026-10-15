@@ -2483,7 +2483,7 @@ export class ProjectAgent extends Agent {
    * For `wait_for_work` (#210): one round of an idle session's wait. Waiting with nothing in progress
    * is the session's safe checkpoint, so what waits for the session is delivered before the round and
    * again after a change wakes it. The round ends when the work get_work reads may have changed since
-   * `since` (at once when it already has), or after `ms`, at most 90 seconds. The session must be the
+   * `since` (at once when it already has), or after `ms`, at most 50 seconds. The session must be the
    * caller's and running; the call also counts as its heartbeat.
    */
   async awaitSessionWork(

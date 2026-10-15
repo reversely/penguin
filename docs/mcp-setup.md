@@ -186,7 +186,7 @@ holds a tool call open and accepts progress notifications can use it.
 | Argument | Value |
 |---|---|
 | `sessionId` | The session's id from `register_session` |
-| `timeoutSeconds` | Optional; how long to wait, from 1 to 90 seconds. The default is 90 |
+| `timeoutSeconds` | Optional; how long to wait, from 1 to 50 seconds. The default is 50 |
 
 The call holds until the session has work it has not read: a caller item, a plan part or a decision
 on the session's plan, a review request or verdict, a tool result, a fix written into its fork, an
@@ -196,12 +196,13 @@ answer, in `get_work`'s shape. An entry whose state changed counts as new. With 
 timeout it answers `{ "state": "waiting", "next": "call wait_for_work again" }`, and the agent calls
 it again at once.
 
-A call answers within 90 seconds so that no client's default limit on a tool call ends it. In live
+A call answers within 50 seconds so that no client's default limit on a tool call ends it. In live
 run film-1015-r5, Claude Code 2.1.300 aborted every `wait_for_work` call after about two minutes
 without an answer, although Penguin sent a progress notification every 60 seconds. Penguin sends an
 MCP progress notification when the call starts, for a client that sent a progress token. Waiting
-counts as the session's safe checkpoint ([Fix tasks and safe checkpoints](#fix-tasks-and-safe-checkpoints)) and as its heartbeat,
-so the session stays running. A session waits only on its work: Penguin refuses a wait on a
+counts as the session's safe checkpoint
+([Fix tasks and safe checkpoints](#fix-tasks-and-safe-checkpoints)) and as its heartbeat, so the
+session stays running. A session waits only on its work: Penguin refuses a wait on a
 session of another owner with `forbidden`.
 
 The Worker holds the call as a streamed MCP response. Each round asks the ProjectAgent Durable
@@ -222,8 +223,9 @@ flight ([Workers limits](https://developers.cloudflare.com/workers/platform/limi
 When Cloudflare updates the Workers runtime, it gives existing requests and streaming responses up
 to 20 minutes to finish before the old process ends them
 ([Runtime updates](https://developers.cloudflare.com/workers/platform/limits/#runtime-updates)).
-A wait of at most 90 seconds finishes inside that grace period. A Durable Object that restarts during a deploy ends its in-flight calls; the Worker then reads the session's work
-again and keeps waiting. Waiting costs no CPU time. The Durable Object stays in memory while a round
+A wait of at most 50 seconds finishes inside that grace period. A Durable Object that restarts
+during a deploy ends its in-flight calls; the Worker then reads the session's work again and keeps
+waiting. Waiting costs no CPU time. The Durable Object stays in memory while a round
 is open, which Cloudflare bills as duration. Each summary build makes about a dozen Durable Object
 calls; a Worker on the Free plan may make 1,000 calls to Cloudflare services per request
 ([Subrequests](https://developers.cloudflare.com/workers/platform/limits/#subrequests)), which
@@ -234,9 +236,8 @@ sets the cap of 50 builds per call. Copies of these pages, fetched when the tool
 
 ### Client timeouts
 
-A call answers within 90 seconds, so Claude Code needs no setting.
-Codex needs no `tool_timeout_sec` in its `[mcp_servers.penguin]` table. Its default is 60 seconds,
-below Penguin's default wait, so a Codex agent passes a `timeoutSeconds` below 60, such as 50.
+A call answers within 50 seconds, so no client needs a setting. Codex allows a tool call 60 seconds
+by default (`tool_timeout_sec`), and Claude Code aborted an idle call after about two minutes.
 
 ## Fix tasks and safe checkpoints
 

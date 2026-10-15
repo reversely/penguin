@@ -1,5 +1,5 @@
 // wait_for_work wakes an idle agent (#210): a waiting session answers as soon as a caller item opens
-// on its fork, with only the entries it has not read; with nothing new it answers waiting by 90 seconds,
+// on its fork, with only the entries it has not read; with nothing new it answers waiting by 50 seconds,
 // holding one wake subscription at a time (#215); it waits only on its own session's work. The wait holds on the ProjectAgent's WorkSignal, which the same events that update
 // get_work move, and reads no storage while it waits. A session that registers in an open feature's
 // worktree joins that feature, so its wait carries the feature's caller items (#213).
@@ -119,7 +119,7 @@ function clockedRounds(changeAt?: number, arrive?: () => void) {
   return { asked, round, most: () => most };
 }
 
-test("with nothing new for its session it answers waiting by 90 seconds, in one round after the first", async (t) => {
+test("with nothing new for its session it answers waiting by 50 seconds, in one round after the first", async (t) => {
   mock.timers.enable({ apis: ["Date"], now: 0 });
   t.after(() => mock.timers.reset());
   const rounds = clockedRounds();
@@ -130,8 +130,8 @@ test("with nothing new for its session it answers waiting by 90 seconds, in one 
   const answer = await call("wait_for_work", { sessionId: SESSION });
 
   assert.deepEqual(answer.value, { state: "waiting", next: "call wait_for_work again" });
-  assert.equal(Date.now(), 90_000, "it answers at 90 seconds, before Claude Code's two-minute idle abort");
-  assert.deepEqual(rounds.asked, [0, 90_000], "a first round at once, then one round for the rest of the call");
+  assert.equal(Date.now(), 50_000, "it answers at 50 seconds, inside Codex's 60-second tool limit and Claude Code's two-minute idle abort");
+  assert.deepEqual(rounds.asked, [0, 50_000], "a first round at once, then one round for the rest of the call");
   assert.equal(rounds.most(), 1, "one wake subscription at a time");
 });
 
@@ -150,7 +150,7 @@ test("work arriving 30 seconds into a wait answers then", async (t) => {
   assert.equal(answer.value["status"], "new_work");
   assert.deepEqual(answer.value["callerItems"]["receiving"].map((each: CallerSummaryView) => each.item), [item(2, "cohort-ltv").item]);
   assert.equal(Date.now(), 30_000, "it answers when the work arrives");
-  assert.deepEqual(rounds.asked, [0, 90_000]);
+  assert.deepEqual(rounds.asked, [0, 50_000]);
 });
 
 test("a session waits only on its own work: another owner's wait on it is refused", async () => {

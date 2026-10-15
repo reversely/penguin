@@ -14,7 +14,7 @@
 import type { SqlDatabase } from "./issue-index.ts";
 
 /** The longest one round of a wait holds: wait_for_work's whole wait (services/mcp/src/wait-for-work.ts). */
-export const WORK_ROUND_MAX_MS = 90_000;
+export const WORK_ROUND_MAX_MS = 50_000;
 
 /** Where the signal stood when a waiter last read its work. */
 export interface WorkMark {
