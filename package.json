@@ -18,7 +18,8 @@
     "test:live": "node scripts/test.mjs live",
     "test:all": "node scripts/test.mjs all",
     "typecheck": "tsc --noEmit && npm run typecheck -w @penguin/worker && npm run typecheck -w @penguin/dashboard",
-    "walkthrough": "playwright test -c tests/walkthrough/playwright.config.ts"
+    "walkthrough": "playwright test -c tests/walkthrough/playwright.config.ts",
+    "deploy": "node scripts/deploy.mjs"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",
