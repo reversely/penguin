@@ -186,27 +186,31 @@ holds a tool call open and accepts progress notifications can use it.
 | Argument | Value |
 |---|---|
 | `sessionId` | The session's id from `register_session` |
-| `timeoutSeconds` | Optional; how long to wait, from 1 to 1200 seconds. The default is 1200 |
+| `timeoutSeconds` | Optional; how long to wait, from 1 to 90 seconds. The default is 90 |
 
 The call holds until the session has work it has not read: a caller item, a plan part or a decision
 on the session's plan, a review request or verdict, a tool result, a fix written into its fork, an
 edit task, an issue or thread, or a landing result. It then answers `{ "status": "new_work", ... }`
 with only the `get_work` entries that are new since the agent's last `get_work` or `wait_for_work`
 answer, in `get_work`'s shape. An entry whose state changed counts as new. With nothing new by the
-timeout it answers `{ "status": "nothing_yet" }`. The agent then calls it again.
+timeout it answers `{ "state": "waiting", "next": "call wait_for_work again" }`, and the agent calls
+it again at once.
 
-While the call waits, Penguin sends an MCP progress notification when the call starts and then about
-every 60 seconds, for a client that sent a progress token. Waiting counts as the session's safe
-checkpoint ([Fix tasks and safe checkpoints](#fix-tasks-and-safe-checkpoints)) and as its heartbeat,
+A call answers within 90 seconds so that no client's default limit on a tool call ends it. In live
+run film-1015-r5, Claude Code 2.1.300 aborted every `wait_for_work` call after about two minutes
+without an answer, although Penguin sent a progress notification every 60 seconds. Penguin sends an
+MCP progress notification when the call starts, for a client that sent a progress token. Waiting
+counts as the session's safe checkpoint ([Fix tasks and safe checkpoints](#fix-tasks-and-safe-checkpoints)) and as its heartbeat,
 so the session stays running. A session waits only on its work: Penguin refuses a wait on a
 session of another owner with `forbidden`.
 
 The Worker holds the call as a streamed MCP response. Each round asks the ProjectAgent Durable
-Object to wait for up to a minute. The ProjectAgent wakes the round from the event that updates the
-dashboards (an issue, a session or a feature changed) or when the check runner records a tool result.
+Object to wait for the rest of the call, so a call holds one wake subscription at a time and releases
+it when it answers. The ProjectAgent wakes the round from the event that updates the dashboards (an
+issue, a session or a feature changed) or when the check runner records a tool result.
 No round reads storage while it waits. After a wake, the Worker builds the session's `get_work`
 summary again and compares it with what the agent read. One call builds the summary at most 50
-times; a busy project whose changes all belong to other sessions ends the call with `nothing_yet`
+times; a busy project whose changes all belong to other sessions ends the call with `waiting`
 sooner.
 
 ### Cloudflare limits
@@ -218,8 +222,7 @@ flight ([Workers limits](https://developers.cloudflare.com/workers/platform/limi
 When Cloudflare updates the Workers runtime, it gives existing requests and streaming responses up
 to 20 minutes to finish before the old process ends them
 ([Runtime updates](https://developers.cloudflare.com/workers/platform/limits/#runtime-updates)).
-Penguin caps a wait at 1200 seconds so a wait finishes inside that grace period. A Durable Object
-that restarts during a deploy ends its in-flight calls; the Worker then reads the session's work
+A wait of at most 90 seconds finishes inside that grace period. A Durable Object that restarts during a deploy ends its in-flight calls; the Worker then reads the session's work
 again and keeps waiting. Waiting costs no CPU time. The Durable Object stays in memory while a round
 is open, which Cloudflare bills as duration. Each summary build makes about a dozen Durable Object
 calls; a Worker on the Free plan may make 1,000 calls to Cloudflare services per request
@@ -231,16 +234,9 @@ sets the cap of 50 builds per call. Copies of these pages, fetched when the tool
 
 ### Client timeouts
 
-| Client | Setting | What to set |
-|---|---|---|
-| Claude Code | Idle timeout: 5 minutes for an HTTP server without a response or a progress notification; `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT` in milliseconds changes it | Nothing: Penguin's progress notifications reset it every minute |
-| Claude Code | Per-server `timeout` in `.mcp.json`, in milliseconds: a hard wall-clock limit per tool call that progress notifications do not extend | Leave it unset (the default from `MCP_TOOL_TIMEOUT` is about 28 hours), or set it above the wait, such as `"timeout": 1260000` |
-| Codex | `tool_timeout_sec` in the server's `[mcp_servers.penguin]` table; the default is 60 | Set it above the wait, such as `tool_timeout_sec = 1260`, or pass a `timeoutSeconds` below it |
-
-In Claude Code (v2.1.212 or later), a call still running after two minutes moves to a background
-task. Its latest progress shows in `/tasks`. Claude Code re-invokes the session with the answer when
-the call finishes ([Claude Code MCP](https://code.claude.com/docs/en/mcp#automatic-backgrounding-of-long-tool-calls)).
-The progress notifications reach `/tasks` only. They never enter the model's context.
+A call answers within 90 seconds, so Claude Code needs no setting.
+Codex needs no `tool_timeout_sec` in its `[mcp_servers.penguin]` table. Its default is 60 seconds,
+below Penguin's default wait, so a Codex agent passes a `timeoutSeconds` below 60, such as 50.
 
 ## Fix tasks and safe checkpoints
 

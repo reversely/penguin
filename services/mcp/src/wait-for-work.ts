@@ -3,30 +3,24 @@
 // An MCP server cannot start an agent's turn, so an agent with nothing to do calls wait_for_work
 // instead of ending its turn. The Worker holds the call as a streamed MCP response. Each round asks
 // the ProjectAgent to wait (awaitSessionWork), which returns when the work get_work reads may have
-// changed or after a minute; the ProjectAgent wakes it from the same events that update the
-// dashboards, so no round reads storage while it waits. After each round the call sends a progress
-// notification, which keeps a client's idle timeout (five minutes for HTTP in Claude Code) from
-// aborting it. When a round reports a change, the call builds the session's get_work summary again
-// and answers with the entries the agent has not read; on its timeout it answers `nothing_yet`.
+// changed or when the call's time is up; the ProjectAgent wakes it from the same events that update
+// the dashboards, so no round reads storage while it waits. When a round reports a change, the call
+// builds the session's get_work summary again and answers with the entries the agent has not read.
+// With nothing new it answers `waiting` within 90 seconds (#215): in live run film-1015-r5, Claude
+// Code 2.1.300 aborted every call left idle for about two minutes although progress notifications
+// went out every minute, so a call answers before that and the agent calls again.
 //
 // An entry is read when get_work or wait_for_work last answered with it. Each list element of the
 // summary is one entry, and each object's own scalar fields are one more; an entry's key is its path
 // and a hash of its fields, so an entry whose state moved counts as new.
 
-/** How often an open wait sends a progress notification, and the longest a round waits. */
-export const PROGRESS_INTERVAL_MS = 60_000;
-
-/**
- * The longest one call waits. Cloudflare gives a streaming response up to 20 minutes to finish when
- * it updates the Workers runtime (https://developers.cloudflare.com/workers/platform/limits/#runtime-updates),
- * so a wait no longer than that finishes inside the grace period.
- */
-export const WAIT_MAX_SECONDS = 1_200;
+/** The longest one call waits, and its default: below the two minutes after which Claude Code aborted an idle call. */
+export const WAIT_MAX_SECONDS = 90;
 
 /**
  * The most times one call builds the summary again. Each build makes about a dozen Durable Object
  * calls, and a Worker invocation may make 1,000 on the Free plan; a busy project whose changes are
- * all for other sessions ends the call with `nothing_yet` here, and the agent calls again.
+ * all for other sessions ends the call with `waiting` here, and the agent calls again.
  */
 export const WAIT_MAX_REBUILDS = 50;
 
@@ -58,7 +52,7 @@ export interface WorkWait {
   readonly now: () => number;
 }
 
-export type WaitOutcome = { readonly status: "new_work"; readonly work: Record<string, unknown> } | { readonly status: "nothing_yet" } | WaitRejection;
+export type WaitOutcome = { readonly status: "new_work"; readonly work: Record<string, unknown> } | { readonly status: "waiting" } | WaitRejection;
 
 /** Holds until the session has entries the agent has not read, or `timeoutSeconds` pass. */
 export async function waitForWork(wait: WorkWait, timeoutSeconds: number): Promise<WaitOutcome> {
@@ -73,11 +67,12 @@ export async function waitForWork(wait: WorkWait, timeoutSeconds: number): Promi
   for (let rounds = 0; ; rounds += 1) {
     if (rounds > 0) {
       const remaining = deadline - wait.now();
-      if (remaining <= 0 || wait.signal.aborted) return { status: "nothing_yet" };
+      if (remaining <= 0 || wait.signal.aborted) return { status: "waiting" };
     }
     let round: WorkRound;
     try {
-      round = await wait.round(mark, rounds === 0 ? 0 : Math.min(PROGRESS_INTERVAL_MS, deadline - wait.now()));
+      // One round holds the rest of the call, so the call keeps one wake subscription at a time.
+      round = await wait.round(mark, rounds === 0 ? 0 : deadline - wait.now());
     } catch (error) {
       // The ProjectAgent restarted mid-round (a deploy or an eviction): read the work again.
       console.warn(JSON.stringify({ event: "wait_round_failed", error: String(error).slice(0, 200) }));
@@ -87,7 +82,7 @@ export async function waitForWork(wait: WorkWait, timeoutSeconds: number): Promi
     ({ mark, changed } = round);
     if (rounds > 0) await wait.progress(rounds, changed ? "checking new work" : "waiting for new work");
     if (!changed) continue;
-    if (rebuilds === WAIT_MAX_REBUILDS) return { status: "nothing_yet" };
+    if (rebuilds === WAIT_MAX_REBUILDS) return { status: "waiting" };
     rebuilds += 1;
     const built = await wait.summary();
     if (built.status === "rejected") return built;

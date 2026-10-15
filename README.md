@@ -86,8 +86,8 @@ machine.
 
 Tell your agent which feature it works on, for example: "You're working on accounts-merge. Check your
 change with Penguin and deal with whatever it finds." When it has nothing left to do, it calls
-`wait_for_work`. Penguin wakes it when a change reaches its branch. Codex users raise
-`tool_timeout_sec` to 1260 for this ([docs/mcp-setup.md](docs/mcp-setup.md#waiting-for-new-work)).
+`wait_for_work`. Penguin wakes it when a change reaches its branch
+([docs/mcp-setup.md](docs/mcp-setup.md#waiting-for-new-work)).
 
 ## Use the dashboard
 

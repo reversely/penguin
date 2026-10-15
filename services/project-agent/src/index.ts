@@ -20,7 +20,7 @@ import { BASE_BRANCH, readBaseFile } from "./base-repo.ts";
 import { buildBoard } from "./board.ts";
 import { buildIssuePage } from "./issue-page.ts";
 import { LiveFeed, liveOwner, sendToOwner } from "./live-feed.ts";
-import { WorkReadStore, WorkSignal, type WorkMark } from "./work-wait.ts";
+import { WORK_ROUND_MAX_MS, WorkReadStore, WorkSignal, type WorkMark } from "./work-wait.ts";
 import { buildInbox } from "./inbox-page.ts";
 import {
   buildIdentitiesPage,
@@ -2483,7 +2483,7 @@ export class ProjectAgent extends Agent {
    * For `wait_for_work` (#210): one round of an idle session's wait. Waiting with nothing in progress
    * is the session's safe checkpoint, so what waits for the session is delivered before the round and
    * again after a change wakes it. The round ends when the work get_work reads may have changed since
-   * `since` (at once when it already has), or after `ms`, at most a minute. The session must be the
+   * `since` (at once when it already has), or after `ms`, at most 90 seconds. The session must be the
    * caller's and running; the call also counts as its heartbeat.
    */
   async awaitSessionWork(
@@ -2494,7 +2494,7 @@ export class ProjectAgent extends Agent {
   ): Promise<{ readonly status: "ok"; readonly mark: WorkMark; readonly changed: boolean } | SessionRejection> {
     const before = this.#idleCheckpoint(caller, sessionId);
     if (before !== undefined) return before;
-    const round = await this.#workSignal.wait(since, Math.min(Math.max(ms, 0), 60_000));
+    const round = await this.#workSignal.wait(since, Math.min(Math.max(ms, 0), WORK_ROUND_MAX_MS));
     if (round.changed) this.#idleCheckpoint(caller, sessionId);
     return { status: "ok", ...round };
   }

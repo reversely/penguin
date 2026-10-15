@@ -1,7 +1,6 @@
 // wait_for_work wakes an idle agent (#210): a waiting session answers as soon as a caller item opens
-// on its fork, with only the entries it has not read; with nothing new it answers nothing_yet at its
-// timeout, sending a progress notification every round of at most a minute; it waits only on its own
-// session's work. The wait holds on the ProjectAgent's WorkSignal, which the same events that update
+// on its fork, with only the entries it has not read; with nothing new it answers waiting by 90 seconds,
+// holding one wake subscription at a time (#215); it waits only on its own session's work. The wait holds on the ProjectAgent's WorkSignal, which the same events that update
 // get_work move, and reads no storage while it waits. A session that registers in an open feature's
 // worktree joins that feature, so its wait carries the feature's caller items (#213).
 
@@ -20,7 +19,7 @@ import { IssueIndex, type SqlDatabase } from "../../services/project-agent/src/i
 import { SessionStore } from "../../services/project-agent/src/session-store.ts";
 import { WorkSignal } from "../../services/project-agent/src/work-wait.ts";
 import { createPenguinMcpServer, type CallerSummaryView, type McpProject } from "../../services/mcp/src/tools.ts";
-import { PROGRESS_INTERVAL_MS, type WorkRound } from "../../services/mcp/src/wait-for-work.ts";
+import { WAIT_MAX_SECONDS, type WorkRound } from "../../services/mcp/src/wait-for-work.ts";
 
 const SESSION = "session-jun";
 
@@ -88,7 +87,7 @@ test("a waiting session answers as soon as a caller item opens on its fork, with
   signal.changed();
   const answer = await waiting;
 
-  assert.ok(Date.now() - started < PROGRESS_INTERVAL_MS, "it answers on the change, not at a round's end");
+  assert.ok(Date.now() - started < WAIT_MAX_SECONDS * 1000,"it answers on the change, not at a round's end");
   assert.equal(answer.value["status"], "new_work");
   assert.deepEqual(
     answer.value["callerItems"]["receiving"].map((each: CallerSummaryView) => each.item),
@@ -99,28 +98,59 @@ test("a waiting session answers as soon as a caller item opens on its fork, with
   assert.equal(signal.waiting, 0, "nothing still waits on the signal");
 });
 
-test("with nothing new for its session it answers nothing_yet at its timeout, after a progress notification every round", async (t) => {
+/**
+ * Rounds that move the mocked clock: each waits out `ms`, or ends at `changeAt` when it falls inside
+ * the round, after `arrive` adds the work. Counts the rounds open at once.
+ */
+function clockedRounds(changeAt?: number, arrive?: () => void) {
+  const asked: number[] = [];
+  let open = 0;
+  let most = 0;
+  const round: McpProject["awaitSessionWork"] = async (_caller, _session, since, ms) => {
+    asked.push(ms);
+    open += 1;
+    most = Math.max(most, open);
+    const due = changeAt !== undefined && Date.now() < changeAt && Date.now() + ms >= changeAt;
+    mock.timers.tick(due ? changeAt - Date.now() : ms);
+    if (due) arrive?.();
+    open -= 1;
+    return { status: "ok", mark: { epoch: "e", version: due ? 1 : 0 }, changed: since === null || due };
+  };
+  return { asked, round, most: () => most };
+}
+
+test("with nothing new for its session it answers waiting by 90 seconds, in one round after the first", async (t) => {
   mock.timers.enable({ apis: ["Date"], now: 0 });
   t.after(() => mock.timers.reset());
-  const asked: number[] = [];
-  let rounds = 0;
-  const { project, receiving } = junsProject((_caller, _session, _since, ms) => {
-    asked.push(ms);
-    mock.timers.tick(ms);
-    rounds += 1;
-    // Round 2: Priya's worktree gets an item; Jun's wait reads its own work again and keeps waiting.
-    if (rounds === 2) receiving["priya"]!.push(item(3, "accounts-merge"));
-    return { status: "ok", mark: { epoch: "e", version: rounds >= 2 ? 1 : 0 }, changed: rounds === 1 || rounds === 2 };
-  });
+  const rounds = clockedRounds();
+  const { project } = junsProject(rounds.round);
   const call = await connect("jun", project);
   await call("get_work", { sessionId: SESSION });
 
-  const progress: { progress: number }[] = [];
-  const answer = await call("wait_for_work", { sessionId: SESSION, timeoutSeconds: 300 }, progress);
+  const answer = await call("wait_for_work", { sessionId: SESSION });
 
-  assert.deepEqual(answer.value, { status: "nothing_yet" });
-  assert.deepEqual(asked, [0, 60_000, 60_000, 60_000, 60_000, 60_000], "a first round at once, then rounds of a minute until the timeout");
-  assert.deepEqual(progress.map((each) => each.progress), [0, 1, 2, 3, 4, 5], "one notification at the start and one after each round");
+  assert.deepEqual(answer.value, { state: "waiting", next: "call wait_for_work again" });
+  assert.equal(Date.now(), 90_000, "it answers at 90 seconds, before Claude Code's two-minute idle abort");
+  assert.deepEqual(rounds.asked, [0, 90_000], "a first round at once, then one round for the rest of the call");
+  assert.equal(rounds.most(), 1, "one wake subscription at a time");
+});
+
+test("work arriving 30 seconds into a wait answers then", async (t) => {
+  mock.timers.enable({ apis: ["Date"], now: 0 });
+  t.after(() => mock.timers.reset());
+  let receiving: Record<string, CallerSummaryView[]> = {};
+  const rounds = clockedRounds(30_000, () => void receiving["jun"]!.push(item(2, "cohort-ltv")));
+  const world = junsProject(rounds.round);
+  receiving = world.receiving;
+  const call = await connect("jun", world.project);
+  await call("get_work", { sessionId: SESSION });
+
+  const answer = await call("wait_for_work", { sessionId: SESSION });
+
+  assert.equal(answer.value["status"], "new_work");
+  assert.deepEqual(answer.value["callerItems"]["receiving"].map((each: CallerSummaryView) => each.item), [item(2, "cohort-ltv").item]);
+  assert.equal(Date.now(), 30_000, "it answers when the work arrives");
+  assert.deepEqual(rounds.asked, [0, 90_000]);
 });
 
 test("a session waits only on its own work: another owner's wait on it is refused", async () => {
