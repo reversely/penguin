@@ -700,7 +700,7 @@ export interface BlockProjectPort {
   fixesWrittenSince?(targets: readonly string[], since: string): Promise<readonly string[]>;
   /**
    * The run's caller replay reached Penguin: the feature's caller items follow it (caller-items.ts
-   * `replayReported`). Absent, a block run moves no item.
+   * `replayReported`), opening them when none exist. Absent, a block run moves no item.
    */
   callerReplayReported?(featureId: string, run: { readonly runId: string; readonly checkpoint: string }, section: CallerReplaySection): Promise<void>;
   /** The feature's caller items not yet settled, as lines; a passing land run waits on them. Absent, none. */

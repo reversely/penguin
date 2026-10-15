@@ -4,9 +4,9 @@
 // - The originating feature's FeatureAgent keeps the items (`CallerItemStore`). The ProjectAgent keeps
 //   a short index of them (`CallerIndexStore`), so the receiving side's reads find the originating
 //   features without asking every FeatureAgent.
-// - A `check` run's replay opens the items (`replayReported`). From then on, every replay of the
-//   feature, a later check's or a block run's, updates them: a caller whose calls changed resets its
-//   item to its verdict's first state, and an item no replay reaches is withdrawn.
+// - Every replay of the feature, a `check` run's or a block run's, opens the items it reaches and
+//   updates those it already holds (`replayReported`): a caller whose calls changed resets its item to
+//   its verdict's first state, and an item no replay reaches is withdrawn.
 // - Agents move the items with four tools (`callerAction`): `confirm_caller`, `review_caller` (the
 //   receiving branch's agent), `propose_caller_fix` and `explain_difference` (the originating agent).
 //   The worktree owner decides on the dashboard (`ownerDecision`).
@@ -418,10 +418,10 @@ export async function heldReplay(deps: Pick<CallerItemDeps, "keeper">, originId:
 
 /**
  * A caller replay reached Penguin from the originating feature's `check` run (`source.kind` `check`)
- * or one of its block runs. A check opens an item per running feature and contract the replay reaches.
- * A block run updates the items of a feature that already has them: the protocol starts at the
- * originating agent's first check. An item whose calls changed resets; one the replay no longer
- * reaches is withdrawn. Answers the items that moved.
+ * or one of its block runs. Either opens an item per running feature and contract the replay reaches,
+ * so a feature whose agent never called `check` meets the protocol at its land run (#190). An item
+ * whose calls changed resets; one the replay no longer reaches is withdrawn. Answers the items that
+ * moved.
  */
 export async function replayReported(
   deps: CallerItemDeps,
@@ -431,7 +431,6 @@ export async function replayReported(
 ): Promise<CallerItem[]> {
   if (deps.features.get(originId) === undefined) return [];
   const existing = new Map((await deps.keeper(originId).callerItems(originId)).map((item) => [item.itemId, item]));
-  if (source.kind === "block" && existing.size === 0) return [];
   const groups = new Map<string, { feature: string; contract: string; callers: CallerVerdict[] }>();
   for (const caller of section.callers) {
     const target = deps.features.get(caller.feature);

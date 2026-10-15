@@ -1490,9 +1490,9 @@ rejects before the originating feature changes its fork or reaches main.
   `services/project-agent/src/caller-items.ts`). The ProjectAgent keeps an index of them
   (`CallerIndexStore`), so a read on the receiving side asks only the FeatureAgents that hold an item
   on that worktree.
-- **When items open.** The originating agent's `check` opens the items. From then on every replay of
-  the feature updates them, a later check's or a block run's. A block run of a feature with no item
-  opens none: the protocol starts at the agent's first check. A replay that changes an item's calls
+- **When items open.** Every replay of the feature opens the items it reaches, a `check`'s or a block
+  run's, and updates those already open. A feature whose agent never called `check` gets its items
+  from its land run's replay, and that land is refused `callers_pending` until they settle. A replay that changes an item's calls
   resets the item to its verdict's first state, which clears its explanation, fix and review. The
   calls are compared by a SHA-256 over each call site's verdict and each differing call's outcome and
   effects, so the same calls on newer commits leave the item where it stands. An item the newest

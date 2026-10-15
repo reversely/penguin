@@ -243,8 +243,8 @@ plan's gets a part in that plan; `report_checkpoint` lists it under `plansJoined
 
 ## Caller items
 
-When the originating agent's `check` replays another running feature's calls into a changed function
-([design.md](design.md#caller-replay)), Penguin opens one caller item per running feature and contract
+When the originating feature's `check` or block run replays another running feature's calls into a
+changed function ([design.md](design.md#caller-replay)), Penguin opens one caller item per running feature and contract
 ([design.md](design.md#caller-items-in-the-build)). Each side answers its own steps:
 
 | Tool | Who calls it | Input | Answer |

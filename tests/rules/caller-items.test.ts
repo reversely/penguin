@@ -186,8 +186,6 @@ const reasonOf = (outcome: Awaited<ReturnType<typeof callerAction>>) => (outcome
 
 test("a check's replay opens one item per running feature and contract in its verdict's first state, each a signed record", async () => {
   const w = await world();
-  const blockFirst = await replayReported(w.deps, "dependency-audit", section([caller("instant-payouts", "differs")]), { kind: "block", id: "dependency-audit/1", checkpoint: SHA("a") });
-  assert.deepEqual(blockFirst, [], "a block run opens no item before the agent's own check");
   const opened = await replayReported(
     w.deps,
     "dependency-audit",
@@ -324,9 +322,10 @@ test("get_work's packet carries the calls as data and the other agent's words un
   assert.equal(origin?.originating[0]?.yourTurn, null, "the originating agent waits for the review");
 });
 
-test("a fix token and a runner write into a receiving fork wait for its approval; a land with an open item is refused callers_pending", async () => {
+test("a block run opens items when the agent never called check; a fix token and a runner write into a receiving fork wait for approval; the land is refused callers_pending", async () => {
   const w = await world();
-  await replayReported(w.deps, "dependency-audit", section([caller("instant-payouts", "differs")]), CHECK);
+  const opened = await replayReported(w.deps, "dependency-audit", section([caller("instant-payouts", "differs")]), { kind: "block", id: "dependency-audit/1", checkpoint: SHA("a") });
+  assert.deepEqual(opened.map((item) => [item.feature, item.state, item.source.kind].join(" ")), ["instant-payouts differs block"], "a block run with no prior check opens the items");
   const part = {
     partId: "dependency-audit/v1#instant-payouts",
     revision: 1,
