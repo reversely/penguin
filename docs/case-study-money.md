@@ -1,7 +1,7 @@
 # Case study: moving every price to integer minor units
 
-This case follows one breaking change through Penguin on a team of fourteen people running 64 agent
-identities, plus up to 250 sub-agents, with about forty features in progress at once. The change alters contracts that nine scopes
+This case follows one breaking change through Penguin at a company of 200 engineers running 587 agent
+identities, plus up to five sub-agents per builder, with 573 features in progress at once. The change alters contracts that nine scopes
 and 23 running features call, so it reaches main as a split: the expand first, then each owner's
 code in its own block, then the removal of the old shape. Every count below comes from the preview
 seed's run of the fixture in [fixture-money.md](fixture-money.md): `propose_plan`, Penguin's caller
@@ -9,12 +9,14 @@ counts, its migration plans and the review harness.
 
 ## Team
 
-Larder is a sample e-commerce site for grocery delivery, with one repository. Fourteen engineers work
-in four teams. Each is DRI for two or three of the repository's 30 scopes. Each runs one steward plus
-one builder per open feature: 64 identities across the 50 features. A builder may run up to five
-sub-agents on its own machine, each on a bounded task within the feature, so Larder runs up to 314
-agents at once. Sub-agents act as their builder: Penguin sees the builder's identity, charter and
-token. At any moment about forty features are open.
+Larder is a sample e-commerce site for grocery delivery, with one repository. Two hundred engineers
+work in four teams. Fourteen of them are DRI for two or three of the repository's 30 scopes each and
+run a steward for those scopes. Every engineer runs one builder per open feature: 587 identities
+across 573 open features. A builder may run up to five sub-agents on its own machine, each on a
+bounded task within the feature, so Larder runs up to 3,452 agents at once. Sub-agents act as their
+builder: Penguin sees the builder's identity, charter and token. The tables below follow the fourteen
+DRIs, whose features the cases are written around; [fixture-money.md](fixture-money.md#scale)
+describes the other 186 engineers and their 532 features.
 
 | Team | Person | DRI for | Reads money? |
 |---|---|---|---|

@@ -5,7 +5,6 @@
 // #177). Each case's start opens with the owners told. Names and numbers come from the fixture.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -29,10 +28,10 @@ import {
 } from "@penguin/protocol";
 import { build } from "esbuild";
 
-import { builderOf, seed, type LarderFeature, type MoneyLarder, type PreviewProject } from "../../scripts/preview/seed.ts";
+import { builderOf, larderExpanded, seed, type LarderFeature, type PreviewProject } from "../../scripts/preview/seed.ts";
 
 const ROOT = fileURLToPath(new URL("../../", import.meta.url));
-const LARDER = JSON.parse(readFileSync(join(ROOT, "examples", "money-minor-units", "larder.json"), "utf8")) as MoneyLarder;
+const LARDER = larderExpanded().larder;
 
 // One Larder run serves the four cases, which run in order on one main.
 let larderRun: Promise<PreviewProject> | undefined;
@@ -206,7 +205,7 @@ test("case 2, structured-logs: Hugo's agent revises its change, Elif's and Sam's
   assert.deepEqual(verdictsAt("utc-day"), { "holiday-closures": ["unaffected"], "weekly-digest": ["unaffected"] });
 
   // Hugo's agent classifies every differing call as incidental and revises, with the case's words; no one reviews.
-  const words = JSON.parse(readFileSync(join(ROOT, "examples", "money-minor-units", "callers", "case2.json"), "utf8")) as { explanations: Record<string, string> };
+  const words = larderExpanded().callers["case2"] as { explanations: Readonly<Record<string, string>> };
   const explained = recordsOf(preview, origin.id, "explain_difference");
   assert.deepEqual(explained.map((record) => [record.payload["feature"], record.payload["kind"]]).sort(), receiving.map((feature) => [feature, "revising"]));
   for (const record of explained) {
@@ -300,7 +299,7 @@ test("cases 1 and 3 run the caller protocol: each unaffected caller confirmed, e
   const steps = ["caller_item", "confirm_caller", "explain_difference", "review_caller", "decide_caller", "propose_caller_fix"];
   for (const useCase of [1, 3]) {
     const origin = originOf(useCase);
-    const words = JSON.parse(readFileSync(join(ROOT, "examples", "money-minor-units", "callers", `case${useCase}.json`), "utf8")) as { explanations: Record<string, string> };
+    const words = larderExpanded().callers[`case${useCase}`] as { explanations: Readonly<Record<string, string>> };
     const records = preview.features.records(origin.id).map((stored) => JSON.parse(stored.file) as { type: string; author: Record<string, string>; payload: Record<string, unknown> });
     // Replays each item's state from its signed records; at each write into a fork, every item there is approved from its side.
     const states = new Map<string, { feature: string; state: string; ownerAsked: unknown }>();

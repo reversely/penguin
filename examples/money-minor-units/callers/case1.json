@@ -1,5 +1,5 @@
 {
-  "$comment": "Case 1's caller items (docs/fixture-money.md, Caller items on the preview seed): Priya's agent explains each receiving feature's differing calls and classifies every one of them as intended with the reason under calls; that feature's agent reviews the explanation.",
+  "$comment": "Case 1's caller items (docs/fixture-money.md, Caller items on the preview seed): Priya's agent explains each receiving feature's differing calls and classifies every one of them as intended with the reason under calls; that feature's agent reviews the explanation. 'kinds' gives the words for the features scale.py generates, by their kind, with {title} filled in (scale.caller_words).",
   "explanations": {
     "cohort-ltv": "ShopperMap.resolve() now links the identities a login or a shared verified email ties together, one account per device. Your retention test sees a later login lower a published day's count. Penguin's update copies accounts/shoppers.py and analytics/activity.py into your fork. Rule count-by-cutover rewrites your cohorts' key to shopper_map.counted_as(event), which counts identities before the cutover day and shoppers from it on.",
     "weekly-digest": "Shopper now keeps its attributes per identity, and ShopperMap links a shopper's identities. Your audience therefore reads one shopper where it read several identities. Penguin's update copies accounts/shoppers.py and messaging/subscriptions.py into your fork: is_subscribed() reads each linked identity's latest consent, so an unsubscribe on any identity holds."
@@ -17,5 +17,25 @@
   "reviews": {
     "cohort-ltv": "Approved. Counting by the cutover keeps each published day's count, and the kiosk's shoppers stay apart.",
     "weekly-digest": "Approved. The digest writes to each linked shopper once, and an unsubscribe on any of their identities stops it."
+  },
+  "kinds": {
+    "shopper-same": {
+      "kind": "intended",
+      "explanation": "ShopperMap.resolve() now links the identities a login or a shared verified email ties together, one account per device, so it can return a linked shopper's key where it returned an identity's. {title} counts shoppers with only one identity each, so its counts stay the same.",
+      "reason": "ShopperMap.resolve() returns the linked shopper's key. {title} counts each shopper once either way.",
+      "review": "Approved. {title}'s counts are unchanged."
+    },
+    "shopper-cutover": {
+      "kind": "intended",
+      "explanation": "ShopperMap.resolve() now links the identities a login or a shared verified email ties together, one account per device. Your test sees a later login lower a published day's count in {title}. Penguin's update copies accounts/shoppers.py into your fork. Rule count-by-cutover rewrites the count's key to shopper_map.counted_as(event), which counts identities before the cutover day and shoppers from it on.",
+      "reason": "ShopperMap.resolve() now links the identities that one login or one verified email ties together. The call returns one shopper where it returned several.",
+      "review": "Approved. Counting by the cutover keeps each published day's count in {title}."
+    },
+    "shopper-consent": {
+      "kind": "intended",
+      "explanation": "Shopper now keeps its attributes per identity, and ShopperMap links a shopper's identities. {title} therefore reads one shopper where it read several identities. Penguin's update copies accounts/shoppers.py and messaging/subscriptions.py into your fork: is_subscribed() reads each linked identity's latest consent, so an unsubscribe on any identity holds.",
+      "reason": "Shopper now keeps its attributes per identity. {title} reads one linked shopper where it read several identities.",
+      "review": "Approved. {title} leaves out a shopper who unsubscribed on any of their identities."
+    }
   }
 }

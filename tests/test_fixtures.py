@@ -216,14 +216,27 @@ def test_each_larder_fork_penguin_updates_holds_the_originating_modules_and_pass
         check=True,
         capture_output=True,
     )
-    data = json.loads((EXAMPLES / "money-minor-units" / "larder.json").read_text())
+    # Larder grown by its 'scale' section, so Penguin's updates of the generated callers count too.
+    data = json.loads(
+        subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                str(EXAMPLES / "money-minor-units" / "build.py"),
+                "--expanded",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+    )["larder"]
     updates = [
         (feature["id"], commit["tag"], commit["update"])
         for feature in data["features"]
         for commit in feature["commits"]
         if "update" in commit
     ]
-    assert len(updates) == 4
+    assert len(updates) == 8
     for fork, tag, update in updates:
         head = f"feature-{fork}-{tag}"
         source = f"feature-{update['from']}-{update['tag']}"

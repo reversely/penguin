@@ -24,9 +24,9 @@ import {
   blockPass,
   checkTools,
   CombinedRunner,
-  fetchRepoBranches,
+  fetchedRefs,
   FixApplier,
-  localRemote,
+  isRunnerRepo,
   PartTrialRunner,
   PlanFactsRunner,
   pythonDependencyAnalyzer,
@@ -802,7 +802,7 @@ export class PreviewProject {
    */
   async #pushFix(spec: FixWriteSpec): Promise<string> {
     const repo = await this.#runner();
-    if (spec.copy !== undefined) await fetchRepoBranches(repo, () => localRemote(this.repo), `feature-${spec.feature}`);
+    if (spec.copy !== undefined) await fetchPreviewFork(repo, this.repo, `feature-${spec.feature}`);
     const written = await writeFix({ repoPath: repo, remote: this.#forkRemote(spec.fork) }, spec);
     if (written.status !== "written") throw new Error(`writing ${spec.partId} into ${spec.fork}: ${written.status === "moved" ? `the fork moved to ${written.head}` : written.reason}`);
     return written.commit;
@@ -814,14 +814,14 @@ export class PreviewProject {
    * fork's order for a later claim. The preview writes each fork's writes at the fixture's dates, so
    * one claim does not write them all as a polling runner would. Answers each write kept.
    */
-  async #runnerClaim(pick: (grant: FixGrant) => boolean): Promise<{ readonly grant: FixGrant; readonly commit: string }[]> {
+  async #runnerClaim(pick: (grant: FixGrant, spec: FixWriteSpec) => boolean): Promise<{ readonly grant: FixGrant; readonly commit: string }[]> {
     const deps = this.fixWriteDeps();
     const claimed = await claimRunnerWrites(deps, RUNNER);
     if (claimed.status !== "ok") throw new Error(claimed.message);
     const kept: { grant: FixGrant; commit: string }[] = [];
     for (const { spec } of claimed.writes) {
       const grant = this.fixGrants.byId(spec.writeId) as FixGrant;
-      if (!pick(grant)) {
+      if (!pick(grant, spec)) {
         this.fixGrants.release(grant.id, RUNNER.bridgeId);
         continue;
       }
@@ -841,12 +841,17 @@ export class PreviewProject {
   /**
    * The check runner claims the copy writes whose turn it is, into feature `target`'s fork or into
    * any, and copies the originating change's current modules there (fix-write.ts `openCopyWrites`).
-   * A copy write whose fork already holds every module is withdrawn by the claim. Answers each copy
-   * kept, as `<part> into <feature>`.
+   * A copy write whose fork already holds every module is withdrawn by the claim. A verify part's
+   * write into a feature of `verifyInto` is claimed too: it only copies the modules, and comes first in
+   * that fork's order. Answers each write kept, as `<part> into <feature>`.
    */
-  async writeCopies(target?: string): Promise<string[]> {
+  async writeCopies(target?: string, verifyInto: ReadonlySet<string> = new Set()): Promise<string[]> {
     this.tick();
-    const kept = await this.#runnerClaim((grant) => copyWriteOf(grant) !== undefined && (target === undefined || grant.targetFeatureId === target));
+    const kept = await this.#runnerClaim(
+      (grant, spec) =>
+        (target === undefined || grant.targetFeatureId === target) &&
+        (copyWriteOf(grant) !== undefined || (verifyInto.has(grant.targetFeatureId) && spec.copy !== undefined && spec.patch === "")),
+    );
     return kept.map(({ grant }) => `${writtenPart(grant)} into ${grant.targetFeatureId}`);
   }
 
@@ -1097,7 +1102,7 @@ export class PreviewProject {
         }
         return recorded as never;
       },
-      fetchFork: (fork) => fetchRepoBranches(repo, () => localRemote(this.repo), fork),
+      fetchFork: (fork) => fetchPreviewFork(repo, this.repo, fork),
       impact,
       combined: new CombinedRunner({
         repoPath: repo,
@@ -1470,7 +1475,7 @@ export class PreviewProject {
         if (recorded.status === "rejected") throw new Error(`block ${report.runId}: ${recorded.message}`);
         return recorded as never;
       },
-      fetchRepo: (fork) => fetchRepoBranches(repo, () => localRemote(this.repo), fork),
+      fetchRepo: (fork) => fetchPreviewFork(repo, this.repo, fork),
       combined: new CombinedRunner({
         repoPath: repo,
         runner: new TestRunner({ repoPath: repo, env: ENV, scratchDir: scratch, consent: () => true }),
@@ -1843,6 +1848,42 @@ function gitHistory(dir: string): RepoHistoryReader & { has(sha: string): boolea
   };
 }
 
+/**
+ * Fetches fork `fork` of the preview into the runner's repository as runner mode fetches an Artifacts
+ * fork: its own branch and main, under `refs/penguin/<fork>/`, plus the fixture's tags. Every fork of the preview is a branch of
+ * one local repository, so fetching every branch for each fork (`fetchRepoBranches`) would copy every
+ * other fork's refs too, which no Artifacts fork holds; at 573 forks that grows the runner's refs past
+ * half a million.
+ */
+async function fetchPreviewFork(runnerRepo: string, previewRepo: string, fork: string): Promise<void> {
+  if (!isRunnerRepo(fork)) throw new Error(`${JSON.stringify(fork)} is not a fork the runner may fetch`);
+  const wanted = [...new Set(["main", fork])].map((branch) => `refs/heads/${branch}`);
+  const present = execFileSync("git", ["-C", previewRepo, "for-each-ref", "--format=%(refname:lstrip=2)", ...wanted], { encoding: "utf8" });
+  const branches = present.split("\n").filter((branch) => branch !== "");
+  // The fixture's tags name every checkpoint, the revisions Penguin copies from included. They go into
+  // the runner's one tag namespace, so they are copied once however many forks are fetched.
+  await promisify(execFile)("git", ["-C", runnerRepo, "fetch", "--quiet", "--no-tags", "--end-of-options", previewRepo, ...branches.map((branch) => `+refs/heads/${branch}:${fetchedRefs(fork)}/${branch}`), "+refs/tags/*:refs/tags/*"]);
+}
+
+/**
+ * Larder grown by its larder.json 'scale' section (examples/money-minor-units/scale.py), with each
+ * case's caller words for the generated features filled in: what `build.py --expanded` prints. The
+ * seed and the use-case tests read this, so they see every feature build.py builds.
+ */
+export interface ExpandedLarder {
+  readonly larder: MoneyLarder;
+  readonly callers: Readonly<Record<string, CallerWords>>;
+}
+
+let expandedLarder: ExpandedLarder | undefined;
+
+export function larderExpanded(): ExpandedLarder {
+  expandedLarder ??= JSON.parse(
+    execFileSync(PYTHON, [join(ROOT, "examples", "money-minor-units", "build.py"), "--expanded"], { env: ENV, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 }),
+  ) as ExpandedLarder;
+  return expandedLarder;
+}
+
 /** Builds the fixture's repository with its own build.py into a new directory. */
 export async function buildFixture(fixture: ExampleName): Promise<string> {
   const dir = join(await realpath(await mkdtemp(join(tmpdir(), `penguin-preview-${fixture}-`))), "repo");
@@ -2023,7 +2064,7 @@ const subjectOf = (commit: LarderCommit): string => commit.message.split("\n")[0
  * explanation of each receiving feature's differing calls, and that feature's agent's review note.
  * A feature whose calls are `incidental` gets no review: the originating agent revises its change.
  */
-interface CallerWords {
+export interface CallerWords {
   readonly explanations: Readonly<Record<string, string>>;
   /** Each receiving feature's differing calls: how the originating agent classifies them, with its reason. */
   readonly calls: Readonly<Record<string, { readonly kind: "intended" | "incidental"; readonly reason: string }>>;
@@ -2062,8 +2103,10 @@ async function callerApprovals(preview: PreviewProject, item: CallerItem): Promi
 
 /** The case's caller words, or undefined when the fixture has none for it. */
 async function callerWords(preview: PreviewProject, useCase: number | undefined): Promise<CallerWords | undefined> {
+  if (useCase === undefined) return undefined;
+  if (preview.fixture === "money-minor-units") return larderExpanded().callers[`case${useCase}`];
   const file = join(ROOT, "examples", preview.fixture, "callers", `case${useCase}.json`);
-  return useCase !== undefined && existsSync(file) ? (JSON.parse(await readFile(file, "utf8")) as CallerWords) : undefined;
+  return existsSync(file) ? (JSON.parse(await readFile(file, "utf8")) as CallerWords) : undefined;
 }
 
 /**
@@ -2143,8 +2186,12 @@ async function landOrigin(preview: PreviewProject, feature: LarderFeature, words
       if (round === 4) throw new Error(`${feature.id}'s land stays refused as ${asked}: ${(await landPending(preview.callerDeps(), feature.id)).join("; ")}`);
       if (asked === "copy_not_written") {
         await answerCallers(preview, feature.id, words);
-        const copied = await preview.step(`check runner copies ${feature.id}'s modules into its affected forks`, () => preview.writeCopies());
-        if (copied.length === 0) throw new Error(`${feature.id}'s land waits for copies the check runner did not write`);
+        // A verify part on a running feature the fixture holds no update of, such as a generated caller
+        // whose calls come out the same, is written by the check runner as the copies themselves.
+        const updated = new Set(larderExpanded().larder.features.filter((each) => each.commits.some((commit) => commit.update?.from === feature.id)).map((each) => each.id));
+        const verifyInto = new Set(preview.callerItemsOf(feature.id).map((item) => item.feature).filter((each) => !updated.has(each)));
+        const copied = await preview.step(`check runner copies ${feature.id}'s modules into its affected forks`, () => preview.writeCopies(undefined, verifyInto));
+        if (copied.length === 0) throw new Error(`${feature.id}'s land waits for copies the check runner did not write: ${(await landPending(preview.callerDeps(), feature.id)).join("; ").slice(0, 2_000)}; claimable writes: ${JSON.stringify(await Promise.all(preview.fixGrants.claimable().map(async (grant) => [grant.targetFeatureId, grant.partId, preview.fixGrants.waitsFor(grant), (await preview.fixWriteDeps().callerWaits?.(grant.featureId, grant.targetFeatureId)) ?? null, preview.fixWriteDeps().locked?.(grant.targetFeatureId) ?? null]))).slice(0, 3_000)}`);
       } else {
         await answerCallers(preview, feature.id, words);
       }
@@ -2248,7 +2295,8 @@ async function casesOneToThree(preview: PreviewProject, larder: Larder): Promise
     for (const place of plan.parts.map((part) => part.place)) {
       if (place.kind !== "feature") continue;
       const reviewer = byId.get(place.feature) as LarderFeature;
-      for (const scope of reviewer.area) {
+      // A review covers its own scope: only the agent of the scope's DRI reviews it.
+      for (const scope of reviewer.area.filter((each) => preview.scopeMap.scopes.get(each)?.driId === reviewer.owner)) {
         const names = [...tags.map((tag) => `case${origin.case}-${scope}-${tag}.json`), `case${origin.case}-${scope}.json`];
         const file = names.map((name) => join(reviewsDir, name)).find((path) => existsSync(path));
         if (file === undefined) continue;
@@ -2425,7 +2473,7 @@ async function casesOneToThree(preview: PreviewProject, larder: Larder): Promise
 
 /** Use cases 1 to 4 on Larder, run in order on one main (PRD section 1). */
 async function larderCases(preview: PreviewProject): Promise<void> {
-  const data = JSON.parse(await readFile(join(ROOT, "examples", preview.fixture, "larder.json"), "utf8")) as MoneyLarder;
+  const data = larderExpanded().larder;
   const identities = identitiesOf(preview);
   preview.seedIdentities(identities);
   preview.sortContracts = true;

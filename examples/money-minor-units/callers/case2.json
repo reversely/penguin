@@ -1,5 +1,5 @@
 {
-  "$comment": "Case 2's caller items, which open when Hugo's agent checks the checkpoint (docs/fixture-money.md, Caller items on the preview seed): Hugo's agent explains each receiving feature's differing calls, classifies every one of them as incidental with the reason under calls and revises its change. No receiving agent reviews them; each confirms its callers once the revision's replay shows them unaffected.",
+  "$comment": "Case 2's caller items, which open when Hugo's agent checks the checkpoint (docs/fixture-money.md, Caller items on the preview seed): Hugo's agent explains each receiving feature's differing calls, classifies every one of them as incidental with the reason under calls and revises its change. No receiving agent reviews them; each confirms its callers once the revision's replay shows them unaffected. 'kinds' gives the words for the features scale.py generates, by their kind, with {title} filled in (scale.caller_words).",
   "explanations": {
     "holiday-closures": "My change makes start_of_day() return UTC midnight, which only the log partitions need. is_closed() reads the store's local day from it, so 20:00 on Christmas at UTC-08:00 reads as 26 December. I am putting start_of_day() back as main has it and filing log lines by a new start_of_utc_day().",
     "weekly-digest": "My change makes start_of_day() return UTC midnight, which only the log partitions need. The digest's send time starts from it, so a shopper west of UTC gets the digest at another hour. I am putting start_of_day() back as main has it and filing log lines by a new start_of_utc_day()."
@@ -12,6 +12,13 @@
     "weekly-digest": {
       "kind": "incidental",
       "reason": "Only log_day() needs a UTC midnight. The send time needs the shopper's local midnight, which start_of_day() returned on main."
+    }
+  },
+  "kinds": {
+    "local-day": {
+      "kind": "incidental",
+      "explanation": "My change makes start_of_day() return UTC midnight, which only the log partitions need. {title} reads the store's local day from it, so 20:00 on Christmas at UTC-08:00 reads as 26 December. I am putting start_of_day() back as main has it and filing log lines by a new start_of_utc_day().",
+      "reason": "Only log_day() needs a UTC midnight. {title} needs the store's local midnight, which start_of_day() returned on main."
     }
   }
 }

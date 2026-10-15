@@ -35,6 +35,7 @@ a temporary folder of its own.
 """
 
 import argparse
+import importlib.util
 import json
 import os
 import re
@@ -51,6 +52,18 @@ LARDER = HERE / "larder.json"
 CODEMOD = (
     HERE.parents[1] / "services" / "local-bridge" / "analysis" / "python_codemod.py"
 )
+
+
+def _load_scale():
+    """scale.py beside this script, loaded by path: an isolated interpreter (-I) does not put this
+    script's directory on the import path."""
+    spec = importlib.util.spec_from_file_location("larder_scale", HERE / "scale.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+scale = _load_scale()
 
 # Files a local test run leaves in a source directory; they never belong in a commit.
 SKIPPED_DIRS = frozenset({"__pycache__", ".pytest_cache"})
@@ -157,6 +170,8 @@ class Larder:
     scope_paths: dict[str, list[str]]
     features: dict[str, dict]
     commits: list[CommitSpec]
+    # The files of each generated feature commit (scale.py), keyed by (feature id, source).
+    sources: dict = None
 
 
 class Checker:
@@ -558,6 +573,10 @@ def load_larder(raw: object) -> Larder:
     """
     if not isinstance(raw, dict):
         raise LarderError(["the file must hold a JSON object"])
+    try:
+        raw, sources = scale.expand(raw)
+    except (KeyError, ValueError, StopIteration) as error:
+        raise LarderError([f"scale: {error!r}"]) from error
     check = Checker()
     people = check_people(raw, check)
     teams = check_teams(raw, people, check)
@@ -569,7 +588,7 @@ def load_larder(raw: object) -> Larder:
     check_split(raw, features, check)
     if check.problems:
         raise LarderError(check.problems)
-    return Larder(raw, people, teams, scopes, scope_paths, features, commits)
+    return Larder(raw, people, teams, scopes, scope_paths, features, commits, sources)
 
 
 def read_larder(path: Path = LARDER) -> Larder:
@@ -1125,6 +1144,8 @@ def build(target: Path, larder: Larder | None = None) -> Built:
             )
         elif event.source is None:
             files = {}
+        elif (event.feature, event.source) in larder.sources:
+            files = larder.sources[(event.feature, event.source)]
         else:
             files = source_files(HERE / "features" / event.feature / event.source)
         laid[name] = {**laid.get(name, {}), **files}
@@ -1184,13 +1205,36 @@ def pins_of(larder: Larder, built: Built) -> dict:
     }
 
 
+def expanded() -> dict:
+    """larder.json grown by scale.py, and each case's callers file with the generated features' words.
+
+    The preview seed and the use-case tests read this, so they see the features build.py builds.
+    """
+    grown, _ = scale.expand(json.loads(LARDER.read_text(encoding="utf-8")))
+    callers = {}
+    for path in sorted((HERE / "callers").glob("case*.json")):
+        words = json.loads(path.read_text(encoding="utf-8"))
+        callers[path.stem] = scale.caller_words(words, grown["features"])
+    return {"larder": grown, "callers": callers}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
-        "target", type=Path, help="empty or missing directory to build into"
+        "target", type=Path, nargs="?", help="empty or missing directory to build into"
     )
     parser.add_argument("--pins", action="store_true", help="print the pins JSON")
+    parser.add_argument(
+        "--expanded",
+        action="store_true",
+        help="print larder.json grown by its 'scale' section and each case's caller words, then stop",
+    )
     args = parser.parse_args(argv)
+    if args.expanded:
+        print(json.dumps(expanded(), indent=1))
+        return 0
+    if args.target is None:
+        parser.error("TARGET is required unless --expanded is given")
     try:
         larder = read_larder()
     except LarderError as error:
