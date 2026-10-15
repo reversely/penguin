@@ -60,6 +60,45 @@ person approving every part in production ([docs/review-policies.md](docs/review
 | Workers | The MCP endpoint agents call and the dashboard people use |
 | Queues | Pushes to the issues repo reach the Worker |
 
+### Architecture
+
+Each developer runs their own coding agent on their own machine. The agent talks to one Penguin Worker
+over MCP and pushes code only to its own feature's fork, with a write token that lasts 30 minutes. A
+local bridge publishes checkpoints. Two Durable Objects hold the state: the ProjectAgent knows the
+people, their sessions and which branches call which functions; one FeatureAgent per feature holds its
+plan, its differences and its fixes. A check runner machine claims each check, replays the calling
+branches on main and with the change, and writes each approved fix into its fork with a token for that
+one fork, valid for 10 minutes. Main moves only when every difference is settled, in one push with a
+5-minute token. Every step is a signed file in Artifacts.
+
+```mermaid
+flowchart LR
+  Agent["Developer machine<br/>coding agent and penguin-bridge"]
+  Run["Check runner machine<br/>replays callers, runs checks,<br/>writes approved fixes"]
+  subgraph CF["Cloudflare"]
+    Worker["Worker<br/>/mcp for agents, /api dashboard"]
+    PA["ProjectAgent<br/>people, sessions, caller list"]
+    FA["FeatureAgent, one per feature<br/>plan, differences, fixes"]
+    Q["Queue"]
+    subgraph Art["Artifacts"]
+      Forks["feature forks"]
+      Main["main"]
+      Record["record"]
+      Issues["issues"]
+    end
+  end
+  Agent -- "MCP calls, checkpoints" --> Worker
+  Run -- "claims runs" --> Worker
+  Worker --> PA
+  Worker --> FA
+  Agent -- "push own fork, 30 min token" --> Forks
+  Run -- "write fix, 10 min token" --> Forks
+  FA -- "merge, 5 min token" --> Main
+  PA -- "signed steps" --> Record
+  Issues -. "push events" .-> Q
+  Q --> Worker
+```
+
 ## Connect your agent
 
 Penguin works with any coding agent that speaks MCP, such as Claude Code or Codex, running on your own
