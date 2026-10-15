@@ -64,6 +64,8 @@ export interface Rejection {
 }
 
 export type SessionResult = { readonly status: "ok"; readonly session: SessionView } | Rejection;
+/** A registration: `feature` is the running feature the session joined from its worktree, or null. */
+export type RegisterResult = { readonly status: "ok"; readonly session: SessionView; readonly feature?: string | null } | Rejection;
 export type WorkResult = { readonly status: "ok"; readonly issueIds: readonly string[] } | Rejection;
 
 /** The charter fields of an identity that get_work reports. */
@@ -119,7 +121,7 @@ export interface OperationView {
 
 /** The ProjectAgent methods the tools call, reached over Durable Object RPC in the Worker. */
 export interface McpProject {
-  registerSession(caller: string, input: SessionRegistration): MaybePromise<SessionResult>;
+  registerSession(caller: string, input: SessionRegistration): MaybePromise<RegisterResult>;
   sessionHeartbeat(caller: string, sessionId: string): MaybePromise<SessionResult>;
   sessionWork(caller: string, sessionId: string): MaybePromise<WorkResult>;
   readIdentity(id: string): MaybePromise<CharterView | undefined>;
@@ -1057,7 +1059,8 @@ export const INSTRUCTIONS =
   "running; after about 90 seconds without one, the session goes offline and you register again. " +
   "A fix task from a Huddle reaches get_work at your next safe checkpoint: before your next tool " +
   "action when Penguin's bridge hook is installed, or when you report a checkpoint. " +
-  "To start a unit of work, call open_feature: Penguin forks main into the feature's repo and gives " +
+  "When register_session answers with a `feature`, this session already works on that feature, opened " +
+  "earlier from this worktree and branch; otherwise, to start a unit of work, call open_feature: Penguin forks main into the feature's repo and gives " +
   "this session a short-lived write token on it; report checkpoints on that fork with report_checkpoint. " +
   "When another person's running feature already covers part of the area, the start still opens at once: " +
   "Penguin approves it with a signed `approve_overlap` record and tells that feature's worktree owner. " +
@@ -1111,14 +1114,16 @@ export function createPenguinMcpServer(
       description:
         "Announces this session's identity, vendor, worktree and branch, and returns its sessionId. " +
         "The identity must belong to the owner of the MCP token. Issues assigned to the identity then " +
-        "route to this session.",
+        "route to this session. When an earlier session of the same identity opened or joined a running " +
+        "feature from this worktree and branch, this session joins that feature too and `feature` names it; " +
+        "otherwise `feature` is null and you call open_feature.",
       inputSchema: registerInput,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
     async (input) => {
       const outcome = await project.registerSession(owner, input);
       if (outcome.status === "rejected") return rejected(outcome);
-      return result({ sessionId: outcome.session.id, session: sessionFields(outcome.session) });
+      return result({ sessionId: outcome.session.id, session: sessionFields(outcome.session), feature: outcome.feature ?? null });
     },
   );
 

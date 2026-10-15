@@ -140,6 +140,13 @@ one, Penguin marks the session offline and the agent registers again. Once a ses
 identity's agent box in its owner's square on the team map leaves "No session". The identity's agent
 card lists the session with its vendor, branch and worktree ([dashboard.md](dashboard.md#agent-card)).
 
+Registering joins the open feature for the worktree. When an earlier session of the same identity
+opened or joined a running feature from the same `worktreeId` and `branch`, and the token's owner owns
+that feature, the new session joins it, as `open_feature` does for an existing feature. The answer's
+`feature` names the feature, and `get_work` and `wait_for_work` then carry its work, caller items
+included. With no such feature, `feature` is `null` and the agent calls `open_feature`. A session never
+joins a feature of another owner or another identity, nor one that has landed or closed.
+
 Penguin refuses `register_session` for an identity the token's owner does not own. The refusal reads
 `forbidden` and names the identity's owner.
 

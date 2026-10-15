@@ -53,6 +53,7 @@ import {
 import {
   declareArea,
   featureTokenGrant,
+  joinWorktreeFeature,
   openFeature,
   recordFeatureRepo,
   recordPenguinCheckpoint,
@@ -1653,13 +1654,18 @@ export class ProjectAgent extends Agent {
   /**
    * Registers a session of an identity and returns it with its ID. `caller` is the owner the gateway
    * authenticated by token; a session registers only as an identity of that owner. The identity's
-   * waiting assignments route to it.
+   * waiting assignments route to it. A session that registers in the worktree and branch of a
+   * running feature of its identity joins that feature, as open_feature would (#213); `feature`
+   * names it, or is null.
    */
-  registerSession(caller: string, input: SessionInput): SessionOutcome {
+  registerSession(caller: string, input: SessionInput): ({ readonly status: "ok"; readonly session: Session; readonly feature: string | null }) | SessionRejection {
     const outcome = this.#armSweep(this.#sessionStore().register(caller, input));
+    if (outcome.status !== "ok") return outcome;
+    const feature = joinWorktreeFeature(this.#featureStore(), caller, outcome.session);
+    if (feature !== null) this.#liveFeed().featuresChanged();
     // A new session has nothing in progress: registering is its first safe checkpoint.
-    if (outcome.status === "ok") this.#deliverEditTasks(outcome.session.id);
-    return outcome;
+    this.#deliverEditTasks(outcome.session.id);
+    return { ...outcome, feature };
   }
 
   /** Records a session's heartbeat. A session with no heartbeat within the offline window goes offline. */

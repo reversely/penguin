@@ -426,6 +426,27 @@ export class FeatureStore {
     return row === undefined ? undefined : (row["feature_id"] as string);
   }
 
+  /**
+   * The running feature of `personId` that an earlier session of identity `identityId` joined from
+   * worktree `worktreeId` on `branch`, latest joined first, or undefined. One query; it reads the
+   * Session table, which session-store.ts keeps in the same database.
+   */
+  featureOfWorktree(personId: string, identityId: string, worktreeId: string, branch: string): string | undefined {
+    const [row] = this.#db.exec(
+      `SELECT f.id FROM Session s
+         JOIN FeatureSession fs ON fs.session_id = s.id
+         JOIN Feature f ON f.id = fs.feature_id
+       WHERE s.identity_id = ? AND s.worktree_id = ? AND s.branch = ? AND f.person_id = ?
+         AND f.state IN ('opening', 'building', 'landing')
+       ORDER BY fs.joined_at DESC, fs.rowid DESC LIMIT 1`,
+      identityId,
+      worktreeId,
+      branch,
+      personId,
+    );
+    return row === undefined ? undefined : (row["id"] as string);
+  }
+
   /** The feature a session works on and when it joined, in epoch milliseconds, or undefined. */
   joinOfSession(sessionId: string): { readonly featureId: string; readonly joinedAt: number } | undefined {
     const [row] = this.#db.exec(`SELECT feature_id, joined_at FROM FeatureSession WHERE session_id = ?`, sessionId);

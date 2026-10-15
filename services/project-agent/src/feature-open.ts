@@ -35,7 +35,7 @@ import {
 import type { OverlapStatus } from "./overlap-lock.ts";
 import { CHECKPOINT_SHA_PATTERN } from "./owner-forks.ts";
 import type { HandedPlan, JoinedPlan } from "./plan-coverage.ts";
-import type { Delivery, OverlapRef, SessionOutcome } from "./session-store.ts";
+import type { Delivery, OverlapRef, Session, SessionOutcome } from "./session-store.ts";
 
 export type FeatureRejectReason = "invalid" | "forbidden" | "not_found" | "offline" | "conflict" | "locked";
 
@@ -164,6 +164,22 @@ function joinExisting(
   const joined = deps.features.join(feature.id, sessionId);
   if (!joined.joined) return rejected("conflict", `session ${sessionId} already works on feature ${joined.featureId}`);
   return { status, feature, joined: sessionId, overlap, announcedPlans: [] };
+}
+
+/**
+ * Joins a session `caller` just registered to the running feature its worktree is open for: one an
+ * earlier session of the same identity joined from the same worktree and branch, owned by `caller`.
+ * This is open_feature's join of an existing feature, without the agent having to call it. Returns
+ * the joined feature's id, or null when no feature matches.
+ */
+export function joinWorktreeFeature(
+  features: FeatureStore,
+  caller: string,
+  session: Pick<Session, "id" | "identityId" | "worktreeId" | "branch">,
+): string | null {
+  const featureId = features.featureOfWorktree(caller, session.identityId, session.worktreeId, session.branch);
+  if (featureId === undefined) return null;
+  return features.join(featureId, session.id).joined ? featureId : null;
 }
 
 /** Records the fork the Worker made for a feature. */
