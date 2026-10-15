@@ -166,9 +166,9 @@ The default base version counts every file in the issue's folder. A rejected ope
 advance the issue's version, so after a rejection pass `--base-version` with the version
 `get_issue` or the issue page reports.
 
-`create` writes the issue under a temporary ID, which is its own op_id, then prints it. Penguin gives the issue
-a number when it applies the create; the temporary ID stays an alias, so later commands keep naming
-the issue by it ([issues.md](issues.md#offline-issues-and-aliases)).
+`create` writes the issue under a temporary ID, which is its own op_id, then prints it. Penguin
+gives the issue a number when it applies the create; the temporary ID stays an alias, so later
+commands keep naming the issue by it ([issues.md](issues.md#offline-issues-and-aliases)).
 
 With the issues repo unreachable, the operation stays signed and queued in the spool and the command
 still exits 0. The next issue command, `penguin-bridge spool drain` or `penguin-bridge spool watch`
@@ -228,11 +228,11 @@ penguin-bridge edits [--once] [--interval <ms>] [--vendor claude|codex] [--progr
                      [--model <name>] [--timeout-minutes <n>] [--repo <path>] [--project <id>]
 ```
 
-Penguin routes each edit its procedure needs to the owner's steward or to a feature's builder. A task no running session takes waits for the
-owner's bridge. `edits` claims those tasks and runs each identity headless on the owner's machine,
-with the owner's own agent account (`edit-run.ts`, `edits-cli.ts`). It runs no task when the owner
-is away from the machine and the command is not running: Penguin then asks the owner to start a
-session.
+Penguin routes each edit its procedure needs to the owner's steward or to a feature's builder. A
+task no running session takes waits for the owner's bridge. `edits` claims those tasks and runs each
+identity headless on the owner's machine, with the owner's own agent account (`edit-run.ts`,
+`edits-cli.ts`). It runs no task when the owner is away from the machine and the command is not
+running: Penguin then asks the owner to start a session.
 
 Each pass:
 
@@ -347,10 +347,11 @@ Edit tasks for jun: 1 running, 2 queued, 0 asked (cap 2).
 `tests/e2e/edit-task-run.test.ts` runs one task on the helpful-fix fixture against real Artifacts.
 The Worker runs under local `wrangler dev` with every repo under a prefix unique to the run. Priya
 and Jun open their features and push their first checkpoints. Jun's session then goes offline.
-Priya's agent lands the UTC change. The runner's block run fails Jun's tests on Jun's fork, so Penguin opens
-a next-step task for Jun's builder. Jun's bridge runs `penguin-bridge edits --once --vendor claude`.
-The test checks the task is done and that its commit sits on Jun's fork head with changes under
-`analytics/` only. It deletes every repo under the prefix at the end and prints no token.
+Priya's agent lands the UTC change. The runner's block run fails Jun's tests on Jun's fork, so
+Penguin opens a next-step task for Jun's builder. Jun's bridge runs `penguin-bridge edits --once
+--vendor claude`. The test checks the task is done and that its commit sits on Jun's fork head with
+changes under `analytics/` only. It deletes every repo under the prefix at the end and prints no
+token.
 
 ```sh
 PENGUIN_EDIT_E2E=1 node --test tests/e2e/edit-task-run.test.ts
@@ -362,14 +363,14 @@ on the machine and `uv sync` for the runner's tests. `PENGUIN_EDIT_E2E_MODEL` pi
 
 ### Review task live check
 
-`tests/e2e/review-task-run.test.ts` runs PRD case 2 on the helpful-fix fixture against real
-Artifacts under local `wrangler dev`, with every repo under a prefix unique to the run. It runs the
-walkthrough's steps up to Priya's plan, so Google Chrome drives the dashboard steps. Priya's agent
-reports `owner-priya-local-day` before it proposes the plan, as PRD case 2 orders it. No steward session
-runs. Jun's and Sam's bridges each run `penguin-bridge edits --once --vendor claude`, which submits
-each review form through Penguin's MCP server. The check runner then records the forms and runs the
-part trials. `evidence.json` records each part's decision, who approved it, whether any author was
-asked and the repos deleted at the end. Nothing prints a token.
+`tests/e2e/review-task-run.test.ts` runs case 2, the helpful fix, on the helpful-fix fixture against
+real Artifacts under local `wrangler dev`, with every repo under a prefix unique to the run. It runs
+the walkthrough's steps up to Priya's plan, so Google Chrome drives the dashboard steps. Priya's
+agent reports `owner-priya-local-day` before it proposes the plan. No steward session runs. Jun's
+and Sam's bridges each run `penguin-bridge edits --once --vendor claude`, which submits each review
+form through Penguin's MCP server. The check runner then records the forms and runs the part trials.
+`evidence.json` records each part's decision, who approved it, whether any author was asked and the
+repos deleted at the end. Nothing prints a token.
 
 ```sh
 PENGUIN_REVIEW_E2E=1 node --test tests/e2e/review-task-run.test.ts
@@ -398,10 +399,11 @@ penguin-bridge runner --combined
 2. With `--combined` or `--repo <path>`, also runs Penguin's test jobs in the repository at `<path>`,
    default `~/.penguin/combined`, created empty when missing:
    - claims and runs combined runs with the [block checks](#block-checks) on every merged tree
-     (`combined-run-pass.ts`). `--python <path>` names the interpreter for the impact graph and
-     the dependency diff, default `python3`, and the one the type check resolves imports against. `--ruff <path>` names ruff. Without it the runner uses `PENGUIN_RUFF`, then this repository's
-     pinned ruff in `.venv/bin/ruff`, then `ruff` on `PATH`, because an older ruff elsewhere on `PATH`
-     (such as an Anaconda install) formats differently;
+     (`combined-run-pass.ts`). `--python <path>` names the interpreter for the impact graph and the
+     dependency diff, default `python3`, and the one the type check resolves imports against.
+     `--ruff <path>` names ruff. Without it the runner uses `PENGUIN_RUFF`, then this repository's
+     pinned ruff in `.venv/bin/ruff`, then `ruff` on `PATH`, because an older ruff elsewhere on
+     `PATH` (such as an Anaconda install) formats differently;
    - lists and runs the facts runs of merge plans ([Plan facts runs](#plan-facts-runs)), reporting
      each one to `POST /plan-facts/<run id>` (`plan-facts-run.ts`);
    - lists and runs verification runs, pushing each merge to the Huddle repo's `integration` branch
@@ -417,8 +419,8 @@ penguin-bridge runner --combined
      result (`tool-run.ts`, [Agent tools on the runner](#agent-tools-on-the-runner));
    - claims the writes of approved plan parts of every kind and the module copies, and writes each
      into the affected feature's fork ([Fix writes](#fix-writes));
-   - claims the block runs of features that land or whose plan needs checking again, runs the
-     checks and reports each one ([Block runs](#block-runs)).
+   - claims the block runs of features that land, promote an expand checkpoint or whose plan needs
+     checking again, runs the checks and reports each one ([Block runs](#block-runs)).
 
 Passing `--combined` or `--repo` is the runner operator's consent to those runs and pushes. The test
 jobs loop on their own, so a long test run never holds up the operation pushes. `--once` runs a
@@ -437,7 +439,8 @@ succeeds sends no failure report, so a run that works costs no extra request.
   and only counts the failure.
 - A runner that dies without reporting still loses its claim when the lease ends, as before.
 - Penguin counts the failures of each run. At `PENGUIN_RUN_FAILURE_LIMIT`, 3 by default, it stops
-  handing the run out and routes it to the feature's person with the last reason. A stopped block run fails, so a land goes back to building.
+  handing the run out and routes it to the feature's person with the last reason. A stopped block
+  run fails, so a land goes back to building.
 - When the failure report itself cannot reach Penguin, the run keeps its claim until the lease ends.
 
 The pass prints what became of each stopped run:
@@ -463,14 +466,14 @@ those fetches with `fetch-pack: protocol error: bad band #78`. Over v2 every fet
 
 ### Block runs
 
-A feature reaches main as a block. Each pass
-claims the waiting block runs from `POST /blocks/claim` under a 30-minute lease (`block-run.ts`). A
-claim names the run, its purpose (`land` or `plan_check`), the feature's fork and checkpoint, main's
-head and branch, the targets with each fork's head and the originating identity's charter. The
-targets are the running features the change reaches: those that call what it modifies, by the caller
-list, with those that change the same files. A claim with no targets is checked on main alone: the
-runner fetches only `base` and the feature's fork, merges onto main only and runs no caller replay. The bridge checks each commit is a full object ID and the branch a plain branch name before
-it uses them.
+A feature reaches main as a block. Each pass claims the waiting block runs from `POST /blocks/claim`
+under a 30-minute lease (`block-run.ts`). A claim names the run, its purpose (`land`, `expand` or
+`plan_check`), the feature's fork and checkpoint, main's head and branch, the targets with each
+fork's head and the originating identity's charter. The targets are the running features the change
+reaches: those that call what it modifies, by the caller list, with those that change the same
+files. A claim with no targets is checked on main alone: the runner fetches only `base` and the
+feature's fork, merges onto main only and runs no caller replay. The bridge checks each commit is a
+full object ID and the branch a plain branch name before it uses them.
 
 For each run the runner fetches `base`, the feature's fork and every target's fork with read tokens.
 It runs a combined run with the [block checks](#block-checks): the checkpoint merged onto main and
@@ -485,10 +488,9 @@ and, for a promotion, main's commit before and after. A run whose repos cannot b
 reported as a [failed run](#failed-runs), which frees it for the next claim. A run that cannot be
 checked reports an `error` check on main, which never passes.
 
-On the helpful-fix fixture, the block of `owner-priya` with the switch to `start_of_local_day` written
-into Jun's and Sam's forks passes every check. All three scopes' tests pass on main's merged tree.
-Without the switch, Jun's and Sam's tests fail on their merged trees and each failure carries one next
-step (no test yet (docs/testing.md)).
+On the helpful-fix fixture, Priya's block with the switch to `start_of_local_day` written into Jun's
+and Sam's forks passes every check. Every scope's tests pass on main. Without the switch, Jun's and
+Sam's tests fail on their merged trees (`tests/e2e/block-landing.test.ts`).
 
 ### Preview
 
@@ -499,7 +501,8 @@ no new repo. Nothing is pushed.
 
 ### Block exit check
 
-`tests/e2e/block-landing.test.ts` runs the Phase E exit check against real Artifacts through local
+`tests/e2e/block-landing.test.ts` checks that main never fails its tests across several concurrent
+features. It runs against real Artifacts through local
 `wrangler dev` under a repo prefix unique to the run. It deletes every repo it made. It needs a
 Wrangler login and this repository's `.venv`:
 
@@ -573,7 +576,8 @@ is the one its author approved. The same commit copies the originating change's 
 imports. The receiving feature's agent only approves; `get_work` tells it that Penguin writes the
 fix. The writers all use the same code (`fix-write.ts`):
 
-- Runner mode claims every write at `POST /fix-writes/claim` under a 10-minute lease: each approved
+- Runner mode claims every write at `POST /fix-writes/claim` under a lease of
+  `PENGUIN_FIX_TOKEN_TTL_MINUTES` (default 10): each approved
   part's own write, and the copy writes a land asks for, a spec with an empty patch whose `copy`
   names the originating change's current revision. One claim loop serves both. Each claimed write
   carries a `write` token minted for that part on the named fork alone. A write into a fork whose
@@ -595,16 +599,16 @@ token.
 
 The writer fetches the fork's `main` and stops with `moved` when its head is not the granted parent.
 It reads each file the patch writes at the parent and applies the patch with `applyPatchFile`
-(`packages/protocol`), the function Penguin checks the commit with. Every hunk must match at its line.
-The writer stores each new file as a blob in a scratch index over the parent's tree. A write whose
-spec names a `copy` then sets each copied module to its blob and mode at the originating revision,
-byte for byte (`copiedTree`). The writer first lists the originating change's own files with
-`git diff-tree` from the change's baseline to the revision. It refuses a copy of any other file and
-a revision its repository does not hold. Runner mode fetches the originating fork before such a
-write. The writer refuses when the tree changes anything but the patch's files and the copies. It commits with Penguin's message as author
-`Penguin` with no hook or signing. It pushes the commit to `main` with no force. The token reaches
-Git only in the push's environment. A fork whose head moved refuses the push; asking `fix_token`
-again rebases the write or sends the part back for revision.
+(`packages/protocol`), the function Penguin checks the commit with. Every hunk must match at its
+line. The writer stores each new file as a blob in a scratch index over the parent's tree. A write
+whose spec names a `copy` then sets each copied module to its blob and mode at the originating
+revision, byte for byte (`copiedTree`). The writer first lists the originating change's own files
+with `git diff-tree` from the change's baseline to the revision. It refuses a copy of any other file
+and a revision its repository does not hold. Runner mode fetches the originating fork before such a
+write. The writer refuses when the tree changes anything but the patch's files and the copies. It
+commits with Penguin's message as author `Penguin` with no hook or signing. It pushes the commit to
+`main` with no force. The token reaches Git only in the push's environment. A fork whose head moved
+refuses the push; asking `fix_token` again rebases the write or sends the part back for revision.
 
 Building and pushing one fix commit took about 200 ms against a bare fork on local disk. Against
 Artifacts through local `wrangler dev` it took about 1 second; `fix_token` and `report_fix_write`
@@ -612,14 +616,14 @@ took about 2 seconds each, most of it Artifacts reads.
 
 ### Plan facts runs
 
-A merge plan needs facts that only running the code can give.
-Penguin schedules one facts run per feature checkpoint when the checkpoint is reported: its impact
-report holds the contract diff Penguin sorts.
-`propose_plan` reuses that run, or schedules one of its own when it declares rewrite rules. Penguin
-sorts the run's report as the runner reports it. `GET /plan-facts` lists each pending
+A merge plan needs facts that only running the code can give. Penguin schedules one facts run per
+feature checkpoint when the checkpoint is reported: its impact report holds the contract diff
+Penguin sorts. `propose_plan` reuses that run, or schedules one of its own when it declares rewrite
+rules. Penguin sorts the run's report as the runner reports it. `GET /plan-facts` lists each pending
 run. The listing names the originating fork, the checkpoint, its baseline on main and the targets.
 `main` is one target, at the baseline. Each running feature that may read the change is another, at
-its latest checkpoint, keyed by its feature id and naming its person. Every target lists `test:<scope>` command IDs only. For each run the runner:
+its latest checkpoint, keyed by its feature id and naming its person. Every target lists
+`test:<scope>` command IDs only. For each run the runner:
 
 1. refuses a listing that names a repo other than a `feature-<id>` fork or a commit that is not a
    full SHA, then fetches each fork it names;
@@ -648,12 +652,13 @@ its latest checkpoint, keyed by its feature id and naming its person. Every targ
    fork's own failure: it is not a break and the report leaves it out (`withoutForkFailures`). On
    Larder, `japan-launch` fails its yen test on its own head, so case 2's change is not charged
    with it;
-6. applies the plan's rewrite rules when the listing carries them. In each listed place the runner runs the
-   codemod with the rules in a throwaway worktree, then `ruff check --fix` and `ruff format` on the
-   files the rules changed (`FixApplier.rewrite`). Main's place covers every Python file under the
-   dependent scopes' paths at the baseline. A running feature's place covers the files it added or
-   changed since its merge base with the baseline. The report lists each changed file's blob before
-   and after, with each rule the codemod refused and the reason. Nothing is committed.
+6. applies the plan's rewrite rules when the listing carries them. In each listed place the runner
+   runs the codemod with the rules in a throwaway worktree, then `ruff check --fix` and `ruff
+   format` on the files the rules changed (`FixApplier.rewrite`). Main's place covers every Python
+   file under the dependent scopes' paths at the baseline. A running feature's place covers the
+   files it added or changed since its merge base with the baseline. The report lists each changed
+   file's blob before and after, with each rule the codemod refused and the reason. Nothing is
+   committed.
 
 The report carries the impact report and each command's result with its fingerprint and breaks. It
 carries no log. `PLAN_FACTS_REPORT_SCHEMA` (`packages/protocol`) caps each docstring at 500
@@ -661,16 +666,18 @@ characters and each assertion or error line at 300. A newer checkpoint of the fe
 pending run. A report of a superseded run answers 409.
 
 On the helpful-fix fixture the facts run of Priya's checkpoint against Jun's and Sam's checkpoints
-takes between 1 and 3 seconds of wall time on an Apple silicon laptop, analysis and three merged trees included.
+takes between 1 and 3 seconds of wall time on an Apple silicon laptop, analysis and three merged
+trees included.
 
 ### Part trials
 
-Each revision of a merge plan's part is tested on the tree it would reach main as. Each pass claims the waiting trials from
-`POST /part-trials/claim` under a 30-minute lease. A claimed trial names the originating fork and the
-plan's checkpoint, the target (main at the plan's baseline, or the affected feature's fork head), the
-part's fix (a commit in the originating fork with its base, or a patch), `test:<scope>` command IDs,
-the forms to review and, for a rule-written migration part, the scopes in `sideBySide` whose
-side-by-side run goes ahead with no form. For each trial the runner (`part-trial-run.ts`):
+Each revision of a merge plan's part is tested on the tree it would reach main as. Each pass claims
+the waiting trials from `POST /part-trials/claim` under a 30-minute lease. A claimed trial names the
+originating fork and the plan's checkpoint, the target (main at the plan's baseline, or the affected
+feature's fork head), the part's fix (a commit in the originating fork with its base, or a patch),
+`test:<scope>` command IDs, the forms to review and, for a rule-written migration part, the scopes
+in `sideBySide` whose side-by-side run goes ahead with no form. For each trial the runner
+(`part-trial-run.ts`):
 
 1. refuses a claim that names a repo other than `base` or a `feature-<id>` fork, a commit that is not
    a full SHA or a command that is not a test command, then fetches each repo it names;
@@ -707,34 +714,33 @@ repository defines.
 
 The bridge also ships Penguin's own analysis commands. An analysis ID such as
 `analysis:python-impact` resolves to a script in `services/local-bridge/analysis/`, never to text
-from the repository. Any other `analysis:` ID is refused (`command-allowlist.ts`). The runner
-starts the script as `python3 -I python_impact.py --repo <path>` with an argument vector and no
-shell, in the scrubbed environment described above (`impact-analysis.ts`). Isolated mode keeps the
-working directory and `PYTHON*` variables out of the interpreter's import path. The request goes in
-on standard input as JSON: the base and head commits plus each fork's id, commit and scopes. A fork
-may also name `since`, a commit on main. The script then looks up the fork's merge base with it
-(`git merge-base`, one call per fork) and lists the merge base's paths with `git ls-tree`. It reports
-the fork's uses and unreadable files only in paths the fork added or changed since that merge base.
-The fork's entry in the report repeats `since` and adds `mergeBase` and `carried`, the number of uses
+from the repository. Any other `analysis:` ID is refused (`command-allowlist.ts`). The runner starts
+the script as `python3 -I python_impact.py --repo <path>` with an argument vector and no shell, in
+the scrubbed environment described above (`impact-analysis.ts`). Isolated mode keeps the working
+directory and `PYTHON*` variables out of the interpreter's import path. The request goes in on
+standard input as JSON: the base and head commits plus each fork's id, commit and scopes. A fork may
+also name `since`, a commit on main. The script then looks up the fork's merge base with it (`git
+merge-base`, one call per fork) and lists the merge base's paths with `git ls-tree`. It reports the
+fork's uses and unreadable files only in paths the fork added or changed since that merge base. The
+fork's entry in the report repeats `since` and adds `mergeBase` and `carried`, the number of uses
 left out. When the two histories never meet, `mergeBase` is null and every file counts as the fork's
 own. A request may also list `symbols`, up to 64 contracts as `path::name`. The script searches for
 each one as if it had changed, so a request whose base equals its head reports only their uses.
-Penguin uses it for retiring symbols. A request
-with `edges: true` also gets `scopeEdges`: for each pair of scopes, the import, call and reference
-sites the consumer scope's files at head hold into the provider scope's modules and definitions. An
-edge names two scope ids and three counts, no path or symbol. A request with `calls: true` gives each
-fork `calls`: every module and definition of its tree its own files use, defined outside them, as
-dotted names, and every file or folder of its tree, outside those files, that a string constant in
-them names, as `path:<repo path>`. A string names a path from the repository root or from its own
-file's folder, so `open("examples/closures.json")` lists `path:examples/closures.json`. The candidate
-must be a safe repository path and is only looked up among the tree's paths from `git ls-tree`;
-nothing is read for it. The report then also carries `removedPaths`: each file the change renames,
-moves or deletes, each folder it removes and each folder that loses an entry. Penguin keeps the names
-as the caller list. A rename or
-move whose old name still reaches the very definition it moved to, through `old = new` in the module
-or class or through an import of the new definition into the old module, is reported with `kept:
-true`. The old name's callers are still listed. The report comes back on standard output and is checked against `IMPACT_REPORT_SCHEMA` in
-`packages/protocol` before anything reads it.
+Penguin uses it for retiring symbols. A request with `edges: true` also gets `scopeEdges`: for each
+pair of scopes, the import, call and reference sites the consumer scope's files at head hold into
+the provider scope's modules and definitions. An edge names two scope ids and three counts, no path
+or symbol. A request with `calls: true` gives each fork `calls`: every module and definition of its
+tree its own files use, defined outside them, as dotted names, and every file or folder of its tree,
+outside those files, that a string constant in them names, as `path:<repo path>`. A string names a
+path from the repository root or from its own file's folder, so `open("examples/closures.json")`
+lists `path:examples/closures.json`. The candidate must be a safe repository path and is only looked
+up among the tree's paths from `git ls-tree`; nothing is read for it. The report then also carries
+`removedPaths`: each file the change renames, moves or deletes, each folder it removes and each
+folder that loses an entry. Penguin keeps the names as the caller list. A rename or move whose old
+name still reaches the very definition it moved to, through `old = new` in the module or class or
+through an import of the new definition into the old module, is reported with `kept: true`. The old
+name's callers are still listed. The report comes back on standard output and is checked against
+`IMPACT_REPORT_SCHEMA` in `packages/protocol` before anything reads it.
 
 The script reads only Git objects. It never checks out a tree or imports the code it reads.
 
@@ -754,24 +760,23 @@ checkpoint. A running feature's fork is a target keyed by its feature id, so one
 features are two targets. An owner fork is a target keyed by its owner's id. A target is tested in
 the scopes it names, or in its person's dependent scopes when it names none. A named scope need not
 depend on a changed one: a scheduled run whose target the caller list picked names the scopes its
-feature touches. A dependent
-scope that no target covers gets a `no-checkpoint` result, unless its DRI is the person who made
-the checkpoint, named as the request's `changer`. The checkpoint already holds that scope's code,
-so its tests run on the checkpoint itself, with no merge, and report `passed` or `failed` with the
-checkpoint as both `ownerCheckpoint` and `mergedCommit`. The result's target is the changer's id.
-Another person's fork that covers the scope is tested as well; only a fork of the changer's own
-replaces the run on the checkpoint. That checkpoint is no fork target of the block checks. The
-scheduled combined runs and the agent `check` tool both name the changer: a scheduled run names
-the trigger's person, and `check` names the feature's person, which the tool claim carries as
-`person`. On the helpful-fix fixture Priya is DRI for both `ingestion` and `shared-dates`, and
-`ingestion` reads `shared-dates`, so a change of hers to `shared-dates` runs the `ingestion` tests
-on her checkpoint. Given an
-analyzer, the run analyses first, with one fork per target that covers a dependent scope. It merges
-every target's checkpoint, then runs tests only for the targets the report selects. Each skipped
-scope gets a `not-affected` result with its target's checkpoint and is listed under `notAffected`
-in the run's report. Penguin accepts a `not-affected` result as the end of that target's claimed
-run (`combined-run-schedule.ts`), so the run is never claimed again. A merge conflict outranks the
-impact graph: an unaffected target whose merge conflicts gets `conflict`. A failed analysis is recorded as `impactError`. Every dependent scope's
+feature touches. A dependent scope that no target covers gets a `no-checkpoint` result, unless its
+DRI is the person who made the checkpoint, named as the request's `changer`. The checkpoint already
+holds that scope's code, so its tests run on the checkpoint itself, with no merge, and report
+`passed` or `failed` with the checkpoint as both `ownerCheckpoint` and `mergedCommit`. The result's
+target is the changer's id. Another person's fork that covers the scope is tested as well; only a
+fork of the changer's own replaces the run on the checkpoint. That checkpoint is no fork target of
+the block checks. The scheduled combined runs and the agent `check` tool both name the changer: a
+scheduled run names the trigger's person, and `check` names the feature's person, which the tool
+claim carries as `person`. On the helpful-fix fixture Priya is DRI for both `ingestion` and
+`shared-dates`, and `ingestion` reads `shared-dates`, so a change of hers to `shared-dates` runs the
+`ingestion` tests on her checkpoint. Given an analyzer, the run analyses first, with one fork per
+target that covers a dependent scope. It merges every target's checkpoint, then runs tests only for
+the targets the report selects. Each skipped scope gets a `not-affected` result with its target's
+checkpoint and is listed under `notAffected` in the run's report. Penguin accepts a `not-affected`
+result as the end of that target's claimed run (`combined-run-schedule.ts`), so the run is never
+claimed again. A merge conflict outranks the impact graph: an unaffected target whose merge
+conflicts gets `conflict`. A failed analysis is recorded as `impactError`. Every dependent scope's
 tests then run. Runner mode passes the analyzer to every combined run.
 
 To see the report for any two commits:
@@ -944,9 +949,9 @@ laptop. pyright takes about 1 to 2.5 seconds of each target.
 ### Caller replay
 
 The caller replay tells the originating agent and each running feature's owner how a change moves
-the calls the feature's code makes into the functions the change modifies. Every combined run with an impact graph runs it, so a `check`
-request and a block run carry it (`combined-run.ts`, `caller-replay.ts`). `callerReplay: false` on
-the `CombinedRunner` turns it off.
+the calls the feature's code makes into the functions the change modifies. Every combined run with
+an impact graph runs it, so a `check` request and a block run carry it (`combined-run.ts`,
+`caller-replay.ts`). `callerReplay: false` on the `CombinedRunner` turns it off.
 
 1. `replaySymbols` takes the impact report's modified, removed, renamed and moved functions and
    methods: at most 64, each with the module it imports as and the contract it belongs to. A `check`
@@ -1008,13 +1013,13 @@ is the difference the replay shows.
 
 The section (`CallerReplaySection`, `packages/protocol/src/caller-replay.ts`) holds one run per
 feature and one verdict per caller. A run names its id, the feature, the originating checkpoint, the
-fork head, the merged commit, the scopes, the wrapped functions, the functions a side could not wrap,
-each side's test tally and recorded calls. It also names the extra run's time. A caller names the feature,
-the contract, the file and line, the verdict with its reason, the run id, the call counts, the tests
-that reached it and the first 5 differing calls. Each differing call has a call id and both sides:
-status, arguments, value or exception and the first 8 effects, each with a one-line summary. A
-section over 256 KiB of JSON drops the differing calls' arguments, then all but one differing call
-per caller, then the rest; `trimmed` says so and every count stays.
+fork head, the merged commit, the scopes, the wrapped functions, the functions a side could not
+wrap, each side's test tally and recorded calls. It also names the extra run's time. A caller names
+the feature, the contract, the file and line, the verdict with its reason, the run id, the call
+counts, the tests that reached it and the first 5 differing calls. Each differing call has a call id
+and both sides: status, arguments, value or exception and the first 8 effects, each with a one-line
+summary. A section over 256 KiB of JSON drops the differing calls' arguments, then all but one
+differing call per caller, then the rest; `trimmed` says so and every count stays.
 
 A run id is `replay-` and 20 hexadecimal digits of the SHA-256 of the checkpoint, the feature, the
 fork head, the merged commit and the wrapped functions. A call id is `call-` and 20 digits of the
@@ -1058,17 +1063,17 @@ commit it starts from, with the scrubbed environment above (`apply-fix.ts`):
 | Lockfile | `fix:uv-lock` | `uv lock` in the directory of each `uv.lock`, after merging the other side when the lockfile conflicts |
 | Codemod | `fix:python-codemod` | `python3 -I python_codemod.py --tree <worktree>`, the bridge's own script, with the edits on standard input |
 
-The codemod script uses libcst 1.9.0 (T21). A `rename` or `move` edit rewrites every import and
-reference of one dotted name to another with libcst's `RenameCommand`. A `rename-parameter` edit
-rewrites one keyword in each call that resolves to the function. Given a plan's rewrite rules in
-place of edits, the script compiles each rule into LibCST matchers. A name in the contract's module
-matches however the file imports it, through `QualifiedNameProvider`. A method a pattern calls
-through the contract class, such as `Client.post($client, "/v1/payouts", $body)`, also matches
+The codemod script uses libcst 1.9.0. A `rename` or `move` edit rewrites every import and reference
+of one dotted name to another with libcst's `RenameCommand`. A `rename-parameter` edit rewrites one
+keyword in each call that resolves to the function. Given a plan's rewrite rules in place of edits,
+the script compiles each rule into LibCST matchers. A name in the contract's module matches however
+the file imports it, through `QualifiedNameProvider`. A method a pattern calls through the contract
+class, such as `Client.post($client, "/v1/payouts", $body)`, also matches
 `client.post("/v1/payouts", body)` when `ScopeProvider` shows `client` bound only as a parameter
-annotated with the class. Each placeholder captures one
-expression, parenthesised where the replacement needs it. After the rewrite the script removes each
-import of the contract's module that the file no longer uses and adds each import a replacement
-declares. The script parses the code and never imports or runs it. The runner starts it with the interpreter of this repository's uv
+annotated with the class. Each placeholder captures one expression, parenthesised where the
+replacement needs it. After the rewrite the script removes each import of the contract's module that
+the file no longer uses and adds each import a replacement declares. The script parses the code and
+never imports or runs it. The runner starts it with the interpreter of this repository's uv
 environment, `.venv/bin/python`, which has the pinned libcst. `PENGUIN_CODEMOD_PYTHON` or
 `--codemod-python` names another.
 
@@ -1099,9 +1104,9 @@ a behaviour change. Past the round limit (default 3, `--round-limit`) the failur
 originating feature's person.
 
 Every tool run and every decision is recorded: the tool, its caller, its command ID, its input, what
-it found or changed with the commit before and after. It also holds the run's time. The record counts the
-failures Penguin's fixes resolved, those routed to agents or people and the agent calls made, which
-is zero for the ladder itself.
+it found or changed with the commit before and after. It also holds the run's time. The record
+counts the failures Penguin's fixes resolved, those routed to agents or people and the agent calls
+made, which is zero for the ladder itself.
 
 ```sh
 penguin-bridge resolve --repo <path> --base main --head <commit> --identity @<owner>/<name> \
@@ -1130,19 +1135,19 @@ round 2: 20 checks, 0 failing, on ebe750fadc97
 ```
 
 On the fixture's own trigger, `owner-priya-checkpoint`, Jun's and Sam's failing tests go to step 5,
-to the stewards `@jun/steward` and `@sam/steward`, because the failing files lie outside `@priya/utc-day-start`'s
-charter. With an unused import added to Priya's `shared/dates.py`, lint fails on every target. The
-failure goes to step 1. One `fix:ruff-autofix` commit on Priya's checkpoint clears it on all
-three. On an Apple silicon laptop one codemod run takes about 1 second, most of it libcst's import.
-Each round of checks takes 8 to 12 seconds.
+to the stewards `@jun/steward` and `@sam/steward`, because the failing files lie outside
+`@priya/utc-day-start`'s charter. With an unused import added to Priya's `shared/dates.py`, lint
+fails on every target. The failure goes to step 1. One `fix:ruff-autofix` commit on Priya's
+checkpoint clears it on all three. On an Apple silicon laptop one codemod run takes about 1 second,
+most of it libcst's import. Each round of checks takes 8 to 12 seconds.
 
 ### Agent tools on the runner
 
-Runner mode answers the `impact`, `check` and `apply_fix` calls agents make through MCP. Each pass claims the waiting requests from
-`POST /tool-runs/claim` under a 30-minute lease. For each request the runner fetches `feature-<id>`
-and the other running features' forks with read tokens into the runner's repository. `impact` and
-`apply_fix` name every other running fork. `check` names the forks its change reaches, as a land of
-the feature targets them:
+Runner mode answers the `impact`, `check` and `apply_fix` calls agents make through MCP. Each pass
+claims the waiting requests from `POST /tool-runs/claim` under a 30-minute lease. For each request
+the runner fetches `feature-<id>` and the other running features' forks with read tokens into the
+runner's repository. `impact` and `apply_fix` name every other running fork. `check` names the forks
+its change reaches, as a land of the feature targets them:
 
 - `impact` runs the [impact analysis](#impact-analysis) on the checkpoint's baseline and the
   checkpoint, with each other fork, keyed by its feature id, searched in its person's scopes. While
@@ -1171,15 +1176,15 @@ the feature targets them:
   waiting list of a pass in one analysis with `calls: true`, at most 256 forks at a time, and reports
   each request's names under `calls` with no `impact`. An incomplete read is reported as an error.
 - A request Penguin records after a count with `search: "rewrite"` is the rewrite of a split's
-  migration parts. It is claimed like a count.
-  Its input names the originating feature's retiring symbols with their rules. It also names each
-  place: `main` or a running feature, with the files whose uses the rules may rewrite. For each place the
-  runner applies the rules to those files at main's commit or at the feature's fork head, in a
-  throwaway worktree, with the codemod, the lint autofix and the formatter. It keeps the change as
-  a unified diff. It applies each target's patches to a commit kept only in the runner's
-  repository, with no checkout. One analysis of those commits then searches for the retiring
-  symbols. It reports, per place under `rewrites`, the files and rules, the patch, the uses left
-  (`residual`, less the defining scope's own uses) and any error. Nothing is pushed.
+  migration parts. It is claimed like a count. Its input names the originating feature's retiring
+  symbols with their rules. It also names each place: `main` or a running feature, with the files
+  whose uses the rules may rewrite. For each place the runner applies the rules to those files at
+  main's commit or at the feature's fork head, in a throwaway worktree, with the codemod, the lint
+  autofix and the formatter. It keeps the change as a unified diff. It applies each target's patches
+  to a commit kept only in the runner's repository, with no checkout. One analysis of those commits
+  then searches for the retiring symbols. It reports, per place under `rewrites`, the files and
+  rules, the patch, the uses left (`residual`, less the defining scope's own uses) and any error.
+  Nothing is pushed.
 - `check` runs the [block checks](#block-checks) on the checkpoint merged onto its baseline and onto
   each other running feature's fork at its head, with every fix written into it, as a land merges
   onto it. Each merged tree is named by its feature id, so a person with
@@ -1193,10 +1198,10 @@ the feature targets them:
   rewrite rules of retiring symbols, each contract module read at the checkpoint. A codemod by
   `expand` writes a split's expand step with the same script and allowlisted command ID
   (`fix:python-codemod`): `old = new` after the new definition for a rename, `from <new module>
-  import <name> as <old name>` after the old module's imports for a move. For a keyword rename it writes a
-  signature that takes both keywords and forwards the old one. The edits come from the ProjectAgent's
-  split, never from the agent. An edit the script cannot write comes back under `refused` with the
-  reason.
+  import <name> as <old name>` after the old module's imports for a move. For a keyword rename it
+  writes a signature that takes both keywords and forwards the old one. The edits come from the
+  ProjectAgent's split, never from the agent. An edit the script cannot write comes back under
+  `refused` with the reason.
 
 The runner reports each result to `POST /tool-runs/<id>`. Penguin hands it to the requesting session
 at its next safe checkpoint. A request whose forks cannot be fetched is reported as a

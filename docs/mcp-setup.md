@@ -1,15 +1,12 @@
 # Connecting agent sessions to Penguin
 
-> **Design change.** This page describes the current build. In the design, a session works on one
-> feature. The build serves
-> `whats_near`, `impact`, `check`, `apply_fix` ([Agent tools for a feature](#agent-tools-for-a-feature)),
-> `submit_review` and the caller tools ([Caller items](#caller-items)). It gains `propose_plan`.
-
-An owner's Claude Code or Codex session reads the issues assigned to one of the owner's identities and
-writes comments, linked commits and state changes back to them. The session reaches Penguin's MCP
-endpoint, `<worker-url>/mcp`, with the owner's MCP token. The token decides whose identities the
-session may use. This page covers issuing a token, connecting each agent product, registering a
-session and the errors each tool returns.
+An owner's Claude Code or Codex session works on one feature: it opens or joins the feature, reports
+checkpoints on its fork, proposes merge plans, answers caller items and lands the feature. It also
+reads the issues assigned to one of the owner's identities and writes comments, linked commits and
+state changes back to them. The session reaches Penguin's MCP endpoint, `<worker-url>/mcp`, with the
+owner's MCP token. The token decides whose identities the session may use. This page covers issuing
+a token, connecting each agent product, registering a session and the errors each tool returns. The
+tools are defined in `services/mcp/src/tools.ts`.
 
 For how the three connection paths fit together (MCP tools, the hook, the inbox), read
 [how-agents-connect.md](how-agents-connect.md) first.
@@ -131,18 +128,19 @@ identity in the first prompt, for example:
 | Argument | Value |
 |---|---|
 | `identity` | One of the token owner's identity handles, such as `@jun/reports` |
-| `vendor` | `claude-code` or `codex` |
+| `vendor` | The agent product, such as `claude-code` or `codex` |
 | `worktreeId` | The bridge's id for the worktree, or any stable name of letters, digits, `.`, `_` and `-` |
 | `branch` | The branch checked out in the worktree |
 
-`register_session` returns a `sessionId`. The agent passes it to `get_work`, `get_work_item`, `wait_for_work`,
-`get_issue`, `post_update` and `report_checkpoint`. Each of those calls keeps the session running. After about 90 seconds without
-one, Penguin marks the session offline and the agent registers again. Every tool call that carries the `sessionId`
-refreshes the session when it starts and again when it answers, and Penguin never marks a session offline while one of
-its calls is running, so a `propose_plan` that runs longer than 90 seconds leaves the session running. Only calls made
-with the token of the session's owner count. Once a session registers, the
-identity's agent box in its owner's square on the team map leaves "No session". The identity's agent
-card lists the session with its vendor, branch and worktree ([dashboard.md](dashboard.md#agent-card)).
+`register_session` returns a `sessionId`. The agent passes it to `get_work`, `get_work_item`,
+`wait_for_work`, `get_issue`, `post_update` and `report_checkpoint`. Each of those calls keeps the
+session running. After about 90 seconds without one, Penguin marks the session offline and the agent
+registers again. Every tool call that carries the `sessionId` refreshes the session when it starts
+and again when it answers, and Penguin never marks a session offline while one of its calls is
+running, so a `propose_plan` that runs longer than 90 seconds leaves the session running. Only calls
+made with the token of the session's owner count. Once a session registers, the identity's page on
+the dashboard lists it under Sessions with its vendor, state, branch and worktree
+([dashboard.md](dashboard.md#identities)).
 
 Registering joins the open feature for the worktree. When an earlier session of the same identity
 opened or joined a running feature from the same `worktreeId` and `branch`, and the token's owner owns
@@ -203,7 +201,8 @@ it again at once.
 A call answers within 50 seconds so that no client's default limit on a tool call ends it. In live
 run film-1015-r5, Claude Code 2.1.300 aborted every `wait_for_work` call after about two minutes
 without an answer, although Penguin sent a progress notification every 60 seconds. Penguin sends an
-MCP progress notification when the call starts, for a client that sent a progress token. Waiting
+MCP progress notification when the call starts and after each round, for a client that sent a
+progress token (`services/mcp/src/wait-for-work.ts`). Waiting
 counts as the session's safe checkpoint
 ([Fix tasks and safe checkpoints](#fix-tasks-and-safe-checkpoints)) and as its heartbeat, so the
 session stays running. A session waits only on its work: Penguin refuses a wait on a
@@ -304,11 +303,12 @@ needs or a person who replied.
 
 ## Overlapping starts
 
-A feature whose declared area another person's running feature covers starts at once. Penguin approves the start with a signed
-`approve_overlap` record. The `open_feature` answer carries the write token and lists each covering
-feature under `overlap.approvedBy`, with `penguin` as the approver. `get_work` reports the same under
-`feature.approvedBy`. The covering feature's worktree owner gets an `overlap_started` item in the
-dashboard inbox. No one is asked. A feature of the same person makes no lock; `ownOverlaps` lists it.
+A feature whose declared area another person's running feature covers starts at once. Penguin
+approves the start with a signed `approve_overlap` record. The `open_feature` answer carries the
+write token and lists each covering feature under `overlap.approvedBy`, with `penguin` as the
+approver. `get_work` reports the same under `feature.approvedBy`. The covering feature's worktree
+owner gets an `overlap_started` item in the dashboard inbox. No one is asked. A feature of the same
+person makes no lock; `ownOverlaps` lists it.
 
 A lock that waits for a person, such as an expand checkpoint that adds to a scope another person
 owns, reaches that person's running sessions once, at their next safe checkpoint: the hook answer
@@ -333,8 +333,10 @@ originating feature hears each decision under `planDecisions`. It answers a `cha
 with `revise_plan_part`. A session that submitted a review hears the check runner's verdict under
 `reviewResults`.
 
-Once an author approves a behavioural part, the originating agent writes its fix into the author's
-feature fork:
+Penguin's check runner writes every approved part into its fork, behavioural parts included
+([bridge-and-runner.md](bridge-and-runner.md#fix-writes)). No agent writes code in another person's
+fork. `fix_token` refuses every such part as `forbidden`. It answers only for a behavioural part whose
+write Penguin opened for the originating agent before the check runner wrote every part (#207):
 
 | Tool | Input | Answer |
 |---|---|---|
@@ -357,7 +359,8 @@ plan's gets a part in that plan; `report_checkpoint` lists it under `plansJoined
 ## Caller items
 
 When the originating feature's `check` or block run replays another running feature's calls into a
-changed function, Penguin opens one caller item per running feature and contract. Each side answers its own steps:
+changed function, Penguin opens one caller item per running feature and contract. Each side answers
+its own steps:
 
 | Tool | Who calls it | Input | Answer |
 |---|---|---|---|
@@ -423,11 +426,12 @@ until the item next moves.
 
 ## Edit tasks
 
-Penguin creates a steward for each person who owns a scope, `@<person>/steward`, chartered on every
-scope the person owns. It creates a builder for each feature at open, `@<person>/<feature>`,
-chartered on the feature's declared area. Register a session as either identity to take its edit
-tasks. Every edit Penguin needs goes to one of them by charter: a review form, an approved fix to write, a
-next step after a failed block check or a migration part.
+Penguin creates a steward for each person who is DRI for a scope, `@<person>/steward`, chartered on
+every scope the person is DRI for (`services/project-agent/src/edit-roster.ts`). It creates a
+builder for each feature at open, `@<person>/<feature>`, chartered on the feature's declared area.
+Register a session as either identity to take its edit tasks. Every edit Penguin needs goes to one
+of them by charter: a review form, an approved fix to write, a next step after a failed block check,
+a migration part or the removal of retiring symbols.
 
 A waiting task reaches a running session of its identity at the session's next safe checkpoint. A
 builder's task also reaches a session of the same person that works on the target feature.
@@ -437,7 +441,7 @@ answers the full task:
 
 | Field | Holds |
 |---|---|
-| `taskId`, `kind`, `block` | The task, its kind (`review`, `fix`, `next_step`, `migration`) and the block it shares with the other half of a split task |
+| `taskId`, `kind`, `block` | The task, its kind (`review`, `fix`, `next_step`, `migration`, `contract`) and the block it shares with the other half of a split task |
 | `feature`, `target`, `fork` | The feature whose work raised it and the fork it edits, `feature-<target>` |
 | `identity`, `via` | The identity it went to and why: `builder` or `steward` |
 | `files`, `scopes` | What the edit may change: these files, or the paths of these scopes |
@@ -445,8 +449,8 @@ answers the full task:
 | `personWritten.instructions` | Penguin's instructions, which quote the failing check's reason |
 
 The agent answers a `review` with `submit_review` and a `fix` with `fix_token` and
-`penguin-bridge fix-write`. It makes a `next_step` or a `migration` edit in the fork and reports the
-checkpoint. Penguin closes each task from the facts: the form arriving, the write being kept or the
+`penguin-bridge fix-write`. It makes a `next_step`, `migration` or `contract` edit in the fork and
+reports the checkpoint. Penguin closes each task from the facts: the form arriving, the write being kept or the
 block check passing. `editQueue` counts the developer's `running`, `queued` and `asked` tasks against
 `cap`, the most background runs the developer's bridge holds at once.
 
@@ -470,8 +474,9 @@ SHA-256 hash.
 
 ## Agent tools for a feature
 
-A session that works on a feature calls four tools for facts and deterministic fixes. Each call is recorded with its tool, its caller's
-identity, its input, its answer and its duration, so the feature page and a demo show every use.
+A session that works on a feature calls four tools for facts and deterministic fixes. Each call is
+recorded with its tool, its caller's identity, its input, its answer and its duration, so the
+feature page and a demo show every use.
 
 | Tool | Input | Answer |
 |---|---|---|
@@ -516,10 +521,11 @@ repository or an edit whose names are not Python names. A refused call records n
 
 ## Contract sort and split
 
-Penguin sorts the contract diff of each checkpoint a feature reports. `get_work` summarizes the sort of the
-feature's latest checkpoint under `contract`: its state, decision, counts, the number of entries, the
-split's state, each retiring symbol's state and callers, each migration plan's state and number of
-parts, and `nextStep`. `get_work_item` with `{ "kind": "contract" }` answers the full sort:
+Penguin sorts the contract diff of each checkpoint a feature reports. `get_work` summarizes the sort
+of the feature's latest checkpoint under `contract`: its state, decision, counts, the number of
+entries, the split's state, each retiring symbol's state and callers, each migration plan's state
+and number of parts, and `nextStep`. `get_work_item` with `{ "kind": "contract" }` answers the full
+sort:
 
 | Field | Content |
 |---|---|
@@ -566,14 +572,20 @@ optional on each part.
 
 The first call for a checkpoint answers `missing` with `waiting_for_runner`: Penguin has asked the
 check runner for the impact graph and the test runs. The agent calls again once the runner has
-reported. Each later `missing` answer lists every gap: an affected place without a part, a part for a
-place the facts show unaffected (`not_affected`, with the reason), two parts for one place, a diff commit missing from the fork, or a
-patch that names another base, writes outside the place's scopes or does not apply at the head. A
-running feature is affected only by its own changes: the files it added or changed since its merge
-base with main. A caller in a file it carries unchanged from main is main's, so a feature with no
-caller of its own and no break needs no part. A part needs a person when one of Penguin's checks fails. A plan with more such parts than the
-project's break limit answers `returned`, with their places under `inPerson`. A review the author's
-agent has yet to submit does not count.
+reported. Each later `missing` answer lists every gap: an affected place without a part, a part for
+a place the facts show unaffected (`not_affected`, with the reason), two parts for one place, a diff
+commit missing from the fork, or a patch that names another base, writes outside the place's scopes
+or does not apply at the head. A running feature is affected only by its own changes: the files it
+added or changed since its merge base with main. A caller in a file it carries unchanged from main
+is main's, so a feature with no caller of its own and no break needs no part. A part needs a person
+when one of Penguin's checks fails. A plan with more such parts than the project's break limit
+(`PENGUIN_PLAN_BREAK_LIMIT`) answers `returned`, with their places under `inPerson`. A review the
+author's agent has yet to submit does not count.
+
+A plan may declare `storeMarker`: `{ "kind": "migration" | "backfill", "evidence": "<path::name or
+path:line>" }`, the migration or backfill the checkpoint carries for the stored data the change
+reshapes. It covers every scope that only reads that data. Without one, a part whose scope reads
+the reshaped data waits on the originating feature's person instead of its author.
 
 A plan may also declare `rules`: up to 32 rewrite rules for its mechanical fixes. Each rule names
 `id`, `contract` (`path::symbol`, one the contract diff touches), `kind` (`expression` or
