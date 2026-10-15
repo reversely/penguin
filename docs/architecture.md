@@ -124,6 +124,10 @@ Write on `base` is minted only by a FeatureAgent, for one promotion, for
 to `read` on `base`. No MCP tool or dashboard route mints a token on it. Once a feature's block
 reaches main, every write token on its fork is revoked and none is minted again.
 `/tokens` holds every bridge to `read` on `record`: a person clones it with that expiring token.
+`/tokens` hands out the token it minted earlier on the same repo and scope while more than a minute
+of it is left, so a bridge's repeated requests make no Artifacts call. The Worker keeps those tokens
+in the isolate's memory only, and checks that the bridge may hold the scope before it hands one out.
+A claim's token on one part's or task's fork is always minted new, for that claim's lifetime.
 Artifacts tokens separate only read from write per repo, so the repo boundary is the push boundary.
 The validator then decides what each operation in `issues` may do.
 
@@ -239,7 +243,9 @@ matches a pending operation clears its `PendingOp` row.
    unwritten and that the patch writes only paths inside the part. It reads the affected fork's head
    through the Artifacts binding. A head that moved past the patch's base still takes the write when
    the patch applies there unchanged. Otherwise the part goes back to the originating agent to revise.
-   The Worker then mints a `write` token on that one fork.
+   The Worker then mints a `write` token on that one fork. The runner's claim skips a write that waits
+   for its receiving worktree's approval before it reads any fork, and reads each fork through one
+   repo handle for the length of the claim.
 3. The writer's bridge fetches the fork, makes one commit of the patch on the head with the message
    Penguin built and pushes it to `main` with no force (`penguin-bridge fix-write`, or runner mode).
 4. The writer reports the commit with `report_fix_write` or `POST /fix-writes/<write id>`. The

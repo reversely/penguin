@@ -144,6 +144,37 @@ export class RepoNotFoundError extends Error {
   }
 }
 
+/** A kept token is handed out again only while more than this is left of its life. */
+export const TOKEN_REUSE_MARGIN_MS = 60_000;
+
+/**
+ * The tokens `/tokens` minted, one per Artifacts repo and scope, kept for the isolate's life so a
+ * bridge's repeated requests make no Artifacts call (#218). Only settled tokens are kept, as plain
+ * data: a promise or a repo handle belongs to the request that made it. The caller checks that the
+ * bridge may hold the scope on the repo before asking; the key holds no bridge, so any bridge allowed
+ * the same repo and scope gets the same token.
+ */
+export class TokenCache {
+  readonly #tokens = new Map<string, MintedToken>();
+  readonly #now: () => number;
+
+  constructor(now: () => number = Date.now) {
+    this.#now = now;
+  }
+
+  /** The kept token on `repoName` with `scope` while more than a minute of it is left, or a new one from `mint`. */
+  async token(repoName: string, scope: TokenScope, mint: () => Promise<MintedToken>): Promise<MintedToken> {
+    const key = `${scope} ${repoName}`;
+    const kept = this.#tokens.get(key);
+    // An unparseable expiry compares false, so the token is minted again.
+    if (kept !== undefined && Date.parse(kept.expiresAt) - this.#now() > TOKEN_REUSE_MARGIN_MS) return kept;
+    this.#tokens.delete(key);
+    const minted = await mint();
+    if (minted.scope === scope) this.#tokens.set(key, minted);
+    return minted;
+  }
+}
+
 /**
  * Mints one token on `repoName` and reads the repo's Git remote, so the bridge never has to build
  * the account-specific remote URL itself.

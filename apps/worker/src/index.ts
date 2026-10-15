@@ -10,7 +10,7 @@ import { parseOwnerMap } from "./github-oauth.ts";
 import { consumePushEvents } from "./push-events.ts";
 import { featureView, mcpFeatures, mcpReviewTask, openFeatureWithFork, type FeaturePorts } from "./features.ts";
 import { forkFeatureRepo, forkHuddleRepo, parseFeatureForkOptions, RepoNames, setUpProject } from "./repos.ts";
-import { artifactsRepoName, mintRepoToken, parseFeatureTokenTtl, parseFixTokenTtl, parseProjectRepo, parseTokenTtl } from "./tokens.ts";
+import { artifactsRepoName, mintRepoToken, parseFeatureTokenTtl, parseFixTokenTtl, parseProjectRepo, parseTokenTtl, TokenCache } from "./tokens.ts";
 
 export { FeatureAgent } from "@penguin/feature-agent";
 export { ProjectAgent } from "@penguin/project-agent";
@@ -63,6 +63,16 @@ function featurePorts(env: WorkerEnv, names: RepoNames): FeaturePorts {
       fixTokenTtlSeconds: parseFixTokenTtl(env.PENGUIN_FIX_TOKEN_TTL_MINUTES),
     },
   };
+}
+
+/** `/tokens`' minted tokens, kept for the isolate's life (tokens.ts `TokenCache`). */
+const BRIDGE_TOKENS = new TokenCache();
+
+/** The Artifacts repo name of `repo`, named as a bridge names it, under `names`' prefix. */
+function projectRepoName(repo: string, names: RepoNames): string {
+  const parsed = parseProjectRepo(repo);
+  if (parsed === undefined) throw new Error(`not a project repo: ${repo}`);
+  return artifactsRepoName(parsed, names);
 }
 
 /** The project's one ProjectAgent instance. The repo prefix keeps test projects apart. */
@@ -217,10 +227,10 @@ export default {
         serveReviewTaskMcp: (mcpRequest, owner, taskId) => serveReviewTaskMcp(mcpRequest, mcpReviewTask(features, owner, taskId)),
         ownerForkRepo: (owner) => names.owner(owner),
         projectRepos: repos,
-        mintToken: (repo, scope, ttl) => {
-          const parsed = parseProjectRepo(repo);
-          if (parsed === undefined) throw new Error(`not a project repo: ${repo}`);
-          return mintRepoToken(env.ARTIFACTS, artifactsRepoName(parsed, names), scope, ttl);
+        mintToken: (repo, scope, ttl) => mintRepoToken(env.ARTIFACTS, projectRepoName(repo, names), scope, ttl),
+        reusableToken: (repo, scope, ttl) => {
+          const name = projectRepoName(repo, names);
+          return BRIDGE_TOKENS.token(name, scope, () => mintRepoToken(env.ARTIFACTS, name, scope, ttl));
         },
       },
     );

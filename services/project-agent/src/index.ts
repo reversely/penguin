@@ -188,6 +188,7 @@ import {
   type FixWriteDeps,
   type FixWriteOutcome,
   type ForkReader,
+  type ForkReading,
   type RuleUnmatched,
 } from "./fix-write.ts";
 import { retrialReported, retryWaitingWrites } from "./fix-retrial.ts";
@@ -3123,7 +3124,10 @@ export class ProjectAgent extends Agent {
 
   /** The check runner's claim of the mechanical parts' writes; refused unless `caller` holds the runner role. */
   claimFixWrites(caller: BridgeCaller, repos: ProjectRepos): ReturnType<typeof claimRunnerWrites> {
-    return this.#planStep(() => claimRunnerWrites(this.#fixWriteDeps(repos), caller));
+    // A claim reads each fork's head once per write it weighs; the reads share one handle per fork.
+    return this.#planStep(() =>
+      withRepoPool(this.env.ARTIFACTS, (read) => claimRunnerWrites(this.#fixWriteDeps(repos, (repo, use) => read(repo, (opened) => use(opened as unknown as ForkReader))), caller)),
+    );
   }
 
   /** The check runner reports the commit of write `writeId`, which it claimed. */
@@ -3134,7 +3138,7 @@ export class ProjectAgent extends Agent {
     return outcome;
   }
 
-  #fixWriteDeps(repos: ProjectRepos): FixWriteDeps {
+  #fixWriteDeps(repos: ProjectRepos, readFork?: ForkReading): FixWriteDeps {
     const approval = this.#planApprovalDeps(repos);
     const deps: FixWriteDeps = {
       features: approval.features,
@@ -3144,7 +3148,7 @@ export class ProjectAgent extends Agent {
       notify: approval.notify,
       grants: this.#fixGrantStore(),
       scopeMap: () => this.#scopeMap(repos),
-      readFork: (repo, use) => withRepo(this.env.ARTIFACTS, repo, (opened) => use(opened as unknown as ForkReader)),
+      readFork: readFork ?? ((repo, use) => withRepo(this.env.ARTIFACTS, repo, (opened) => use(opened as unknown as ForkReader))),
       // The identity a fix's edit task was routed to writes it too (PRD 0.5 section 4.4a).
       holds: (sessionId, partId, revision) => holdsFixTask(this.#editTaskStore(), sessionId, partId, revision),
       // An approved rule-written migration part is written by the runner the same way (migration-plans.ts).
@@ -4179,6 +4183,35 @@ async function withRepo<T>(artifacts: Artifacts, name: string, use: (repo: Artif
     return await use(repo);
   } finally {
     repo[Symbol.dispose]();
+  }
+}
+
+/** Runs `use` with a reader that opens a repo at most once by name; one call's reads of a repo share it. */
+type PooledRead = <T>(name: string, use: (repo: ArtifactsRepo) => Promise<T>) => Promise<T>;
+
+/**
+ * Runs `use` with repo handles opened at most once per name and releases them all when it ends
+ * (#218). A handle belongs to the request that opened it (Artifacts: "released before the request
+ * ends"), so none outlives `use`. A failed open is not kept: the next read opens the repo again.
+ */
+async function withRepoPool<T>(artifacts: Artifacts, use: (read: PooledRead) => Promise<T>): Promise<T> {
+  const opened = new Map<string, Promise<ArtifactsRepo>>();
+  const read: PooledRead = async (name, useRepo) => {
+    let repo = opened.get(name);
+    if (repo === undefined) {
+      const opening = artifacts.get(name);
+      opening.catch(() => opened.get(name) === opening && opened.delete(name));
+      opened.set(name, opening);
+      repo = opening;
+    }
+    return useRepo(await repo);
+  };
+  try {
+    return await use(read);
+  } finally {
+    for (const repo of await Promise.allSettled(opened.values())) {
+      if (repo.status === "fulfilled") repo.value[Symbol.dispose]();
+    }
   }
 }
 

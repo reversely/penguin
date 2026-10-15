@@ -22,7 +22,7 @@ Everything is declared in `apps/worker/wrangler.jsonc`, except the queue itself 
 | Durable Object | `FeatureAgent` | `wrangler.jsonc` | One instance per feature, named `<repo prefix>project-feature-<id>`. One instance per owner-fork Huddle issue, named `<repo prefix>project-huddle-<issue>` |
 | Migration | `v1` | `wrangler.jsonc` | Declares `ProjectAgent` and `HuddleAgent` with SQLite storage |
 | Migration | `v2` | `wrangler.jsonc` | Renames `HuddleAgent` to `FeatureAgent`. Every instance keeps its storage, so each feature's plan and fix writes survive. `wrangler deploy` applies it once |
-| Artifacts namespace | `penguin`, binding `ARTIFACTS` | `wrangler.jsonc` | Artifacts creates the namespace on the first repo create. `remote: true` points `wrangler dev` at the real service, since Artifacts has no local simulator |
+| Artifacts namespace | `penguin`, binding `ARTIFACTS` | `wrangler.jsonc` | Artifacts creates the namespace on the first repo create. `remote: true` points `wrangler dev` at the real service, since Artifacts has no local simulator. There each binding call leaves connections open ([walkthrough.md](walkthrough.md#open-connections-from-the-remote-artifacts-binding)) |
 | Queue | `penguin-issues-events` | `npx wrangler queues create penguin-issues-events` | The Worker is its consumer |
 | Event subscription | `issues` repo, event `pushed` | The Cloudflare dashboard | See below |
 

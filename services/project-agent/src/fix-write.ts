@@ -1110,14 +1110,16 @@ export async function claimRunnerWrites(
   for (const grant of deps.grants.claimable()) {
     // A fork whose start waits on an overlap lock gets no token yet; the write stays queued.
     if (deps.locked?.(grant.targetFeatureId) === true) continue;
+    // A write that waits for the receiving worktree's approval stays queued. This is asked before any
+    // fork is read, so a claim with only such writes makes no Artifacts call (#218).
+    if (((await deps.callerWaits?.(grant.featureId, grant.targetFeatureId)) ?? null) !== null) continue;
     const approved = await grantedWrite(deps, grant);
     if (isRejection(approved)) {
       deps.grants.withdraw(grant.id);
       continue;
     }
-    // A write that waits for its fork's turn, or for the receiving worktree's approval, stays queued.
+    // A write that waits for its fork's turn stays queued.
     if ((await forkTurn(deps, grant)) !== null) continue;
-    if (((await deps.callerWaits?.(grant.featureId, grant.targetFeatureId)) ?? null) !== null) continue;
     const migration = deps.migration;
     const headMoved =
       isMigrationPlanId(grant.planId) && migration !== undefined

@@ -7,7 +7,8 @@
  *   token, once.
  * - DELETE /bridges/<id>, deployer only: revokes a bridge.
  * - POST /tokens, bridge token: returns a short-lived Artifacts token on one project repo, with the
- *   repo's Git remote.
+ *   repo's Git remote. The Worker hands out the token it minted earlier on the same repo and scope
+ *   while more than a minute of it is left, so repeated requests make no Artifacts call.
  * - GET /operations/pending, bridge token of a runner bridge: lists the operations from MCP, the
  *   dashboard and Penguin that wait for the runner to push them to the issues repo.
  * - POST /checkpoints, bridge token: records a checkpoint the bridge pushed to its owner's fork as
@@ -278,7 +279,10 @@ export type TokenMinter = (repo: string, scope: TokenScope, ttlSeconds: number) 
 
 export interface BridgeHandlers {
   readonly bridges: () => BridgeDirectory | Promise<BridgeDirectory>;
+  /** A new token: a claim's token on one part's or task's fork, for that claim's lifetime. */
   readonly mintToken: TokenMinter;
+  /** `/tokens`: the token minted earlier on the repo and scope while more than a minute is left, else a new one (`TokenCache`). */
+  readonly reusableToken: TokenMinter;
   /** The Artifacts repo name of an owner's fork, with the deployment's repo prefix. */
   readonly ownerForkRepo: (ownerId: string) => string;
   readonly huddles: () => HuddleDirectory | Promise<HuddleDirectory>;
@@ -391,7 +395,8 @@ async function issueToken(request: Request, options: BridgeOptions, handlers: Br
   }
 
   try {
-    const minted = await handlers.mintToken(repoName, scope, options.tokenTtlSeconds);
+    // Asked only after the scope check above: a kept token goes to a bridge allowed the same repo and scope.
+    const minted = await handlers.reusableToken(repoName, scope, options.tokenTtlSeconds);
     const { scope: mintedScope, token, remote, expiresAt } = minted;
     return json({ repo: repoName, scope: mintedScope, token, remote, expiresAt }, 200, NO_STORE);
   } catch (error) {

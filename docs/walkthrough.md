@@ -189,3 +189,28 @@ Penguin's own code does not drop a failed Artifacts call either. A fork head tha
 fails the land or `check` with every such fork named and logs `fork_read_failed`
 ([architecture.md](architecture.md)). A token revocation that fails, which only expires with the
 token's TTL, logs `token_revoke_failed` with the repo and token.
+
+## Open connections from the remote Artifacts binding
+
+Under `wrangler dev` (4.149.0 and 4.151.0, measured on 2026-10-15) each call through the remote
+Artifacts binding leaves 2 connections to Cloudflare open. A Worker whose only code is
+`env.ARTIFACTS.get()` held 6 connections before 300 calls, 606 after them and 606 thirty seconds
+later. In film run r8 the count rose by 1,373 in one minute while the only traffic was the check
+runner's idle poll, 11 requests about 24 times a minute. Runs r6 and r7 stopped at about 10,000 with
+`Too many open files`, and every request after that failed.
+
+Penguin keeps its binding calls off the idle poll (#218):
+
+| Request | Artifacts calls |
+|---|---|
+| `POST /tokens` | None while the token minted earlier on the same repo and scope has more than a minute left; then one `get`, `createToken` and `info` |
+| `POST /fix-writes/claim` | None for a write that waits for its receiving worktree's approval. Each fork a claim reads is opened once for that claim |
+| The other nine runner requests | None |
+
+Penguin does not keep a repo handle past the request that opened it. Cloudflare's Artifacts docs say
+to declare the handle "with `using` so it is released before the request ends", and its RPC docs
+say stubs are disposed when the event that made them is done. A write that waits for its fork's turn
+behind another write still reads fork heads on each claim: with two writes waiting behind a held
+one, a claim makes one `get` and six `log` calls (`tests/rules/binding-calls.test.ts` counts
+the idle pass; this case was counted with the same double outside the suite). A deployed Worker was
+not measured.
