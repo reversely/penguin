@@ -426,17 +426,25 @@ feature's page it names the originating feature and its person. Below the name i
 - the contract as code;
 - the item's state and who it waits on;
 - why it went to the worktree owner, when it did, with the count of rejections once there is one;
-- each call site as `path:line` with its verdict and how many of its calls match;
+- what Penguin replayed, as one line: `Penguin ran <receiving feature>'s tests on main and with
+  <originating feature>`, with a tag counting the calls that changed. The line is absent when no test
+  reaches any call site;
+- each call site as `path:line` with its verdict and how many of its calls are the same as on main,
+  such as `7 of 10 calls same as on main`;
+- the first differing call, open: its test and the changed function, then its two sides side by side,
+  On main and With `<originating feature>`. Each side shows Result, the return value as JSON text or
+  how the call ended when it raised or was not made, and Effects, the first effects. The field that
+  differs carries a `differs` tag on both sides. Below them, once answered, the call shows Classified
+  with `intended` or `incidental` and the originating agent's reason. Review then shows approved or
+  changes requested with the receiving agent's evidence as code;
+- the other differing calls behind a line that counts them, each drawn as the first is;
 - the originating agent's explanation, the fix it proposed (the plan part and revision, with its
   note) and the last review note, each quoted as text an agent or a person wrote;
 - the answers Penguin refused since the item last moved, the newest 3, each as a reason tag with the
-  agent that sent it;
-- the differing calls behind a line that counts them: each call's test, the changed function, what
-  differs, then Before and After with how the call ended and its first effects. Once answered, a call
-  shows Classified with `intended` or `incidental` and the originating agent's reason. Review then
-  shows approved or changes requested with the receiving agent's evidence as code.
+  agent that sent it.
 
-The card shows no recorded argument or return value. The tag for each state:
+The card shows each differing call's recorded return value as text, cut at 2,048 characters, and no
+recorded argument. The tag for each state:
 
 | Tag | State | Meaning |
 |---|---|---|

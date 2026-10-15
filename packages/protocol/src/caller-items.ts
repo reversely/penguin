@@ -34,7 +34,7 @@
 // every item there is approved from the receiving side. The originating feature reaches main only once
 // every item is `confirmed`, `written`, `approved` or `unaffected`.
 
-import type { CallerVerdict, CallerVerdictKind, ReplayCall, ReplayCallStatus, ReplaySide } from "./caller-replay.ts";
+import { CALLER_REPLAY_LIMITS, type CallerVerdict, type CallerVerdictKind, type ReplayCall, type ReplayCallStatus, type ReplaySide } from "./caller-replay.ts";
 import type { RewriteRuleImport } from "./rewrite-rule.ts";
 import { FEATURE_ID_MAX_LENGTH } from "./overlap.ts";
 import { IDENTITY_HANDLE_MAX_LENGTH, PERSON_ID_MAX_LENGTH, PERSON_ID_PATTERN, SEGMENT_PATTERN } from "./operation-schema.ts";
@@ -437,9 +437,11 @@ export function itemVerdict(callers: readonly Pick<CallerVerdict, "verdict">[]):
   return "unaffected";
 }
 
-/** One side of a differing call as the dashboard shows it: how it ended and its effects, without its values. */
+/** One side of a differing call as the dashboard shows it: how it ended, what it returned and its effects, without its arguments. */
 export interface CallerSideView {
   readonly status: ReplayCallStatus;
+  /** The returned value as canonical JSON text, when it returned; shown as text, never evaluated. */
+  readonly value: string | null;
   /** The exception's type, when it raised. */
   readonly error: string | null;
   readonly effects: readonly string[];
@@ -492,10 +494,11 @@ export interface CallerItemView {
 }
 
 function sideView(side: ReplaySide): CallerSideView {
-  return { status: side.status, error: side.error?.type ?? null, effects: side.effects.map((effect) => effect.summary), effectCount: side.effectCount };
+  const value = side.status === "returned" ? JSON.stringify(side.value).slice(0, CALLER_REPLAY_LIMITS.valueChars) : null;
+  return { status: side.status, value, error: side.error?.type ?? null, effects: side.effects.map((effect) => effect.summary), effectCount: side.effectCount };
 }
 
-/** The dashboard's view of an item: the differing calls' outcomes and effects, never their recorded values. */
+/** The dashboard's view of an item: the differing calls' outcomes, return values and effects, never their arguments. */
 export function callerItemView(item: CallerItem, people: { readonly origin: string; readonly feature: string }): CallerItemView {
   const calls: ReplayCall[] = item.callers.flatMap((caller) => caller.differing).slice(0, CALLER_ITEM_LIMITS.viewCalls);
   const kinds = new Map((item.explanation?.calls ?? []).map((each) => [each.callId, { kind: each.kind, reason: each.reason }]));
@@ -556,6 +559,7 @@ const nullable = (schema: JsonSchema): JsonSchema => ({ anyOf: [schema, { type: 
 const VERDICT: JsonSchema = { type: "string", enum: ["unaffected", "broken", "differs", "unknown_reach"] };
 const SIDE: JsonSchema = record({
   status: { type: "string", enum: ["returned", "raised", "missing"] },
+  value: nullable(text(CALLER_REPLAY_LIMITS.valueChars)),
   error: nullable(text(256)),
   effects: { type: "array", items: text(500) },
   effectCount: COUNT,
