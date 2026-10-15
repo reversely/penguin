@@ -1646,7 +1646,9 @@ async function workSummary(
   const feature = await project.featureWork?.(owner, id);
   const overlaps = (await project.overlapsNeeding?.(owner)) ?? [];
   // The summaries leave a result's input and outcome unread, which can hold an impact graph or a replay's calls.
-  const toolResults = (await (project.agentToolSummaries ?? project.agentToolResults)?.call(project, owner, id)) ?? [];
+  // Called as methods: under the Worker, project is the ProjectAgent's RPC stub, which sends any property access,
+  // `.call` included, to the Durable Object as a remote method name.
+  const toolResults = (await (project.agentToolSummaries !== undefined ? project.agentToolSummaries(owner, id) : project.agentToolResults?.(owner, id))) ?? [];
   const plan = await project.planWork?.(owner, id, { issues: repos.issues, base: repos.base });
   const landing = await project.landWork?.(owner, id);
   const contract = await project.contractWork?.(owner, id, { issues: repos.issues, base: repos.base });

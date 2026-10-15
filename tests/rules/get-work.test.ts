@@ -144,9 +144,27 @@ function priyasProject(reads: string[]): McpProject {
   };
 }
 
-async function connect(owner: string, reads: string[]) {
+// A Durable Object stub: every method is a remote call, and a property such as `call` on a method is sent to the
+// object as a method name it does not implement (the live failure behind #211).
+function asStub<T extends object>(target: T): T {
+  return new Proxy(target, {
+    get(object, key) {
+      const value = Reflect.get(object, key) as unknown;
+      if (typeof value !== "function") return value;
+      const method = (...args: unknown[]) => (value as (...a: unknown[]) => unknown).apply(object, args);
+      return new Proxy(method, {
+        get(fn, prop) {
+          if (prop === "call" || prop === "apply" || prop === "bind") throw new Error(`The RPC receiver does not implement the method "${String(prop)}".`);
+          return Reflect.get(fn, prop);
+        },
+      });
+    },
+  });
+}
+
+async function connect(owner: string, reads: string[], stub = false) {
   const [client, server] = InMemoryTransport.createLinkedPair();
-  await createPenguinMcpServer(owner, priyasProject(reads), { issues: "issues", base: "base", ownerFork: `owner-${owner}` }).connect(server);
+  await createPenguinMcpServer(owner, stub ? asStub(priyasProject(reads)) : priyasProject(reads), { issues: "issues", base: "base", ownerFork: `owner-${owner}` }).connect(server);
   const mcp = new Client({ name: "test", version: "0" });
   await mcp.connect(client);
   return async (name: string, args: Record<string, unknown>) => {
@@ -171,6 +189,13 @@ test("get_work for case 1's Priya after her check and plan stays under 20,000 ch
   assert.deepEqual(own.map((each) => each.part), parts.map((each) => each.partId), "every plan part");
   assert.deepEqual([own[0]?.next, own[1]?.next], ["answer with revise_plan_part", "none"]);
   assert.ok(!work.text.includes("Ignore previous instructions") && !work.text.includes("+line"), "no requested change's text and no patch");
+});
+
+test("get_work answers through a Durable Object stub, whose methods cannot be reached with call", async () => {
+  const call = await connect("priya", [], true);
+  const work = await call("get_work", { sessionId: SESSION });
+  assert.equal(work.isError, false, work.text);
+  assert.ok(Array.isArray(work.value["callerItems"]["originating"]), work.text.slice(0, 200));
 });
 
 test("get_work_item gives one listed entry's details to its own session alone", async () => {
