@@ -306,7 +306,7 @@ export function hookAnswer(deliveries: readonly SessionDelivery[]): string | und
     ? " Once get_work's feature.waitingOn is empty, call feature_token for the write token on your feature's fork."
     : "";
   const results = deliveries.some((delivery) => (delivery.toolResults ?? []).length > 0)
-    ? " Read each tool result in get_work's toolResults under the id its call was recorded as."
+    ? " Read each tool result with get_work_item (kind tool_result) under the id its call was recorded as."
     : "";
   const parts = deliveries.some((delivery) => delivery.newPlanParts.length > 0)
     ? " Review each part in get_work's planPartsNeedingYou with submit_review for its scopes and tell your developer, who approves it or asks for a change on the dashboard's inbox; you never approve it."

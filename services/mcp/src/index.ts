@@ -4,7 +4,6 @@ export { MCP_ROUTE, serveMcp, serveReviewTaskMcp } from "./handler.ts";
 export { createReviewTaskMcpServer, type McpReviewTask } from "./review-task-tools.ts";
 export {
   createPenguinMcpServer,
-  landingFields,
   planNoticeFields,
   type CharterView,
   type CheckpointResult,

@@ -993,13 +993,31 @@ export async function ownerCallerItems(deps: CallerItemDeps, person: string, del
   return requests.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0));
 }
 
-/** What get_work gives a session about caller items: one context packet per item, on either side. */
+/** What get_work gives a session about caller items: one short summary per item, on either side (#206). */
 export interface CallerWork {
   /** Items on the session's own worktree, from other features' changes. */
-  readonly receiving: readonly CallerPacket[];
+  readonly receiving: readonly CallerSummary[];
   /** Items the session's feature's change opened in other worktrees. */
-  readonly originating: readonly CallerPacket[];
+  readonly originating: readonly CallerSummary[];
 }
+
+/** One item as get_work lists it: where it stands and whose turn it is, without its calls or the plan's diff. */
+export interface CallerSummary {
+  readonly item: string;
+  readonly origin: string;
+  readonly feature: string;
+  readonly contract: string;
+  readonly verdict: CallerItem["verdict"];
+  readonly state: CallerItemState;
+  readonly waitingOn: ReturnType<typeof callerWaitingOn>;
+  readonly ownerAsked: CallerOwnerReason | null;
+  /** True when this session's side acts next, with the tool it answers with. */
+  readonly yourTurn: { readonly tools: readonly string[] } | null;
+  /** The differing calls the replay counted, listed or not; the item's packet lists them. */
+  readonly differingCalls: number;
+}
+
+type CallerSide = "receiving_agent" | "originating_agent";
 
 /** One item with everything an agent needs to answer it. Text another agent or person wrote is under `personWritten`. */
 export interface CallerPacket {
@@ -1061,7 +1079,24 @@ function contractEntries(plan: Plan | undefined, contract: string): CallerPacket
   return { changes, signatures: diff.signatures.filter((signature) => symbols.has(signature.symbol)) };
 }
 
-function packetOf(item: CallerItem, plan: Plan | undefined, side: "receiving_agent" | "originating_agent"): CallerPacket {
+function summaryOf(item: CallerItem, side: CallerSide): CallerSummary {
+  const waitingOn = callerWaitingOn(item);
+  const differing = differingOf(item);
+  return {
+    item: item.itemId,
+    origin: item.origin,
+    feature: item.feature,
+    contract: item.contract,
+    verdict: item.verdict,
+    state: item.state,
+    waitingOn,
+    ownerAsked: item.ownerAsked,
+    yourTurn: waitingOn === side ? { tools: TOOLS_FOR[item.state] ?? [] } : null,
+    differingCalls: differing.listed.size + differing.unlisted,
+  };
+}
+
+function packetOf(item: CallerItem, plan: Plan | undefined, side: CallerSide): CallerPacket {
   const waitingOn = callerWaitingOn(item);
   const part = item.fix === null ? undefined : plan?.parts.find((each) => each.partId === item.fix?.partId);
   return {
@@ -1094,28 +1129,47 @@ function packetOf(item: CallerItem, plan: Plan | undefined, side: "receiving_age
 }
 
 /**
- * get_work's caller items for `caller`'s session: a packet per open item on the session's feature's
- * own worktree, and per item its feature's change opened. Undefined for a session that is not live or
- * works on no feature.
+ * The open items `caller`'s session may see, each with its side: those on the session's feature's own
+ * worktree and those its feature's change opened. Undefined for a session that is not live or works on
+ * no feature of the caller's.
  */
-export async function callerWork(deps: Omit<CallerActionDeps, "testStanding">, caller: string, sessionId: string): Promise<CallerWork | undefined> {
+async function sessionItems(
+  deps: Omit<CallerActionDeps, "testStanding">,
+  caller: string,
+  sessionId: string,
+): Promise<{ readonly item: CallerItem; readonly side: CallerSide }[] | undefined> {
   if (deps.heartbeat(caller, sessionId).status !== "ok") return undefined;
   const featureId = parseFeatureId(deps.features.featureOfSession(sessionId));
   if (featureId === undefined || deps.features.get(featureId)?.personId !== caller) return undefined;
   await sweepUnanswered(deps);
-  const plans = new Map<string, Plan | undefined>();
-  const planOf = async (origin: string) => {
-    if (!plans.has(origin)) plans.set(origin, await deps.plan(origin));
-    return plans.get(origin);
-  };
-  const receiving: CallerPacket[] = [];
+  const items: { readonly item: CallerItem; readonly side: CallerSide }[] = [];
   for (const origin of deps.index.originsOn([featureId])) {
     if (origin === featureId) continue;
     for (const item of await deps.keeper(origin).callerItems(origin)) {
-      if (item.feature === featureId && item.state !== "withdrawn") receiving.push(packetOf(item, await planOf(origin), "receiving_agent"));
+      if (item.feature === featureId && item.state !== "withdrawn") items.push({ item, side: "receiving_agent" });
     }
   }
-  const originating = (await liveItems(deps, featureId)).filter((item) => item.state !== "withdrawn");
-  const plan = originating.length === 0 ? undefined : await planOf(featureId);
-  return { receiving, originating: originating.map((item) => packetOf(item, plan, "originating_agent")) };
+  for (const item of await liveItems(deps, featureId)) if (item.state !== "withdrawn") items.push({ item, side: "originating_agent" });
+  return items;
+}
+
+/**
+ * get_work's caller items for `caller`'s session: a summary per open item on the session's feature's
+ * own worktree, and per item its feature's change opened. It reads no plan, so no diff, and lists no
+ * calls (#206). Undefined for a session that is not live or works on no feature.
+ */
+export async function callerWork(deps: Omit<CallerActionDeps, "testStanding">, caller: string, sessionId: string): Promise<CallerWork | undefined> {
+  const items = await sessionItems(deps, caller, sessionId);
+  if (items === undefined) return undefined;
+  const of = (side: CallerSide) => items.filter((each) => each.side === side).map(({ item }) => summaryOf(item, side));
+  return { receiving: of("receiving_agent"), originating: of("originating_agent") };
+}
+
+/**
+ * One item's packet for `caller`'s session, for get_work_item: its calls, call sites, runs, the
+ * contract's diff and the proposed fix's patch. Undefined unless get_work lists the item for the session.
+ */
+export async function callerPacket(deps: Omit<CallerActionDeps, "testStanding">, caller: string, sessionId: string, itemId: string): Promise<CallerPacket | undefined> {
+  const found = (await sessionItems(deps, caller, sessionId))?.find(({ item }) => item.itemId === itemId);
+  return found === undefined ? undefined : packetOf(found.item, await deps.plan(found.item.origin), found.side);
 }

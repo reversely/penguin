@@ -131,6 +131,8 @@ export interface McpProject {
   overlapsNeeding?(person: string): MaybePromise<readonly OverlapLockView[]>;
   /** The check runner's results delivered to the caller's session, newest first; absent without features. */
   agentToolResults?(caller: string, sessionId: string): MaybePromise<readonly ToolResultView[]>;
+  /** The same results without their input or outcome, for get_work; absent, get_work reads `agentToolResults`. */
+  agentToolSummaries?(caller: string, sessionId: string): MaybePromise<readonly ToolResultSummaryView[]>;
   /** Advance notice for the caller's session; absent without merge plans, undefined for another owner's session. */
   planWork?(caller: string, sessionId: string, repos: { readonly issues: string; readonly base: string }): MaybePromise<PlanWorkView | undefined>;
   /** Where the caller's session's feature stands in landing; absent without features, undefined without a feature. */
@@ -146,8 +148,10 @@ export interface McpProject {
     sessionId: string,
     repos: { readonly issues: string; readonly base: string },
   ): MaybePromise<{ readonly tasks: readonly EditTaskView[]; readonly queue: EditQueue } | undefined>;
-  /** The caller items on the session's worktree and those its feature's change opened (caller-items.ts); absent without them. */
+  /** A summary of each caller item on the session's worktree and each its feature's change opened (caller-items.ts); absent without them. */
   callerWork?(caller: string, sessionId: string): MaybePromise<CallerWorkView | undefined>;
+  /** One of those items' full packet; undefined for an item get_work does not list for the session. */
+  callerPacket?(caller: string, sessionId: string, item: string): MaybePromise<CallerPacketView | undefined>;
   /** One call of a caller tool by the session; the ProjectAgent checks the session's side of the item. */
   callerItemCall?(caller: string, sessionId: string, call: CallerCallView, repos: { readonly base: string }): MaybePromise<CallerCallResult>;
   readIssue(
@@ -185,13 +189,30 @@ export interface OverlapLockView {
   readonly openedAt: string;
 }
 
-/** get_work's caller items: one context packet per item (the ProjectAgent's `CallerPacket`). */
+/** get_work's caller items: one summary per item (the ProjectAgent's `CallerSummary`). */
 export interface CallerWorkView {
-  readonly receiving: readonly CallerPacketView[];
-  readonly originating: readonly CallerPacketView[];
+  readonly receiving: readonly CallerSummaryView[];
+  readonly originating: readonly CallerSummaryView[];
 }
 
-/** One caller item's packet. `calls` holds what the code under test returned and sent; `personWritten` what agents and people wrote. */
+/** One caller item as get_work lists it, without its calls, call sites, runs or diffs. */
+export interface CallerSummaryView {
+  readonly item: string;
+  readonly origin: string;
+  readonly feature: string;
+  readonly contract: string;
+  readonly verdict: string;
+  readonly state: string;
+  readonly waitingOn: string;
+  readonly ownerAsked: string | null;
+  readonly yourTurn: { readonly tools: readonly string[] } | null;
+  readonly differingCalls: number;
+}
+
+/** A delivered tool result as get_work lists it: no input and no outcome. */
+export type ToolResultSummaryView = Pick<ToolResultView, "id" | "featureId" | "tool" | "result" | "summary" | "checkpointSha" | "completedAt">;
+
+/** One caller item's packet (get_work_item). `calls` holds what the code under test returned and sent; `personWritten` what agents and people wrote. */
 export interface CallerPacketView {
   readonly item: string;
   readonly origin: string;
@@ -969,9 +990,27 @@ const reviewCallerInput = z.strictObject({
     .describe("Required when the packet's `unlistedCalls` is above 0: one verdict for those calls."),
 });
 
+// One get_work entry, named as get_work lists it (#206).
+const runId = z.number().int().min(1).max(2_147_483_647);
+const workEntry = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("caller_item"), item: callerItem }),
+  z.strictObject({ kind: z.literal("plan_part"), part: z.string().min(1).max(128).describe("The part's id, as get_work's `plan` or `planPartsNeedingYou` names it.") }),
+  z.strictObject({ kind: z.literal("review"), reviewId: runId.describe("The review's id, as get_work's `reviewResults` names it.") }),
+  z.strictObject({ kind: z.literal("tool_result"), recordedAs: runId.describe("The result's id, as get_work's `toolResults` names it.") }),
+  z.strictObject({ kind: z.literal("edit_task"), taskId: runId.describe("The task's id, as get_work's `editTasks` names it.") }),
+  z.strictObject({ kind: z.literal("landing_run"), runId: z.string().min(1).max(256).describe("The block run's id, as get_work's `landing.runs` names it.") }),
+  z.strictObject({ kind: z.literal("contract") }),
+  z.strictObject({
+    kind: z.literal("thread"),
+    issue: z.string().min(1).max(ISSUE_ID_MAX_LENGTH).describe("The thread's issue, as get_work's `threadsNeedingYou` names it."),
+    thread: opId.describe("The thread's id."),
+  }),
+]);
+const workItemInput = z.strictObject({ sessionId, entry: workEntry });
+
 const INSTRUCTIONS =
   "Penguin coordinates issues between owners and their agent sessions. Call register_session once " +
-  "with your identity, vendor, worktree and branch, then pass the returned sessionId to get_work, " +
+  "with your identity, vendor, worktree and branch, then pass the returned sessionId to get_work, get_work_item, " +
   "get_issue, post_update and report_checkpoint. Each call with a sessionId keeps the session " +
   "running; after about 90 seconds without one, the session goes offline and you register again. " +
   "A fix task from a Huddle reaches get_work at your next safe checkpoint: before your next tool " +
@@ -1037,10 +1076,15 @@ export function createPenguinMcpServer(
     {
       title: "Get work",
       description:
-        "The issues assigned to this session's identity and routed to the session, each with its pinned " +
-        "base, allowed scopes and paths, failing tests and acceptance criteria, plus every open thread, " +
-        "on any issue, that needs your developer, such as a reviewer's request for changes. Tell your " +
-        "developer about each of those threads in your conversation; reply in one with post_update. A " +
+        "A short summary of this session's work: one entry per issue, thread, tool result, plan part, review, " +
+        "edit task, landing run and caller item, each with its id, its state, who it waits on and its `next` action. " +
+        "No entry carries a diff, a call list or long quoted text: read one entry's details with get_work_item, " +
+        "naming it by its kind and id, and an issue's with get_issue. " +
+        "`issues` lists the issues assigned to this session's identity and routed to the session; get_issue gives " +
+        "a fix task's pinned base, allowed scopes and paths, failing tests and acceptance criteria. " +
+        "`threadsNeedingYou` lists every open thread, on any issue, that needs your developer, such as a reviewer's " +
+        "request for changes. Tell your developer about each of those threads in your conversation; reply in one " +
+        "with post_update. A " +
         "fix task appears from the session's next safe checkpoint on, so it never interrupts work in progress. " +
         "`feature` names the feature this session works on. Penguin approves its start beside each other person's " +
         "running feature that covers part of the area: `approvedBy` lists those approvals, with `penguin` as the " +
@@ -1052,17 +1096,19 @@ export function createPenguinMcpServer(
         "developer's code: review each with submit_review for its scopes and tell your developer, who approves " +
         "it or asks for a change on the dashboard; you never approve. `plan` is your feature's newest merge plan " +
         "with where each part stands: answer each `change_requested` part with revise_plan_part. `reviewPolicy` names the " +
-        "sandbox's review policy. Each part's `routing` says who decides it and why, with the kinds of validation " +
+        "sandbox's review policy. Each part's `decider` says whether Penguin or a person decides it; its detail's `routing` says why, with the kinds of validation " +
         "(Tests, Logic, Data matching, Stored data, Custom path rules and place, Overlapping starts) whose checks marked it, " +
         "and its `waitsOn` names the person, agent or `penguin` it waits on. A part whose rule is `originator` waits on the " +
         "originating feature's person, because the change reshapes stored data the part's scope only reads and the plan names " +
         "no migration or backfill: that person's agent adds one to the change and proposes again, or the person approves the part. " +
         "`approvedVia` says whether Penguin approved it under the policy or a person on the dashboard. `reviewResults` " +
         "gives the check runner's verdict on each review you submitted. `landing` says where your feature's " +
-        "landing stands: each block run with its state, the failing checks and one next step per failure, and " +
+        "landing stands: each block run with its state and its counts of failing checks and next steps, whose detail gives " +
+        "the failing checks and one next step per failure, and " +
         "the promotion once main moved to your checkpoint; `expansions` lists each expand checkpoint promoted on its own. " +
-        "`contract` is how Penguin sorted your latest checkpoint's contract diff: each entry additive, compatible, incompatible " +
-        "(callers outside your scopes) or a behaviour change, your feature's split, and `nextStep`. An incompatible entry makes " +
+        "`contract` is how Penguin sorted your latest checkpoint's contract diff: how many entries are additive, compatible, incompatible " +
+        "(callers outside your scopes) or a behaviour change, your feature's split, and `nextStep`; get_work_item's `contract` lists " +
+        "each entry. An incompatible entry makes " +
         "the next step \"Expand first\" with the entries listed; a behaviour change keeps the merge plan. `contractStep` lists " +
         "each symbol your feature retires with its callers at Penguin's count after the last promotion; once none is left, " +
         "Penguin approves removing it. The next step then starts with \"Contract\": remove it, report a checkpoint and land. " +
@@ -1072,9 +1118,9 @@ export function createPenguinMcpServer(
         "to make in `fork`, changing only `files` or the paths of `scopes`; Penguin's checks named in `verifier` then run. " +
         "`editQueue` counts your developer's running, queued and asked tasks against the cap of background runs. " +
         "`callerItems` lists each caller item: `receiving` for callers in your worktree that another feature's change reaches, " +
-        "`originating` for callers in other worktrees your change reaches. Each packet gives the contract's diff, the call sites, " +
-        "each differing call old and new with its effects, the replay runs and the tests that ran, the proposed fix's patch and the " +
-        "other side's explanation or review under `personWritten`. `yourTurn` names the tool your side answers with: confirm_caller, " +
+        "`originating` for callers in other worktrees your change reaches. get_work_item's packet for an item gives the contract's diff, " +
+        "the call sites, each differing call old and new with its effects, the replay runs and the tests that ran, the proposed fix's patch " +
+        "and the other side's explanation or review under `personWritten`. `yourTurn` names the tool your side answers with: confirm_caller, " +
         "review_caller, propose_caller_fix or explain_difference. Your feature lands only once every item is confirmed, its fix written " +
         "or its difference approved. Penguin's check runner writes an approved fix into the receiving worktree once that " +
         "worktree approves it; the receiving agent only approves and never edits the fix in.",
@@ -1086,7 +1132,6 @@ export function createPenguinMcpServer(
       if (live.status === "rejected") return rejected(live);
       const work = await project.sessionWork(owner, id);
       if (work.status === "rejected") return rejected(work);
-      const charter = await project.readIdentity(live.session.identityId);
       const issues: { readonly issue: IssueRecord; readonly task: FixTaskView | undefined }[] = [];
       for (const issueId of work.issueIds) {
         const { issue } = await project.readIssue(issueId);
@@ -1095,7 +1140,8 @@ export function createPenguinMcpServer(
       const threads = await project.threadsNeeding(owner);
       const feature = await project.featureWork?.(owner, id);
       const overlaps = (await project.overlapsNeeding?.(owner)) ?? [];
-      const toolResults = (await project.agentToolResults?.(owner, id)) ?? [];
+      // The summaries leave a result's input and outcome unread, which can hold an impact graph or a replay's calls.
+      const toolResults = (await (project.agentToolSummaries ?? project.agentToolResults)?.call(project, owner, id)) ?? [];
       const plan = await project.planWork?.(owner, id, { issues: repos.issues, base: repos.base });
       const landing = await project.landWork?.(owner, id);
       const contract = await project.contractWork?.(owner, id, { issues: repos.issues, base: repos.base });
@@ -1104,8 +1150,8 @@ export function createPenguinMcpServer(
       return result({
         sessionId: id,
         identity: live.session.handle,
-        issues: issues.map(({ issue, task }) => workItem(issue, charter, task)),
-        threadsNeedingYou: threads.map(({ issueId, thread }) => ({ issueId, ...threadFields(thread) })),
+        issues: issues.map(({ issue, task }) => issueSummary(issue, task)),
+        threadsNeedingYou: threads.map(({ issueId, thread }) => threadSummary(issueId, thread)),
         feature: feature === undefined ? null : featureWorkFields(feature),
         overlapsNeedingYou: overlaps.map((lock) => ({
           feature: lock.featureId,
@@ -1113,13 +1159,40 @@ export function createPenguinMcpServer(
           overlap: overlapFields(lock.overlap),
           openedAt: lock.openedAt,
         })),
-        toolResults: toolResults.map(toolResultFields),
-        ...(plan === undefined ? {} : planWorkFields(plan)),
-        ...(project.landWork === undefined ? {} : { landing: landing === undefined ? null : landingFields(landing) }),
-        ...(project.contractWork === undefined ? {} : { contract: contract ?? null }),
-        ...(edits === undefined ? {} : { editTasks: edits.tasks.map(editTaskFields), editQueue: edits.queue }),
-        ...(project.callerWork === undefined ? {} : { callerItems: callers === undefined ? null : { receiving: [...callers.receiving], originating: [...callers.originating] } }),
+        toolResults: toolResults.map(toolResultSummary),
+        ...(plan === undefined ? {} : planWorkSummary(plan)),
+        ...(project.landWork === undefined ? {} : { landing: landing === undefined ? null : landingSummary(landing) }),
+        ...(project.contractWork === undefined ? {} : { contract: contract === undefined ? null : contractSummary(contract) }),
+        ...(edits === undefined ? {} : { editTasks: edits.tasks.map(editTaskSummary), editQueue: edits.queue }),
+        ...(project.callerWork === undefined
+          ? {}
+          : { callerItems: callers === undefined ? null : { receiving: callers.receiving.map(callerSummary), originating: callers.originating.map(callerSummary) } }),
       });
+    },
+  );
+
+  server.registerTool(
+    "get_work_item",
+    {
+      title: "Get work item",
+      description:
+        "The details of one entry get_work lists, named by its kind and id: a caller item's packet (`caller_item`), a plan " +
+        "part with its routing and the author's requested change (`plan_part`), a review verdict with each refusal's reason " +
+        "(`review`), a tool result with its input and the check runner's outcome (`tool_result`), an edit task with its " +
+        "instructions (`edit_task`), a block run with its failing checks and next steps (`landing_run`), your feature's sorted " +
+        "contract diff (`contract`) or a thread with its text (`thread`). Only an entry get_work lists for this session is " +
+        "answered; any other is `not_found`. Read an issue with get_issue.",
+      inputSchema: workItemInput,
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async ({ sessionId: id, entry }) => {
+      const live = await project.sessionHeartbeat(owner, id);
+      if (live.status === "rejected") return rejected(live);
+      const detail = await workEntryDetail(owner, id, project, repos, entry);
+      if (detail === undefined) {
+        return rejected({ status: "rejected", reason: "not_found", message: `get_work lists no ${entry.kind.replaceAll("_", " ")} ${entryName(entry)} for this session` });
+      }
+      return result(detail);
     },
   );
   if (project.callerItemCall !== undefined) registerCallerTools(server, owner, project as McpProject & Required<Pick<McpProject, "callerItemCall">>, repos.base);
@@ -1130,7 +1203,8 @@ export function createPenguinMcpServer(
       title: "Get issue",
       description:
         "One issue assigned to this session's identity, with its operations, checks, reviews, threads, " +
-        "comments, linked commits and sub-issues.",
+        "comments, linked commits and sub-issues, and the scopes and paths your identity's charter allows. " +
+        "A Huddle's fix sub-issue also carries its pinned base, failing tests and acceptance criteria.",
       inputSchema: issueInput,
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -1149,7 +1223,8 @@ export function createPenguinMcpServer(
           message: `issue ${issueId} is not assigned to ${live.session.handle}`,
         });
       }
-      return result(issueDetail(read.issue, read.timeline));
+      const task = await project.readFixTask(read.issue.id);
+      return result({ ...issueDetail(read.issue, read.timeline), ...fixTaskFields(await project.readIdentity(live.session.identityId), task) });
     },
   );
 
@@ -1541,25 +1616,175 @@ function sessionFields(session: SessionView): Record<string, unknown> {
   return { id, identity: handle, vendor, worktreeId, branch, status, lastSeen };
 }
 
-/**
- * One assigned issue as get_work reports it. A Huddle's fix sub-issue carries its pinned base,
- * failing tests and acceptance criteria from the Huddle's combined run. Any other issue has none of
- * them, so they are null and empty; a person who writes acceptance criteria puts them in the body.
- */
-function workItem(issue: IssueRecord, charter: CharterView | undefined, task: FixTaskView | undefined): Record<string, unknown> {
+/** The most characters of a person's text, or of a runner's summary, that a get_work entry quotes. */
+const EXCERPT_LENGTH = 200;
+
+/** Text cut to a summary line; the entry's detail carries all of it. */
+function excerpt(text: string | null | undefined): string | null {
+  if (text === null || text === undefined) return null;
+  return text.length <= EXCERPT_LENGTH ? text : `${text.slice(0, EXCERPT_LENGTH - 1)}…`;
+}
+
+/** One assigned issue as get_work lists it: get_issue gives its body, its operations and its fix task. */
+function issueSummary(issue: IssueRecord, task: FixTaskView | undefined): Record<string, unknown> {
   return {
     id: issue.id,
     state: issue.state,
     labels: [...issue.labels],
     version: issue.version,
     huddleIssueId: task?.huddleIssueId ?? null,
+    failingTests: task?.failingTests.length ?? 0,
+    next: "read it with get_issue",
+    personWritten: { title: excerpt(issue.title) },
+  };
+}
+
+/**
+ * An issue's task fields as get_issue gives them. A Huddle's fix sub-issue carries its pinned base,
+ * failing tests and acceptance criteria from the Huddle's combined run. Any other issue has none of
+ * them, so they are null and empty; a person who writes acceptance criteria puts them in the body.
+ */
+function fixTaskFields(charter: CharterView | undefined, task: FixTaskView | undefined): Record<string, unknown> {
+  return {
+    huddleIssueId: task?.huddleIssueId ?? null,
     pinnedBase: task === undefined ? null : { ...task.pinnedBase },
     allowedScopes: [...(charter?.charterScopes ?? [])],
     allowedPaths: [...(charter?.charterPaths ?? [])],
     failingTests: (task?.failingTests ?? []).map((test) => ({ ...test })),
     acceptanceCriteria: [...(task?.acceptanceCriteria ?? [])],
-    personWritten: { title: issue.title, body: issue.body },
   };
+}
+
+function threadSummary(issueId: string, thread: Thread): Record<string, unknown> {
+  return {
+    issueId,
+    id: thread.id,
+    openedBy: thread.openedBy,
+    needsPersonIds: [...thread.needsPersonIds],
+    status: thread.status,
+    next: "tell your developer; reply with post_update",
+    personWritten: { body: excerpt(thread.body) },
+  };
+}
+
+function toolResultSummary(run: ToolResultSummaryView): Record<string, unknown> {
+  const { id, featureId, tool, result: answered, summary, checkpointSha, completedAt } = run;
+  return { recordedAs: id, feature: featureId, tool, result: answered, summary: excerpt(summary), checkpoint: checkpointSha, completedAt };
+}
+
+/** Whose move a caller item waits on, as get_work's `next` names it. */
+function callerSummary(item: CallerSummaryView): Record<string, unknown> {
+  const { item: id, origin, feature, contract, verdict, state, waitingOn, ownerAsked, yourTurn, differingCalls } = item;
+  const next = yourTurn === null ? (waitingOn === "nobody" ? "none" : `wait on the ${waitingOn.replaceAll("_", " ")}`) : `answer with ${yourTurn.tools.join(" or ")}`;
+  return { item: id, origin, feature, contract, verdict, state, waitingOn, ownerAsked, yourTurn, differingCalls, next };
+}
+
+function editTaskSummary(task: EditTaskView): Record<string, unknown> {
+  return { taskId: task.id, kind: task.kind, feature: task.feature, fork: `feature-${task.target}`, identity: task.handle, files: task.files.length, next: "read it with get_work_item" };
+}
+
+function landingSummary(landing: LandingWorkView): Record<string, unknown> {
+  return {
+    feature: landing.feature,
+    state: landing.state,
+    runs: landing.runs.map((run) => ({
+      runId: run.runId,
+      purpose: run.purpose,
+      state: run.state,
+      checkpoint: run.checkpoint,
+      reportedAt: run.reportedAt,
+      outcome: run.outcome,
+      failing: run.failing.length,
+      nextSteps: run.decisions.length,
+    })),
+    promotion: landing.promotion === null ? null : { ...landing.promotion },
+    expansions: (landing.expansions ?? []).map((expansion) => ({ ...expansion })),
+  };
+}
+
+/** The sort of a checkpoint as get_work lists it: counts, the split's state, each retiring symbol's state and the next step. */
+function contractSummary(contract: ContractWorkView): Record<string, unknown> {
+  return {
+    checkpoint: contract.checkpoint,
+    state: contract.state,
+    decision: contract.decision,
+    counts: contract.counts,
+    entries: contract.entries.length + contract.omitted,
+    split: contract.split === null ? null : { state: contract.split.state, entries: contract.split.entries.length, promotion: contract.split.promotion },
+    contractStep: contract.contractStep.map(({ contract: symbol, replacement, state, callers }) => ({ contract: symbol, replacement, state, callers })),
+    migration: contract.migration.map(({ planId, owner, state, block, parts }) => ({ planId, owner, state, block, parts: parts.length })),
+    nextStep: contract.nextStep,
+  };
+}
+
+/** The detail of one get_work entry, read through the same per-session calls get_work makes; undefined when it lists no such entry. */
+async function workEntryDetail(
+  owner: string,
+  sessionId: string,
+  project: McpProject,
+  repos: McpRepos,
+  entry: z.infer<typeof workEntry>,
+): Promise<Record<string, unknown> | undefined> {
+  const at = { issues: repos.issues, base: repos.base };
+  switch (entry.kind) {
+    case "caller_item": {
+      const packet = await project.callerPacket?.(owner, sessionId, entry.item);
+      return packet === undefined ? undefined : { ...packet };
+    }
+    case "plan_part": {
+      const plan = await project.planWork?.(owner, sessionId, at);
+      const own = plan?.ownPlan?.parts.find((part) => part.partId === entry.part);
+      if (own !== undefined) return ownPartFields(own);
+      const asked = plan?.partsNeedingYou.find((part) => part.partId === entry.part);
+      return asked === undefined ? undefined : askedPartFields(asked);
+    }
+    case "review": {
+      const review = (await project.planWork?.(owner, sessionId, at))?.reviews.find((each) => each.reviewId === entry.reviewId);
+      return review === undefined ? undefined : reviewResultFields(review);
+    }
+    case "tool_result": {
+      const run = ((await project.agentToolResults?.(owner, sessionId)) ?? []).find((each) => each.id === entry.recordedAs);
+      return run === undefined ? undefined : toolResultFields(run);
+    }
+    case "edit_task": {
+      const task = (await project.editTaskWork?.(owner, sessionId, at))?.tasks.find((each) => each.id === entry.taskId);
+      return task === undefined ? undefined : editTaskFields(task);
+    }
+    case "landing_run": {
+      const landing = await project.landWork?.(owner, sessionId);
+      const run = landing?.runs.find((each) => each.runId === entry.runId);
+      return landing === undefined || run === undefined ? undefined : { feature: landing.feature, ...landingRunFields(run) };
+    }
+    case "contract": {
+      const contract = await project.contractWork?.(owner, sessionId, at);
+      return contract === undefined ? undefined : { ...contract };
+    }
+    case "thread": {
+      const found = (await project.threadsNeeding(owner)).find(({ issueId, thread }) => issueId === entry.issue && thread.id === entry.thread);
+      return found === undefined ? undefined : { issueId: found.issueId, ...threadFields(found.thread) };
+    }
+  }
+}
+
+function entryName(entry: z.infer<typeof workEntry>): string {
+  switch (entry.kind) {
+    case "caller_item":
+      return entry.item;
+    case "plan_part":
+      return entry.part;
+    case "review":
+      return String(entry.reviewId);
+    case "tool_result":
+      return String(entry.recordedAs);
+    case "edit_task":
+      return String(entry.taskId);
+    case "landing_run":
+      return entry.runId;
+    case "contract":
+      return "";
+    case "thread":
+      return `${entry.thread} on issue ${entry.issue}`;
+  }
 }
 
 function overlapFields(overlap: OverlapFieldsView): Record<string, unknown> {
@@ -1616,10 +1841,6 @@ export function planNoticeFields(notices: PlanNoticesView): Record<string, unkno
 }
 
 /**
- * A feature's landing as get_work reports it. Check summaries and the evidence behind each ladder
- * decision come from the repos and the tools' runs, so they are echoed only inside `personWritten`.
- */
-/**
  * One edit task as get_work reports it. The instructions quote a failing check's reason, which can
  * carry repository text such as a test's docstring, so they sit inside `personWritten`.
  */
@@ -1640,45 +1861,50 @@ export function editTaskFields(task: EditTaskView): Record<string, unknown> {
   };
 }
 
-export function landingFields(landing: LandingWorkView): Record<string, unknown> {
+/**
+ * One block run in full: its failing checks and one next step per failure, as get_work_item's
+ * `landing_run` gives it. Check summaries and the evidence behind each ladder decision come from the
+ * repos and the tools' runs, so they are echoed only inside `personWritten`.
+ */
+function landingRunFields(run: LandingWorkView["runs"][number]): Record<string, unknown> {
   return {
-    feature: landing.feature,
-    state: landing.state,
-    runs: landing.runs.map((run) => ({
-      runId: run.runId,
-      purpose: run.purpose,
-      state: run.state,
-      checkpoint: run.checkpoint,
-      mainBefore: run.mainBefore,
-      requestedBy: run.requestedBy,
-      requestedAt: run.requestedAt,
-      reportedAt: run.reportedAt,
-      runnerMs: run.runnerMs,
-      recordId: run.recordId,
-      outcome: run.outcome,
-      failing: run.failing.map(({ target, check, result }) => ({ target, check, result })),
-      nextSteps: run.decisions.map(({ target, check, failure, step, nextStep, actor, fix }) => ({
-        target,
-        check,
-        failure,
-        step,
-        nextStep,
-        actor: { ...actor },
-        fix: fix === null ? null : { ...fix },
-      })),
-      personWritten: {
-        summary: run.summary,
-        failing: run.failing.map(({ target, check, summary }) => ({ target, check, summary })),
-        evidence: run.decisions.map(({ target, check, reason, evidence }) => ({ target, check, reason, evidence })),
-      },
+    runId: run.runId,
+    purpose: run.purpose,
+    state: run.state,
+    checkpoint: run.checkpoint,
+    mainBefore: run.mainBefore,
+    requestedBy: run.requestedBy,
+    requestedAt: run.requestedAt,
+    reportedAt: run.reportedAt,
+    runnerMs: run.runnerMs,
+    recordId: run.recordId,
+    outcome: run.outcome,
+    failing: run.failing.map(({ target, check, result }) => ({ target, check, result })),
+    nextSteps: run.decisions.map(({ target, check, failure, step, nextStep, actor, fix }) => ({
+      target,
+      check,
+      failure,
+      step,
+      nextStep,
+      actor: { ...actor },
+      fix: fix === null ? null : { ...fix },
     })),
-    promotion: landing.promotion === null ? null : { ...landing.promotion },
-    expansions: (landing.expansions ?? []).map((expansion) => ({ ...expansion })),
+    personWritten: {
+      summary: run.summary,
+      failing: run.failing.map(({ target, check, summary }) => ({ target, check, summary })),
+      evidence: run.decisions.map(({ target, check, reason, evidence }) => ({ target, check, reason, evidence })),
+    },
   };
 }
 
-/** Advance notice as get_work reports it. An author's requested change is their words, inside `personWritten`. */
-function planWorkFields(work: PlanWorkView): Record<string, unknown> {
+type AskedPart = PlanWorkView["partsNeedingYou"][number];
+type OwnPart = NonNullable<PlanWorkView["ownPlan"]>["parts"][number];
+
+/**
+ * Advance notice as get_work lists it: one short entry per part and review. A part's routing and an
+ * author's requested change, and a review's refusal reasons, come from get_work_item.
+ */
+function planWorkSummary(work: PlanWorkView): Record<string, unknown> {
   return {
     ...(work.policy === undefined ? {} : { reviewPolicy: { name: policyName(work.policy.policy), preset: work.policy.policy.preset, locked: work.policy.locked } }),
     planPartsNeedingYou: work.partsNeedingYou.map(({ featureId, partId, revision, place, scopes, route, waitsOn }) => ({
@@ -1688,7 +1914,8 @@ function planWorkFields(work: PlanWorkView): Record<string, unknown> {
       place: { ...place },
       scopes: [...scopes],
       ...(waitsOn === undefined ? {} : { waitsOn }),
-      ...routingFields(route),
+      ...(route === undefined ? {} : { decider: route.decider }),
+      next: "review it with submit_review for its scopes and tell your developer",
     })),
     plan:
       work.ownPlan === null
@@ -1696,25 +1923,68 @@ function planWorkFields(work: PlanWorkView): Record<string, unknown> {
         : {
             planId: work.ownPlan.planId,
             roundLimit: work.ownPlan.roundLimit,
-            parts: work.ownPlan.parts.map(({ partId, revision, place, owner, kind, state, approvedBy, changeRequests, changeRequest, route, waitsOn }) => ({
-              part: partId,
-              revision,
-              place: { ...place },
-              owner,
-              kind,
-              state,
-              approvedBy,
-              // Penguin approves on its own under the policy; a person approves only on the dashboard.
-              ...(approvedBy === null ? {} : { approvedVia: approvedBy === "penguin" ? "penguin" : "dashboard" }),
-              changeRequests,
-              ...(waitsOn === undefined ? {} : { waitsOn }),
-              ...routingFields(route, owner),
-              personWritten: {
-                changeRequest: changeRequest === null ? null : { by: changeRequest.by, revision: changeRequest.revision, text: changeRequest.text },
-              },
+            parts: work.ownPlan.parts.map((part) => ({
+              ...ownPartHead(part),
+              ...(part.route === undefined ? {} : { decider: part.route.decider }),
+              next: ownPartNext(part),
             })),
           },
-    reviewResults: work.reviews.map(reviewResultFields),
+    reviewResults: work.reviews.map(({ reviewId, featureId, scopeId, state, refusals, exceptions }) => ({
+      reviewId,
+      feature: featureId,
+      scope: scopeId,
+      state,
+      refusals: refusals.map(({ code }) => code),
+      exceptions: exceptions.map(({ kind }) => kind),
+    })),
+  };
+}
+
+/** The fields of a part of the session's own plan that both its summary and its detail give. */
+function ownPartHead({ partId, revision, place, owner, kind, state, approvedBy, changeRequests, waitsOn }: OwnPart): Record<string, unknown> {
+  return {
+    part: partId,
+    revision,
+    place: { ...place },
+    owner,
+    kind,
+    state,
+    approvedBy,
+    // Penguin approves on its own under the policy; a person approves only on the dashboard.
+    ...(approvedBy === null ? {} : { approvedVia: approvedBy === "penguin" ? "penguin" : "dashboard" }),
+    changeRequests,
+    ...(waitsOn === undefined ? {} : { waitsOn }),
+  };
+}
+
+function ownPartNext(part: OwnPart): string {
+  if (part.state === "change_requested") return "answer with revise_plan_part";
+  if (part.state === "approved") return "none";
+  return part.waitsOn === undefined || part.waitsOn === null ? "wait" : `wait on ${part.waitsOn}`;
+}
+
+/** A part of the session's own plan in full. An author's requested change is their words, inside `personWritten`. */
+function ownPartFields(part: OwnPart): Record<string, unknown> {
+  const { changeRequest } = part;
+  return {
+    ...ownPartHead(part),
+    ...routingFields(part.route, part.owner),
+    personWritten: {
+      changeRequest: changeRequest === null ? null : { by: changeRequest.by, revision: changeRequest.revision, text: changeRequest.text },
+    },
+  };
+}
+
+/** A part that waits on the session's developer, in full. */
+function askedPartFields({ featureId, partId, revision, place, scopes, route, waitsOn }: AskedPart): Record<string, unknown> {
+  return {
+    feature: featureId,
+    part: partId,
+    revision,
+    place: { ...place },
+    scopes: [...scopes],
+    ...(waitsOn === undefined ? {} : { waitsOn }),
+    ...routingFields(route),
   };
 }
 

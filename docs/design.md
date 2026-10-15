@@ -1594,8 +1594,8 @@ rejects before the originating feature changes its fork or reaches main.
   reset an item. A passing land run whose items are no longer settled is then not promoted: Penguin
   signs `promotion_refused` with the items and the feature goes back to `building`. An expand
   promotion reads no item.
-- **The context packet.** `get_work` gives the agent `callerItems`: `receiving` for the items on its
-  worktree and `originating` for those its change opened. Each packet holds the contract's entries in
+- **The context packet.** `get_work` lists the agent's `callerItems` as one short entry each: `receiving` for the items on its
+  worktree and `originating` for those its change opened. `get_work_item` answers one item's packet, which holds the contract's entries in
   the originating plan's contract diff, the call sites with the tests that reached them, each
   differing call old and new with its arguments, result or exception and effects, the count of
   differing calls past the list (`unlistedCalls`), the replay runs with their commits and test tallies

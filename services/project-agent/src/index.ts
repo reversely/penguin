@@ -124,6 +124,7 @@ import {
   type AgentToolDeps,
   type AgentToolRun,
   type ToolRequestOutcome,
+  type ToolResultSummary,
   type WhatsNearOutcome,
 } from "./agent-tools.ts";
 import { PlanFactsStore, type PlanFactsReportOutcome } from "./plan-facts.ts";
@@ -132,6 +133,7 @@ import type { PlanKeeper } from "./plan-store.ts";
 import {
   callerAction,
   CallerIndexStore,
+  callerPacket,
   callerWork,
   featureCallerItems,
   fixWritten,
@@ -150,6 +152,7 @@ import {
   type CallerItemKeeper,
   type CallerOutcome,
   type CallerOwnerInput,
+  type CallerPacket,
   type CallerWork,
 } from "./caller-items.ts";
 import { fileDiffs, type GitObjectReader } from "./repo-diff.ts";
@@ -477,6 +480,7 @@ export {
   CallerIndexStore,
   callerItemId,
   CallerItemStore,
+  callerPacket,
   callerWork,
   featureCallerItems,
   fixWritten,
@@ -495,6 +499,7 @@ export {
   type CallerOwnerInput,
   type CallerPacket,
   type CallerRejection,
+  type CallerSummary,
   type CallerWork,
 } from "./caller-items.ts";
 export {
@@ -747,6 +752,7 @@ export {
   type NearFeature,
   type ToolRequestOutcome,
   type ToolResultRef,
+  type ToolResultSummary,
   type ToolRunClaimListing,
   type WhatsNearOutcome,
 } from "./agent-tools.ts";
@@ -2444,6 +2450,12 @@ export class ProjectAgent extends Agent {
     return this.#toolStore().delivered(sessionId);
   }
 
+  /** For `get_work`: the same results without their input or outcome (#206). */
+  agentToolSummaries(caller: string, sessionId: string): ToolResultSummary[] {
+    if (this.sessionHeartbeat(caller, sessionId).status !== "ok") return [];
+    return this.#toolStore().deliveredSummaries(sessionId);
+  }
+
   /**
    * For the integration runner only: claims the waiting `impact`, `check` and `apply_fix` requests,
    * each with its fork, checkpoint, baseline, charter and the other running features' forks
@@ -3106,9 +3118,14 @@ export class ProjectAgent extends Agent {
     return this.#featuresChanging(this.#planStep(() => callerAction(this.#callerActionDeps(repos), caller, sessionId, call)));
   }
 
-  /** For `get_work`: a context packet per caller item on the session's worktree or opened by its change. */
+  /** For `get_work`: a summary per caller item on the session's worktree or opened by its change. */
   callerWork(caller: string, sessionId: string): Promise<CallerWork | undefined> {
     return this.#planStep(() => callerWork(this.#callerWorkDeps(), caller, sessionId));
+  }
+
+  /** For `get_work_item`: one caller item's context packet, when `get_work` lists it for the session. */
+  callerPacket(caller: string, sessionId: string, itemId: string): Promise<CallerPacket | undefined> {
+    return this.#planStep(() => callerPacket(this.#callerWorkDeps(), caller, sessionId, itemId));
   }
 
   /** The worktree owner, or their delegate, decides an item sent to them on the dashboard. */

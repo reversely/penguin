@@ -121,7 +121,7 @@ identity in the first prompt, for example:
 | `worktreeId` | The bridge's id for the worktree, or any stable name of letters, digits, `.`, `_` and `-` |
 | `branch` | The branch checked out in the worktree |
 
-`register_session` returns a `sessionId`. The agent passes it to `get_work`, `get_issue`, `post_update`
+`register_session` returns a `sessionId`. The agent passes it to `get_work`, `get_work_item`, `get_issue`, `post_update`
 and `report_checkpoint`. Each of those calls keeps the session running. After about 90 seconds without
 one, Penguin marks the session offline and the agent registers again. Once a session registers, the
 identity's agent box in its owner's square on the team map leaves "No session". The identity's agent
@@ -130,14 +130,41 @@ card lists the session with its vendor, branch and worktree ([dashboard.md](dash
 Penguin refuses `register_session` for an identity the token's owner does not own. The refusal reads
 `forbidden` and names the identity's owner.
 
+## Reading work: summary and details
+
+`get_work` answers a summary that fits a coding agent's tool result. Each issue, thread, tool result,
+plan part, review, edit task, landing run and caller item is one short entry: its id, its state, who it
+waits on and, where the agent acts on it, its `next` action. No entry carries a diff, a call list or a
+person's full text; a title or a thread's text is cut to 200 characters. `get_work` reads no caller
+item's calls, no plan part's patch and no tool result's input or outcome.
+
+The agent reads one entry's details with `get_work_item`, naming the entry by its kind and id:
+
+| `entry.kind` | Names it by | Answer |
+|---|---|---|
+| `caller_item` | `item` | The item's packet ([Caller items](#caller-items)) |
+| `plan_part` | `part` | The part with its `routing` and the author's requested change under `personWritten` |
+| `review` | `reviewId` | The verdict with each refusal's message under `personWritten` |
+| `tool_result` | `recordedAs` | The request's input and the check runner's `outcome` |
+| `edit_task` | `taskId` | The task with its files, scopes, verifier and instructions |
+| `landing_run` | `runId` | The block run with its failing checks and one next step per failure |
+| `contract` | nothing | The sort of the feature's latest checkpoint with each entry |
+| `thread` | `issue`, `thread` | The thread with its full text |
+
+`get_work_item` answers only an entry `get_work` lists for the session: the session must belong to the
+token's owner, and a caller item must sit on the session's worktree or come from its feature's change.
+Any other entry answers `not_found`. An issue's details, including a fix task's fields, come from
+`get_issue`.
+
 ## Fix tasks and safe checkpoints
 
 When combined tests fail, Penguin opens a Huddle issue with one fix sub-issue per failing test. Each
 fix sub-issue routes to a running session of its assigned identity. The session reads it through
 `get_work` only from its next safe checkpoint on, so the task never arrives in the middle of a step.
-Until then `get_work` leaves the task out. Its result for a fix task carries the pinned base (the
-trigger checkpoint, its baseline and the owner checkpoint it was merged with), the failing test with
-its fingerprint and the acceptance criteria.
+Until then `get_work` leaves the task out. `get_work` counts the task's failing tests. `get_issue`
+on the task carries the pinned base (the trigger checkpoint, its baseline and the owner checkpoint it
+was merged with), the failing test with its fingerprint, the acceptance criteria and the scopes and
+paths the identity's charter allows.
 
 A session reaches a safe checkpoint in any of these ways:
 
@@ -255,9 +282,11 @@ changed function ([design.md](design.md#caller-replay)), Penguin opens one calle
 | `explain_difference` | The originating agent | `item`, `kind` (`expected` or `revising`), `text`, `calls`: one `{ call, kind, reason }` per differing call with `kind` `intended` or `incidental`, `unlisted`: `{ count, kind, reason }` when `unlistedCalls` is above 0 | The same, with two record ids for `expected`: the explanation and the review request |
 
 `get_work` lists the items under `callerItems`: `receiving` for the items on the session's worktree and
-`originating` for the items its feature's change opened. Each packet names the item, its feature,
-contract, verdict, state and who it waits on (`receiving_agent`, `originating_agent`, `worktree_owner`
-or `nobody`). `yourTurn` names the tool the session's side answers with, or is null. The packet holds
+`originating` for the items its feature's change opened. Each entry names the item, its feature,
+contract, verdict, state, who it waits on (`receiving_agent`, `originating_agent`, `worktree_owner`
+or `nobody`) and its count of differing calls under `differingCalls`. `yourTurn` names the tool the
+session's side answers with, or is null; `next` says the same in words. `get_work_item` with
+`{ "kind": "caller_item", "item": "<item>" }` answers the item's packet. The packet holds
 the contract's entries in the originating plan's contract diff, the call sites with the tests that
 reached each, every differing call old and new with its arguments, result or exception and effects,
 the replay runs, the proposed fix's part and the other side's words under `personWritten`: the
@@ -307,7 +336,9 @@ next step after a failed block check or a migration part.
 
 A waiting task reaches a running session of its identity at the session's next safe checkpoint. A
 builder's task also reaches a session of the same person that works on the target feature.
-`get_work` lists the delivered tasks under `editTasks`:
+`get_work` lists the delivered tasks under `editTasks`, each with its `taskId`, `kind`, `feature`,
+`fork`, `identity` and count of `files`. `get_work_item` with `{ "kind": "edit_task", "taskId": <id> }`
+answers the full task:
 
 | Field | Holds |
 |---|---|
@@ -362,7 +393,8 @@ applies the fix ([bridge-and-runner.md](bridge-and-runner.md#agent-tools-on-the-
 
 The result reaches the session at its next safe checkpoint, once. The bridge hook names it by tool
 and id. `report_checkpoint` lists it under `toolResults`. `get_work` lists the session's last 10
-delivered results under `toolResults`, newest first. Each entry carries the full `outcome`:
+delivered results under `toolResults`, newest first, each with its tool, result and summary.
+`get_work_item` with `{ "kind": "tool_result", "recordedAs": <id> }` answers the full `outcome`:
 
 | Tool | `outcome` holds |
 |---|---|
@@ -391,8 +423,10 @@ repository or an edit whose names are not Python names. A refused call records n
 ## Contract sort and split
 
 Penguin sorts the contract diff of each checkpoint a feature reports
-([design.md](design.md#sorting-and-splitting-in-the-build)). `get_work` reports the sort of the
-feature's latest checkpoint under `contract`:
+([design.md](design.md#sorting-and-splitting-in-the-build)). `get_work` summarizes the sort of the
+feature's latest checkpoint under `contract`: its state, decision, counts, the number of entries, the
+split's state, each retiring symbol's state and callers, each migration plan's state and number of
+parts, and `nextStep`. `get_work_item` with `{ "kind": "contract" }` answers the full sort:
 
 | Field | Content |
 |---|---|
@@ -494,7 +528,7 @@ another person's custom path rule, and that person has not confirmed the lines o
 message names each person with the custom paths), `fix_not_written`, `fix_not_in_block`, `fix_not_in_place`,
 `copy_not_written` (an affected fork does not yet hold your change's current revision of the modules
 it imports; Penguin's check runner copies them, then land again), `callers_pending` (a caller item is
-not yet confirmed, written or approved; the message names each item, whose packet in `get_work`'s
+not yet confirmed, written or approved; the message names each item, whose entry in `get_work`'s
 `callerItems` says who answers it),
 `not_ready` (no checkpoint, or nothing past main) or `busy` (a land or expand of the feature is
 already being checked).
@@ -513,8 +547,9 @@ split. Once the expand reaches main, Penguin marks each old name retiring with i
 
 `get_work` reports `landing`: the feature's state (`building`, `landing` or `landed`), its newest block
 runs, its promotion and under `expansions` each expand checkpoint promoted on its own. Each run names
-its purpose (`land`, `expand` or `plan_check`), its state, the failing
-checks and one next step per failure under `nextSteps`. A `raced` run met a main that moved; Penguin
+its purpose (`land`, `expand` or `plan_check`), its state and how many checks failed. `get_work_item`
+with `{ "kind": "landing_run", "runId": "<run>" }` answers the failing checks and one next step per
+failure under `nextSteps`. A `raced` run met a main that moved; Penguin
 checks the block again, or returns the feature to `building` to take main. Check summaries and the
 evidence behind each next step come from the repos and the tools' runs, so they arrive only inside
 `personWritten`. `report_checkpoint` on a feature fork lists under `planChecks` each announced plan

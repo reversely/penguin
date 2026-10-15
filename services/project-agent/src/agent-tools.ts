@@ -285,7 +285,33 @@ export class AgentToolStore {
       .exec(`SELECT * FROM AgentToolRun WHERE session_id = ? AND delivered_at IS NOT NULL ORDER BY id DESC LIMIT ?`, sessionId, TOOL_RESULTS_LISTED)
       .map(toolRun);
   }
+
+  /**
+   * The same results as `delivered` without their input or the runner's outcome, which can hold an
+   * impact graph or a caller replay's calls: get_work lists these (#206).
+   */
+  deliveredSummaries(sessionId: string): ToolResultSummary[] {
+    return this.#db
+      .exec(
+        `SELECT id, feature_id, tool, result, summary, checkpoint_sha, completed_at FROM AgentToolRun
+         WHERE session_id = ? AND delivered_at IS NOT NULL ORDER BY id DESC LIMIT ?`,
+        sessionId,
+        TOOL_RESULTS_LISTED,
+      )
+      .map((row) => ({
+        id: Number(row["id"]),
+        featureId: row["feature_id"] === null ? null : String(row["feature_id"]),
+        tool: String(row["tool"]) as AgentToolName,
+        result: String(row["result"]) as AgentToolRun["result"],
+        summary: String(row["summary"]),
+        checkpointSha: text(row["checkpoint_sha"]),
+        completedAt: time(row["completed_at"]),
+      }));
+  }
 }
+
+/** A delivered result as get_work lists it: no input and no outcome. */
+export type ToolResultSummary = Pick<AgentToolRun, "id" | "featureId" | "tool" | "result" | "summary" | "checkpointSha" | "completedAt">;
 
 export interface AgentToolDeps {
   readonly features: FeatureStore;
