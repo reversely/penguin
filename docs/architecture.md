@@ -222,9 +222,12 @@ matches a pending operation clears its `PendingOp` row.
    changes use, which the ProjectAgent keeps so a later change finds the forks it reaches without
    reading every fork ([design.md](design.md#caller-list)).
 5. When the runner reports that list, the ProjectAgent schedules the checkpoint's combined runs: one
-   for each other person's running feature that calls a name the checkpoint modifies or whose own
-   changes hold a file it changes. Without the checkpoint's complete list, scope dependencies pick
-   the targets, as for an owner fork's checkpoint.
+   for each other person's running feature that calls a name the checkpoint modifies or whose area
+   names a file it changes or a folder above one. Without the checkpoint's complete list, scope
+   dependencies pick the targets, as for an owner fork's checkpoint. A running feature whose own
+   list was not read at its latest checkpoint is also picked by scope dependencies. A Huddle opened
+   from these runs reads the trigger from the feature's fork. A feature that lands or is closed has
+   its caller list dropped.
 
 ### Writing an approved fix
 

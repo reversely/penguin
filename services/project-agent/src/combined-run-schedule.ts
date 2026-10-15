@@ -7,12 +7,12 @@
 // failed (huddle-open.ts).
 //
 // A feature's checkpoint picks its targets from the caller list (caller-list.ts, #198): the running
-// features that call a name the checkpoint modifies, plus those whose own changes hold a file it
-// changes. Its runs are scheduled when the runner reports the checkpoint's list. Without that list,
-// or with an incomplete one, the scopes the checkpoint changes pick the targets as for an owner
-// fork's checkpoint, which keeps no list: each running feature or owner fork in a scope whose
-// `depends_on` names a changed scope. A running feature with no complete list of its own is still
-// picked that way, so a list not reported yet misses nothing.
+// features that call a name the checkpoint modifies, plus those whose area holds a file it changes.
+// Its runs are scheduled when the runner reports the checkpoint's list. Without that list, or with
+// an incomplete one, the scopes the checkpoint changes pick the targets as for an owner fork's
+// checkpoint, which keeps no list: each running feature or owner fork in a scope whose `depends_on`
+// names a changed scope. A running feature with no complete list read at its latest checkpoint is
+// still picked that way, so a list not reported yet misses nothing.
 //
 // Everything here reads Git objects through the Artifacts binding and the agent's SQL store; nothing
 // calls a model.
@@ -387,6 +387,23 @@ function isoTime(value: SqlValue | undefined): string | null {
   return value === null || value === undefined ? null : new Date(Number(value)).toISOString();
 }
 
+/**
+ * The Artifacts repo that holds checkpoint `sha` of `ownerId`, which a combined run report's Huddle
+ * reads its trigger from: the feature's own fork when the runs were scheduled from a feature
+ * checkpoint of that person, else `ownerForkRepo`, the owner fork the Worker names.
+ */
+export function triggerRepo(
+  runs: Pick<CombinedRunStore, "byTrigger">,
+  features: { get(id: string): Feature | undefined },
+  trigger: { readonly ownerId: string; readonly sha: string },
+  ownerForkRepo: string,
+): string {
+  const fork = runs.byTrigger(trigger.ownerId, trigger.sha)[0]?.trigger.fork;
+  if (fork === undefined || !fork.startsWith("feature-")) return ownerForkRepo;
+  const feature = features.get(fork.slice("feature-".length));
+  return feature?.personId === trigger.ownerId && feature.repo !== null ? feature.repo : ownerForkRepo;
+}
+
 /** The binding methods the detection reads: a repo's first-parent log and its trees. */
 export type RepoHistoryReader = Pick<IssuesRepoReader, "log" | "readTree">;
 
@@ -436,9 +453,11 @@ const NOTHING: ScheduleOutcome = {
  * feature with a checkpoint is a target, tested in the scopes it touches, when:
  *
  * - the caller list holds the complete list of checkpoint `sha` of `feature`, and the feature calls a
- *   name the checkpoint modifies or its own changes hold a file the checkpoint changes;
- * - otherwise, or when the feature has no complete list of its own, its person owns or its area
- *   touches a scope that depends on a scope the checkpoint changes, tested in those scopes.
+ *   name the checkpoint modifies or an area path of its own is a file the checkpoint changes or a
+ *   folder that holds one;
+ * - otherwise, or when the feature has no complete list read at its latest checkpoint, its person
+ *   owns or its area touches a scope that depends on a scope the checkpoint changes, tested in those
+ *   scopes. Such a feature reached by the rule above is tested in both sets of scopes.
  *
  * As before the caller list, scope dependencies also pick two more targets:
  *
@@ -463,8 +482,8 @@ export async function scheduleCombinedRuns(deps: ScheduleDeps, owner: string, sh
   const changed = await changedPaths(deps.fork, baselineTree, checkpointTree);
   const affected = affectedOwners(deps.scopeMap, changed);
   const callers = reach === undefined ? undefined : new Set(deps.callers?.callersOf(reach));
-  const listedFeatures = reach === undefined ? new Set<string>() : (deps.callers?.completeLists() ?? new Set<string>());
-  const changedFiles = new Set(changed);
+  const listedFeatures = reach === undefined ? new Map<string, string>() : (deps.callers?.completeLists() ?? new Map<string, string>());
+  const changedFiles = changedFilesAndFolders(changed);
 
   const byOwner = new Map<string, string[]>();
   for (const scopeId of affected.dependentScopes) {
@@ -487,16 +506,14 @@ export async function scheduleCombinedRuns(deps: ScheduleDeps, owner: string, sh
   for (const other of running) {
     if (other.personId === owner) continue;
     const touched = touchedScopes(other, deps.scopeMap);
-    // A feature with its own complete list is reached or not by the trigger's list; one without
-    // a list may call anything, so scope dependencies decide it.
-    const decided = listedFeatures.has(other.id);
-    const reached = callers !== undefined && (callers.has(other.id) || other.area.paths.some((path) => changedFiles.has(path)));
+    // A feature whose complete list was read at its latest checkpoint is reached or not by the
+    // trigger's list. One without such a list may call anything, so scope dependencies also decide it.
+    const decided = listedFeatures.get(other.id) === other.latestCheckpointSha;
+    // An area path is a file or a folder: `accounts` holds a change to `accounts/shoppers.py`.
+    const reached = callers !== undefined && (callers.has(other.id) || other.area.paths.some((path) => changedFiles.has(path.replace(/\/+$/u, ""))));
     if (decided) withFeature.add(other.personId);
-    const scopes = reached
-      ? [...touched].sort()
-      : decided
-        ? []
-        : [...dependents].filter((scopeId) => scopeOwner(scopeId) === other.personId || touched.has(scopeId));
+    const byDependency = decided ? [] : [...dependents].filter((scopeId) => scopeOwner(scopeId) === other.personId || touched.has(scopeId));
+    const scopes = [...new Set([...(reached ? touched : []), ...byDependency])].sort();
     const commandIds = scopes.map(testCommandId).filter((id): id is string => id !== undefined);
     if (commandIds.length === 0) continue;
     withFeature.add(other.personId);
@@ -536,6 +553,19 @@ export async function scheduleCombinedRuns(deps: ScheduleDeps, owner: string, sh
     scheduled,
     withoutCheckpoint,
   };
+}
+
+/**
+ * Every changed file with each folder that holds one, so a feature's area path matches a change by
+ * one lookup whether it names the file or a folder above it. The set grows with the change only.
+ */
+function changedFilesAndFolders(changed: readonly string[]): Set<string> {
+  const found = new Set<string>();
+  for (const path of changed) {
+    found.add(path);
+    for (let at = path.lastIndexOf("/"); at > 0; at = path.lastIndexOf("/", at - 1)) found.add(path.slice(0, at));
+  }
+  return found;
 }
 
 /** The command ID of a scope's tests, or undefined when the scope ID cannot form a valid one. */

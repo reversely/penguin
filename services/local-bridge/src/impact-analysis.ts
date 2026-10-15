@@ -77,12 +77,17 @@ export function pythonImpactAnalyzer(options: PythonImpactOptions): ImpactAnalyz
     runPythonAnalysis<ImpactReport>(IMPACT_COMMAND_ID, checkImpactReport, options, request, (message) => new ImpactAnalysisError(message));
 }
 
-/** Several impact requests in one analysis, which parses each file the requests share once. */
-export type ImpactBatchAnalyzer = (requests: readonly ImpactRequest[]) => Promise<ImpactReport[]>;
+/**
+ * Several impact requests in one analysis, which parses each file the requests share once. Each
+ * request answers its report or the error that request alone met.
+ */
+export type ImpactBatchAnalyzer = (requests: readonly ImpactRequest[]) => Promise<(ImpactReport | ImpactAnalysisError)[]>;
 
 /**
  * An analyzer that runs `analysis:python-impact --batch` in `repoPath` on several requests and checks
- * each report, in the requests' order. Penguin's caller lists use it, one request per checkpoint.
+ * each report, in the requests' order. Penguin's caller lists use it, one request per checkpoint. A
+ * request the analysis refused, or whose report breaks its schema or names other commits, is an
+ * error in its own place; the batch as a whole fails only when the analysis itself does.
  */
 export function pythonImpactBatchAnalyzer(options: PythonImpactOptions): ImpactBatchAnalyzer {
   return async (requests) => {
@@ -97,11 +102,14 @@ export function pythonImpactBatchAnalyzer(options: PythonImpactOptions): ImpactB
     }
     if (!Array.isArray(reports) || reports.length !== requests.length) throw fail("the batch answered another number of requests");
     return reports.map((report: unknown, index) => {
+      if (typeof report === "object" && report !== null && Object.keys(report).length === 1 && typeof (report as { error?: unknown }).error === "string") {
+        return fail(`request ${index}: ${(report as { error: string }).error.slice(0, 500)}`);
+      }
       const errors = checkImpactReport(report);
-      if (errors.length > 0) throw fail(`report ${index} breaks its schema: ${errors.slice(0, 5).map((error) => `${error.path || "/"} ${error.message}`).join("; ")}`);
+      if (errors.length > 0) return fail(`report ${index} breaks its schema: ${errors.slice(0, 5).map((error) => `${error.path || "/"} ${error.message}`).join("; ")}`);
       const checked = report as ImpactReport;
       const request = requests[index] as ImpactRequest;
-      if (checked.base !== request.base || checked.head !== request.head) throw fail(`report ${index} describes other commits than its request`);
+      if (checked.base !== request.base || checked.head !== request.head) return fail(`report ${index} describes other commits than its request`);
       return checked;
     });
   };

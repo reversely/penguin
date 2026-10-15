@@ -3,7 +3,8 @@
 Usage: python3 -I python_impact.py --repo PATH [--batch] < request.json
 
 With ``--batch`` the input is a JSON array of requests and the output a JSON array of their reports,
-in order; one run parses each file the requests share once.
+in order; one run parses each file the requests share once. A request that is malformed or names a
+missing commit answers ``{"error": MESSAGE}`` in its place, so it fails alone.
 
 The request is a JSON object: ``{"base": SHA, "head": SHA, "forks": [{"id": ID, "sha": SHA,
 "scopes": [SCOPE ID, ...], "since": SHA}]}``. The report on standard output names every function,
@@ -1735,6 +1736,14 @@ def analyse(
     }
 
 
+def _batch_report(repo: GitRepo, raw: object, cache: dict) -> dict:
+    """One request's report in a batch, or ``{"error": MESSAGE}`` when that request alone fails."""
+    try:
+        return analyse(repo, parse_request(raw), cache=cache)
+    except (RequestError, GitError) as error:
+        return {"error": str(error)}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
@@ -1762,9 +1771,8 @@ def main(argv: list[str] | None = None) -> int:
                 raise RequestError(
                     f"a batch must be an array of at most {MAX_FORKS} requests"
                 )
-            requests = [parse_request(each) for each in parsed]
             cache: dict = {}
-            output = [analyse(repo, request, cache=cache) for request in requests]
+            output = [_batch_report(repo, each, cache) for each in parsed]
         else:
             output = analyse(repo, parse_request(parsed))
     except (RequestError, GitError) as error:

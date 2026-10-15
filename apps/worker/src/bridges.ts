@@ -226,7 +226,10 @@ export interface EditCaller {
 
 /** Opening Huddle issues: the ProjectAgent's side over Durable Object RPC, and the Huddle repo fork. */
 export interface HuddleDirectory {
-  /** Opens the Huddle issue for a combined run; `triggerFork` is the trigger owner's fork. */
+  /**
+   * Opens the Huddle issue for a combined run; `triggerFork` is the trigger owner's fork. The agent
+   * reads a feature checkpoint's trigger from that feature's fork instead.
+   */
   open(event: unknown, triggerFork: string): Promise<HuddleOpenOutcome>;
   /** Records the Huddle repo forked for the Huddle opened by `triggerCommit`. */
   recordRepo(triggerCommit: string, huddleRepo: string): Promise<Huddle | undefined>;

@@ -291,12 +291,17 @@ export class FeatureStore {
   readonly #db: SqlDatabase;
   readonly #now: () => number;
   readonly #stored: () => void;
+  readonly #ended: (id: string) => void;
 
-  /** `stored` is called after each record is stored, inside the caller's transaction, so it only arms work for later. */
-  constructor(db: SqlDatabase, now: () => number = Date.now, stored: () => void = () => undefined) {
+  /**
+   * `stored` is called after each record is stored, inside the caller's transaction, so it only arms
+   * work for later. `ended` is called with a feature's id when it moves to `landed` or `closed`.
+   */
+  constructor(db: SqlDatabase, now: () => number = Date.now, stored: () => void = () => undefined, ended: (id: string) => void = () => undefined) {
     this.#db = db;
     this.#now = now;
     this.#stored = stored;
+    this.#ended = ended;
     for (const statement of FEATURE_SCHEMA) db.exec(statement);
   }
 
@@ -375,6 +380,7 @@ export class FeatureStore {
       id,
       ...from,
     );
+    if (changed.length > 0 && (to === "landed" || to === "closed")) this.#ended(id);
     return changed.length > 0;
   }
 

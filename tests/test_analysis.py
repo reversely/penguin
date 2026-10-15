@@ -185,6 +185,30 @@ def test_calls_list_the_names_a_forks_own_changes_use(tmp_path: Path) -> None:
     )
 
 
+def test_a_batch_request_naming_a_missing_commit_fails_alone(tmp_path: Path) -> None:
+    """#200: one bad caller list request is an error for its own checkpoint, not the batch's."""
+    repo, base = new_repo(tmp_path, BASE)
+    good = {"base": base, "head": base, "calls": True}
+    bad = {"base": base, "head": "0" * 40, "calls": True}
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            str(ANALYSIS / "python_impact.py"),
+            "--repo",
+            str(repo),
+            "--batch",
+        ],
+        input=json.dumps([good, bad]),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    reports = json.loads(result.stdout)
+    assert reports[0]["head"] == base
+    assert list(reports[1]) == ["error"]
+
+
 def test_codemod_rewrites_every_call_of_a_renamed_function(tmp_path: Path) -> None:
     tree = tmp_path / "tree"
     for path, text in BASE.items():

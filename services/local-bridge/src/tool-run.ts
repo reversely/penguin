@@ -170,20 +170,26 @@ async function runCallerLists(options: ToolPassOptions, claims: readonly Claimed
   if (ready.length === 0) return results;
   const started = performance.now();
   const requests = ready.map(callerListRequest);
-  let reports: ImpactReport[] = [];
+  // Each request answers its own report or error, so one bad checkpoint never errors the others.
+  let reports: (ImpactReport | Error)[] = [];
   let failed = "";
   try {
-    reports = options.impactBatch === undefined ? await Promise.all(requests.map((request) => options.impact(request))) : await options.impactBatch(requests);
+    reports =
+      options.impactBatch === undefined
+        ? await Promise.all(requests.map((request) => options.impact(request).catch((error: unknown) => error as Error)))
+        : await options.impactBatch(requests);
   } catch (error) {
     failed = (error as Error).message;
   }
   const durationMs = Math.round((performance.now() - started) / ready.length);
   for (const [index, claim] of ready.entries()) {
-    const impact = reports[index];
+    const answer = reports[index];
+    const impact = answer instanceof Error ? undefined : answer;
     const calls = impact?.forks[0]?.calls;
+    const reason = answer instanceof Error ? answer.message : failed || (calls === undefined ? "the report left out the fork" : "a list was cut at its limit");
     const result: AgentToolResult =
       impact === undefined || calls === undefined || impact.truncated
-        ? { ...emptyResult(claim), result: "error", summary: bounded(`the caller list could not be read: ${failed || (calls === undefined ? "the report left out the fork" : "a list was cut at its limit")}`) }
+        ? { ...emptyResult(claim), result: "error", summary: bounded(`the caller list could not be read: ${reason}`) }
         : {
             ...emptyResult(claim),
             impact,

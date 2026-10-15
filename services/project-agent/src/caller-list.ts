@@ -93,9 +93,14 @@ export class CallerListStore {
         };
   }
 
-  /** The features whose stored list is complete, so `callersOf` decides whether a change reaches them. */
-  completeLists(): Set<string> {
-    return new Set(this.#db.exec(`SELECT feature_id FROM ForkCallList WHERE complete = 1`).map((row) => String(row["feature_id"])));
+  /**
+   * The checkpoint of each feature's stored complete list. `callersOf` decides whether a change
+   * reaches a feature only while that checkpoint is the feature's latest.
+   */
+  completeLists(): Map<string, string> {
+    return new Map(
+      this.#db.exec(`SELECT feature_id, checkpoint FROM ForkCallList WHERE complete = 1`).map((row) => [String(row["feature_id"]), String(row["checkpoint"])]),
+    );
   }
 
   /**
@@ -111,7 +116,10 @@ export class CallerListStore {
     return [...found].sort();
   }
 
-  /** Drops the list of a feature that landed or stopped, which no later change can reach. */
+  /**
+   * Drops the list of a feature that landed or stopped, which no later change can reach. The
+   * ProjectAgent's FeatureStore calls it when the feature moves to `landed` or `closed`.
+   */
   forget(featureId: string): void {
     this.#db.exec(`DELETE FROM ForkCall WHERE feature_id = ?`, featureId);
     this.#db.exec(`DELETE FROM ForkCallList WHERE feature_id = ?`, featureId);

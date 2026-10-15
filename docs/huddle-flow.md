@@ -106,9 +106,9 @@ For each recorded checkpoint, `scheduleCombinedRuns` (`services/project-agent/sr
 
 A feature's checkpoint is scheduled when the runner reports its caller list
 ([design.md](design.md#caller-list)). With that list complete, step 4 picks the running features
-that call a name the checkpoint modifies, or whose own changes hold a file it changes, each tested in
-the scopes it touches. A running feature with no complete list of its own still goes by step 4's
-scope rule. Without the checkpoint's complete list, the steps above run as written. Each run names
+that call a name the checkpoint modifies, or whose area names a file it changes or a folder above
+one, each tested in the scopes it touches. A running feature with no complete list read at its
+latest checkpoint still goes by step 4's scope rule. When the list reaches it too, its run keeps those scopes. Without the checkpoint's complete list, the steps above run as written. Each run names
 the trigger's fork, `owner-<id>` or `feature-<id>`, which the runner fetches; a run from before #198
 names none and reads as its owner fork.
 
@@ -146,7 +146,8 @@ the pinned commit.
 ## 4. Huddle opening
 
 `openHuddle` (`services/project-agent/src/huddle-open.ts`) opens a Huddle only for a failed result
-whose trigger commit is in its owner's fork. Only owner forks' results count: a failed result of a
+whose trigger commit is in the fork that holds it: the owner's fork, or the feature's own fork when a
+feature checkpoint scheduled the runs. Only owner forks' results count: a failed result of a
 run on a feature's fork stays with that run and its block checks. The run of the trigger owner's
 own scopes is keyed by their owner fork, so a failure there opens a Huddle whose fix goes to that
 owner. A passing report opens nothing. A conflict also opens

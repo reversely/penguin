@@ -46,6 +46,7 @@ import {
   checkpointChange,
   CombinedRunStore,
   scheduleCombinedRuns,
+  triggerRepo,
   type ClaimListing,
 } from "./combined-run-schedule.ts";
 import {
@@ -1160,7 +1161,7 @@ export class ProjectAgent extends Agent {
    * Opens the Huddle issue for a combined run the integration runner reports (see huddle-open.ts),
    * or answers `existing` when one is already open for the same trigger. `triggerFork` is the
    * Artifacts repo name of the trigger owner's fork, named by the Worker; the trigger commit must be
-   * there. Openings run one at a time, so two reports of one trigger never open two issues.
+   * there, or in the feature's own fork when a feature checkpoint scheduled the runs. Openings run one at a time, so two reports of one trigger never open two issues.
    *
    * A report that is not rejected also completes the scheduled combined runs it answers, so a
    * passing run is recorded as passed and opens nothing.
@@ -1171,6 +1172,8 @@ export class ProjectAgent extends Agent {
       const index = this.#index();
       const sessions = this.#sessionStore();
       const parsedEvent = parseCombinedRunEvent(event);
+      // A feature checkpoint lives in its feature's fork, not in the owner fork the Worker names.
+      const forkRepo = parsedEvent.ok ? triggerRepo(this.#combinedRunStore(), this.#featureStore(), parsedEvent.event.trigger, triggerFork) : triggerFork;
       const outcome = await openHuddle(
         {
           huddles: this.#huddleStore(),
@@ -1182,7 +1185,7 @@ export class ProjectAgent extends Agent {
           session: (sessionId) => sessions.get(sessionId),
           identities: () => this.#identityStore().list(),
           triggerPublished: ({ trigger }) =>
-            withRepo(this.env.ARTIFACTS, triggerFork, async (repo) => (await repo.readCommit(trigger.sha)) !== null),
+            withRepo(this.env.ARTIFACTS, forkRepo, async (repo) => (await repo.readCommit(trigger.sha)) !== null),
         },
         // A feature fork's failures are not a Huddle's: Huddles fix owner forks only.
         parsedEvent.ok ? this.#combinedRunStore().ownerForkResults(parsedEvent.event) : event,
@@ -2147,7 +2150,13 @@ export class ProjectAgent extends Agent {
 
   #featureStore(): FeatureStore {
     // A stored record arms the push to the record repo once the storing transaction is over.
-    this.#featureRows ??= new FeatureStore(this.#database(), Date.now, () => queueMicrotask(() => this.#armRecordFlush()));
+    // A feature that lands or stops can no longer be reached, so its caller list is dropped (caller-list.ts).
+    this.#featureRows ??= new FeatureStore(
+      this.#database(),
+      Date.now,
+      () => queueMicrotask(() => this.#armRecordFlush()),
+      (id) => this.#callerListStore().forget(id),
+    );
     return this.#featureRows;
   }
 
@@ -2466,7 +2475,9 @@ export class ProjectAgent extends Agent {
   async reportToolRun(caller: BridgeCaller, runId: number, result: unknown, repos?: ProjectRepos): Promise<ToolReportOutcome> {
     const outcome = recordToolResult(this.#toolStore(), caller, runId, result);
     if (outcome.status === "recorded" && edgesReported(this.#scopeEdgeStore(), outcome.run)) this.#liveFeed().featuresChanged();
-    if (outcome.status === "recorded") callsReported(this.#callerListStore(), outcome.run);
+    // A late report never brings back the list of a feature that already landed or stopped.
+    const reportedFeature = outcome.status === "recorded" && outcome.run.featureId !== null ? this.#featureStore().get(outcome.run.featureId) : undefined;
+    if (outcome.status === "recorded" && reportedFeature !== undefined && readOnlyReason(reportedFeature) === undefined) callsReported(this.#callerListStore(), outcome.run);
     // A checkpoint's caller list, kept or not, schedules the checkpoint's combined runs (combined-run-schedule.ts).
     const listed = outcome.status === "recorded" ? listedCheckpoint(this.#featureStore(), outcome.run) : undefined;
     if (listed !== undefined && repos !== undefined) {

@@ -709,7 +709,7 @@ The script reads only Git objects. It never checks out a tree or imports the cod
 | Nesting past the parser's limit or past 100 syntax tree levels | Reported as `too-deep` |
 | More than 50,000 Python files in one commit | The rest are not read; reported as `too-many-files` |
 | A list past 2,000 entries | Cut; the report sets `truncated` and counts as incomplete |
-| Missing commit or malformed request | Exit status 2 with one line on standard error |
+| Missing commit or malformed request | Exit status 2 with one line on standard error. In a `--batch` run, that request's place holds `{"error": message}` and the others are reported |
 
 A combined run (`CombinedRunner`) takes its targets as forks, each with an id, a person and a
 checkpoint. A running feature's fork is a target keyed by its feature id, so one person's two
