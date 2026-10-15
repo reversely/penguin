@@ -6,7 +6,9 @@
 //   features without asking every FeatureAgent.
 // - Every replay of the feature, a `check` run's or a block run's, opens the items it reaches and
 //   updates those it already holds (`replayReported`): a caller whose calls changed resets its item to
-//   its verdict's first state, and an item no replay reaches is withdrawn.
+//   its verdict's first state, and an item no replay reaches is withdrawn. A replay on the feature's
+//   current checkpoint that finds every call of an item matching closes it as `unaffected` (#208), and
+//   so does a caller list of that checkpoint that no longer names the contract (`contractsUnchanged`).
 // - Agents move the items with four tools (`callerAction`): `confirm_caller`, `review_caller` (the
 //   receiving branch's agent), `propose_caller_fix` and `explain_difference` (the originating agent).
 //   The worktree owner decides on the dashboard (`ownerDecision`).
@@ -293,6 +295,7 @@ const RECORD_TYPE: Readonly<Record<CallerItemAction, FeatureRecordType>> = {
   open: "caller_item",
   reset: "caller_item",
   withdraw: "caller_item",
+  close: "caller_item",
   ask_owner: "caller_item",
   write: "caller_item",
   confirm: "confirm_caller",
@@ -416,12 +419,18 @@ export async function heldReplay(deps: Pick<CallerItemDeps, "keeper">, originId:
   return [...held.values()];
 }
 
+/** Whether every call of `callers` matched on both trees: each caller unaffected, with no call left unmatched. */
+const everyCallMatches = (callers: readonly CallerVerdict[]): boolean =>
+  callers.every((caller) => caller.verdict === "unaffected" && caller.matched === caller.calls && caller.differingCount === 0);
+
 /**
  * A caller replay reached Penguin from the originating feature's `check` run (`source.kind` `check`)
  * or one of its block runs. Either opens an item per running feature and contract the replay reaches,
  * so a feature whose agent never called `check` meets the protocol at its land run (#190). An item
- * whose calls changed resets; one the replay no longer reaches is withdrawn. Answers the items that
- * moved.
+ * whose calls changed resets; one the replay no longer reaches is withdrawn. An item that stood on an
+ * earlier replay closes as `unaffected` when this one ran on the feature's current checkpoint and
+ * every call matches (#208): nobody needs to confirm what the replay already showed. Answers the
+ * items that moved.
  */
 export async function replayReported(
   deps: CallerItemDeps,
@@ -441,6 +450,8 @@ export async function replayReported(
     if (groups.size < CALLER_ITEM_LIMITS.items || groups.has(key)) groups.set(key, group);
   }
   const runs = new Map(section.runs.map((run) => [run.runId, run]));
+  // A late report of an older checkpoint never closes an item: the current one may differ again.
+  const current = source.checkpoint !== "" && source.checkpoint === deps.features.get(originId)?.latestCheckpointSha;
   const stage = await deps.stage();
   const moved: CallerItem[] = [];
   const reached = new Set<string>();
@@ -455,12 +466,16 @@ export async function replayReported(
     });
     const before = existing.get(itemId);
     const facts = { callers, runs: itemRuns, source, fingerprint, verdict };
-    if (before !== undefined && before.fingerprint === fingerprint && before.state !== "withdrawn") {
+    const same = before !== undefined && before.fingerprint === fingerprint && before.state !== "withdrawn";
+    // A re-check: the item stood on an earlier replay, and this one ran on the current checkpoint with
+    // every call matching. An item those same calls already settled stands.
+    const closes = before !== undefined && before.state !== "withdrawn" && current && everyCallMatches(callers) && !(same && callerItemSettled(before, "land"));
+    if (before !== undefined && same && !closes) {
       // The same calls on newer commits: the item stands, with the newest replay as its evidence.
       await deps.keeper(originId).keepCallerItem({ ...before, ...facts }, before.recordId);
       continue;
     }
-    const state = CALLER_OPENING_STATE[verdict];
+    const state = closes ? "unaffected" : CALLER_OPENING_STATE[verdict];
     const kept = await transition(
       deps,
       before ?? null,
@@ -471,14 +486,14 @@ export async function replayReported(
         contract,
         ...facts,
         state,
-        ownerAsked: verdict === "unknown_reach" ? "unknown_reach" : null,
+        ownerAsked: !closes && verdict === "unknown_reach" ? "unknown_reach" : null,
         rejections: before?.rejections ?? 0,
         explanation: null,
         fix: null,
         review: null,
         openedAt: before?.openedAt ?? iso(deps),
       },
-      before === undefined ? "open" : "reset",
+      before === undefined ? "open" : closes ? "close" : "reset",
       "penguin",
       { stage },
     );
@@ -490,6 +505,42 @@ export async function replayReported(
     if (!isRejection(kept)) moved.push(kept);
   }
   return moved;
+}
+
+/** The dotted module of a Python path, as the caller list names it: `shared/platform/dates.py` is `shared.platform.dates`. */
+const moduleOfPath = (path: string): string | undefined => (path.endsWith(".py") ? path.replace(/\.py$/u, "").replace(/\/__init__$/u, "").replaceAll("/", ".") : undefined);
+
+/** Whether caller list name `name` is `of`, lies inside it, or holds it. */
+const nameMeets = (name: string, of: string): boolean => name === of || name.startsWith(`${of}.`) || of.startsWith(`${name}.`);
+
+/**
+ * The caller list of the originating feature's checkpoint `listed.checkpoint` was kept: `changed` holds
+ * every name the checkpoint's change modifies, removes, renames or moves, with each one's module
+ * (caller-list.ts `changedNames`). An open item whose contract's module and differing functions the
+ * list no longer names closes as `unaffected` without a replay (#208): a revision that restores the
+ * function to main's bytes reaches no fork, so no replay comes to close it. Only a complete list of the
+ * feature's latest checkpoint counts; an item with no module or function to look up stays open.
+ * Answers the items that closed.
+ */
+export async function contractsUnchanged(
+  deps: CallerItemDeps,
+  originId: string,
+  listed: { readonly runId: number; readonly checkpoint: string; readonly changed: readonly string[]; readonly complete: boolean },
+): Promise<CallerItem[]> {
+  if (!listed.complete || deps.features.get(originId)?.latestCheckpointSha !== listed.checkpoint) return [];
+  const closed: CallerItem[] = [];
+  for (const item of await deps.keeper(originId).callerItems(originId)) {
+    if (callerItemSettled(item, "land") || item.state === "withdrawn" || item.state === "unaffected") continue;
+    const module = moduleOfPath(item.contract.split("::", 1)[0] ?? "");
+    const looked = [...(module === undefined ? [] : [module]), ...item.callers.flatMap((caller) => caller.differing.map((call) => call.symbol))];
+    if (looked.length === 0 || listed.changed.some((name) => looked.some((of) => nameMeets(name, of)))) continue;
+    const source = { kind: "list", id: String(listed.runId), checkpoint: listed.checkpoint } as const;
+    // An empty fingerprint matches no replay, so the next replay that reaches the item moves it.
+    const after = { ...item, source, state: "unaffected", ownerAsked: null, fingerprint: "", explanation: null, fix: null, review: null } as const;
+    const kept = await transition(deps, item, after, "close", "penguin", { unchanged: true });
+    if (!isRejection(kept)) closed.push(kept);
+  }
+  return closed;
 }
 
 /**

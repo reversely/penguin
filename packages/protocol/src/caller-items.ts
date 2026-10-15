@@ -16,6 +16,11 @@
 // - `unknown_reach`: no test reaches the call, so the worktree owner, the receiving feature's person,
 //   decides.
 //
+// An item a later replay on the originating feature's current checkpoint finds with every call
+// matching closes as `unaffected` (#208), whatever path it was on, and nobody answers it. So does an
+// item whose contract the current checkpoint no longer changes, read from the checkpoint's caller
+// list without a replay. A later replay that finds a call differing again reopens it on its verdict's path.
+//
 // An item whose receiving agent leaves it unanswered past the stage's wait, or that the receiving side
 // rejected twice, goes to the worktree owner too. The review policy's stage decides when that person
 // sees items at all. Production asks the person after every answer of the receiving agent.
@@ -24,7 +29,7 @@
 // confirms, approves or rejects; only the originating agent proposes or explains; only the worktree
 // owner or their delegate decides an item sent to them. A write into the receiving fork waits until
 // every item there is approved from the receiving side. The originating feature reaches main only once
-// every item is `confirmed`, `written` or `approved`.
+// every item is `confirmed`, `written`, `approved` or `unaffected`.
 
 import type { CallerVerdict, CallerVerdictKind, ReplayCall, ReplayCallStatus, ReplaySide } from "./caller-replay.ts";
 import { FEATURE_ID_MAX_LENGTH } from "./overlap.ts";
@@ -46,6 +51,7 @@ export const CALLER_ITEM_STATES = [
   "approved",
   "changes_requested",
   "unknown_reach",
+  "unaffected",
   "withdrawn",
 ] as const;
 export type CallerItemState = (typeof CALLER_ITEM_STATES)[number];
@@ -81,8 +87,11 @@ export function callerWaitingOn(item: { readonly state: CallerItemState; readonl
   return "nobody";
 }
 
-/** States a land accepts; `withdrawn` is an item no replay reaches any more. */
-const LAND_STATES: ReadonlySet<CallerItemState> = new Set(["confirmed", "written", "approved", "withdrawn"]);
+/**
+ * States a land accepts. `unaffected`: a re-check on the current checkpoint matched every call, or the
+ * checkpoint no longer changes the contract. `withdrawn`: no replay reaches the item any more.
+ */
+const LAND_STATES: ReadonlySet<CallerItemState> = new Set(["confirmed", "written", "approved", "unaffected", "withdrawn"]);
 /** States a write into the receiving fork accepts: the receiving side approved, or nothing changes there. */
 const WRITE_STATES: ReadonlySet<CallerItemState> = new Set([...LAND_STATES, "fix_approved"]);
 
@@ -100,6 +109,7 @@ export const CALLER_ITEM_ACTIONS = [
   "open",
   "reset",
   "withdraw",
+  "close",
   "confirm",
   "propose_fix",
   "approve_fix",
@@ -119,6 +129,7 @@ export const CALLER_ACTION_BY: Readonly<Record<CallerItemAction, "penguin" | "re
   open: "penguin",
   reset: "penguin",
   withdraw: "penguin",
+  close: "penguin",
   confirm: "receiving_agent",
   propose_fix: "originating_agent",
   approve_fix: "receiving_agent",
@@ -364,8 +375,11 @@ export interface CallerItem {
   readonly fingerprint: string;
   readonly callers: readonly CallerVerdict[];
   readonly runs: readonly CallerItemRun[];
-  /** Where the replay came from: the originating agent's `check` run or a block run. */
-  readonly source: { readonly kind: "check" | "block"; readonly id: string; readonly checkpoint: string };
+  /**
+   * What last moved the item: the originating agent's `check` run, a block run, or the caller list of
+   * a checkpoint that no longer changes the contract (`list`, #208).
+   */
+  readonly source: { readonly kind: "check" | "block" | "list"; readonly id: string; readonly checkpoint: string };
   readonly explanation: CallerExplanation | null;
   readonly fix: CallerFix | null;
   readonly review: CallerReview | null;
@@ -551,6 +565,7 @@ export const CALLER_STATE_LABEL: Readonly<Record<CallerItemState, string>> = {
   approved: "Approved",
   changes_requested: "Changes requested",
   unknown_reach: "No test reaches it",
+  unaffected: "Unaffected",
   withdrawn: "Withdrawn",
 };
 

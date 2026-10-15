@@ -30,7 +30,7 @@ const VERDICT_LABEL: Readonly<Record<CallerItemView["verdict"], string>> = {
   unknown_reach: "no test reaches it",
 };
 
-const SETTLED = new Set<CallerItemView["state"]>(["confirmed", "written", "approved", "withdrawn"]);
+const SETTLED = new Set<CallerItemView["state"]>(["confirmed", "written", "approved", "unaffected", "withdrawn"]);
 
 interface Props {
   readonly item: CallerItemView;

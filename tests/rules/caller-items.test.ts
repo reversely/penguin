@@ -26,6 +26,7 @@ import {
   CallerIndexStore,
   CallerItemStore,
   callerWork,
+  contractsUnchanged,
   featureCallerItems,
   heldReplay,
   landPending,
@@ -267,6 +268,62 @@ test("a revision whose replay changes the calls resets the item; the same calls 
   const moved = await replayReported(w.deps, "dependency-audit", section([caller("instant-payouts", "unaffected")]), { kind: "block", id: "dependency-audit/1", checkpoint: SHA("d") });
   assert.deepEqual(moved.map((item) => [item.feature, item.state]).sort(), [["instant-payouts", "confirmation_requested"], ["tip-jar", "withdrawn"]]);
   assert.deepEqual(w.records("caller_item").slice(-2).map((record) => record.payload["action"]).sort(), ["reset", "withdraw"]);
+});
+
+/** Hugo's agent checkpoints `dependency-audit` at `sha`, which becomes its current checkpoint. */
+async function checkpointAt(w: Awaited<ReturnType<typeof world>>, sha: string): Promise<void> {
+  w.features.setArea("dependency-audit", { scopes: [], paths: [], contracts: [] }, await w.deps.sign(w.features.draftRecord("dependency-audit", "checkpoint_area", { penguin: true }, {})), sha);
+}
+
+test("a re-check on the current checkpoint that matches every call closes the item as unaffected, the land stops waiting on it, and a later checkpoint that differs reopens it", async () => {
+  const w = await world();
+  await checkpointAt(w, SHA("a"));
+  await replayReported(w.deps, "dependency-audit", section([caller("instant-payouts", "differs")]), CHECK);
+  const id = w.item("instant-payouts").itemId;
+  await w.origin({ action: "explain", item: id, kind: "revising", text: "restoring start of day", calls: [{ call: CALL, kind: "incidental", reason: "the retry is wrong" }] });
+  assert.equal(reasonOf(await w.kofi({ action: "confirm", item: id, run: RUN("instant-payouts") })), "conflict", "no agent call closes a revising item");
+
+  // Checkpoint B: a late report of A's replay resets the item but never closes it.
+  await checkpointAt(w, SHA("d"));
+  await replayReported(w.deps, "dependency-audit", section([caller("instant-payouts", "unaffected")]), { ...CHECK, id: "8" });
+  assert.equal(w.item("instant-payouts").state, "confirmation_requested");
+  const closed = await replayReported(w.deps, "dependency-audit", section([caller("instant-payouts", "unaffected")]), { kind: "block", id: "dependency-audit/2", checkpoint: SHA("d") });
+  assert.deepEqual(closed.map((item) => [item.state, item.ownerAsked, item.source.checkpoint]), [["unaffected", null, SHA("d")]]);
+  assert.deepEqual(w.records("caller_item").at(-1)?.payload["action"], "close");
+  assert.deepEqual(w.records("caller_item").at(-1)?.author, { penguin: true });
+  assert.deepEqual(await landPending(w.deps, "dependency-audit"), [], "land_feature answers no callers_pending for it");
+  const [view] = await featureCallerItems(w.deps, "dependency-audit");
+  assert.deepEqual([view?.state, view?.waitingOn], ["unaffected", "nobody"]);
+
+  // Checkpoint C differs again: the item reopens on its verdict's path.
+  await checkpointAt(w, SHA("e"));
+  await replayReported(w.deps, "dependency-audit", section([caller("instant-payouts", "differs")]), { ...CHECK, id: "9", checkpoint: SHA("e") });
+  assert.equal(w.item("instant-payouts").state, "differs");
+  assert.match((await landPending(w.deps, "dependency-audit")).join(";"), /instant-payouts .*\(differs\)/u);
+});
+
+test("a current checkpoint whose caller list no longer changes the item's contract closes it as unaffected without a replay", async () => {
+  const w = await world();
+  await checkpointAt(w, SHA("a"));
+  await replayReported(w.deps, "dependency-audit", section([caller("instant-payouts", "differs")]), CHECK);
+  const id = w.item("instant-payouts").itemId;
+  await w.origin({ action: "explain", item: id, kind: "revising", text: "restoring start of day", calls: [{ call: CALL, kind: "incidental", reason: "the retry is wrong" }] });
+  await checkpointAt(w, SHA("d"));
+  const list = { runId: 12, checkpoint: SHA("d"), changed: ["shared.platform.dates", "shared.platform.dates.start_of_utc_day"], complete: true };
+  assert.deepEqual(await contractsUnchanged(w.deps, "dependency-audit", { ...list, checkpoint: SHA("a") }), [], "an older checkpoint's list closes nothing");
+  assert.deepEqual(await contractsUnchanged(w.deps, "dependency-audit", { ...list, complete: false }), [], "an incomplete list closes nothing");
+  assert.deepEqual(await contractsUnchanged(w.deps, "dependency-audit", { ...list, changed: ["shared.platform.http", "shared.platform.http.Client.post"] }), [], "a list that still changes the contract closes nothing");
+  assert.equal(w.item("instant-payouts").state, "explained");
+
+  const closed = await contractsUnchanged(w.deps, "dependency-audit", list);
+  assert.deepEqual(closed.map((item) => [item.itemId, item.state, item.source.kind]), [[id, "unaffected", "list"]]);
+  assert.deepEqual(await landPending(w.deps, "dependency-audit"), []);
+  assert.deepEqual(await heldReplay(w.deps, "dependency-audit"), [], "a closed item keeps no function wrapped");
+
+  // A later checkpoint that changes the contract again and differs reopens the item.
+  await checkpointAt(w, SHA("e"));
+  await replayReported(w.deps, "dependency-audit", section([caller("instant-payouts", "differs")]), { ...CHECK, id: "9", checkpoint: SHA("e") });
+  assert.equal(w.item("instant-payouts").state, "differs");
 });
 
 test("a broken caller's fix is a plan part on its feature, approved by the receiving agent before a token; its write settles the item", async () => {

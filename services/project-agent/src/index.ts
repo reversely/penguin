@@ -139,6 +139,7 @@ import {
   ownerCallerItems,
   ownerDecision,
   heldReplay,
+  contractsUnchanged,
   replayReported,
   sweepUnanswered,
   testStandingOf,
@@ -2477,7 +2478,15 @@ export class ProjectAgent extends Agent {
     if (outcome.status === "recorded" && edgesReported(this.#scopeEdgeStore(), outcome.run)) this.#liveFeed().featuresChanged();
     // A late report never brings back the list of a feature that already landed or stopped.
     const reportedFeature = outcome.status === "recorded" && outcome.run.featureId !== null ? this.#featureStore().get(outcome.run.featureId) : undefined;
-    if (outcome.status === "recorded" && reportedFeature !== undefined && readOnlyReason(reportedFeature) === undefined) callsReported(this.#callerListStore(), outcome.run);
+    if (outcome.status === "recorded" && reportedFeature !== undefined && readOnlyReason(reportedFeature) === undefined && callsReported(this.#callerListStore(), outcome.run)) {
+      // A checkpoint that no longer changes an item's contract closes it as unaffected (caller-items.ts, #208).
+      const listed = this.#callerListStore().listedAt(reportedFeature.id);
+      try {
+        if (listed !== undefined) await this.#featuresChanging(this.#planStep(() => contractsUnchanged(this.#callerDeps(), reportedFeature.id, listed)));
+      } catch (error) {
+        console.error(JSON.stringify({ event: "caller_items_failed", run: runId, error: String(error).slice(0, 200) }));
+      }
+    }
     // A checkpoint's caller list, kept or not, schedules the checkpoint's combined runs (combined-run-schedule.ts).
     const listed = outcome.status === "recorded" ? listedCheckpoint(this.#featureStore(), outcome.run) : undefined;
     if (listed !== undefined && repos !== undefined) {

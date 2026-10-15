@@ -1505,6 +1505,15 @@ rejects before the originating feature changes its fork or reaches main.
   effects, so the same calls on newer commits leave the item where it stands. An item the newest
   replay no longer reaches is `withdrawn`. A revision of the originating change therefore re-runs the
   replay with the agent's next `check`, which resets every item whose calls moved.
+- **When items close.** Penguin closes an item as `unaffected`, with nobody answering it, in two
+  cases. In the first, a replay on the originating feature's current checkpoint finds every call of
+  an item that stood on an earlier replay matching. In the second, the caller list of the current
+  checkpoint no longer names the contract's module or any function the item's differing calls went
+  through (`contractsUnchanged`). A revision that restores the function to main's bytes reaches no
+  fork, so no replay runs to close the item. Only a complete caller list counts. Penguin signs a
+  `caller_item` record with the action `close`, and no agent tool closes an item. A late report of
+  an older checkpoint resets the item and leaves it open. A later replay that finds a call differing
+  again reopens the item on its verdict's path.
 - **Paths.** Each verdict opens one path:
 
   | Verdict | States | Who moves it |
@@ -1573,12 +1582,12 @@ rejects before the originating feature changes its fork or reaches main.
   run ids. A confirmation adds the run it cited, an explanation each call's classification and a
   review each call's verdict and evidence. The agent's or person's words are in the record as written.
 - **Writes into the receiving fork.** A write of the originating feature's fix into a fork waits until
-  every item there is `confirmed`, `fix_approved`, `written` or `approved`, with no owner's decision
+  every item there is `confirmed`, `fix_approved`, `written`, `approved` or `unaffected`, with no owner's decision
   pending (`writeWaits`). `fix_token` refuses with `callers_pending` and names each item. The check
   runner's claim leaves the write queued, a copy write and a mechanical part's write included. A fork
   that holds no item writes as before.
 - **Landing.** `land_feature` refuses with `callers_pending` until every item on a running feature is
-  `confirmed`, `written`, `approved` or `withdrawn` (`landPending`). The block run's own replay may
+  `confirmed`, `written`, `approved`, `unaffected` or `withdrawn` (`landPending`). The block run's own replay may
   reset an item. A passing land run whose items are no longer settled is then not promoted: Penguin
   signs `promotion_refused` with the items and the feature goes back to `building`. An expand
   promotion reads no item.

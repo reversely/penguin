@@ -84,6 +84,7 @@ import {
   ownerCallerItems,
   ownerDecision,
   heldReplay,
+  contractsUnchanged,
   replayReported,
   testStandingOf,
   writeWaits,
@@ -1148,7 +1149,9 @@ export class PreviewProject {
         // Main's scope dependencies go to the stored edges, as the ProjectAgent's report does.
         edgesReported(this.scopeEdges, recorded.run);
         // A checkpoint's caller list goes to the stored lists, as the ProjectAgent's report does.
-        callsReported(this.callerLists, recorded.run);
+        // A checkpoint that no longer changes an item's contract closes it as unaffected, as the ProjectAgent's report does.
+        const listed = callsReported(this.callerLists, recorded.run) && recorded.run.featureId !== null ? this.callerLists.listedAt(recorded.run.featureId) : undefined;
+        if (listed !== undefined && recorded.run.featureId !== null) await contractsUnchanged(this.callerDeps(), recorded.run.featureId, listed);
         // The report, kept or not, schedules the checkpoint's combined runs, as the ProjectAgent's report does.
         await this.scheduleListedRuns(recorded.run);
         // A check's caller replay opens or moves the feature's caller items, as the ProjectAgent's report does.
