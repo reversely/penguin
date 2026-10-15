@@ -104,18 +104,21 @@ with the first changed call side by side.
 
 ## Try it
 
-This runs the dashboard over Larder, a demo grocery service, on your machine. It needs Node.js 22.18,
-Git 2.38 and [uv](https://docs.astral.sh/uv/):
+Penguin runs on your Cloudflare account as a Worker with Durable Objects and an Artifacts namespace.
+You need Node.js 22.18, Git 2.38 and a Cloudflare account with Artifacts:
 
 ```sh
-git clone https://github.com/reversely/penguin && cd penguin
-npm install && uv sync
-npm run build -w @penguin/dashboard
-node scripts/preview/dashboard.ts --example money-minor-units
+git clone https://github.com/reversely/penguin && cd penguin && npm install
+npx wrangler login && npx wrangler queues create penguin-issues-events
+mkdir -p ~/.config/penguin && openssl rand -hex 32 > ~/.config/penguin/deployer-token
+npx wrangler secret put PENGUIN_DEPLOYER_TOKEN -c apps/worker/wrangler.jsonc < ~/.config/penguin/deployer-token
+node -e 'crypto.subtle.generateKey("Ed25519",true,["sign"]).then(k=>crypto.subtle.exportKey("jwk",k.privateKey)).then(j=>process.stdout.write(JSON.stringify(j)))' \
+  | npx wrangler secret put PENGUIN_OP_SIGNING_KEY -c apps/worker/wrangler.jsonc
+cd apps/worker && npx wrangler deploy
 ```
 
-Open http://127.0.0.1:8792 once it prints the address. To deploy on Cloudflare, see
-[docs/deploy.md](docs/deploy.md).
+Then create the project's repos with `POST /setup` and your owner ids
+([docs/deploy.md](docs/deploy.md#project-setup)).
 
 ## Documentation
 
