@@ -11,20 +11,14 @@ agents on both sides settle it. Penguin then merges the change with every approv
 
 ## What Penguin catches
 
-A change can merge cleanly and pass its own tests while it changes what someone else's unfinished
-work does. Each developer's tests pass on their own branch. The break only appears once the change
-reaches main. Penguin finds those changes before the merge:
+A change can merge cleanly and pass its own tests while it changes what someone else's unfinished work
+does. Penguin finds it before the merge:
 
-- **Logic:** Priya's change merges a shopper's devices into one account. Jun's unfinished analytics
-  dashboard now reports a lower count for a day it already published.
-
-  ![One person shopping on a phone as device:d1 and on the web as user:u1, which Larder counts as two shoppers](docs/images/case1-problem.jpg)
-- **A shared helper:** Hugo's change makes `start_of_day` return UTC midnight. Elif's holiday closures
-  and Sam's weekly digest, both still in progress, now use the wrong local day.
-
-  ![start_of_day(tz) in shared/platform/dates.py, called by Elif's holiday closures and Sam's weekly digest](docs/images/case2-problem.jpg)
-- **Data at scale:** Ines moves every price to whole cents. Penguin replays recorded orders on main
-  and on each step of the change. It stops the step that changes a tax total.
+| Kind | The change | What it breaks in unfinished work |
+|---|---|---|
+| Logic | Merges a shopper's devices into one account | An analytics dashboard's count for a day it already published |
+| A shared helper | Makes `start_of_day` return UTC midnight | Holiday closures and a weekly digest now use the wrong local day |
+| Data at scale | Moves every price to whole cents | A tax total, caught on recorded orders before the step merges |
 
 ## How it works
 
