@@ -61,7 +61,7 @@ over MCP and pushes code only to its own feature's fork, with a write token that
 local bridge publishes checkpoints. Two Durable Objects hold the state: the ProjectAgent knows the
 people, their sessions and which branches call which functions; one FeatureAgent per feature holds its
 plan, its differences and its fixes. A check runner machine claims each check, replays the calling
-branches on main and with the change, and writes each approved fix into its fork with a token for that
+branches on main and with the change. It writes each approved fix into its fork with a token for that
 one fork, valid for 10 minutes. Main moves only when every difference is settled, in one push with a
 5-minute token. Every step is a signed file in Artifacts.
 
