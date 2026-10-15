@@ -152,10 +152,13 @@ Rahul's forms name no migration marker.
 
 ## Contract
 
-When a retiring function has no caller left on main or in any running feature's own changes, Penguin
-proposes removing it on Ines's feature. The plan has no place, so Penguin approves it with no person
-asked. `price()` reaches zero after Kofi's block, `total()` after Jun's, `line_total()` after Sam's,
-`order_total()` and `display()` after Noor's and `percent_off()` after Lena's. Ines's agent removes
+When every retiring function of one package has no caller left on main or in any running feature's
+own changes, Penguin proposes removing them together on Ines's feature (`definingPackage` in
+`retiring-count.ts`). The plan has no place, so Penguin approves it with no person asked. `price()`
+reaches zero after Kofi's block, `total()` after Jun's, `line_total()` after Sam's, `order_total()`
+and `display()` after Noor's and `percent_off()` after Lena's. The `orders` package's two functions
+are therefore proposed after Noor's block and the `shared/money` package's four after Lena's.
+Ines's agent removes
 all six with their own tests as the feature's last checkpoint. Its contract diff shows each removed
 with no caller. The feature lands and Penguin closes the six retiring records under one signed
 `symbols_removed` record.

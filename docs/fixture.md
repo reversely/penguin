@@ -25,11 +25,11 @@ Each feature is a fork of `main`: its first commit starts from `main` and each l
 fork's previous commit. Each fix commit for a feature changes only paths in its owner's scope. Each
 of Priya's fixes for code on main changes only the scope it fixes. `features.json` marks such a
 commit with `fix` and the scope's id. It marks the limit of five and the limit of one with `revises`
-and `analytics`: each answers one change Jun asks for on the plan's part for analytics' code on main.
-The walkthrough has Jun ask once per such commit ([walkthrough.md](walkthrough.md)). A running feature's checkpoint also declares its new contract
-in its own scope's entry of the penguin files. Every scope's tests pass on each commit alone.
-`pins.json` records the SHA of every branch head and tag. It also maps each failing test to the
-commit that fixes it.
+and `analytics`: each answers one change Jun asks for on the plan's part for analytics' code on
+main. The walkthrough has Jun ask once per such commit ([walkthrough.md](walkthrough.md)). A running
+feature's checkpoint also declares its new contract in its own scope's entry of the penguin files.
+Every scope's tests pass on each commit alone. `pins.json` records the SHA of every branch head and
+tag. It also maps each failing test to the commit that fixes it.
 
 ## Expected failures
 
@@ -44,7 +44,7 @@ and Sam's work. Case 1 names each test by module and test name without the `test
 
 ## Fixes
 
-The fixes follow case 1 in [the README](../README.md#use-cases). Merged with the other owner's
+The fixes follow case 1 in [the walkthrough](walkthrough.md). Merged with the other owner's
 checkpoint, each fix makes its own test pass without help from another fix.
 
 | Pytest node ID | Fix commit | Fix |
@@ -76,36 +76,30 @@ and passes on its fix commit.
 still joins the tablet's users." Merged with `owner-jun`, it still fails `test_shared_device_split`,
 because the tablet's three patrons are under the limit.
 
-## Under the new procedure
+## Walkthrough run
 
-In the approved design this case runs as follows:
+The walkthrough runs this fixture as case 1 ([walkthrough.md](walkthrough.md#what-each-case-runs)).
+It reads every person, commit and review form from the fixture (`tests/walkthrough/support/fixture.ts`):
 
-1. **Open.** Priya's agent opens "Add person_id with merge rules". Its area is the identity map with
-   the `person_id` contract. No running feature works in that area, so the feature starts at once.
-   Penguin lists the two running features that read the identity map: Jun's retention dashboard and
-   Sam's re-engagement audience.
-2. **Plan.** Penguin supplies the contract diff with the invariants of analytics and messaging.
-   The facts list four affected places: analytics' and messaging's code on main, Jun's dashboard
-   and Sam's audience. Priya's agent proposes a part for each. The parts for code on main name
-   `owner-priya-fix-analytics` and `owner-priya-fix-messaging` in Priya's fork. Jun's dashboard gets a
-   cutover marker, so past days keep the counts they were published with. Sam's audience honours an
-   unsubscribe from any identity linked to the person. Jun owns two parts and Sam owns two.
-3. **Advance notice.** Sam's agent fills in the review form. The side-by-side run shows no consent
-   changes once the fix is in, so Sam approves both of Sam's parts. Jun's agent reviews analytics' invariant "patrons who
-   log in on one library tablet stay separate people". The side-by-side run shows strangers on one
-   tablet merged into one person. The break sits in Priya's merge rules. Jun asks for a limit on
-   identities per device in Priya's own feature. Priya's agent sets a limit of five
-   (`owner-priya-limit-five`), which still merges a busy tablet's users. Jun asks for a lower limit.
-   The second revision (`owner-priya`, a limit of one) passes.
-4. **Build.** Priya's agent writes the cutover marker into Jun's existing fork. It writes the
-   unsubscribe fix into Sam's. Today Jun and Sam make those fixes themselves (`owner-jun`,
-   `owner-sam`).
-5. **Block promotion.** The block passes every check against main and both forks. Penguin promotes it
-   in one push. Jun is asked twice and Sam once.
+1. **Open.** Jun's and Sam's agents open their features and publish `owner-jun-checkpoint` and
+   `owner-sam-checkpoint`. Priya's agent opens "Add person_id with merge rules" with its
+   `features.json` area and publishes `owner-priya-checkpoint`.
+2. **Plan.** Priya's agent pushes `owner-priya-fix-analytics` and `owner-priya-fix-messaging` and
+   proposes one part per affected place: those commits for analytics' and messaging's code on main,
+   and Jun's and Sam's fixes (`owner-jun`, `owner-sam`) as patches against their fork heads.
+3. **Advance notice.** Jun's and Sam's agents submit `reviews/analytics.json` and
+   `reviews/messaging.json`. Jun asks for one change on the analytics part per commit marked
+   `revises`. Priya's agent answers the first request with the limit of five and the second with
+   the limit of one.
+4. **Build.** The check runner writes each approved part into Jun's and Sam's forks. The walkthrough
+   checks that each written tree equals the fixture's fix tree.
+5. **Land.** Priya's agent lands the feature. The walkthrough then runs every scope's tests on main's
+   new head.
 
 ## Invariants, contracts and features
 
-The base commit's `penguin/invariants.json` holds three invariants in Penguin's invariants format. Their wording follows the tests that check them.
+The base commit's `penguin/invariants.json` holds three invariants in Penguin's invariants format
+(`packages/scope-map/src/invariants.ts`). Their wording follows the tests that check them.
 
 | Id | Scope | Statement | Protected | Recorded examples |
 |---|---|---|---|---|
@@ -151,23 +145,20 @@ use the changed symbols, so both forks run tests.
 | Review | Base | Fork | Side-by-side differences | Verdict and exceptions |
 |---|---|---|---|---|
 | Analytics | `main` | `owner-priya-checkpoint` | Three patrons on one tablet: 3 people on main, 1 on the fork. Six patrons: 6 and 1. A later login on a published day: that day's count drops from 2 to 1 | Refused with `evidence_not_found`: the marker the form names is in Jun's fork only. Analytics reads no changed stored shape, so the stored data rule asks nothing. The tablet difference goes to Jun as a `protected_difference` |
-| Analytics | `main` | `owner-priya-limit-five` | Three patrons: 3 and 1. Six patrons: 6 and 2. The risky input of ten patrons: 10 and 6. The published-day example matches main, because `owner-priya-fix-analytics` comes before the limit | Refused with `evidence_not_found`, as above. A `protected_difference` goes to Jun |
-| Analytics | `main` | `owner-priya` merged onto `owner-jun` | No example differs on `daily_active_users`. The tablet examples, the published-day example and the risky input match main | Accepted, with the cutover marker in the tree. The row Jun's form reports broken goes to Jun as a `broken_invariant` |
-| Messaging, without the contract diff | `owner-sam-checkpoint` | `owner-priya-checkpoint` merged onto it | After an unsubscribe on mobile and a web signup, `subscription_status` gives `device:d1` false and `user:u1` true on the base. The fork gives one subscribed person. `reengagement_audience` returns no address on the base and `a@example.com` on the fork | Accepted. The reported break goes to Sam as a `broken_invariant` |
+| Analytics | `main` | `owner-priya-limit-five` | Three patrons: 3 and 1. Six patrons: 6 and 2. The published-day example matches main, because `owner-priya-fix-analytics` comes before the limit | Refused with `evidence_not_found`, as above. A `protected_difference` goes to Jun |
+| Analytics | `main` | `owner-priya` merged onto `owner-jun` | No example differs on `daily_active_users`. The tablet examples and the published-day example match main | Accepted, with the cutover marker in the tree. The row Jun's form reports broken goes to Jun as a `broken_invariant` |
+| Messaging, without the contract diff | `owner-sam-checkpoint` | `owner-priya-checkpoint` merged onto it | After an unsubscribe on mobile and a web signup, `subscription_status` gives `device:d1` false and `user:u1` true on the base. The fork gives one subscribed person. `reengagement_audience` returns no address on the base and `a@example.com` on the fork | Accepted. No exception: Sam's form reports `unsubscribe-holds` holding. The invariant is not protected |
 | Messaging, without the contract diff | `owner-sam` | `owner-priya` merged onto it | `reengagement_audience` matches on both examples. `subscription_status` gives `device:d1` false and `user:u1` true on the base. The fork gives one person, `device:d1`, not subscribed, through `owner-priya-fix-messaging` | Accepted. No exception |
 
-The messaging reviews run with `--no-diff`. With the contract diff, the stored data rule refuses
-Sam's form on both forks with `stored_data_without_marker`: messaging reads `Profile` and
-`Profile.get`, whose shape Priya's change alters, and the form names no marker. The rule asks only a
-scope that reads a changed stored shape (#132), so analytics, which reads only `IdentityMap` and
-`resolve()`, needs no marker for `Profile`. `penguin-bridge check` on the three checkpoints passes overlap, merge,
-lint and format on every merged tree. It fails `test_shared_device_split` and `test_dau_stable` on
+The messaging reviews run with `--no-diff`. With the contract diff, the review of Sam's checkpoint is
+still accepted: it records `Profile` as a changed stored shape that messaging reads from
+identity-map, which the owning change covers, so Sam's form needs no marker. Analytics reads no
+changed stored shape, so it needs no marker for `Profile` either.
+
+`penguin-bridge check` on the three checkpoints passes overlap, merge, dependencies, lint, format and
+the type check on every merged tree. It fails `test_shared_device_split` and `test_dau_stable` on
 Jun's merged tree. It fails `test_unsubscribe_survives` on Sam's. On the three fixed heads every
 check passes.
-
-`tests/rules/review.test.ts` replaces the fixture's invariants file on `main`
-with its own. It checks the same tablet differences, the refusals for missing evidence and the
-stored data rule for a scope that reads the changed shape and one that does not.
 
 ## Teams
 
@@ -304,22 +295,20 @@ the tree under test.
 
    Every command exits 0.
 
-`uv run pytest -m slow` runs the same steps in `tests/test_fixtures.py`. It asserts that
-every scope passes on each commit alone and that the merged checkpoints fail exactly the three tests
-above. It asserts that each fix makes its own test pass, that `owner-priya-limit-five` still fails
-`test_shared_device_split`, and that the combined run on the fixed branches passes. It also asserts
-that `pins.json` maps each test to its fix commit and that each fix commit changes only the paths of
-the scope it fixes. For each fix for code on main, it asserts that the test the fix adds fails on
-`owner-priya-checkpoint` and passes on the fix commit.
+`tests/test_fixtures.py` checks the fixture's files. Under `uv run pytest -m slow` it asserts that a
+fresh build reproduces every branch and tag in `pins.json`. The fast run asserts that each scope's
+DRI and fallback are members of its team and that each identity's charter names only scopes its
+owner is DRI for. No automated test runs the manual steps above.
 
 ## Changing the fixture
 
 A change to a source directory under `examples/identity-unification/` changes the SHA of the commit
-built from it. It also changes the SHA of every commit that starts from that commit. Run `uv run pre-commit run --all-files` before
-rebuilding, because ruff can rewrite a fixture source file. Then rebuild into an empty directory and
-copy the printed SHAs into the `branches`, `tags` and `fixes` objects of `pins.json`. A new commit
-goes into `features.json`. `examples/ruff.toml` makes ruff in this repository sort the fixture's
-imports as ruff does in the built repository. `tests/test_fixtures.py` fails until `pins.json`
-matches a fresh build. The detect-secrets hook reads each SHA in `pins.json` as a possible secret.
-Run `uv run detect-secrets scan --baseline .secrets.baseline` after changing `pins.json` to record
-the new SHAs as known values.
+built from it. It also changes the SHA of every commit that starts from that commit. Run
+`uv run pre-commit run --all-files` before rebuilding, because ruff can rewrite a fixture source
+file. Then rebuild into an empty directory and copy the printed SHAs into the `branches`, `tags` and
+`fixes` objects of `pins.json`. A new commit goes into `features.json`. `examples/ruff.toml` makes
+ruff in this repository sort the fixture's imports as ruff does in the built repository.
+`tests/test_fixtures.py` fails until `pins.json` matches a fresh build. The detect-secrets hook
+reads each SHA in `pins.json` as a possible secret. Run
+`uv run detect-secrets scan --baseline .secrets.baseline` after changing `pins.json` to record the
+new SHAs as known values.

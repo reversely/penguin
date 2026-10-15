@@ -38,8 +38,8 @@ whole file with every problem listed. It then writes every commit through one `g
 stream, with author, committer, date and file bytes taken from the data file. Penguin's updates of
 cases 1 and 3 are the exception: the builder writes them with Penguin's codemod and ruff, as the
 check runner does ([Penguin's updates](#penguins-updates)). It therefore runs under this
-repository's uv environment, which pins libcst and ruff. A build took 3.6 seconds on an Apple
-silicon laptop, most of it the four codemod runs. After `git gc` the built repository holds 587 objects in a 237 KiB pack.
+repository's uv environment, which pins libcst and ruff. A build took about 4 seconds on an Apple
+silicon laptop. After `git gc` the built repository holds 3,960 objects in an 810 KiB pack.
 
 ## The data file
 
@@ -82,8 +82,7 @@ stands, whose history holds the branch head. Ines's contract uses it.
 Every id, path, contract, tag, test ID, name and email address is checked before anything is
 written. Ids are lowercase words joined by `-`. Paths hold plain segments with no `..` and no
 leading `/`. Names and email addresses hold no `<`, `>` or line break, because they go into commit
-headers. `tests/test_fixtures.py` feeds hostile values such as `../money`,
-`money; rm -rf /`, `/etc/` and `--force` to the loader.
+headers.
 
 ## Scale
 
@@ -246,7 +245,7 @@ when a block reaches main: `cart_total()` still returns dollars, computed in `Mo
 Each case's originating feature opens from main as the case before it left it. `store-dashboard`,
 `messaging`, `checkout` and `payouts` declare `platform` in `depends_on`, because the running
 features of cases 2 and 3 in those scopes call the shared date helper and the HTTP client. Its affected
-features forked from `base` and are among Larder's forty readers and unaffected features. In cases
+features forked from `base` and are among Larder's readers and unaffected features. In cases
 1 and 3 no agent writes into another person's fork: each affected fork's fix is Penguin's update
 ([Penguin's updates](#penguins-updates)). In case 2 Hugo's agent revises its change, so nothing
 is written into another person's fork. The merged trees below are the originating commit merged onto the affected fork with
@@ -414,16 +413,16 @@ an Apple silicon laptop with Python 3.13; each pytest run took under half a seco
 
 | Originating commit | Merged onto | pytest | Replay |
 |---|---|---|---|
-| `accounts-merge-checkpoint` | `cohort-ltv-checkpoint` | 2 failed, 90 passed: `test_shared_device_split`, `test_dau_stable` | |
-| `accounts-merge-checkpoint` | `weekly-digest-checkpoint` | 1 failed, 95 passed: `test_unsubscribe_survives` | |
-| `accounts-merge-fix-analytics` | its own tree | 89 passed | |
-| `accounts-merge-fix-messaging` | its own tree | 90 passed | |
+| `accounts-merge-checkpoint` | `cohort-ltv-checkpoint` | 1 failed, 93 passed: `test_dau_stable` | |
+| `accounts-merge-checkpoint` | `weekly-digest-checkpoint` | 1 failed, 97 passed: `test_unsubscribe_survives` | |
+| `accounts-merge-fix-analytics` | its own tree | 91 passed | |
+| `accounts-merge-fix-messaging` | its own tree | 92 passed | |
 | `accounts-merge-fix-messaging` | `cohort-ltv-cutover` | 98 passed | |
 | `accounts-merge-fix-messaging` | `weekly-digest-consent` | 102 passed | |
-| `dependency-audit-checkpoint` | `instant-payouts-checkpoint` | 1 failed, 103 passed: `test_timed_out_payout_is_paid_once` | 2 payouts |
-| `dependency-audit-checkpoint` | `tip-jar-checkpoint` | 1 failed, 104 passed: `test_timed_out_tip_is_charged_once` | 2 charges |
-| `dependency-audit-checkpoint` | `instant-payouts-keys` | 104 passed | 1 payout |
-| `dependency-audit-checkpoint` | `tip-jar-keys` | 105 passed | 1 charge |
+| `dependency-audit-checkpoint` | `instant-payouts-checkpoint` | 1 failed, 102 passed: `test_timed_out_payout_is_paid_once` | 2 payouts |
+| `dependency-audit-checkpoint` | `tip-jar-checkpoint` | 1 failed, 103 passed: `test_timed_out_tip_is_charged_once` | 2 charges |
+| `dependency-audit-checkpoint` | `instant-payouts-keys` | 103 passed | 1 payout |
+| `dependency-audit-checkpoint` | `tip-jar-keys` | 104 passed | 1 charge |
 
 Two running forks are never merged with each other: each declares its own contracts in
 `penguin/scopes.json` and `penguin/invariants.json`, so `instant-payouts-keys` and `tip-jar-keys`
@@ -641,7 +640,9 @@ The run on gn100 without the check runner's tools took 588 seconds:
 ## The split on the preview seed
 
 The split runs on main as cases 1 to 3 and Lena's stacking left it. `tests/cases/cases.test.ts`
-checks each step below. A whole seed run of the four cases without the originating agents' `impact`
+checks that the callers never rise and end at zero, that every migration plan lands or closes, that
+each retiring contract is removed and that Rahul is the one person asked. The counts below come
+from a seed run. A whole seed run of the four cases without the originating agents' `impact`
 took about 480 seconds on gn100.
 
 1. **Open.** Ines's feature declares money and orders. Four running features work there, so its

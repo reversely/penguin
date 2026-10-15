@@ -1,14 +1,15 @@
 # Dependency-bump fixture
 
-The dependency-bump fixture is a small Git repository for case 3 in [the README](../README.md#use-cases): the dependency
-bump. Hugo owns the shared HTTP client. Hugo upgrades it from wire 1.4.0 to wire 2.0.0 to fix a
-dropped request in Hugo's carrier integration. wire 2.0.0 retries a timed-out request by default.
-Ana's payment webhook charges an order through that client. On the merged checkpoints a charge whose
-response times out is retried. The fake payment processor then records two charges for one payment.
-`examples/dependency-bump/build.py` builds the repository from the source directories next to the
-builder. `examples/dependency-bump/features.json` lists the base commit and each feature: its id,
-owner, role, fork branch, declared area and commits. Every build produces the same commit SHAs. `examples/dependency-bump/pins.json` records
-them.
+The dependency-bump fixture is a small Git repository for case 3 in
+[the walkthrough](walkthrough.md): the dependency bump. Hugo owns the shared HTTP client. Hugo
+upgrades it from wire 1.4.0 to wire 2.0.0 to fix a dropped request in Hugo's carrier integration.
+wire 2.0.0 retries a timed-out request by default. Ana's payment webhook charges an order through
+that client. On the merged checkpoints a charge whose response times out is retried. The fake
+payment processor then records two charges for one payment. `examples/dependency-bump/build.py`
+builds the repository from the source directories next to the builder.
+`examples/dependency-bump/features.json` lists the base commit and each feature: its id, owner,
+role, fork branch, declared area and commits. Every build produces the same commit SHAs.
+`examples/dependency-bump/pins.json` records them.
 
 wire is a small client library written for this fixture. Both versions live in the fixture tree as
 local copies: `vendor/wire_v1/` and `vendor/wire_v2/`. `shared/http.py` imports the client from one
@@ -28,17 +29,17 @@ transports, so no test opens a network connection.
 
 Hugo is DRI for two scopes: `http-client` owns `shared/` and the vendored library in `vendor/`.
 `integrations` owns `integrations/`. Ana's scope `payments` owns `payments/`. `payments` and
-`integrations` each declare a dependency on `http-client` because they import `shared.http`. Each feature is a fork of `main`. Ana's fix commit starts from Ana's checkpoint.
-Each owner's commit changes only paths in scopes that owner is DRI for. Ana's checkpoint also changes the
-payments entries of the penguin files. Every scope's tests pass on each
-checkpoint alone. They also pass on `owner-ana` alone, which still uses wire 1.4.0. `pins.json`
-records the SHA of every branch head and tag. It also maps the failing test to the commit that fixes
-it.
+`integrations` each declare a dependency on `http-client` because they import `shared.http`. Each
+feature is a fork of `main`. Ana's fix commit starts from Ana's checkpoint. Each owner's commit
+changes only paths in scopes that owner is DRI for. Ana's checkpoint also changes the payments
+entries of the penguin files. Every scope's tests pass on each checkpoint alone. They also pass on
+`owner-ana` alone, which still uses wire 1.4.0. `pins.json` records the SHA of every branch head and
+tag. It also maps the failing test to the commit that fixes it.
 
 ## Expected failures
 
-Merging the two checkpoints fails one test in Ana's scope. The `http-client` and `integrations` tests pass on the merged
-tree. The case names no test ID.
+Merging the two checkpoints fails one test in Ana's scope. The `http-client` and `integrations`
+tests pass on the merged tree. The case names no test ID.
 
 | Pytest node ID | Merged tree | Failure |
 |---|---|---|
@@ -56,34 +57,32 @@ Hugo keeps the upgrade.
 |---|---|---|
 | `payments/tests/test_webhooks.py::test_timed_out_charge_is_charged_once` | `owner-ana` | `handle_order_placed()` sends `Idempotency-Key: charge-<order id>`. The retry carries the same key. The fake processor returns the first charge's response without charging again. The order is paid once. |
 
-Ana reviews the fix in Ana's scope. Hugo follows the issue because the upgrade came from Hugo's
-scope.
+Ana reviews the fix in Ana's scope.
 
-## Under the new procedure
+## Walkthrough run
 
-In the approved design this case runs as follows:
+The walkthrough runs this fixture as case 3 ([walkthrough.md](walkthrough.md#what-each-case-runs)).
+It reads every person, commit and review form from the fixture (`tests/walkthrough/support/fixture.ts`):
 
-1. **Open.** Hugo's agent opens "Upgrade the HTTP client" to fix a bug in Hugo's integration.
-   Penguin's dependency diff shows that Ana's payments scope uses the library.
-2. **Plan.** wire 2.0.0 retries failed requests by default. Ana's declared invariant is "a payment
-   is charged at most once". Penguin's side-by-side run with a simulated timeout shows a payment call
-   made twice. Hugo's agent proposes idempotency keys on Ana's payment calls.
-3. **Advance notice.** Ana's agent fills in the review form. The rerun shows one charge. Every
-   check is clean, so Penguin approves the part and tells Ana.
-4. **Build.** Hugo's agent writes the idempotency keys into Ana's existing fork. Today Ana's session
-   makes that fix (`owner-ana`).
-5. **Block promotion.** The upgrade and Ana's fix reach main in one promotion. Main never holds the
-   upgrade without the keys. The dependency diff names where Ana imports the client and fails
-   nothing. Ana's tests, type check and lint on the merged tree decide the block. Ana is told,
-   not asked.
+1. **Open.** Ana's agent opens "Add the order-placed payment webhook" and publishes
+   `owner-ana-checkpoint`. Hugo's agent opens "Upgrade the HTTP client" with its `features.json` area
+   and publishes `owner-hugo-checkpoint`.
+2. **Plan.** Hugo's agent proposes one part per affected place. Ana's fix, the idempotency keys of
+   `owner-ana`, goes in as a patch against Ana's fork head.
+3. **Advance notice.** Ana's agent submits `reviews/payments.json`. No commit is marked `revises`, so
+   Ana asks for no change.
+4. **Build.** The check runner writes the approved part into Ana's fork. The walkthrough checks that
+   the written tree equals the fixture's fix tree.
+5. **Land.** Hugo's agent lands the feature. The walkthrough then runs every scope's tests on main's
+   new head.
 
 ## Invariants, contracts and features
 
-The base commit's `penguin/invariants.json` declares one protected invariant for Ana's scope, in the
-invariants format: `charged-at-most-once`, "A payment is
-charged at most once". `main` has no webhook, so `main` names no examples file. Ana's fork adds
-`payments/examples/placed_orders.json` with three recorded orders: one the processor answers at
-once, a declined card and an order whose charge response times out.
+The base commit's `penguin/invariants.json` declares one protected invariant for Ana's scope, in
+Penguin's invariants format (`packages/scope-map/src/invariants.ts`): `charged-at-most-once`, "A
+payment is charged at most once". `main` has no webhook, so `main` names no examples file. Ana's
+fork adds `payments/examples/placed_orders.json` with three recorded orders: one the processor
+answers at once, a declined card and an order whose charge response times out.
 
 The test the upgrade breaks, `test_timed_out_charge_is_charged_once`, has the one-line docstring
 "A payment is charged at most once." A merge plan states the break in the invariant's words.
@@ -93,9 +92,10 @@ function places the order through `handle_order_placed` against the fake process
 loses as many responses as the case names. The function returns the processor's charges for the
 order, so a second charge shows in the side-by-side run.
 
-`penguin/scopes.json` declares each scope's contracts. Platform declares `quote` and the client
-types `Client`, `Request`, `Response` and `Timeout` in `shared/http.py`. Payments declares `Order` and
-`charge_body`. Ana's checkpoint adds `handle_order_placed` and `charges_for_placed_order`.
+`penguin/scopes.json` declares each scope's contracts. `http-client` declares the client types
+`Client`, `Request`, `Response` and `Timeout` in `shared/http.py`. `integrations` declares `quote`.
+Payments declares `Order` and `charge_body`. Ana's checkpoint adds `handle_order_placed` and
+`charges_for_placed_order`.
 
 `features.json` lists Hugo's feature "Upgrade the HTTP client" as the originating feature on the
 fork `owner-hugo`. Ana's order-placed webhook (`owner-ana`) is the running feature.
@@ -113,26 +113,20 @@ commit with Hugo's head merged onto it.
 
 `penguin-bridge impact --base main --head owner-hugo-checkpoint --fork ana=owner-ana-checkpoint:payments`
 reports `Client`, `Client.__init__` and `Client.post` in `shared/http.py` as modified, now from
-`vendor.wire_v2`, under the contract `shared/http.py::Client`. The new `retries` parameter of
-`Client.__init__` has a default, so the report marks the signature compatible. Ana's fork uses the
-client, so its tests run.
+`vendor.wire_v2`, under the contract `shared/http.py::Client`. It also reports
+`shared.http.__version__` as modified. The new `retries` parameter of `Client.__init__` has a
+default, so the report marks the signature compatible. Ana's fork uses the client, so its tests run.
 
 | Review | Base | Fork | Side-by-side differences | Verdict and exceptions |
 |---|---|---|---|---|
-| Payments | `owner-ana-checkpoint` | `owner-hugo-checkpoint` merged onto it | The order whose charge response times out has one charge on the base and two on the fork | Accepted. The reported break goes to Ana as a `broken_invariant`. The difference also goes to Ana as a `protected_difference` |
-| Payments | `owner-ana-checkpoint` | `owner-hugo` merged onto `owner-ana` | None: the timed-out order has one charge on both sides | Accepted with `test_timed_out_charge_is_charged_once` as evidence. No exception |
+| Payments | `owner-ana-checkpoint` | `owner-hugo-checkpoint` merged onto it | The order whose charge response times out has one charge on the base and two on the fork | Accepted. The difference goes to Ana as a `protected_difference` on `charged-at-most-once` |
+| Payments | `owner-ana-checkpoint` | `owner-hugo` merged onto `owner-ana` | None: the timed-out order has one charge on both sides | Accepted. No exception |
 
 `penguin-bridge check` reports the dependency diff on every merged tree as a passing fact:
 `shared.http` moves from wire 1.4.0 to wire 2.0.0. Ana's scope imports it in four places. On
 Ana's checkpoint the one failure is `test_timed_out_charge_is_charged_once`. On `owner-ana` the
 tests pass, so every check passes. Overlap, merge, lint, format and the type check pass on every
 merged tree.
-
-`tests/cases/cases.test.ts` runs the case from plan to block on the check
-runner's programs. The facts run names Ana's failing test. The trial of Ana's part, the
-idempotency keys as a patch against Ana's checkpoint, passes `test:payments` and accepts
-`reviews/payments.json` with no exception. The block on main and on Ana's fork with the fix passes
-every check. The same block on Ana's checkpoint fails on Ana's test alone.
 
 ## Manual reproduction
 
@@ -157,7 +151,7 @@ from the root of the tree under test.
    The builder prints one line per branch and tag: the ref name and its commit SHA.
 
 3. Check each checkpoint alone. For each tag and for `owner-ana`, extract the ref into its own
-   directory and run the two scope test commands:
+   directory and run the three scope test commands:
 
    ```sh
    cd /tmp/penguin-dependency-bump
@@ -185,9 +179,9 @@ from the root of the tree under test.
    cd /tmp/penguin-dependency-bump
    ```
 
-   `git merge-tree` prints a single tree SHA because the merge has no conflicts. The `http-client` and `integrations` runs
-   exit 0. The payments run reports `1 failed, 3 passed`. Its short test summary lists this test
-   as `FAILED`:
+   `git merge-tree` prints a single tree SHA because the merge has no conflicts. The `http-client`
+   and `integrations` runs exit 0. The payments run reports `1 failed, 3 passed`. Its short test
+   summary lists this test as `FAILED`:
 
    ```text
    payments/tests/test_webhooks.py::test_timed_out_charge_is_charged_once
@@ -207,12 +201,10 @@ from the root of the tree under test.
 
    Every command exits 0.
 
-`uv run pytest -m slow` runs the same steps in `tests/test_fixtures.py`. It
-asserts that every scope passes on each checkpoint alone and on `owner-ana` alone. It asserts that
-the merged checkpoints fail exactly the test above with the two-charge message. It asserts that the
-combined run on Hugo's branch and Ana's fixed branch passes. It also asserts that `pins.json` maps
-the test to its fix commit. Finally it asserts that each owner's commit changes only that owner's
-scope paths.
+`tests/test_fixtures.py` checks the fixture's files. Under `uv run pytest -m slow` it asserts that a
+fresh build reproduces every branch and tag in `pins.json`. The fast run asserts that each scope's
+DRI and fallback are members of its team and that each identity's charter names only scopes its
+owner is DRI for. No automated test runs the manual steps above.
 
 ## Changing the fixture
 
@@ -221,7 +213,8 @@ from it. It also changes the SHA of every commit that starts from that commit. R
 `uv run pre-commit run --all-files` before rebuilding, because ruff can rewrite a fixture source
 file. Then rebuild into an empty directory and copy the printed SHAs into the `branches`, `tags` and
 `fixes` objects of `pins.json`. A new commit goes into `features.json`. `examples/ruff.toml` makes
-ruff in this repository sort the fixture's imports as ruff does in the built repository. `tests/test_fixtures.py` fails until `pins.json`
-matches a fresh build. The detect-secrets hook reads each SHA in `pins.json` as a possible secret.
-Run `uv run detect-secrets scan --baseline .secrets.baseline` after changing `pins.json` to record
-the new SHAs as known values.
+ruff in this repository sort the fixture's imports as ruff does in the built repository.
+`tests/test_fixtures.py` fails until `pins.json` matches a fresh build. The detect-secrets hook
+reads each SHA in `pins.json` as a possible secret. Run
+`uv run detect-secrets scan --baseline .secrets.baseline` after changing `pins.json` to record the
+new SHAs as known values.
