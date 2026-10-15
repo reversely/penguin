@@ -8,7 +8,9 @@ import test from "node:test";
 
 import { recordToolResult } from "../../services/project-agent/src/agent-tool-runner.ts";
 import { AgentToolStore } from "../../services/project-agent/src/agent-tools.ts";
-import { CallerListStore, callsReported, requestCallerList } from "../../services/project-agent/src/caller-list.ts";
+import type { ImpactReport } from "@penguin/protocol";
+
+import { CallerListStore, callsReported, changedNames, requestCallerList } from "../../services/project-agent/src/caller-list.ts";
 import type { Feature } from "../../services/project-agent/src/feature-store.ts";
 import type { SqlDatabase } from "../../services/project-agent/src/issue-index.ts";
 
@@ -117,4 +119,19 @@ test("a checkpoint's caller list puts its feature among a name's callers, and a 
   assert.equal(lists.listedAt("cohort-ltv")?.complete, true);
   report("f".repeat(40), [], ["accounts/broken.py"]);
   assert.equal(lists.listedAt("cohort-ltv")?.complete, false, "a Python file the analysis could not read may have callers");
+});
+
+// #199: a change that renames or deletes a file reaches the forks whose code names the file.
+test("a removed file reaches the forks that name it, and a path matches only itself", () => {
+  const db = new DatabaseSync(":memory:");
+  const lists = new CallerListStore({
+    exec: (query, ...bindings) => db.prepare(query).all(...(bindings as never[])) as Record<string, string | number | null>[],
+    transaction: (body) => body(),
+  });
+  lists.listed("holiday-closures", CHECKPOINT, 1, ["path:store_dashboard/examples/closures.json"]);
+  lists.listed("weekly-digest", CHECKPOINT, 2, ["path:store_dashboard/examples/closures.json.bak", "store_dashboard.holidays"]);
+  const renamed = changedNames({ changes: [], removedPaths: ["store_dashboard/examples", "store_dashboard/examples/closures.json"] } as unknown as ImpactReport);
+  assert.deepEqual(renamed, ["path:store_dashboard/examples", "path:store_dashboard/examples/closures.json"]);
+  assert.deepEqual(lists.callersOf(renamed), ["holiday-closures"]);
+  assert.deepEqual(lists.callersOf(["path:store_dashboard/examples/stores.json"]), [], "an unrelated file finds nothing");
 });

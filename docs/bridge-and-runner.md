@@ -691,7 +691,13 @@ with `edges: true` also gets `scopeEdges`: for each pair of scopes, the import, 
 sites the consumer scope's files at head hold into the provider scope's modules and definitions. An
 edge names two scope ids and three counts, no path or symbol. A request with `calls: true` gives each
 fork `calls`: every module and definition of its tree its own files use, defined outside them, as
-dotted names; Penguin keeps them as the caller list ([design.md](design.md#caller-list)). A rename or
+dotted names, and every file or folder of its tree, outside those files, that a string constant in
+them names, as `path:<repo path>`. A string names a path from the repository root or from its own
+file's folder, so `open("examples/closures.json")` lists `path:examples/closures.json`. The candidate
+must be a safe repository path and is only looked up among the tree's paths from `git ls-tree`;
+nothing is read for it. The report then also carries `removedPaths`: each file the change renames,
+moves or deletes, each folder it removes and each folder that loses an entry. Penguin keeps the names
+as the caller list ([design.md](design.md#caller-list)). A rename or
 move whose old name still reaches the very definition it moved to, through `old = new` in the module
 or class or through an import of the new definition into the old module, is reported with `kept:
 true`. The old name's callers are still listed. The report comes back on standard output and is checked against `IMPACT_REPORT_SCHEMA` in

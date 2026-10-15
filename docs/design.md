@@ -1311,12 +1311,16 @@ every fork for that costs time for every running feature, so Penguin keeps a cal
    `impact` request of Penguin's own with `search: "calls"`. The check runner reads every waiting
    list in one analysis with `calls: true`, each fork asked with `since` its baseline on main, so a
    file the forks carry unchanged from main is parsed once and each checkpoint costs only the files it
-   changed. The runner reports each request with its own fork's names under `calls`. An incomplete
+   changed. The runner reports each request with its own fork's names under `calls`. The names
+   include `path:<repo path>` for each file or folder a string in the fork's own files names, such as
+   `path:store_dashboard/examples/closures.json` for code that opens that file (#199). An incomplete
    read is reported as an error and keeps no list. A request the analysis cannot answer, such as one
    naming a missing commit, is an error for its own checkpoint only; the batch's other lists are
    reported as usual.
-2. **Store.** The ProjectAgent replaces the feature's rows (`ForkCall`) with the reported names. A
-   report older than the stored one is ignored. A list is complete when nothing was truncated and
+2. **Store.** The ProjectAgent replaces the feature's rows (`ForkCall`) with the reported names. It
+   keeps the names the checkpoint's own change modifies: each changed symbol and its module, and
+   `path:<p>` for each path of the report's `removedPaths`, a file the change renames, moves or
+   deletes or a folder it removes or takes an entry from. A report older than the stored one is ignored. A list is complete when nothing was truncated and
    every changed file the analysis could not read is a file other than Python, such as
    `penguin/scopes.json`. Python code reaches such a file through no name, so the forks it reaches
    are those that change the same file. A Python file the analysis could not read leaves the list
@@ -1324,7 +1328,10 @@ every fork for that costs time for every running feature, so Penguin keeps a cal
    dropped. A report that arrives after that keeps nothing.
 3. **Read.** `callersOf(names)` answers from the rows alone which features use any of the names. A
    name matches itself and every name inside it, so a changed module matches every use of its names,
-   as the impact graph counts a module's uses.
+   as the impact graph counts a module's uses. A path name matches only itself: renaming
+   `store_dashboard/examples/closures.json` reaches the forks whose code names that file, and a
+   renamed folder reaches the forks that name it or any file it held, since each such file is a
+   removed path of its own.
 
 On the 200-person Larder, the list finds exactly the forks that reading every fork's own changes
 finds for case 1's and case 2's changes (`tests/test_fixtures.py`).

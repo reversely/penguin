@@ -109,7 +109,8 @@ export interface ImpactFork {
   readonly errors: readonly ImpactError[];
   /**
    * When the request asked for `calls`: every module and definition of the fork's tree its own files
-   * use, defined outside them, as dotted names such as `accounts.shoppers.ShopperMap.resolve`.
+   * use, defined outside them, as dotted names such as `accounts.shoppers.ShopperMap.resolve`, and
+   * every file or folder outside them that a string in them names, as `path:examples/closures.json`.
    */
   readonly calls?: readonly string[];
 }
@@ -138,6 +139,11 @@ export interface ImpactReport {
   readonly files: { readonly base: number; readonly head: number; readonly parsed: number };
   /** With `edges: true` in the request: every pair of scopes whose code uses the other's in the head tree. */
   readonly scopeEdges?: readonly ImpactScopeEdge[];
+  /**
+   * With `calls: true` in the request: each file the change renames, moves or deletes, each folder it
+   * removes and each folder that loses an entry.
+   */
+  readonly removedPaths?: readonly string[];
 }
 
 /**
@@ -264,7 +270,8 @@ export const IMPACT_REPORT_SCHEMA: JsonSchema = {
         references: { type: "integer", minimum: 0 },
       }),
     ),
-  }, ["scopeEdges"]),
+    removedPaths: list(PATH),
+  }, ["scopeEdges", "removedPaths"]),
 };
 
 /** Where a value breaks IMPACT_REPORT_SCHEMA; empty when it is a valid report. */

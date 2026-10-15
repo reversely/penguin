@@ -19,9 +19,14 @@ of the change itself, so ``base`` equal to ``head`` lists only them.
 The request may add ``"calls": true``: each fork in the report then carries ``calls``, every module,
 class, function, method and module-level value of the fork's tree that the fork's own files import,
 call or reference, defined outside those files, as dotted names such as
-``accounts.shoppers.ShopperMap.resolve``. With ``since`` the own files are those the fork added or
-changed since its merge base with ``since``. Penguin keeps these lists so a later change finds the
-forks that call it without reading every fork again.
+``accounts.shoppers.ShopperMap.resolve``, and every file or folder of the fork's tree outside those
+files that a string constant in them names, as ``path:<repo path>``: ``open("examples/closures.json")``
+lists ``path:examples/closures.json``. A string names a path from the repository root or from its own
+file's folder, and is only looked up among the tree's paths, never read. With ``since`` the own files
+are those the fork added or changed since its merge base with ``since``. The report then also carries
+``removedPaths``: each file the change renames, moves or deletes, each folder it removes and each
+folder that loses an entry. Penguin keeps these lists so a later change finds the forks that call it,
+or read a path it removes, without reading every fork again.
 
 The request may add ``"edges": true``: the report then carries ``scopeEdges``, one entry per pair of
 scopes where a file in the consumer scope's paths imports, calls or references a module or definition
@@ -47,7 +52,7 @@ import re
 import subprocess
 import sys
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
 
 TOOL = "python-impact"
@@ -630,6 +635,7 @@ class Tree:
     definitions: dict[str, tuple[Definition, SourceFile]] = field(default_factory=dict)
     aliases: dict[str, str] = field(default_factory=dict)
     _members: dict[str, list[str]] | None = None
+    _folders: frozenset[str] | None = None
 
     def __post_init__(self) -> None:
         for source in self.files.values():
@@ -710,6 +716,23 @@ class Tree:
 
     def canonical(self, name: str) -> str:
         return self.canonical_chain(name)[-1]
+
+    def folders(self) -> frozenset[str]:
+        """Every folder that holds a regular file of the tree, at any depth."""
+        if self._folders is None:
+            self._folders = folders_of(self.entries)
+        return self._folders
+
+
+def folders_of(paths: Iterable[str]) -> frozenset[str]:
+    """Every folder above a path of ``paths``: ``a/b/c.json`` gives ``a`` and ``a/b``."""
+    folders: set[str] = set()
+    for path in paths:
+        folder = posixpath.dirname(path)
+        while folder and folder not in folders:
+            folders.add(folder)
+            folder = posixpath.dirname(folder)
+    return frozenset(folders)
 
 
 def load_tree(repo: GitRepo, name: str, sha: str, cache: dict, limits: Limits) -> Tree:
@@ -1594,6 +1617,52 @@ def fork_calls(tree: Tree, own: set[str] | None) -> list[str]:
     return sorted(called)
 
 
+MAX_PATH_TEXT = 1_024
+
+
+def named_paths(tree: Tree, source: SourceFile) -> set[str]:
+    """Each file or folder of ``tree`` that a string constant in ``source`` names.
+
+    A string names a path from the repository root or, ``../`` included, from the file's own folder.
+    A candidate must be a safe repository path and is only looked up among the tree's paths, so
+    nothing outside the repository is named or read.
+    """
+    folder = posixpath.dirname(source.path)
+    found = set()
+    for node in ast.walk(source.facts.tree):
+        if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+            continue
+        text = node.value.strip().rstrip("/")
+        if not text or len(text) > MAX_PATH_TEXT or "\n" in text:
+            continue
+        for candidate in {text, posixpath.join(folder, text)}:
+            candidate = posixpath.normpath(candidate)
+            if is_safe_path(candidate) and (
+                candidate in tree.entries or candidate in tree.folders()
+            ):
+                found.add(candidate)
+    return found
+
+
+def fork_paths(tree: Tree, own: set[str] | None) -> list[str]:
+    """Each path outside ``own`` that a string in an own file names, as ``path:<p>``, sorted."""
+    named = set()
+    for path in sorted(tree.files):
+        source = tree.files[path]
+        if source.facts is None or (own is not None and path not in own):
+            continue
+        named.update(named_paths(tree, source))
+    return sorted(f"path:{path}" for path in named if own is None or path not in own)
+
+
+def removed_paths(base: Tree, head: Tree) -> list[str]:
+    """Each file the change renames, moves or deletes, each folder it removes, and each folder that loses an entry."""
+    base_folders, head_folders = folders_of(base.entries), folders_of(head.entries)
+    gone = (base.entries.keys() - head.entries.keys()) | (base_folders - head_folders)
+    losing = {posixpath.dirname(path) for path in gone} - {""}
+    return sorted(gone | losing)
+
+
 def unanalysed_paths(base: Tree, head: Tree) -> list[str]:
     """Changed paths whose effect this analysis cannot see: anything but a parsed, importable module."""
     unanalysed = []
@@ -1694,7 +1763,8 @@ def analyse(
             "errors": _cap(errors, limits, truncated),
         }
         if request.calls:
-            entry["calls"] = _cap(fork_calls(tree, own), limits, truncated)
+            names = fork_calls(tree, own) + fork_paths(tree, own)
+            entry["calls"] = _cap(names, limits, truncated)
         forks.append(entry)
 
     # Uses inside the files that define a changed symbol are the change itself, not its callers.
@@ -1709,6 +1779,11 @@ def analyse(
     errors.sort(key=lambda error: (error["tree"], error["path"], error["kind"]))
     edges = (
         {"scopeEdges": scope_edges(head, limits, truncated)} if request.edges else {}
+    )
+    removed = (
+        {"removedPaths": _cap(removed_paths(base, head), limits, truncated)}
+        if request.calls
+        else {}
     )
     return {
         "schemaVersion": SCHEMA_VERSION,
@@ -1733,6 +1808,7 @@ def analyse(
             "parsed": len(cache),
         },
         **edges,
+        **removed,
     }
 
 

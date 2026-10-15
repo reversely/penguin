@@ -185,6 +185,40 @@ def test_calls_list_the_names_a_forks_own_changes_use(tmp_path: Path) -> None:
     )
 
 
+def test_calls_list_the_paths_a_forks_strings_name_and_a_change_lists_the_paths_it_removes(
+    tmp_path: Path,
+) -> None:
+    """#199: a fork that opens a data file is reached when a change renames that file."""
+    repo, base = new_repo(
+        tmp_path, BASE | {"examples/closures.json": "[]", "examples/stores.json": "[]"}
+    )
+    git(repo, "checkout", "-qb", "feature")
+    fork = commit(
+        repo,
+        {
+            "analytics/holidays.py": 'def closures():\n    return open("examples/closures.json").read()\n',
+            "analytics/report.py": 'TITLE = "examples/missing.json"\n',
+        },
+        "reads a data file",
+    )
+    git(repo, "checkout", "-q", "main")
+    git(repo, "mv", "examples/closures.json", "examples/holiday_closures.json")
+    renamed = commit(repo, {}, "rename the data file")
+    report = run(
+        "python_impact.py",
+        "--repo",
+        repo,
+        {
+            "base": base,
+            "head": renamed,
+            "calls": True,
+            "forks": [{"id": "holidays", "sha": fork, "scopes": [], "since": base}],
+        },
+    )
+    assert report["forks"][0]["calls"] == ["path:examples/closures.json"]
+    assert report["removedPaths"] == ["examples", "examples/closures.json"]
+
+
 def test_a_batch_request_naming_a_missing_commit_fails_alone(tmp_path: Path) -> None:
     """#200: one bad caller list request is an error for its own checkpoint, not the batch's."""
     repo, base = new_repo(tmp_path, BASE)

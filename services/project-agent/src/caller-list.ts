@@ -5,7 +5,8 @@
 //    `impact` request of Penguin's own (`requestCallerList`). The check runner runs
 //    `analysis:python-impact` with `calls: true` on the checkpoint's own changes since main
 //    (tool-run.ts `runCallerList` on the bridge) and reports every module and definition those files
-//    use, as dotted names such as `accounts.shoppers.ShopperMap.resolve`.
+//    use, as dotted names such as `accounts.shoppers.ShopperMap.resolve`, and every file or folder a
+//    string in those files names, as `path:store_dashboard/examples/closures.json` (#199).
 // 2. **Store.** When the runner reports (`callsReported`), CallerListStore replaces the feature's
 //    rows with the reported names and keeps the names the checkpoint's own change modifies, which a
 //    land of the feature looks up with `callersOf`. A report older than the stored one is ignored, so a late report
@@ -14,10 +15,11 @@
 //    The report, kept or not, then schedules the checkpoint's combined runs (combined-run-schedule.ts).
 // 3. **Read.** `callersOf` answers which features call any of a change's names from the rows alone:
 //    a name matches itself and every name inside it, so a changed module matches every use of the
-//    module's names, as the impact graph counts a module's uses.
+//    module's names, as the impact graph counts a module's uses. A path name matches only itself, so
+//    renaming or deleting a data file reaches the forks whose code names it.
 //
 // The work grows with the files a checkpoint changed, never with the number of running features.
-// The rows hold names only; no path, line or code reaches the ProjectAgent.
+// The rows hold names only, repository paths among them; no line or code reaches the ProjectAgent.
 
 import type { ImpactReport } from "@penguin/protocol";
 
@@ -28,6 +30,9 @@ import { PENGUIN_SESSION } from "./retiring-count.ts";
 
 /** The `search` of Penguin's request for a checkpoint's caller list. */
 export const CALLS_SEARCH = "calls";
+
+/** The prefix of a file or folder in a caller list: `path:examples/closures.json`. */
+const PATH_NAME = "path:";
 
 export const CALLER_LIST_SCHEMA: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS ForkCall (
@@ -104,13 +109,17 @@ export class CallerListStore {
   }
 
   /**
-   * The features whose own changes use any of `names`, sorted: a name matches itself and every name
-   * inside it (`accounts.shoppers` matches `accounts.shoppers.ShopperMap.resolve`).
+   * The features whose own changes use any of `names`, sorted: a dotted name matches itself and every
+   * name inside it (`accounts.shoppers` matches `accounts.shoppers.ShopperMap.resolve`). A path name
+   * (`path:examples/closures.json`) matches only itself: a removed file or folder reaches the forks
+   * that name it, and each file a removed folder held is a removed path of its own.
    */
   callersOf(names: readonly string[]): string[] {
     const found = new Set<string>();
     for (const name of new Set(names)) {
-      const rows = this.#db.exec(`SELECT DISTINCT feature_id FROM ForkCall WHERE name = ? OR (name > ? AND name < ?)`, name, `${name}.`, `${name}/`);
+      const rows = name.startsWith(PATH_NAME)
+        ? this.#db.exec(`SELECT DISTINCT feature_id FROM ForkCall WHERE name = ?`, name)
+        : this.#db.exec(`SELECT DISTINCT feature_id FROM ForkCall WHERE name = ? OR (name > ? AND name < ?)`, name, `${name}.`, `${name}/`);
       for (const row of rows) found.add(String(row["feature_id"]));
     }
     return [...found].sort();
@@ -134,9 +143,13 @@ function moduleOf(path: string): string {
   return path.replace(/\.py$/u, "").replace(/\/__init__$/u, "").replaceAll("/", ".");
 }
 
-/** The names a change's callers are reached through: each changed symbol and the module that holds it. */
+/**
+ * The names a change's callers are reached through: each changed symbol and the module that holds
+ * it, and `path:<p>` for each file the change renames, moves or deletes and each folder it removes or
+ * takes an entry from.
+ */
 export function changedNames(impact: ImpactReport): string[] {
-  const names = new Set<string>();
+  const names = new Set<string>((impact.removedPaths ?? []).map((path) => `${PATH_NAME}${path}`));
   for (const change of impact.changes) {
     if (!CALLER_CHANGES.has(change.change)) continue;
     names.add(change.symbol);
