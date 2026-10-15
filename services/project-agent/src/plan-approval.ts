@@ -41,6 +41,7 @@
 
 import {
   partRouting,
+  partWaitsOn,
   policyInForce,
   policyRoute,
   policyRoutePayload,
@@ -814,6 +815,8 @@ export interface OwnPlanPart {
   readonly changeRequest: PlanPart["changeRequest"];
   /** The review policy's rule that sent the part to Penguin or a person, when known. */
   readonly route?: PolicyRoute;
+  /** The person, agent or `penguin` the part waits on; null once approved. */
+  readonly waitsOn?: string | null;
 }
 
 /** What `get_work` reports of advance notice for one session. */
@@ -821,7 +824,7 @@ export interface PlanWork {
   /** The sandbox's review policy in force, when known. */
   readonly policy?: PolicyInForce;
   /** Parts whose current revision waits on the session's developer, each with its policy route when known. */
-  readonly partsNeedingYou: readonly (PartRoute & { readonly route?: PolicyRoute })[];
+  readonly partsNeedingYou: readonly (PartRoute & { readonly route?: PolicyRoute; readonly waitsOn?: string | null })[];
   /** The newest plan of the feature the session works on, with where each part stands. */
   readonly ownPlan: { readonly planId: string; readonly roundLimit: number; readonly parts: readonly OwnPlanPart[] } | null;
   /** The runner's verdicts on the reviews the session submitted. */
@@ -833,13 +836,15 @@ export async function planWork(deps: PlanWorkDeps, person: string, sessionId: st
   const featureId = deps.features.featureOfSession(sessionId);
   const plan = featureId === undefined ? undefined : await deps.keeper(featureId).latestPlan(featureId);
   const plans = new Map<string, Plan | undefined>();
-  const routeOf = async (featureId: string, partId: string): Promise<{ readonly route?: PolicyRoute }> => {
-    if (deps.routeOf === undefined) return {};
+  // Each part names its route and who it waits on, so a part that waits on the originating person
+  // for their change's stored data reaches that person's agent, not its author's (#202).
+  const routeOf = async (featureId: string, partId: string): Promise<{ readonly route?: PolicyRoute; readonly waitsOn?: string | null }> => {
     if (!plans.has(featureId)) plans.set(featureId, await deps.keeper(featureId).latestPlan(featureId));
     const found = plans.get(featureId);
     const part = found?.parts.find((each) => each.partId === partId);
     if (found === undefined || part === undefined) return {};
-    return { route: part.approvalState === "approved" && part.route ? part.route : await deps.routeOf(found, part) };
+    const route = part.approvalState === "approved" && part.route ? part.route : await deps.routeOf?.(found, part);
+    return { ...(route === undefined ? {} : { route }), waitsOn: partWaitsOn(found, part, route) };
   };
   const waiting = deps.routes.waitingOn([person]);
   return {

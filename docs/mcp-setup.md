@@ -210,7 +210,12 @@ answer names it. `report_checkpoint` lists it under `newPlanParts`. `get_work` l
 `planPartsNeedingYou` with the scopes the agent reviews through `submit_review`. Penguin approves the
 part itself once every check is clean, the agent's review included. Otherwise the developer approves
 the part or asks for a change on the dashboard inbox; no tool approves it. Each part in `get_work`'s
-`plan` names its `approvedBy`: the developer, their delegate or `penguin`. A session of the
+`plan` names its `approvedBy`: the developer, their delegate or `penguin`. Each part in `plan` and in
+`planPartsNeedingYou` names under `waitsOn` the person, agent or `penguin` it waits on. A part whose
+one failing condition is Stored data waits on the originating feature's person (routing rule
+`originator`): the change reshapes stored data the part's scope only reads with no migration or
+backfill in the plan. The originating agent adds one to the change and proposes the plan again, or
+that person approves the part on the dashboard inbox. A session of the
 originating feature hears each decision under `planDecisions`. It answers a `change_requested` part
 with `revise_plan_part`. A session that submitted a review hears the check runner's verdict under
 `reviewResults`.
@@ -477,7 +482,8 @@ A session of a feature asks Penguin to move main to the feature's latest checkpo
 
 The answer carries no token: Penguin moves main itself. A refusal names what is missing:
 `behind_main` (merge main into your fork, report the merge with `report_checkpoint` and land again),
-`plan_not_approved`, `protected_path_unconfirmed` (the feature's own change writes a path under
+`plan_not_approved` (the message names each part not approved with its state, who it waits on and
+the review policy's reason), `protected_path_unconfirmed` (the feature's own change writes a path under
 another person's custom path rule, and that person has not confirmed the lines on the dashboard; the
 message names each person with the custom paths), `fix_not_written`, `fix_not_in_block`, `fix_not_in_place`,
 `copy_not_written` (an affected fork does not yet hold your change's current revision of the modules

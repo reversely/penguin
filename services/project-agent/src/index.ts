@@ -3552,6 +3552,8 @@ export class ProjectAgent extends Agent {
       callersPending: async (featureId) => landPending(this.#callerDeps(), featureId),
       // A block targets only the running features its change reaches (#196).
       callerLists: this.#callerListStore(),
+      // A refused land names who each part waits on and why (#202).
+      routeOf: this.#routeOf(repos),
       sign: async (record) => signFeatureRecord(record, (await this.#loadServiceKey()).privateKey),
       notify: (personId) => sendToOwner(this.getConnections<{ owner?: string }>(), personId, inboxChangedMessage()),
     };

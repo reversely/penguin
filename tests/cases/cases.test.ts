@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import {
   BLOCK_CHECK_NAMES,
   PENGUIN_APPROVER,
+  partWaitsOn,
   policyInForce,
   policyRoute,
   PRESET_POLICIES,
@@ -76,6 +77,9 @@ test("case 1, shopper accounts: Sam's parts wait on Priya until the backfill; no
   const [samVerify, samReviewed] = [owned(first, sam).filter((part) => part.kind === "verify"), owned(first, sam).filter((part) => part.kind !== "verify")];
   const samParts = JSON.stringify(owned(first, sam).map((part) => [part.partId, part.kind, part.approvalState, part.approvedBy]));
   assert.ok(samReviewed.length > 0 && samReviewed.every((part) => first.toOriginator.includes(part.partId)), `Sam's parts wait on Priya: ${samParts}`);
+  // The review policy and get_work name Priya as the one they wait on, so Priya's agent hears it adds the backfill (#202).
+  const firstRoute = (part: PlanPart) => policyRoute(policyInForce(undefined, false), first.routings.get(part.partId) as PartRouting);
+  assert.ok(samReviewed.every((part) => firstRoute(part).rule === "originator" && partWaitsOn(first.plan, part, firstRoute(part)) === origin.owner), `Sam's parts name Priya: ${samParts}`);
   assert.ok(samVerify.length > 0 && samVerify.every((part) => part.approvedBy === PENGUIN_APPROVER), `Penguin approves the digest's verify part: ${samParts}`);
   const decided = recordsOf(preview, origin.id, "approve_plan_part").filter((record) => record.payload["plan_id"] === first.plan.planId && record.payload["approved_by"] !== PENGUIN_APPROVER);
   assert.deepEqual(decided, [], "no one decides the plan Priya proposes again");

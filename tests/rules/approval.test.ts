@@ -6,8 +6,9 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
-import { needsPerson, partRouting, routesToOriginator, type PartEvidence, type Plan, type PlanPart } from "@penguin/protocol";
+import { needsPerson, partRouting, partWaitsOn, policyInForce, policyRoute, routesToOriginator, type PartEvidence, type Plan, type PlanPart } from "@penguin/protocol";
 
+import { requestPenguinLand, type LandDeps } from "../../services/project-agent/src/block-land.ts";
 import type { SqlDatabase } from "../../services/project-agent/src/issue-index.ts";
 import { PartTrialStore, queueTrials } from "../../services/project-agent/src/part-trial.ts";
 import type { ReviewStore } from "../../services/project-agent/src/review-submit.ts";
@@ -114,6 +115,27 @@ test("a reader of stored data the originating change reshapes goes to the origin
   const unmarked = partRouting(part(), evidence({ reviews }), noProtection);
   assert.ok(routesToOriginator(unmarked));
   assert.equal(partRouting(part(), evidence({ reviews, storeMarked: true }), noProtection).inPerson, false);
+});
+
+test("a part that waits on the originating person for stored data names that person in the route and in a refused land (#202)", async () => {
+  const reviews = [{ reviewId: 4, scope: "analytics", forkSha: CHECKPOINT, state: "accepted" as const, exceptions: [], notHolding: [], readShapes: [{ symbol: "Profile", path: "ingestion/identity_map.py", scope: "ingestion" }] }];
+  const route = policyRoute(policyInForce(undefined, false), partRouting(part(), evidence({ reviews }), noProtection));
+  assert.equal(route.rule, "originator");
+  const pending = { ...part(), partId: "accounts-merge/v1#4", owner: "jun", approvalState: "pending" } as unknown as PlanPart;
+  const plan = { featureId: "accounts-merge", planId: "accounts-merge/v1", person: "priya", proposedBy: "@priya/accounts-merge", parts: [pending] } as unknown as Plan;
+  assert.equal(partWaitsOn(plan, pending, route), "priya", "the originating person, not the part's owner");
+
+  const land = {
+    features: { get: () => ({ id: "accounts-merge", personId: "priya", repo: "feature-accounts-merge", state: "building", latestCheckpointSha: CHECKPOINT }) },
+    readRepo: async (_repo: string, use: (reader: never) => unknown) => use({ log: async () => [{ hash: "b".repeat(40) }] } as never),
+    baseRepo: "base",
+    branch: "main",
+    agent: () => ({ latestPlan: async () => plan }),
+    routeOf: async () => route,
+  } as unknown as LandDeps;
+  const refused = await requestPenguinLand(land, "accounts-merge", { handle: "@priya/steward", person: "priya", scopes: [], paths: [] });
+  assert.equal(refused.status === "rejected" ? refused.reason : refused.status, "plan_not_approved");
+  assert.match(refused.status === "rejected" ? refused.message : "", /accounts-merge\/v1#4 \(pending\), waits on priya: Stored data needs a migration or backfill in the originating change/u);
 });
 
 test("a part's trial runs on the originating fork's newest revision; the trial of the older revision no longer counts", () => {

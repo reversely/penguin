@@ -19,6 +19,7 @@
 // locks the policy to Production.
 
 import type { PartRouting, PartRoutingReason } from "./plan-approval.ts";
+import type { PlanPartState } from "./plan.ts";
 import type { BlockCheckName } from "./block-check.ts";
 import { ruleWrittenRouting, type RuleWrittenRoute } from "./migration.ts";
 import { PERSON_ID_MAX_LENGTH, PERSON_ID_PATTERN } from "./operation-schema.ts";
@@ -255,9 +256,11 @@ export function blockCheckKind(check: BlockCheckName): ValidationKind {
  * each flagged type is set to Penguin. `set_to_person`: `types` are flagged and set to person.
  * `tests`: its tests have not passed. `awaiting_review`: Penguin waits for a review form a row set to
  * person needs. `every_part`: Production. `admin_mode`: PENGUIN_PLAN_ADMIN_MODE. `reversed`: its
- * owner reversed Penguin's approval of this revision.
+ * owner reversed Penguin's approval of this revision. `originator`: its one failing condition is
+ * stored data the originating change reshapes with no migration or backfill, so it waits on the
+ * originating feature's person, not its author (#132).
  */
-export const POLICY_RULES = ["checks_clean", "set_to_penguin", "set_to_person", "tests", "awaiting_review", "every_part", "admin_mode", "reversed"] as const;
+export const POLICY_RULES = ["checks_clean", "set_to_penguin", "set_to_person", "tests", "awaiting_review", "every_part", "admin_mode", "reversed", "originator"] as const;
 export type PolicyRule = (typeof POLICY_RULES)[number];
 
 export interface PolicyRoute {
@@ -300,6 +303,10 @@ export function policyRoute(inForce: PolicyInForce, routing: PartRouting): Polic
   if (reasons.some((reason) => reason.kind === "reversed")) return route("person", "reversed");
   // A failed test goes back to the agent under every policy: Penguin never approves it.
   if (reasons.some((reason) => reason.kind === "tests")) return route("person", "tests");
+  // The same rule as plan-approval.ts routesToOriginator: the originating person adds the backfill.
+  const failing = reasons.filter((reason) => !isWaitingReason(reason));
+  const storedOnly = failing.length > 0 && failing.every((reason) => reason.kind === "stored_data_unmarked");
+  if (storedOnly && (policy.preset === "production" || policy.rows.stored_data === "person")) return route("person", "originator", ["stored_data"]);
   if (policy.preset === "production") return route("person", "every_part");
   const flagged = typesOf(reasons);
   const toPerson = flagged.filter((type) => policy.rows[type] === "person");
@@ -368,6 +375,31 @@ export function policyRuleText(route: PolicyRoute, owner?: string): string {
       return "Admin mode, every update goes to its worktree owner";
     case "reversed":
       return `${owner ?? "The owner"} reversed Penguin's approval`;
+    case "originator":
+      return "Stored data needs a migration or backfill in the originating change";
+  }
+}
+
+/**
+ * Who a part waits on now, or null once approved: the originating agent for a requested change, the
+ * originating person past the round limit or for the change's stored data, Penguin, or the part's
+ * owner. The dashboard's inbox lists the part for the same person.
+ */
+export function partWaitsOn(
+  plan: { readonly person: string; readonly proposedBy: string },
+  part: { readonly approvalState: PlanPartState; readonly owner: string },
+  route?: PolicyRoute,
+): string | null {
+  switch (part.approvalState) {
+    case "approved":
+      return null;
+    case "change_requested":
+      return plan.proposedBy;
+    case "round_limit":
+      return plan.person;
+    case "pending":
+      if (route?.rule === "originator") return plan.person;
+      return route?.decider === "penguin" ? "penguin" : part.owner;
   }
 }
 

@@ -279,6 +279,7 @@ export interface PlanWorkView {
     readonly place: PlanPlaceView;
     readonly scopes: readonly string[];
     readonly route?: PolicyRoute;
+    readonly waitsOn?: string | null;
   }[];
   readonly ownPlan: {
     readonly planId: string;
@@ -295,6 +296,7 @@ export interface PlanWorkView {
       readonly changeRequests: number;
       readonly changeRequest: { readonly by: string; readonly revision: number; readonly text: string } | null;
       readonly route?: PolicyRoute;
+      readonly waitsOn?: string | null;
     }[];
   } | null;
   readonly reviews: readonly ReviewResultView[];
@@ -1050,7 +1052,10 @@ export function createPenguinMcpServer(
         "it or asks for a change on the dashboard; you never approve. `plan` is your feature's newest merge plan " +
         "with where each part stands: answer each `change_requested` part with revise_plan_part. `reviewPolicy` names the " +
         "sandbox's review policy. Each part's `routing` says who decides it and why, with the kinds of validation " +
-        "(Tests, Logic, Data matching, Stored data, Custom path rules and place, Overlapping starts) whose checks marked it; " +
+        "(Tests, Logic, Data matching, Stored data, Custom path rules and place, Overlapping starts) whose checks marked it, " +
+        "and its `waitsOn` names the person, agent or `penguin` it waits on. A part whose rule is `originator` waits on the " +
+        "originating feature's person, because the change reshapes stored data the part's scope only reads and the plan names " +
+        "no migration or backfill: that person's agent adds one to the change and proposes again, or the person approves the part. " +
         "`approvedVia` says whether Penguin approved it under the policy or a person on the dashboard. `reviewResults` " +
         "gives the check runner's verdict on each review you submitted. `landing` says where your feature's " +
         "landing stands: each block run with its state, the failing checks and one next step per failure, and " +
@@ -1672,12 +1677,13 @@ export function landingFields(landing: LandingWorkView): Record<string, unknown>
 function planWorkFields(work: PlanWorkView): Record<string, unknown> {
   return {
     ...(work.policy === undefined ? {} : { reviewPolicy: { name: policyName(work.policy.policy), preset: work.policy.policy.preset, locked: work.policy.locked } }),
-    planPartsNeedingYou: work.partsNeedingYou.map(({ featureId, partId, revision, place, scopes, route }) => ({
+    planPartsNeedingYou: work.partsNeedingYou.map(({ featureId, partId, revision, place, scopes, route, waitsOn }) => ({
       feature: featureId,
       part: partId,
       revision,
       place: { ...place },
       scopes: [...scopes],
+      ...(waitsOn === undefined ? {} : { waitsOn }),
       ...routingFields(route),
     })),
     plan:
@@ -1686,7 +1692,7 @@ function planWorkFields(work: PlanWorkView): Record<string, unknown> {
         : {
             planId: work.ownPlan.planId,
             roundLimit: work.ownPlan.roundLimit,
-            parts: work.ownPlan.parts.map(({ partId, revision, place, owner, kind, state, approvedBy, changeRequests, changeRequest, route }) => ({
+            parts: work.ownPlan.parts.map(({ partId, revision, place, owner, kind, state, approvedBy, changeRequests, changeRequest, route, waitsOn }) => ({
               part: partId,
               revision,
               place: { ...place },
@@ -1697,6 +1703,7 @@ function planWorkFields(work: PlanWorkView): Record<string, unknown> {
               // Penguin approves on its own under the policy; a person approves only on the dashboard.
               ...(approvedBy === null ? {} : { approvedVia: approvedBy === "penguin" ? "penguin" : "dashboard" }),
               changeRequests,
+              ...(waitsOn === undefined ? {} : { waitsOn }),
               ...routingFields(route, owner),
               personWritten: {
                 changeRequest: changeRequest === null ? null : { by: changeRequest.by, revision: changeRequest.revision, text: changeRequest.text },

@@ -20,6 +20,11 @@ rows. The kinds of validation behind each row are defined in [validation.md](val
 | Custom path rules | Custom path rules and place | The fix touches a path under a scope owner's custom path rule (`custom_paths` in `penguin/scopes.json`) |
 | Place | Custom path rules and place | The fix reaches outside the part's scopes |
 
+A part whose one failing condition is Stored data goes to the originating feature's person, not
+the part's owner, when the Stored data row sends it to a person or the stage is Production. That
+person's agent adds a migration or backfill to the change, or the person approves the part. The
+part's route reads `Stored data needs a migration or backfill in the originating change`.
+
 Tests are no row. A failed test always goes back to the agent. Penguin approves no part whose tests
 have not passed. Overlapping starts are no row either: at every stage Penguin lets an overlapping
 start open, records the overlap and tells the person who owns the running feature.

@@ -1380,6 +1380,9 @@ export class PreviewProject {
       callersPending: async (id) => landPending(this.callerDeps(), id),
       // A block targets only the running features its change reaches (#196).
       callerLists: this.callerLists,
+      // A refused land names who each part waits on and why (#202).
+      routeOf: async (plan, part) =>
+        policyRoute(await this.policyInForce(), routePart(plan, part, this.reviews.list(plan.featureId), this.scopeMap, this.adminMode, trialStanding(this.trials, this.reviews, plan.featureId, part))),
       sign: (record) => this.#sign(record),
       notify: this.#notify,
     };

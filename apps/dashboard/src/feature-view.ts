@@ -68,8 +68,7 @@ export interface RoutedPart {
 export function partRouteText(part: RoutedPart, originator?: string): string {
   const { state, approvedBy, kind } = part;
   // A part sent to a person for stored data alone waits on the originating person, who adds the backfill (#132).
-  const storedOnly = part.route?.rule === "set_to_person" && part.route.types.every((type) => type === "stored_data");
-  const owner = storedOnly && originator !== undefined ? originator : part.owner;
+  const owner = part.route?.rule === "originator" && originator !== undefined ? originator : part.owner;
   const route = part.route ?? null;
   if (state === "approved" && approvedBy === PENGUIN_APPROVER) return route === null ? `Approved by ${PENGUIN_NAME}` : penguinApprovalText(route, kind);
   if (state === "approved" && approvedBy !== null) return `Approved by ${approvedBy} in the dashboard`;

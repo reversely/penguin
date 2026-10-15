@@ -40,8 +40,12 @@ import {
   type BlockRunTarget,
   type CallerReplaySection,
   type CharterView,
+  partWaitsOn,
+  policyRuleText,
   type LadderDecision,
   type Plan,
+  type PlanPart,
+  type PolicyRoute,
   type Promotion,
 } from "@penguin/protocol";
 
@@ -201,6 +205,11 @@ export interface LandDeps {
    * (`reachedTargets`). Absent, every running feature is a target.
    */
   readonly callerLists?: Pick<CallerListStore, "listedAt" | "callersOf">;
+  /**
+   * The review policy's route of a plan part as it stands (plan-approval.ts), so that a refused land
+   * names who each part waits on and why. Absent, a pending part names its owner alone.
+   */
+  readonly routeOf?: (plan: Plan, part: PlanPart) => Promise<PolicyRoute>;
   readonly sign: (record: UnsignedFeatureRecord) => Promise<FeatureRecord>;
   readonly notify: (personId: string) => void;
   readonly now?: () => number;
@@ -398,9 +407,9 @@ async function prepareLand(deps: LandDeps, feature: Feature, checkpoint: unknown
 
   const plan = await deps.agent(feature.id).latestPlan(feature.id);
   const unapproved = plan?.parts.filter((part) => part.approvalState !== "approved") ?? [];
-  if (unapproved.length > 0) {
-    const list = unapproved.map((part) => `${part.partId} (${part.approvalState.replaceAll("_", " ")})`).join(", ");
-    return rejected("plan_not_approved", `every part of plan ${plan?.planId} must be approved before it lands: ${list}`);
+  if (plan !== undefined && unapproved.length > 0) {
+    const list = await Promise.all(unapproved.map((part) => waitLine(deps, plan, part)));
+    return rejected("plan_not_approved", `every part of plan ${plan.planId} must be approved before it lands: ${list.join("; ")}`);
   }
   const unconfirmed = protectedRefusal(deps, feature.id);
   if (unconfirmed !== undefined) return unconfirmed;
@@ -449,6 +458,16 @@ async function prepareLand(deps: LandDeps, feature: Feature, checkpoint: unknown
   const callers = (await deps.callersPending?.(feature.id)) ?? [];
   if (callers.length > 0) return rejected("callers_pending", callersPendingMessage(callers));
   return { feature: feature as Prepared["feature"], plan, mainBefore: main.head, targets, reach };
+}
+
+/**
+ * One part not approved as a refused land names it: `accounts-merge/v1#4 (pending), waits on priya:
+ * Stored data needs a migration or backfill in the originating change`.
+ */
+async function waitLine(deps: Pick<LandDeps, "routeOf">, plan: Plan, part: PlanPart): Promise<string> {
+  const route = part.approvalState === "pending" ? await deps.routeOf?.(plan, part) : undefined;
+  const why = route === undefined ? "" : `: ${policyRuleText(route, part.owner)}`;
+  return `${part.partId} (${part.approvalState.replaceAll("_", " ")}), waits on ${partWaitsOn(plan, part, route)}${why}`;
 }
 
 /** Why a feature may not reach main while caller items wait, naming each. */
