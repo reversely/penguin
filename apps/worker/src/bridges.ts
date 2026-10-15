@@ -93,6 +93,14 @@
  *   signed `block_checked` record and, for a passing land run, moves main itself. The answer names
  *   the promotion's commits and record, never a token.
  *
+ * - POST /owner/identities and POST /owner/starts/approve, bridge token of an owner bridge: create an
+ *   identity, `{ owner, identity, signedAt, signature }`, and approve a waiting start, `{ owner,
+ *   feature, blockedFeature, signedAt, signature }`, for the bridge's own person only. `owner` must be
+ *   the person the token authenticated; `signature` is the bridge's registered key over the route and
+ *   every other field, and `signedAt` is within five minutes of the Worker's clock. The rest is
+ *   checked and answered as the dashboard's POST /api/identities and /api/overlaps/approve do, and the
+ *   ProjectAgent records the same signed records.
+ *
  * No route here, in mcp.ts or in dashboard.ts mints a write token on the base repo: `/tokens` holds
  * every bridge to `read` on it, and only the FeatureAgent mints one, for one promotion.
  *
@@ -134,6 +142,15 @@ import { BLOCK_LIMITS, PART_TRIAL_LIMITS, REVIEW_LIMITS, SEGMENT_PATTERN, TOOL_R
 import type { BlockRunRequest, FixWriteSpec, PlanFactsRequest, RunFailureOutcome } from "@penguin/protocol";
 
 import { bearerToken, isDeployer } from "./auth.ts";
+import {
+  identityAnswer,
+  identityFields,
+  overlapApproval,
+  overlapApproved,
+  readCappedJson,
+  type IdentityWriteOutcome,
+  type OverlapApproveResult,
+} from "./dashboard.ts";
 import { checkpointFields, FEATURE_FORK, fixWriteFields, settledFields, toolResultFields } from "./features.ts";
 import { artifactsErrorCode, huddleRepoId, isValidRepoName } from "./repos.ts";
 import {
@@ -218,6 +235,12 @@ export interface BridgeDirectory {
   claimEditTasks(caller: EditCaller, repos: ProjectRepos): Promise<EditClaim>;
   /** The claiming bridge reports one edit task's run. */
   reportEditTask(caller: EditCaller, taskId: number, body: unknown, repos: ProjectRepos): Promise<EditReportOutcome>;
+  /** True only when `body` is signed for `route` by the registered key of unrevoked bridge `bridgeId`. */
+  verifyBridgeRequest(bridgeId: string, route: string, body: Record<string, unknown>): Promise<boolean>;
+  /** Creates an identity owned by `owner`, as the dashboard's POST /api/identities does. */
+  createIdentityFromDashboard(owner: string, input: unknown, repos: ProjectRepos): Promise<IdentityWriteOutcome>;
+  /** Approves the start of `blockedFeatureId` beside `featureId` as `owner`, as the dashboard's approve does. */
+  approveOverlap(owner: string, featureId: string, blockedFeatureId: string, repos: ProjectRepos): Promise<OverlapApproveResult>;
 }
 
 /** A bridge acting for its person on edit tasks: the person comes from the bridge token, never the request. */
@@ -982,6 +1005,73 @@ async function reportEditTask(request: Request, taskId: number, handlers: Bridge
   return json({ status: "recorded", taskId: task.id, state: task.state, askReason: task.askReason, commit: task.commit }, 200);
 }
 
+/** `penguin-bridge identity create` posts here. */
+export const OWNER_IDENTITY_ROUTE = "/owner/identities";
+/** `penguin-bridge start approve` posts here. */
+export const OWNER_START_APPROVE_ROUTE = "/owner/starts/approve";
+/** How far a person's bridge request's `signedAt` may lie from the Worker's clock. */
+export const OWNER_REQUEST_WINDOW_MS = 5 * 60_000;
+
+/**
+ * Authenticates an owner-role bridge acting for its own owner and checks its signature, or answers
+ * 401, 403 or 4xx. The body names `owner`, which must be the bridge's own, and `signedAt`, within
+ * OWNER_REQUEST_WINDOW_MS of now; `signature` covers the route and every other field with the key the
+ * bridge registered. The body is capped like a dashboard identity's. Returns the remaining fields.
+ */
+async function ownerRequest(
+  request: Request,
+  route: string,
+  handlers: BridgeHandlers,
+): Promise<{ readonly directory: BridgeDirectory; readonly ownerId: string; readonly fields: Record<string, unknown> } | Response> {
+  const token = bearerToken(request);
+  const directory = await handlers.bridges();
+  const bridge = token === undefined ? undefined : await directory.authenticateBridge(token);
+  if (bridge === undefined) return unauthorized();
+  // The role and the owner come from the registry record the token authenticated, never from the request.
+  if (bridge.role !== "owner") {
+    return json({ error: "forbidden", message: `bridge ${bridge.bridgeId} does not hold the owner role` }, 403);
+  }
+  if (request.method !== "POST") return methodNotAllowed("POST");
+  const body = await readCappedJson(request, "the request");
+  if (body instanceof Response) return body;
+  if (typeof body !== "object" || body === null || Array.isArray(body)) return invalid("", "must be a JSON object");
+  const signed = body as Record<string, unknown>;
+  const { owner, signedAt, signature: _signature, ...fields } = signed;
+  if (owner !== bridge.ownerId) {
+    return json({ error: "forbidden", message: `this bridge acts only for ${bridge.ownerId}` }, 403);
+  }
+  const at = typeof signedAt === "string" ? Date.parse(signedAt) : Number.NaN;
+  if (!Number.isFinite(at) || Math.abs(Date.now() - at) > OWNER_REQUEST_WINDOW_MS) {
+    return json({ error: "unauthorized", message: "signedAt must be the time the bridge signed the request, within five minutes" }, 401);
+  }
+  if (!(await directory.verifyBridgeRequest(bridge.bridgeId, route, signed))) {
+    return json({ error: "unauthorized", message: "the signature does not verify with this bridge's registered key" }, 401);
+  }
+  return { directory, ownerId: bridge.ownerId, fields };
+}
+
+/** Creates an identity owned by the bridge's person, with the dashboard's validation and answer. */
+async function createOwnerIdentity(request: Request, handlers: BridgeHandlers): Promise<Response> {
+  const checked = await ownerRequest(request, OWNER_IDENTITY_ROUTE, handlers);
+  if (checked instanceof Response) return checked;
+  const { identity, ...rest } = checked.fields;
+  const extra = Object.keys(rest)[0];
+  if (extra !== undefined) return invalid(extra, "the body takes only owner, identity, signedAt and signature");
+  const input = identityFields(identity);
+  if (input instanceof Response) return input;
+  return identityAnswer(await checked.directory.createIdentityFromDashboard(checked.ownerId, input, handlers.projectRepos), true);
+}
+
+/** Approves a start waiting for the bridge's person, with the dashboard's validation and answer. */
+async function approveOwnerStart(request: Request, handlers: BridgeHandlers): Promise<Response> {
+  const checked = await ownerRequest(request, OWNER_START_APPROVE_ROUTE, handlers);
+  if (checked instanceof Response) return checked;
+  const start = overlapApproval(checked.fields);
+  if (start instanceof Response) return start;
+  const approved = await checked.directory.approveOverlap(checked.ownerId, start.feature, start.blockedFeature, handlers.projectRepos);
+  return overlapApproved(approved.status === "ok" ? { status: "ok", lock: approved.lock } : approved);
+}
+
 function huddleBody(status: "opened" | "existing", huddle: Huddle): Record<string, unknown> {
   const { issueId, triggerCommit, baselineSha, huddleRepo, openedAt } = huddle;
   return { status, issueId, triggerCommit, baselineSha, huddleRepo, openedAt };
@@ -1024,6 +1114,8 @@ export async function handleBridgeRoute(
   if (url.pathname === "/edit-tasks/claim") return claimEditTasks(request, options, handlers);
   const editTaskId = /^\/edit-tasks\/([1-9][0-9]{0,14})$/.exec(url.pathname)?.[1];
   if (editTaskId !== undefined) return reportEditTask(request, Number(editTaskId), handlers);
+  if (url.pathname === OWNER_IDENTITY_ROUTE) return createOwnerIdentity(request, handlers);
+  if (url.pathname === OWNER_START_APPROVE_ROUTE) return approveOwnerStart(request, handlers);
   if (url.pathname === "/blocks/claim") return claimBlocks(request, handlers);
   if (url.pathname === "/runs/failures") return reportRunFailure(request, handlers);
   const blockRun = BLOCK_ROUTE.exec(url.pathname);

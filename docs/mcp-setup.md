@@ -24,8 +24,10 @@ For how the three connection paths fit together (MCP tools, the hook, the inbox)
 | The identity the session works as, such as `@jun/reports` | The owner | The dashboard's Identities page, signed in as that owner |
 | Dashboard sign-in for each owner | The deployer | `PENGUIN_DASHBOARD_OWNERS` in `apps/worker/wrangler.jsonc` maps each GitHub login to an owner id ([deploy.md](deploy.md#dashboard-sign-in)) |
 
-An identity's handle starts with its owner's id, so only Jun can create `@jun/reports`. Jun needs a
-GitHub login in `PENGUIN_DASHBOARD_OWNERS` to sign in and create it.
+An identity's handle starts with its owner's id, so only Jun can create `@jun/reports`. Jun creates
+it on the dashboard, which needs a GitHub login in `PENGUIN_DASHBOARD_OWNERS`, or from Jun's own
+registered bridge with `penguin-bridge identity create`
+([bridge-and-runner.md](bridge-and-runner.md#identities-and-waiting-starts)).
 
 A session registered for an identity receives that identity's assigned issues through `get_work` only
 when the identity has "Auto-accept assignments" checked. Otherwise each assignment waits for the

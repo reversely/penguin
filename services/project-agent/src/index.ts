@@ -3932,6 +3932,11 @@ export class ProjectAgent extends Agent {
     return this.#registry().authenticate(bridgeToken);
   }
 
+  /** True only when `body` is signed for `route` by the registered key of unrevoked bridge `bridgeId`. */
+  verifyBridgeRequest(bridgeId: string, route: string, body: Record<string, unknown>): Promise<boolean> {
+    return this.#registry().verifyRequest(bridgeId, route, body);
+  }
+
   /** Revokes a bridge. Returns false when no unrevoked bridge has that id. */
   revokeBridge(bridgeId: string): boolean {
     return this.#registry().revoke(bridgeId);

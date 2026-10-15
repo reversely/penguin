@@ -174,6 +174,37 @@ With the issues repo unreachable, the operation stays signed and queued in the s
 still exits 0. The next issue command, `penguin-bridge spool drain` or `penguin-bridge spool watch`
 pushes it.
 
+## Identities and waiting starts
+
+A person creates their agent identities and approves a start that waits for them from their own
+bridge, as the dashboard's identities page and Approve start button do (`owner-cli.ts`).
+
+```sh
+penguin-bridge identity create --owner jun --handle @jun/reports --job "Keeps the weekly report right" \
+  --charter-scope analytics --charter-path "analytics/**" [--name <text>] [--auto-accept]
+penguin-bridge start approve --owner jun --feature retention-fix --blocked weekly-users
+```
+
+| Option | Meaning |
+|---|---|
+| `--handle` | `@<owner>/<name>`; the owner part must be the bridge's owner |
+| `--name` | The identity's display name; without it, the name part of the handle |
+| `--job` | The identity's job, as the dashboard form's Job field |
+| `--charter-scope`, `--charter-path` | Repeat for each scope and path of the charter; each scope must be one the owner is DRI of |
+| `--auto-accept` | The identity takes each assignment without the owner accepting it, as the form's Auto-accept assignments |
+| `--feature` | The running feature the start waits beside, or `owner:<person>` for an expand checkpoint's addition |
+| `--blocked` | The feature whose start waits |
+
+Each command makes one request: `POST /owner/identities` or `POST /owner/starts/approve`. The body
+names the owner and the time it was signed, and carries a signature with the owner's bridge key
+(`signing-key:<owner>`) over the route and every other field. The Worker serves only a bridge
+registered with the owner role whose owner is the one the body names, checks the signature against
+the key the bridge registered, and refuses a signature made more than five minutes away from its
+clock. A runner bridge, another owner's bridge or a request for another owner gets 403; a bad or old
+signature gets 401. The input is then checked and answered exactly as the dashboard's
+`POST /api/identities` and `POST /api/overlaps/approve` check and answer it, under the same 256 KiB
+cap, and Penguin records the same signed `approve_overlap` record.
+
 ## Safe checkpoints
 
 ```sh

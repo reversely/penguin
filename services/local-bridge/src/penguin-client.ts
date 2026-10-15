@@ -5,6 +5,8 @@
 import { mkdir, open, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
+import { signBridgeRequest } from "@penguin/issues";
+
 import {
   BLOCK_RUN_PURPOSES,
   checkEditTaskSpec,
@@ -1063,6 +1065,41 @@ export async function reportEditTask(server: string, bridgeToken: string, taskId
   const message = typeof body["message"] === "string" ? `: ${body["message"]}` : "";
   if ([400, 403, 404, 409].includes(status)) throw new RemoteRefusedError(`Penguin refused the report of edit task ${taskId} (HTTP ${status})${message}`);
   throw new RemoteUnavailableError(`Penguin could not take the report of edit task ${taskId} (HTTP ${status})${message}`);
+}
+
+/**
+ * One request a person's bridge signs for its own person (`penguin-bridge identity create` and
+ * `start approve`): `fields` with `owner` and `signedAt`, signed with the owner's bridge key over the
+ * route and every field. Answers the status and body; a 401 throws.
+ */
+export async function sendOwnerRequest(
+  server: string,
+  bridgeToken: string,
+  owner: string,
+  privateKey: CryptoKey,
+  route: string,
+  fields: Record<string, unknown>,
+  fetchImpl: Fetch = fetch,
+): Promise<{ readonly status: number; readonly body: Record<string, unknown> }> {
+  const signed = await signBridgeRequest(route, { ...fields, owner, signedAt: new Date().toISOString() }, privateKey);
+  const origin = checkedOrigin(server, "the Penguin server").origin;
+  let response: Response;
+  try {
+    response = await fetchImpl(`${origin}${route}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${bridgeToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify(signed),
+    });
+  } catch (error) {
+    throw new RemoteUnavailableError(`Penguin at ${origin} is unreachable: ${(error as Error).message}`);
+  }
+  const parsed = (await response.json().catch(() => ({}))) as unknown;
+  const record = typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
+  if (response.status === 401) {
+    const message = typeof record["message"] === "string" ? `: ${record["message"]}` : "; register the bridge again";
+    throw new RemoteRefusedError(`Penguin refused the bridge's credentials${message}`);
+  }
+  return { status: response.status, body: record };
 }
 
 /** One request of a bridge acting for its own person: POST of `body` as JSON. A 401 throws. */

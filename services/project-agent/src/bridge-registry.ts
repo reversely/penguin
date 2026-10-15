@@ -2,7 +2,7 @@
 // owner, role and public signing key, and bridge tokens. Codes and bridge tokens are stored only as
 // SHA-256 hashes; their plaintext leaves this module once, in the call that made it.
 
-import { importPublicKey, toBase64Url, type BridgeKey } from "@penguin/issues";
+import { importPublicKey, toBase64Url, verifyBridgeRequest, type BridgeKey } from "@penguin/issues";
 
 import type { SqlDatabase, SqlValue } from "./issue-index.ts";
 
@@ -159,6 +159,17 @@ export class BridgeRegistry {
       bridgeId,
     );
     return rows.length > 0;
+  }
+
+  /**
+   * True only when `body` carries a signature over `route` and the rest of the body by the registered
+   * key of unrevoked bridge `bridgeId` (`verifyBridgeRequest` in @penguin/issues).
+   */
+  async verifyRequest(bridgeId: string, route: string, body: Record<string, unknown>): Promise<boolean> {
+    const [row] = this.#db.exec(`SELECT public_key FROM Bridge WHERE id = ? AND revoked_at IS NULL`, bridgeId);
+    if (row === undefined) return false;
+    const publicKey = await importPublicKey(JSON.parse(String(row["public_key"])) as JsonWebKey);
+    return verifyBridgeRequest(route, body, publicKey);
   }
 
   /** The signing keys of every unrevoked bridge, for operation validation. */

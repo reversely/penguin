@@ -21,13 +21,16 @@ export {
 
 export { canonicalBytes, canonicalJson } from "./canonical.ts";
 export {
+  bridgeRequestBytes,
   fromBase64Url,
   generateSigningKeyPair,
   importPrivateKey,
   importPublicKey,
+  signBridgeRequest,
   signOperation,
   signingBytes,
   toBase64Url,
+  verifyBridgeRequest,
   verifyOperation,
 } from "./signature.ts";
 export {

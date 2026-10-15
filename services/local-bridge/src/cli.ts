@@ -15,6 +15,7 @@ import { isPenguinRemote, penguinRemote } from "./git-remote.ts";
 import { FIX_WRITE_USAGE, runFixWriteCommand } from "./fix-write-cli.ts";
 import { PREVIEW_USAGE, runPreviewCommand } from "./preview-cli.ts";
 import { IMPACT_USAGE, runImpactCommand } from "./impact-cli.ts";
+import { OWNER_USAGE, runOwnerCommand } from "./owner-cli.ts";
 import { ISSUE_USAGE, runIssueCommand, runKeyCommand } from "./issue-cli.ts";
 import { KeychainStore, type KeyStore } from "./key-store.ts";
 import { bridgeRemotes, registerBridge, type Fetch } from "./penguin-client.ts";
@@ -75,6 +76,7 @@ export async function runCli(argv: readonly string[], io: CliIo, deps: CliDepend
   if (command === "worktree-id") return runWorktreeIdCommand(rest, io);
   if (command === "consent") return runConsentCommand(rest, io, stateDir);
   if (command === "edits") return runEditsCommand(rest, io, keyStore, stateDir, deps.fetch);
+  if (command === "identity" || command === "start") return runOwnerCommand(command, rest, io, keyStore, stateDir, deps.fetch);
   if (command === "impact") return runImpactCommand(rest, io);
   if (command === "review") return runReviewCommand(rest, io);
   if (command === "check") return runCheckCommand(rest, io);
@@ -87,6 +89,7 @@ export async function runCli(argv: readonly string[], io: CliIo, deps: CliDepend
       USAGE +
         CONSENT_USAGE +
         ISSUE_USAGE +
+        OWNER_USAGE +
         SPOOL_USAGE +
         RUNNER_USAGE +
         EDITS_USAGE +

@@ -432,22 +432,30 @@ async function markInboxRead(
  * The largest identity request body: every text field at its cap plus a 64 KiB avatar in base64 fits
  * well under it, and a larger body is refused before it is parsed.
  */
-const MAX_IDENTITY_BODY_BYTES = 256 * 1024;
+export const MAX_IDENTITY_BODY_BYTES = 256 * 1024;
+
+/** A request body of at most MAX_IDENTITY_BODY_BYTES parsed as JSON, or a 4xx answer naming `what`. */
+export async function readCappedJson(request: Request, what: string): Promise<unknown> {
+  const tooLarge = () => json({ error: "invalid request", message: `${what} is too large` }, 413);
+  if (Number(request.headers.get("Content-Length") ?? 0) > MAX_IDENTITY_BODY_BYTES) return tooLarge();
+  const text = await request.text();
+  if (text.length > MAX_IDENTITY_BODY_BYTES) return tooLarge();
+  try {
+    return JSON.parse(text);
+  } catch {
+    return json({ error: "invalid request", message: `${what} must be a JSON object` }, 400);
+  }
+}
 
 /** An identity request's JSON object with its avatar's base64 decoded to bytes, or a 4xx answer. */
 async function readIdentityBody(request: Request): Promise<Record<string, unknown> | Response> {
-  const invalid = (message: string, status = 400) => json({ error: "invalid request", message }, status);
-  if (Number(request.headers.get("Content-Length") ?? 0) > MAX_IDENTITY_BODY_BYTES) {
-    return invalid("the identity is too large", 413);
-  }
-  const text = await request.text();
-  if (text.length > MAX_IDENTITY_BODY_BYTES) return invalid("the identity is too large", 413);
-  let body: unknown;
-  try {
-    body = JSON.parse(text);
-  } catch {
-    return invalid("the identity must be a JSON object");
-  }
+  const body = await readCappedJson(request, "the identity");
+  return body instanceof Response ? body : identityFields(body);
+}
+
+/** An identity as a JSON object with its avatar's base64 decoded to bytes, or a 400 answer. */
+export function identityFields(body: unknown): Record<string, unknown> | Response {
+  const invalid = (message: string) => json({ error: "invalid request", message }, 400);
   if (typeof body !== "object" || body === null || Array.isArray(body)) return invalid("the identity must be a JSON object");
   const fields = body as Record<string, unknown>;
   const avatar = fields["avatar"];
@@ -466,7 +474,7 @@ function fromBase64(text: string): Uint8Array | undefined {
   }
 }
 
-function identityAnswer(outcome: IdentityWriteOutcome, created = false): Response {
+export function identityAnswer(outcome: IdentityWriteOutcome, created = false): Response {
   if (outcome.status === "ok") return json(outcome, created ? 201 : 200);
   const status = { forbidden: 403, not_found: 404, invalid: 422, handle_taken: 422 }[outcome.reason] ?? 422;
   return json(outcome, status);
@@ -597,6 +605,13 @@ async function overlapRoute(request: Request, url: URL, session: DashboardSessio
   }
   const body = await readJsonObject(request);
   if (body === undefined) return json({ error: "invalid request", message: "the body must be a JSON object" }, 400);
+  const start = overlapApproval(body);
+  if (start instanceof Response) return start;
+  return overlapApproved(await (await handlers.dashboard()).approveOverlap(session.owner, start.feature, start.blockedFeature));
+}
+
+/** The start an approval names, `{ feature, blockedFeature }` and no other field, or a 400 answer. */
+export function overlapApproval(body: Record<string, unknown>): { readonly feature: string; readonly blockedFeature: string } | Response {
   const { feature, blockedFeature, ...rest } = body;
   if (Object.keys(rest).length > 0) {
     return json({ error: "invalid", message: "the body takes only feature and blockedFeature; the approver is the signed-in person" }, 400);
@@ -604,7 +619,10 @@ async function overlapRoute(request: Request, url: URL, session: DashboardSessio
   if (!(isFeatureId(feature) || isOwnerLockId(feature)) || !isFeatureId(blockedFeature)) {
     return json({ error: "invalid", message: "feature must be a feature id or owner:<person>, and blockedFeature a feature id" }, 400);
   }
-  const approved = await (await handlers.dashboard()).approveOverlap(session.owner, feature, blockedFeature);
+  return { feature, blockedFeature };
+}
+
+export function overlapApproved(approved: OverlapApproveResult): Response {
   return json(approved, approved.status === "ok" ? 200 : (FEATURE_REJECTION_STATUS[approved.reason] ?? 422));
 }
 
