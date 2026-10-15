@@ -1,17 +1,33 @@
 // Rule fixes for broken callers (#209): the originating agent states a rewrite
 // rule without reading the receiving fork, the receiving agent approves it, and Penguin's check runner
 // rewrites the matching call sites with the copied modules in one write on that fork alone. A rule that
-// rewrites nothing comes back to the originating agent.
+// rewrites nothing comes back to the originating agent. Under caller sudo (#222) Penguin approves the
+// rule at once and the receiving agent's review is recorded after the write.
 
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
-import { CALLER_REPLAY_COMMAND_ID, CALLER_REPLAY_SCHEMA_VERSION, CALLER_REPLAY_TOOL, checkFixWriteSpec, type CallerReplaySection, type CallerVerdict, type Plan, type PlanPart } from "@penguin/protocol";
+import { CALLER_REPLAY_COMMAND_ID, CALLER_REPLAY_SCHEMA_VERSION, CALLER_REPLAY_TOOL, callerApprovalLabel, callerItemView, checkFixWriteSpec, type CallerReplaySection, type CallerVerdict, type Plan, type PlanPart } from "@penguin/protocol";
 import { parseScopeMap, parseTeams } from "@penguin/scope-map";
 
-import { callerAction, CallerIndexStore, CallerItemStore, landPending, replayReported, ruleItems, rulesUnmatched, rulesWritten, writeWaits, type CallerActionDeps, type CallerCall } from "../../services/project-agent/src/caller-items.ts";
+import {
+  callerAction,
+  callerForkGrant,
+  CallerIndexStore,
+  CallerItemStore,
+  callerWork,
+  landPending,
+  ownerCallerItems,
+  replayReported,
+  ruleItems,
+  rulesUnmatched,
+  rulesWritten,
+  writeWaits,
+  type CallerActionDeps,
+  type CallerCall,
+} from "../../services/project-agent/src/caller-items.ts";
 import { FeatureStore, signFeatureRecord } from "../../services/project-agent/src/feature-store.ts";
 import { claimRunnerWrites, copiesBehind, FixGrantStore, openFixWrite, openRuleWrite, runnerFixReport, type FixWriteDeps, type ForkReader } from "../../services/project-agent/src/fix-write.ts";
 import type { SqlDatabase } from "../../services/project-agent/src/issue-index.ts";
@@ -143,7 +159,7 @@ function brokenCaller(): CallerVerdict {
  * resolve in analytics/retention.py, which Priya's agent cannot read. The plan has one approved verify
  * part on cohort-ltv, whose copy write waits on the broken item.
  */
-async function world() {
+async function world(sudo = false) {
   const keys = (await crypto.subtle.generateKey("Ed25519", true, ["sign", "verify"])) as CryptoKeyPair;
   const sql = memorySql();
   const features = new FeatureStore(sql, () => Date.parse("2026-10-14T09:00:00Z"));
@@ -186,6 +202,7 @@ async function world() {
     plan: async () => plan,
     testStanding: async (_item, tests) => new Map(tests.map((each) => [each, "main" as const])),
     ruleApproved: async (item) => void openRuleWrite(grants, plan, item.feature),
+    callerSudo: () => sudo,
   };
   const deps: FixWriteDeps = {
     features,
@@ -226,7 +243,7 @@ async function world() {
   };
   await replayReported(callerDeps, "accounts-merge", section, { kind: "check", id: "1", checkpoint });
   const as = (feature: string) => (call: CallerCall) => callerAction(callerDeps, people[feature] as string, `session-${feature}`, call);
-  return { origin, fork, grants, deps, callerDeps, plan, priya: as("accounts-merge"), jun: as("cohort-ltv"), item: () => items.callerItems("accounts-merge")[0]! };
+  return { origin, fork, grants, deps, callerDeps, plan, features, priya: as("accounts-merge"), jun: as("cohort-ltv"), item: () => items.callerItems("accounts-merge")[0]!, items: () => items.callerItems("accounts-merge") };
 }
 
 /** Priya states the rule and Jun approves it, citing the replayed call. */
@@ -309,4 +326,80 @@ test("a rule that rewrites nothing is refused: no write, and the item goes back 
   // The agent states another rule, its next revision.
   const again = await w.priya({ action: "propose_fix", item: back.itemId, rule: { ...RULE, replacement: "$counts[$map.resolve($event)]" } });
   assert.equal(again.status === "ok" ? again.item.fix?.revision : again.status, 2);
+});
+
+
+/** The runner writes the one claimed rule write into Jun's fork with the copy, as the first test does. */
+async function runnerWrites(w: Awaited<ReturnType<typeof world>>) {
+  const [write] = claimed(await claimRunnerWrites(w.deps, RUNNER));
+  assert.ok(write !== undefined, "the runner claims the rule write");
+  const copied = (await readFileText(w.origin, (await w.origin.readCommit(write.spec.copy!.source))!.treeHash, "accounts/shoppers.py"))!;
+  const commit = w.fork.commit({ "accounts/shoppers.py": copied, "analytics/retention.py": RETENTION_FIXED, "analytics/other.py": "x = 1\n" }, [write.spec.parent], write.spec.message);
+  const kept = await runnerFixReport(w.deps, RUNNER, write.spec.writeId, { commit });
+  assert.equal(kept.status, "ok", JSON.stringify(kept));
+}
+
+const view = (item: Parameters<typeof callerItemView>[0]) => callerItemView(item, { origin: "priya", feature: "jun" });
+const JUN_REVIEW = { calls: [{ call: CALL, verdict: "approve", evidence: CALL }] } as const;
+
+test("caller sudo: Penguin approves the rule at once, the runner writes it before Jun reviews, then Jun's approval shows on the card", async () => {
+  const w = await world(true);
+  const item = w.item().itemId;
+  const proposed = await w.priya({ action: "propose_fix", item, rule: RULE });
+  assert.equal(proposed.status, "ok", JSON.stringify(proposed));
+  assert.equal(proposed.status === "ok" ? proposed.recordIds.length : 0, 2, "the proposal and Penguin's approval");
+  assert.equal(w.item().state, "fix_approved");
+  const [approval] = w.features.records("accounts-merge").slice(-1).map((stored) => JSON.parse(stored.file));
+  assert.deepEqual([approval.type, approval.author, approval.payload.action, approval.payload.reason], ["caller_item", { penguin: true }, "sudo_approve", "caller_sudo"], "signed as Penguin with reason caller_sudo");
+
+  // Jun is told and Jun's agent gets review_caller as its turn; nothing waits on either.
+  const told = await ownerCallerItems(w.callerDeps, "jun", new Map());
+  assert.deepEqual(told.map((each) => [each.itemId, each.ask]), [[item, "told"]]);
+  const juns = await callerWork(w.callerDeps, "jun", "session-cohort-ltv");
+  assert.deepEqual(juns?.receiving.map((each) => each.yourTurn), [{ tools: ["review_caller"] }]);
+  assert.equal(juns?.receiving[0]?.waitingOn, "nobody");
+
+  await runnerWrites(w);
+  assert.equal(w.item().state, "written");
+  assert.deepEqual(await landPending(w.callerDeps, "accounts-merge"), [], "the land waits on no review");
+  assert.equal(callerApprovalLabel(view(w.item())), "Approved by Penguin (caller sudo)");
+
+  const reviewed = await w.jun({ action: "review", item, verdict: "approve", ...JUN_REVIEW });
+  assert.equal(reviewed.status, "ok", JSON.stringify(reviewed));
+  assert.equal(w.item().state, "written", "the review leaves the written fix where it stands");
+  assert.equal(callerApprovalLabel(view(w.item())), "Approved by @jun/cohort-ltv");
+  const again = await w.jun({ action: "review", item, verdict: "approve", ...JUN_REVIEW });
+  assert.equal(statusOf(again), "conflict", "one review per approval");
+});
+
+test("caller sudo: Jun's request for changes opens a follow-up item for Priya and keeps the written fix", async () => {
+  const w = await world(true);
+  const item = w.item().itemId;
+  await w.priya({ action: "propose_fix", item, rule: RULE });
+  await runnerWrites(w);
+  const asked = await w.jun({ action: "review", item, verdict: "request_changes", text: "count by account id", calls: [{ call: CALL, verdict: "request_changes", evidence: CALL }] });
+  assert.equal(asked.status, "ok", JSON.stringify(asked));
+  const [original, followUp] = [w.items().find((each) => each.itemId === item)!, w.items().find((each) => each.itemId !== item)!];
+  assert.equal(original.state, "written", "the written fix stands");
+  assert.equal(original.review?.verdict, "request_changes");
+  assert.equal(callerApprovalLabel(view(original)), "Approved by Penguin (caller sudo)");
+  assert.deepEqual([followUp.state, followUp.followUp, followUp.feature, followUp.contract, followUp.review?.text], ["fix_rejected", item, "cohort-ltv", CONTRACT, "count by account id"]);
+  const priyas = await callerWork(w.callerDeps, "priya", "session-accounts-merge");
+  assert.deepEqual(priyas?.originating.find((each) => each.item === followUp.itemId)?.yourTurn, { tools: ["propose_caller_fix"] });
+});
+
+test("caller sudo: the originating agent gets a read grant on that item's fork alone; Jun's agent and sudo off get none", async () => {
+  const on = await world(true);
+  const item = on.item().itemId;
+  const grant = await callerForkGrant(on.callerDeps, "priya", "session-accounts-merge", item);
+  assert.deepEqual(grant, { status: "ok", featureId: "cohort-ltv", repo: "feature-cohort-ltv" });
+  assert.equal(statusOf(await callerForkGrant(on.callerDeps, "jun", "session-cohort-ltv", item)), "forbidden", "only the originating feature's agent");
+  assert.equal(statusOf(await callerForkGrant(on.callerDeps, "priya", "session-accounts-merge", `caller-${"0".repeat(16)}`)), "not_found");
+  assert.equal(statusOf(await callerForkGrant(on.callerDeps, "priya", "session-accounts-merge", "../feature-main")), "invalid");
+
+  const off = await world(false);
+  assert.equal(statusOf(await callerForkGrant(off.callerDeps, "priya", "session-accounts-merge", off.item().itemId)), "forbidden");
+  const proposed = await off.priya({ action: "propose_fix", item: off.item().itemId, rule: RULE });
+  assert.equal(proposed.status === "ok" ? proposed.item.state : proposed.status, "fix_proposed", "with sudo off the fix waits on Jun's agent");
+  assert.equal(callerApprovalLabel(view(off.item())), null);
 });

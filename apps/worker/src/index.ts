@@ -1,6 +1,6 @@
 import { getAgentByName, routeAgentRequest } from "agents";
 import { serveMcp, serveReviewTaskMcp } from "@penguin/mcp";
-import { LIVE_OWNER_HEADER, type BlockProjectPort, type InboxReason } from "@penguin/project-agent";
+import { LIVE_OWNER_HEADER, parseAdminMode, type BlockProjectPort, type InboxReason } from "@penguin/project-agent";
 import { featureOfBlockRun, parseEditRunMinutes } from "@penguin/protocol";
 
 import type { BlockReportAnswer } from "./bridges.ts";
@@ -42,6 +42,8 @@ type WorkerEnv = Env & {
   PENGUIN_FIX_TOKEN_TTL_MINUTES?: string;
   /** Minutes an edit task's background run holds its task and its token; 20 when unset. */
   PENGUIN_EDIT_RUN_MINUTES?: string;
+  /** Caller sudo (#222): on unless unset, empty or `off`; set by the deployer only. */
+  PENGUIN_CALLER_SUDO?: string;
 };
 
 /** PENGUIN_EDIT_RUN_MINUTES in seconds: the lifetime of an edit task's token, as long as its claim holds. */
@@ -56,6 +58,7 @@ function featurePorts(env: WorkerEnv, names: RepoNames): FeaturePorts {
     directory: () => getAgentByName(env.ProjectAgent, projectAgentName(names)),
     fork: (featureId, options) => forkFeatureRepo(env.ARTIFACTS, featureId, names, options),
     mintWrite: (repo, ttl) => mintRepoToken(env.ARTIFACTS, repo, "write", ttl),
+    mintRead: (repo, ttl) => mintRepoToken(env.ARTIFACTS, repo, "read", ttl),
     repos: { issues: names.issues, base: names.base },
     config: {
       forkOptions: parseFeatureForkOptions(env.PENGUIN_FEATURE_FORK_DEFAULT_BRANCH_ONLY),
@@ -222,6 +225,7 @@ export default {
             () => getAgentByName(env.ProjectAgent, projectAgentName(names)),
             { issues: names.issues, base: names.base, ownerFork: names.owner(owner) },
             mcpFeatures(features, owner),
+            { callerSudo: parseAdminMode(env.PENGUIN_CALLER_SUDO) },
           ),
         // A task token reaches the review tools alone, bound to its task (#138).
         serveReviewTaskMcp: (mcpRequest, owner, taskId) => serveReviewTaskMcp(mcpRequest, mcpReviewTask(features, owner, taskId)),

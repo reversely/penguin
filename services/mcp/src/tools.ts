@@ -437,6 +437,8 @@ export interface McpFeatures {
   fixToken(sessionId: string, input: FixPart): Promise<FeatureCallResult>;
   /** Reports the commit the originating agent pushed for a granted write. */
   reportFixWrite(sessionId: string, input: FixPart & { readonly commit: string }): Promise<FeatureCallResult>;
+  /** A short-lived read-only token on the receiving fork of a caller item the session's feature originates (#222). */
+  callerReadToken?(sessionId: string, item: string): Promise<FeatureCallResult>;
   /** Asks to land the feature the session works on (PRD 0.4 section 4.5). */
   land(
     sessionId: string,
@@ -464,6 +466,12 @@ export interface PartRevision {
   readonly diff?: { readonly commit: string; readonly base?: string | undefined } | undefined;
   readonly patch?: { readonly base: string; readonly diff: string } | undefined;
   readonly note?: string | undefined;
+}
+
+/** The Worker settings the served tools and instructions depend on. */
+export interface McpSettings {
+  /** PENGUIN_CALLER_SUDO (#222): Penguin approves every proposed caller fix at once. */
+  readonly callerSudo?: boolean;
 }
 
 /** The project's repos as the Worker names them for one request's owner. */
@@ -986,6 +994,7 @@ const confirmCallerInput = z.strictObject({
     .regex(/^replay-[0-9a-f]{20}$/u)
     .describe("The replay run you read, from the packet's `runs`; every call through your call sites matched in it."),
 });
+const callerReadTokenInput = z.strictObject({ sessionId, item: callerItem });
 const proposeCallerFixInput = z.strictObject({
   sessionId,
   item: callerItem,
@@ -1086,6 +1095,18 @@ export const INSTRUCTIONS =
   "for a broken call site in another branch state a rule with propose_caller_fix. " +
   "(5) Keep messages to your person to a few sentences: what Penguin found and what you did.";
 
+/** What the instructions add while the deployer has PENGUIN_CALLER_SUDO on (#222). */
+export const CALLER_SUDO_INSTRUCTIONS =
+  " Caller sudo is on: Penguin approves each fix you propose with propose_caller_fix at once. Its check runner " +
+  "writes the fix into the receiving worktree without waiting for that worktree's agent. That agent still reviews it with " +
+  "review_caller; a request for changes opens a new caller item for you. To read the lines you fix, call " +
+  "caller_read_token for a read-only token on the receiving worktree's fork.";
+
+/** The server's instructions under `settings`. */
+export function instructionsFor(settings: McpSettings): string {
+  return settings.callerSudo === true ? INSTRUCTIONS + CALLER_SUDO_INSTRUCTIONS : INSTRUCTIONS;
+}
+
 export function result(value: Record<string, unknown>): CallToolResult {
   return { content: [{ type: "text", text: JSON.stringify(value) }], structuredContent: value };
 }
@@ -1105,8 +1126,9 @@ export function createPenguinMcpServer(
   project: McpProject,
   repos: McpRepos,
   features?: McpFeatures,
+  settings: McpSettings = {},
 ): McpServer {
-  const server = new McpServer({ name: "penguin", version: "0.0.0" }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: "penguin", version: "0.0.0" }, { instructions: instructionsFor(settings) });
 
   server.registerTool(
     "register_session",
@@ -1362,10 +1384,28 @@ export function createPenguinMcpServer(
   );
 
   if (features !== undefined) registerFeatureTools(server, features);
+  if (features?.callerReadToken !== undefined && settings.callerSudo === true) registerCallerReadToken(server, features.callerReadToken.bind(features));
   return server;
 }
 
 const FEATURE_FORK = new RegExp(`^(?:penguin:)?feature-(${SEGMENT_PATTERN})$`, "u");
+
+/** `caller_read_token`, served only while caller sudo is on; the ProjectAgent checks the setting again (#222). */
+function registerCallerReadToken(server: McpServer, token: NonNullable<McpFeatures["callerReadToken"]>): void {
+  server.registerTool(
+    "caller_read_token",
+    {
+      title: "Caller read token",
+      description:
+        "While caller sudo is on: a short-lived read-only token on the receiving worktree's fork of a caller item your " +
+        "feature's change opened, so you can read the lines your fix changes there. Only the originating feature's agent " +
+        "session gets it, for that item's fork alone. You never push with it: propose the fix with propose_caller_fix.",
+      inputSchema: callerReadTokenInput,
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async ({ sessionId: id, item }) => answer(await token(id, item)),
+  );
+}
 
 export function answer(outcome: FeatureCallResult): CallToolResult {
   return outcome.status === "rejected" ? rejected(outcome) : result({ ...outcome.value });
@@ -2240,7 +2280,9 @@ function registerCallerTools(server: McpServer, owner: string, project: McpProje
         "(the call's test or one of the call site's tests) or the call's id. Penguin refuses a call left out, evidence the " +
         "replay did not run and a test the originating change added or edited or that was not on main before it. " +
         "Approving a fix lets Penguin's check runner write it into your fork; you do not edit it in. Asking for changes " +
-        "sends it back. A second rejection sends the item to your developer, the worktree owner.",
+        "sends it back. A second rejection sends the item to your developer, the worktree owner. While caller sudo is on, Penguin " +
+        "has already approved the fix (`fix_approved` or `written`): your review is recorded on the item. Asking for changes " +
+        "opens a new item for the originating agent while the written fix stays.",
       inputSchema: reviewCallerInput,
       annotations: write,
     },

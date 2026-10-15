@@ -33,6 +33,11 @@
   // set to "on" makes a person approve every part instead. Unset or "off" leaves it off; any other
   // value counts as on.
   //
+  // PENGUIN_CALLER_SUDO set to "on" makes Penguin approve every caller fix an originating agent
+  // proposes, signed with reason caller_sudo, so the check runner writes it without waiting for the
+  // receiving worktree's agent; that agent still reviews it. It also serves caller_read_token. Unset,
+  // empty or "off" leaves it off; any other value counts as on. Only the deployer sets it.
+  //
   // An author may ask for PENGUIN_PLAN_ROUND_LIMIT changes to one plan part; the next request sends
   // the part to the originating feature's person (PRD 0.4 section 7). Unset means the PRD's default
   // of 3; any value other than a positive whole number refuses every requested change as misconfigured.
@@ -52,6 +57,7 @@
   "vars": {
     "GITHUB_OAUTH_CLIENT_ID": "Ov23liQdtDavAZ3IhIVQ",
     "PENGUIN_BACKGROUND_RUN_CAP": "2",
+    "PENGUIN_CALLER_SUDO": "off",
     "PENGUIN_DASHBOARD_OWNERS": "reversely:priya",
     "PENGUIN_EDIT_RUN_MINUTES": "20",
     "PENGUIN_FEATURE_FORK_DEFAULT_BRANCH_ONLY": "true",

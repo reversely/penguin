@@ -134,6 +134,7 @@ import { releaseRun, reportRunFailure, RunFailureStore, type RunFailure, type Ru
 import type { PlanKeeper } from "./plan-store.ts";
 import {
   callerAction,
+  callerForkGrant,
   CallerIndexStore,
   callerPacket,
   callerWork,
@@ -487,6 +488,7 @@ export {
   CALLER_INDEX_SCHEMA,
   CALLER_ITEM_STORE_SCHEMA,
   callerAction,
+  callerForkGrant,
   CallerIndexStore,
   callerItemId,
   CallerItemStore,
@@ -983,6 +985,8 @@ interface ProjectAgentEnv {
   readonly PENGUIN_PLAN_BREAK_LIMIT?: string;
   /** `on` makes a person approve every plan part, so Penguin approves none (PRD 4.3 step 5). Off when unset. */
   readonly PENGUIN_PLAN_ADMIN_MODE?: string;
+  /** `on` makes Penguin approve every caller fix an originating agent proposes (#222). Off when unset, empty or `off`. */
+  readonly PENGUIN_CALLER_SUDO?: string;
   /** The changes an author may ask for on one plan part. Defaults to PLAN_ROUND_LIMIT_DEFAULT (PRD 7). */
   readonly PENGUIN_PLAN_ROUND_LIMIT?: string;
   /** Failures of one claimed run before Penguin stops handing it out. Defaults to RUN_FAILURE_LIMIT_DEFAULT. */
@@ -3192,6 +3196,8 @@ export class ProjectAgent extends Agent {
       sign: async (record) => signFeatureRecord(record, (await this.#loadServiceKey()).privateKey),
       stage: async () => (await this.#policyInForce()).policy.preset,
       notify: (personId) => sendToOwner(this.getConnections<{ owner?: string }>(), personId, inboxChangedMessage()),
+      // Read from the Worker's settings on every call: no agent or dashboard route can change it (#222).
+      callerSudo: () => parseAdminMode((this.env as unknown as ProjectAgentEnv).PENGUIN_CALLER_SUDO),
       // The receiving side approved a rule fix: the runner's one write into its fork opens (#209).
       ruleApproved: async (item) => {
         const plan = await this.#planKeeper(item.origin).latestPlan(item.origin);
@@ -3237,6 +3243,14 @@ export class ProjectAgent extends Agent {
    */
   callerItemCall(caller: string, sessionId: string, call: CallerCall, repos: Pick<ProjectRepos, "base">): Promise<CallerOutcome> {
     return this.#sessionCall(caller, sessionId, () => this.#featuresChanging(this.#planStep(() => callerAction(this.#callerActionDeps(repos), caller, sessionId, call))));
+  }
+
+  /**
+   * `caller_read_token` (#222): while PENGUIN_CALLER_SUDO is on, the receiving fork of a caller item the
+   * session's feature originates, for the Worker to mint a read-only token on.
+   */
+  callerForkGrant(caller: string, sessionId: string, itemId: string): Promise<Awaited<ReturnType<typeof callerForkGrant>>> {
+    return this.#sessionCall(caller, sessionId, () => callerForkGrant(this.#callerWorkDeps(), caller, sessionId, itemId));
   }
 
   /** For `get_work`: a summary per caller item on the session's worktree or opened by its change. */

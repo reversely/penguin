@@ -71,6 +71,12 @@ export interface FeatureDirectory {
   openFeature(owner: string, input: FeatureOpenInput, sessionId: string | null, repos: ProjectRepos): Promise<FeatureOpenOutcome>;
   recordFeatureRepo(featureId: string, repo: string): MaybePromise<Feature | undefined>;
   featureTokenGrant(owner: string, sessionId: string, featureId: string, repos: ProjectRepos): MaybePromise<TokenGrant>;
+  /** The receiving fork of a caller item the session's feature originates, while PENGUIN_CALLER_SUDO is on (#222). */
+  callerForkGrant?(
+    owner: string,
+    sessionId: string,
+    itemId: string,
+  ): Promise<{ readonly status: "ok"; readonly featureId: string; readonly repo: string } | { readonly status: "rejected"; readonly reason: string; readonly message: string }>;
   declareFeatureArea(
     owner: string,
     featureId: string,
@@ -127,6 +133,8 @@ export interface FeaturePorts {
   readonly fork: (featureId: string, options: FeatureForkOptions) => Promise<{ readonly name: string }>;
   /** Mints a write token on one Artifacts repo, named with the deployment's prefix. */
   readonly mintWrite: (repo: string, ttlSeconds: number) => Promise<MintedToken>;
+  /** Mints a read-only token on one Artifacts repo, named with the deployment's prefix (#222). */
+  readonly mintRead?: (repo: string, ttlSeconds: number) => Promise<MintedToken>;
   readonly repos: ProjectRepos;
   readonly config: FeatureConfig;
   readonly now?: () => number;
@@ -395,6 +403,18 @@ export function mcpFeatures(ports: FeaturePorts, owner: string): McpFeatures {
         // The token names the affected fork alone, for minutes, minted only on the grant.
         const token = await ports.mintWrite(grant.repo, ttl);
         return { status: "ok", value: { token: tokenFields(grant.spec.fork, token), write: fixWriteFields(grant.spec) } };
+      }),
+    callerReadToken: (sessionId, item) =>
+      guarded(async () => {
+        const ttl = ports.config.fixTokenTtlSeconds;
+        if (ttl === undefined) return { status: "rejected", reason: "misconfigured", message: "PENGUIN_FIX_TOKEN_TTL_MINUTES must be a whole number of minutes from 1 to 60" };
+        const directory = await ports.directory();
+        if (directory.callerForkGrant === undefined || ports.mintRead === undefined) return { status: "rejected", reason: "forbidden", message: "PENGUIN_CALLER_SUDO is off" };
+        const grant = await directory.callerForkGrant(owner, sessionId, item);
+        if (grant.status === "rejected") return grant;
+        // Read-only, on the item's receiving fork alone, for the fix token's minutes.
+        const token = await ports.mintRead(grant.repo, ttl);
+        return { status: "ok", value: { item, token: tokenFields(`feature-${grant.featureId}`, token) } };
       }),
     reportFixWrite: (sessionId, input) =>
       guarded(async () => {

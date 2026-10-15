@@ -52,6 +52,8 @@ const ITEM: CallerItemView = {
   explanation: null,
   fix: null,
   review: null,
+  sudo: false,
+  followUp: null,
   openedAt: "2026-03-03T14:00:00Z",
   updatedAt: "2026-03-03T14:00:00Z",
   recordId: "record-1",
@@ -105,4 +107,14 @@ test("a value renders as text, never as markup", async () => {
   const html = await renderCard({ ...ITEM, differing: [{ ...first!, new: returned("<img src=x onerror=alert(1)>") }] });
   assert.ok(!html.includes("<img"));
   assert.ok(html.includes("&lt;img src=x onerror=alert(1)&gt;"));
+});
+
+test("caller sudo: the card names Penguin as the approver until the receiving agent approves, then that agent", async () => {
+  const written = { ...ITEM, verdict: "broken", state: "written", waitingOn: "nobody", sudo: true } as const;
+  assert.match(text(await renderCard(written)), /Fix written Approved by Penguin \(caller sudo\)/u);
+  const reviewed = { ...written, review: { verdict: "approve", text: "", by: "@sam/weekly-digest" } } as const;
+  const shown = text(await renderCard(reviewed));
+  assert.match(shown, /Fix written Approved by @sam\/weekly-digest/u);
+  assert.doesNotMatch(shown, /caller sudo/u);
+  assert.doesNotMatch(text(await renderCard(ITEM)), /Approved by/u, "an item Penguin did not approve under caller sudo has no approver tag");
 });

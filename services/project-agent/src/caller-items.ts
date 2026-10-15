@@ -27,6 +27,11 @@
 //   the replay ran, from a test on main before the change. Penguin looks each id up in the item and
 //   never builds a message from text it did not find there. A refused answer leaves its reason on the
 //   item until the item next moves.
+// - Caller sudo (#222): while PENGUIN_CALLER_SUDO is on (`callerSudo`), Penguin approves each fix the
+//   originating agent proposes at once, so nothing waits on the receiving side. The receiving agent
+//   still gets the item to review; its request for changes opens a follow-up item (`openFollowUp`)
+//   and leaves the written fix in place. The originating agent may read the receiving fork
+//   (`callerForkGrant`).
 
 import {
   CALLER_ACTION_BY,
@@ -38,6 +43,7 @@ import {
   callerItemSettled,
   callerRuleFixId,
   callerItemView,
+  callerSudoAwaitsReview,
   callerWaitingOn,
   itemVerdict,
   ownerApproved,
@@ -196,6 +202,8 @@ export interface CallerItemDeps {
    * its fork is opened (fix-write.ts `openRuleWrite`). Absent, nothing writes it.
    */
   readonly ruleApproved?: (item: CallerItem) => Promise<void>;
+  /** PENGUIN_CALLER_SUDO (#222): Penguin approves every proposed caller fix at once. Absent, off. */
+  readonly callerSudo?: () => boolean;
 }
 
 export interface CallerActionDeps extends CallerItemDeps {
@@ -324,6 +332,8 @@ const RECORD_TYPE: Readonly<Record<CallerItemAction, FeatureRecordType>> = {
   request_changes: "review_caller",
   owner_approve: "decide_caller",
   owner_request_changes: "decide_caller",
+  sudo_approve: "caller_item",
+  sudo_review: "review_caller",
 };
 
 async function sha256Hex(text: string): Promise<string> {
@@ -521,7 +531,8 @@ export async function replayReported(
     if (!isRejection(kept)) moved.push(kept);
   }
   for (const item of existing.values()) {
-    if (reached.has(item.itemId) || item.state === "withdrawn") continue;
+    // A follow-up stands while the replay still reaches the item it follows (#222).
+    if (reached.has(item.itemId) || item.state === "withdrawn" || (item.followUp != null && reached.has(item.followUp))) continue;
     const kept = await transition(deps, item, { ...item, source, state: "withdrawn", ownerAsked: null }, "withdraw", "penguin");
     if (!isRejection(kept)) moved.push(kept);
   }
@@ -717,7 +728,7 @@ function boundedText(value: unknown, field: string, required: boolean): string |
 }
 
 /** The item `itemId` with the originating feature that keeps it, or why not. */
-async function findItem(deps: CallerItemDeps, itemId: unknown): Promise<CallerItem | CallerRejection> {
+async function findItem(deps: Pick<CallerItemDeps, "index" | "keeper">, itemId: unknown): Promise<CallerItem | CallerRejection> {
   if (typeof itemId !== "string" || !ITEM_ID.test(itemId)) return rejected("invalid", "the item must be a caller item id, `caller-` and 16 hexadecimal digits");
   const origin = deps.index.originOf(itemId);
   const item = origin === undefined ? undefined : (await deps.keeper(origin).callerItems(origin)).find((each) => each.itemId === itemId);
@@ -729,7 +740,7 @@ async function findItem(deps: CallerItemDeps, itemId: unknown): Promise<CallerIt
  * receiving feature for the receiving agent, the originating feature for the originating agent.
  */
 async function agentItem(
-  deps: CallerActionDeps,
+  deps: Pick<CallerActionDeps, "heartbeat" | "features" | "index" | "keeper">,
   caller: string,
   sessionId: string,
   itemId: unknown,
@@ -793,7 +804,7 @@ export async function callerAction(deps: CallerActionDeps, caller: string, sessi
       if (refusal !== undefined) return refusal;
       const note = boundedText(call.note, "the note", false);
       if (isRejection(note)) return note;
-      if (call.rule !== undefined) return done(await proposeRule(deps, item, handle, call, note));
+      if (call.rule !== undefined) return sudoApproved(deps, await proposeRule(deps, item, handle, call, note));
       if (typeof call.part !== "string" || typeof call.revision !== "number" || !Number.isInteger(call.revision)) {
         return rejected("invalid", "name the plan part and its revision that carry the fix, or state a rule");
       }
@@ -811,8 +822,8 @@ export async function callerAction(deps: CallerActionDeps, caller: string, sessi
       }
       const state: CallerItemState = "fix_proposed";
       const fix = { partId: part.partId, revision: part.revision, note, by: handle, at: iso(deps) };
-      const ownerAsked = ownerAfter(await deps.stage(), state, item.rejections);
-      return done(await transition(deps, item, { ...item, state, fix, review: null, ownerAsked }, "propose_fix", handle, { part_id: part.partId, revision: part.revision, note }));
+      const ownerAsked = deps.callerSudo?.() === true ? null : ownerAfter(await deps.stage(), state, item.rejections);
+      return sudoApproved(deps, await transition(deps, item, { ...item, state, fix, review: null, ownerAsked }, "propose_fix", handle, { part_id: part.partId, revision: part.revision, note }));
     }
     case "explain": {
       const found = await agentItem(deps, caller, sessionId, call.item, "originating_agent");
@@ -854,7 +865,9 @@ export async function callerAction(deps: CallerActionDeps, caller: string, sessi
       const text = boundedText(call.text, "the note", verdict === "request_changes");
       if (isRejection(text)) return text;
       const fixing = item.state === "fix_proposed";
-      const action: CallerItemAction = fixing ? (verdict === "approve" ? "approve_fix" : "reject_fix") : verdict === "approve" ? "approve" : "request_changes";
+      // A fix Penguin approved under caller sudo still takes the receiving agent's review (#222).
+      const afterSudo = callerSudoAwaitsReview(item);
+      const action: CallerItemAction = afterSudo ? "sudo_review" : fixing ? (verdict === "approve" ? "approve_fix" : "reject_fix") : verdict === "approve" ? "approve" : "request_changes";
       const refusal = stateRefusal(item, action);
       if (refusal !== undefined) return refusal;
       const answers = readAnswers<Omit<CallerCallVerdict, "callId">, Omit<CallerUnlistedVerdict, "count">>(item, call.calls, call.unlisted, readVerdict, (fields) => readVerdict(fields, "unlisted"));
@@ -870,6 +883,20 @@ export async function callerAction(deps: CallerActionDeps, caller: string, sessi
       if (isRejection(unreal)) return unreal;
       if (unreal !== undefined) return refuse(deps, item, unreal.code, handle, unreal.message);
       const rejections = item.rejections + (verdict === "approve" ? 0 : 1);
+      if (afterSudo) {
+        const review: CallerItem["review"] = { verdict, text, calls: answers.calls, unlisted: answers.unlisted, by: handle, at: iso(deps) };
+        const fields = {
+          verdict_given: verdict,
+          text,
+          calls: answers.calls.map(({ callId, verdict: callVerdict, evidence }) => ({ call_id: callId, verdict: callVerdict, evidence })),
+          unlisted: answers.unlisted,
+          ...(item.fix === null ? {} : { part_id: item.fix.partId, revision: item.fix.revision }),
+        };
+        // The item keeps its state: the fix stays written and the land stands.
+        const reviewed = await transition(deps, item, { ...item, review, rejections }, "sudo_review", handle, fields);
+        if (isRejection(reviewed) || verdict === "approve") return done(reviewed);
+        return done(await openFollowUp(deps, reviewed), [reviewed.recordId]);
+      }
       const state: CallerItemState = fixing ? (verdict === "approve" ? "fix_approved" : "fix_rejected") : verdict === "approve" ? "approved" : "changes_requested";
       const review: CallerItem["review"] = { verdict, text, calls: answers.calls, unlisted: answers.unlisted, by: handle, at: iso(deps) };
       const ownerAsked = ownerAfter(await deps.stage(), state, rejections);
@@ -885,6 +912,70 @@ export async function callerAction(deps: CallerActionDeps, caller: string, sessi
     default:
       return rejected("invalid", "the action must be confirm, propose_fix, explain or review");
   }
+}
+
+/**
+ * While caller sudo is on, Penguin approves a fix the originating agent just proposed, signed as
+ * Penguin with reason `caller_sudo`; the check runner then writes it as any approved fix (#222).
+ */
+async function sudoApproved(deps: CallerActionDeps, proposed: CallerItem | CallerRejection): Promise<CallerOutcome> {
+  if (isRejection(proposed) || deps.callerSudo?.() !== true) return done(proposed);
+  const sudo = { reason: "caller_sudo", at: iso(deps) } as const;
+  const fields = { reason: "caller_sudo", ...(proposed.fix === null ? {} : { part_id: proposed.fix.partId, revision: proposed.fix.revision }) };
+  const approved = await transition(deps, proposed, { ...proposed, state: "fix_approved", ownerAsked: null, sudo }, "sudo_approve", "penguin", fields);
+  return done(approved, [proposed.recordId]);
+}
+
+/**
+ * The receiving agent asked for changes to a fix Penguin approved under caller sudo: a new item, on
+ * the same callers, goes to the originating agent as `fix_rejected` with that review. The item it
+ * follows stays where it stands, so the written fix and the land stand too (#222).
+ */
+async function openFollowUp(deps: CallerItemDeps, reviewed: CallerItem): Promise<CallerItem | CallerRejection> {
+  const itemId = await callerItemId(reviewed.origin, reviewed.feature, `${reviewed.contract}#${reviewed.recordId}`);
+  const { callers, runs, source, fingerprint, verdict, fix, review, rejections, origin, feature, contract } = reviewed;
+  const after = {
+    itemId,
+    origin,
+    feature,
+    contract,
+    callers,
+    runs,
+    source,
+    fingerprint,
+    verdict,
+    fix,
+    review,
+    rejections,
+    state: "fix_rejected",
+    ownerAsked: null,
+    explanation: null,
+    sudo: null,
+    followUp: reviewed.itemId,
+    openedAt: iso(deps),
+  } as const;
+  return transition(deps, null, after, "open", "penguin", { follow_up_of: reviewed.itemId });
+}
+
+/**
+ * A read-only token's grant on the receiving fork of caller item `itemId`, for an agent session of the
+ * item's originating feature while caller sudo is on (#222). The Worker mints the token on `repo`
+ * alone, read-only and short-lived.
+ */
+export async function callerForkGrant(
+  deps: Pick<CallerActionDeps, "heartbeat" | "features" | "index" | "keeper" | "callerSudo">,
+  caller: string,
+  sessionId: string,
+  itemId: unknown,
+): Promise<{ readonly status: "ok"; readonly featureId: string; readonly repo: string } | CallerRejection> {
+  if (deps.callerSudo?.() !== true) return rejected("forbidden", "PENGUIN_CALLER_SUDO is off, so no agent reads another worktree's fork");
+  const found = await agentItem(deps, caller, sessionId, itemId, "originating_agent");
+  if (isRejection(found)) return found;
+  const { item } = found;
+  if (item.state === "withdrawn") return rejected("conflict", `item ${item.itemId} is withdrawn: no replay reaches it`);
+  const repo = deps.features.get(item.feature)?.repo ?? null;
+  if (repo === null) return rejected("not_found", `feature ${item.feature} has no fork yet`);
+  return { status: "ok", featureId: item.feature, repo };
 }
 
 /** The most call site files one rule fix may rewrite. */
@@ -929,7 +1020,7 @@ async function proposeRule(
   const partId = callerRuleFixId(item.itemId);
   const revision = item.fix?.partId === partId ? item.fix.revision + 1 : 1;
   const fix = { partId, revision, note, by: handle, at: iso(deps), rule, rewritten: null };
-  const ownerAsked = ownerAfter(await deps.stage(), "fix_proposed", item.rejections);
+  const ownerAsked = deps.callerSudo?.() === true ? null : ownerAfter(await deps.stage(), "fix_proposed", item.rejections);
   return transition(deps, item, { ...item, state: "fix_proposed", fix, review: null, ownerAsked }, "propose_fix", handle, {
     part_id: partId,
     revision,
@@ -1101,7 +1192,10 @@ export async function ownerCallerItems(deps: CallerItemDeps, person: string, del
       if (!wanted.has(item.feature) || item.state === "withdrawn") continue;
       const view = viewOf(deps, item);
       if (view.waitingOn === "worktree_owner") requests.push({ ...view, ask: "decide" });
-      else if (stage.told && (item.verdict === "broken" || item.verdict === "differs") && !callerItemSettled(item, "land")) requests.push({ ...view, ask: "told" });
+      // A fix Penguin approved under caller sudo is told to the owner at every stage (#222).
+      else if (callerSudoAwaitsReview(item) || (stage.told && (item.verdict === "broken" || item.verdict === "differs") && !callerItemSettled(item, "land"))) {
+        requests.push({ ...view, ask: "told" });
+      }
     }
   }
   return requests.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0));
@@ -1205,6 +1299,12 @@ function contractEntries(plan: Plan | undefined, contract: string): CallerPacket
   return { changes, signatures: diff.signatures.filter((signature) => symbols.has(signature.symbol)) };
 }
 
+/** The tools `side` answers `item` with now, or null. A sudo-approved fix still takes the receiving agent's review (#222). */
+function turnOf(item: CallerItem, side: CallerSide): { readonly tools: readonly string[] } | null {
+  if (callerWaitingOn(item) === side) return { tools: TOOLS_FOR[item.state] ?? [] };
+  return side === "receiving_agent" && callerSudoAwaitsReview(item) ? { tools: ["review_caller"] } : null;
+}
+
 function summaryOf(item: CallerItem, side: CallerSide): CallerSummary {
   const waitingOn = callerWaitingOn(item);
   const differing = differingOf(item);
@@ -1217,7 +1317,7 @@ function summaryOf(item: CallerItem, side: CallerSide): CallerSummary {
     state: item.state,
     waitingOn,
     ownerAsked: item.ownerAsked,
-    yourTurn: waitingOn === side ? { tools: TOOLS_FOR[item.state] ?? [] } : null,
+    yourTurn: turnOf(item, side),
     differingCalls: differing.listed.size + differing.unlisted,
   };
 }
@@ -1234,7 +1334,7 @@ function packetOf(item: CallerItem, plan: Plan | undefined, side: CallerSide): C
     state: item.state,
     waitingOn,
     ownerAsked: item.ownerAsked,
-    yourTurn: waitingOn === side ? { tools: TOOLS_FOR[item.state] ?? [] } : null,
+    yourTurn: turnOf(item, side),
     rejections: item.rejections,
     contractDiff: contractEntries(plan, item.contract),
     callSites: item.callers.map(({ path, line, verdict, calls, matched, reason, tests }) => ({ path, line, verdict, calls, matched, reason, tests })),

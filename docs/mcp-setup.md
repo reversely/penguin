@@ -60,6 +60,10 @@ working guide:
    own change, and for a broken call site in another branch state a rule with `propose_caller_fix`.
 5. Keep messages to your person to a few sentences: what Penguin found and what you did.
 
+While the deployer has `PENGUIN_CALLER_SUDO` on, the instructions add one paragraph after the guide.
+It says that Penguin approves each `propose_caller_fix` at once and that the receiving agent still
+reviews the fix. It also names `caller_read_token` ([Caller sudo](#caller-sudo)).
+
 ## Claude Code
 
 Claude Code connects to an HTTP MCP server with a bearer header
@@ -405,6 +409,27 @@ characters answers `invalid`. A proposal of a part revision already written into
 `conflict`: revise the part and propose the new revision. After the receiving side rejects an item
 twice, every later proposal or review request goes to the developer of the receiving worktree, who
 decides on the dashboard.
+
+### Caller sudo
+
+While the deployer sets `PENGUIN_CALLER_SUDO` on ([review-policies.md](review-policies.md#caller-sudo)),
+Penguin approves each fix at once. `propose_caller_fix` answers state `fix_approved` with two record
+ids: the proposal and Penguin's approval, whose reason is `caller_sudo`. The check runner then writes
+the fix. `land_feature` waits on no review of it.
+
+The receiving worktree's agent still reviews the fix. Its `get_work` entry waits on `nobody` but
+names `review_caller` in `yourTurn` until the agent answers. `review_caller` takes the same `calls`
+and evidence as any review, from state `fix_approved` or `written`. An approval leaves the item where
+it stands. A request for changes opens a new item for the originating agent in state `fix_rejected`,
+whose packet carries that review under `personWritten`. The written fix stays in the fork.
+
+| Tool | Who calls it | Input | Answer |
+|---|---|---|---|
+| `caller_read_token` | The originating agent | `item`: a caller item its feature's change opened | `item` and `token`: a `read` token on that item's receiving fork alone, with its remote and expiry |
+
+The token lasts `PENGUIN_FIX_TOKEN_TTL_MINUTES`. The server lists `caller_read_token` only while the
+setting is on. The ProjectAgent checks the setting again on every call. With it off, or from a
+session of any other feature, the call answers `forbidden`. A withdrawn item answers `conflict`.
 
 Each answer cites the replay. Penguin refuses one that does not, with its code as `error`:
 

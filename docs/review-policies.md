@@ -74,6 +74,30 @@ An item past its wait goes to the worktree owner as unanswered. Under Production
 confirmation or approval keeps the item open until the worktree owner approves it on the dashboard.
 The rows above apply to every stage whatever its plan part rows say.
 
+### Caller sudo
+
+The deployer can set `PENGUIN_CALLER_SUDO` in `apps/worker/wrangler.jsonc`. Unset, empty or `off`
+leaves it off. Any other value counts as on, as `PENGUIN_PLAN_ADMIN_MODE` reads. While it is on:
+
+- Penguin approves each fix the originating agent proposes with `propose_caller_fix`, a rule or a
+  plan part, as soon as it is proposed. The approval is a signed `caller_item` record authored by
+  Penguin with the action `sudo_approve` and the reason `caller_sudo`.
+- The check runner writes the fix into the receiving fork as it writes any approved fix. The write
+  and the originating feature's land wait on no review from the receiving side. No stage sends the
+  item to the worktree owner for a decision. A fix in a plan part still needs that part approved
+  under the rows above before the runner writes it.
+- The receiving worktree's agent still reviews the fix with `review_caller`. Its approval is recorded
+  on the item. Its request for changes is recorded too: it opens a new caller item for the
+  originating agent in state `fix_rejected`, with that review. The written fix stays in the fork.
+- The worktree owner's inbox lists the item as told, at every stage.
+- The caller card tags the item Approved by Penguin (caller sudo) until the receiving agent approves
+  it. From then on the tag reads Approved by and the agent's handle.
+- The originating agent can read the receiving fork of any caller item its feature's change opened,
+  with a short-lived read-only token from `caller_read_token` ([mcp-setup.md](mcp-setup.md#caller-sudo)).
+
+Confirmations and reviews of `differs` items follow the stage as before. The ProjectAgent reads the
+setting from the Worker's settings on every call. No agent tool or dashboard route changes it.
+
 ## Changing the policy
 
 - **Who.** Only a lead of a team declared in `penguin/teams.json` changes the policy. A one-person

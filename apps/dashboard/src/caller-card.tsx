@@ -8,7 +8,7 @@
 // inbox lists the cards sent to them, with Approve and Request changes on each they decide. Every
 // value renders as React text.
 
-import { CALLER_PARTY_LABEL, CALLER_REFUSAL_LABEL, CALLER_STATE_LABEL, type CallerItemView, type CallerSideView } from "@penguin/protocol";
+import { CALLER_PARTY_LABEL, CALLER_REFUSAL_LABEL, CALLER_STATE_LABEL, callerApprovalLabel, type CallerItemView, type CallerSideView } from "@penguin/protocol";
 import { useId, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 
 import { PersonAvatar } from "./avatar.tsx";
@@ -53,6 +53,8 @@ export function CallerCard({ item, title, navigate, decide, told = false }: Prop
   // Penguin replayed tests unless no test reached any call site.
   const replayed = item.callers.some((caller) => caller.verdict !== "unknown_reach");
   const changed = item.callers.reduce((sum, caller) => sum + caller.differingCount, 0);
+  // A fix Penguin approved under caller sudo names its approver: the receiving agent once it approves (#222).
+  const approval = callerApprovalLabel(item);
   return (
     <article className="approval-card card-raised caller-card" aria-labelledby={titleId} data-in-person={item.waitingOn === "worktree_owner" ? true : undefined}>
       <header className="approval-card-head">
@@ -73,6 +75,7 @@ export function CallerCard({ item, title, navigate, decide, told = false }: Prop
         <li className={SETTLED.has(item.state) ? "tag tag-verified" : item.waitingOn === "worktree_owner" ? "tag tag-attention" : "tag"}>{CALLER_STATE_LABEL[item.state]}</li>
         {item.waitingOn === "nobody" ? null : <li className="tag tag-data">Waits on {CALLER_PARTY_LABEL[item.waitingOn].toLowerCase()}</li>}
         {item.ownerAsked === null || item.ownerAsked === "unknown_reach" ? null : <li className="tag tag-attention">{CALLER_OWNER_TAG[item.ownerAsked]}</li>}
+        {approval === null ? null : <li className="tag tag-verified caller-approval">{approval}</li>}
         {item.rejections === 0 ? null : <li className="tag tag-data">{counted(item.rejections, "rejection")}</li>}
         {told ? <li className="tag tag-data">No decision needed</li> : null}
       </ul>

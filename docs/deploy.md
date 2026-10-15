@@ -78,6 +78,7 @@ node -e 'crypto.subtle.generateKey("Ed25519", true, ["sign", "verify"])
 | `PENGUIN_PLAN_BREAK_LIMIT` | `vars` in `wrangler.jsonc` | 10 | Parts needing a person past which a merge plan goes back to its author. Any value other than a positive whole number refuses every plan |
 | `PENGUIN_PLAN_ROUND_LIMIT` | `vars` in `wrangler.jsonc` | 3 | Requested changes to one plan part before it goes to the originating feature's person. Any value other than a positive whole number refuses every requested change |
 | `PENGUIN_PLAN_ADMIN_MODE` | `vars` in `wrangler.jsonc` | off | `on` makes a person approve every plan part. Unset, empty or `off` is off; any other value counts as on |
+| `PENGUIN_CALLER_SUDO` | `vars` in `wrangler.jsonc` | off | `on` makes Penguin approve every caller fix an originating agent proposes, with no wait on the receiving worktree ([review-policies.md](review-policies.md#caller-sudo)). Unset, empty or `off` is off; any other value counts as on |
 | `PENGUIN_BACKGROUND_RUN_CAP` | `vars` in `wrangler.jsonc` | 2 | Edit tasks one person's bridge runs at once, 1 to 8. Any other value means 2 |
 | `PENGUIN_EDIT_RUN_MINUTES` | `vars` in `wrangler.jsonc` | 20 | Minutes a claimed edit task and its write token last, 1 to 60. Any other value refuses every claim |
 | `PENGUIN_SESSION_OFFLINE_SECONDS` | Optional | 90 | Seconds without an MCP call before an agent session goes offline |

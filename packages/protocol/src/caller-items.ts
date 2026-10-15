@@ -33,6 +33,12 @@
 // owner or their delegate decides an item sent to them. A write into the receiving fork waits until
 // every item there is approved from the receiving side. The originating feature reaches main only once
 // every item is `confirmed`, `written`, `approved` or `unaffected`.
+//
+// Caller sudo (#222): while the deployer sets PENGUIN_CALLER_SUDO, Penguin approves each fix the
+// originating agent proposes at once (`sudo_approve`, a signed record with reason `caller_sudo`), so
+// the fix is written and the feature lands without waiting. The receiving agent still reviews it
+// (`sudo_review`): an approval is recorded on the item. A request for changes opens a follow-up item
+// for the originating agent while the written fix and the land stand.
 
 import { CALLER_REPLAY_LIMITS, type CallerVerdict, type CallerVerdictKind, type ReplayCall, type ReplayCallStatus, type ReplaySide } from "./caller-replay.ts";
 import type { RewriteRuleImport } from "./rewrite-rule.ts";
@@ -127,6 +133,8 @@ export const CALLER_ITEM_ACTIONS = [
   "ask_owner",
   "owner_approve",
   "owner_request_changes",
+  "sudo_approve",
+  "sudo_review",
 ] as const;
 export type CallerItemAction = (typeof CALLER_ITEM_ACTIONS)[number];
 
@@ -147,6 +155,8 @@ export const CALLER_ACTION_BY: Readonly<Record<CallerItemAction, "penguin" | "re
   ask_owner: "penguin",
   owner_approve: "worktree_owner",
   owner_request_changes: "worktree_owner",
+  sudo_approve: "penguin",
+  sudo_review: "receiving_agent",
 };
 
 /** The states the worktree owner decides from, once an item is sent to them. */
@@ -165,7 +175,20 @@ export const CALLER_ACTION_FROM: Readonly<Partial<Record<CallerItemAction, reado
   request_changes: ["review_requested"],
   owner_approve: OWNER_DECIDES,
   owner_request_changes: OWNER_DECIDES,
+  sudo_approve: ["fix_proposed"],
+  sudo_review: ["fix_approved", "written"],
 };
+
+/** Penguin's approval of a fix while PENGUIN_CALLER_SUDO was on (#222). */
+export interface CallerSudoApproval {
+  readonly reason: "caller_sudo";
+  readonly at: string;
+}
+
+/** Whether Penguin approved the item's fix under caller sudo and the receiving agent has not reviewed it yet. */
+export function callerSudoAwaitsReview(item: { readonly state: CallerItemState; readonly sudo?: CallerSudoApproval | null; readonly review: unknown }): boolean {
+  return item.sudo != null && item.review === null && (item.state === "fix_approved" || item.state === "written");
+}
 
 /** Where the worktree owner's approval leaves an item: the receiving side's approval on its path. */
 export function ownerApproved(state: CallerItemState): CallerItemState {
@@ -423,6 +446,10 @@ export interface CallerItem {
   readonly review: CallerReview | null;
   /** The newest refused answers since the item last moved; absent on an item kept before #189. */
   readonly refusals?: readonly CallerRefusal[];
+  /** Penguin's approval of the fix under caller sudo (#222); absent or null otherwise. */
+  readonly sudo?: CallerSudoApproval | null;
+  /** The sudo-approved item whose review asked for changes, when this item follows it up (#222). */
+  readonly followUp?: string | null;
   readonly openedAt: string;
   readonly updatedAt: string;
   /** The newest `caller_item` record. */
@@ -488,9 +515,22 @@ export interface CallerItemView {
     readonly rewritten: readonly CallerRewrittenSite[];
   } | null;
   readonly review: { readonly verdict: CallerReview["verdict"]; readonly text: string; readonly by: string } | null;
+  /** True when Penguin approved the fix under caller sudo (#222). */
+  readonly sudo: boolean;
+  /** The sudo-approved item this one follows up, or null. */
+  readonly followUp: string | null;
   readonly openedAt: string;
   readonly updatedAt: string;
   readonly recordId: string;
+}
+
+/**
+ * Who approved a sudo-approved item, as the caller card tags it: the receiving agent once its approval
+ * exists, Penguin until then. Null for an item Penguin did not approve under caller sudo.
+ */
+export function callerApprovalLabel(view: Pick<CallerItemView, "sudo" | "review">): string | null {
+  if (!view.sudo) return null;
+  return view.review?.verdict === "approve" ? `Approved by ${view.review.by}` : "Approved by Penguin (caller sudo)";
 }
 
 function sideView(side: ReplaySide): CallerSideView {
@@ -539,6 +579,8 @@ export function callerItemView(item: CallerItem, people: { readonly origin: stri
             rewritten: item.fix.rewritten ?? [],
           },
     review: item.review === null ? null : { verdict: item.review.verdict, text: item.review.text, by: item.review.by },
+    sudo: item.sudo != null,
+    followUp: item.followUp ?? null,
     openedAt: item.openedAt,
     updatedAt: item.updatedAt,
     recordId: item.recordId,
@@ -609,6 +651,8 @@ const VIEW_FIELDS = {
     }),
   ),
   review: nullable(record({ verdict: { type: "string", enum: ["approve", "request_changes"] }, text: text(CALLER_ITEM_LIMITS.textLength), by: BY })),
+  sudo: { type: "boolean" },
+  followUp: nullable({ type: "string", pattern: CALLER_ITEM_ID_PATTERN }),
   openedAt: text(64, 1),
   updatedAt: text(64, 1),
   recordId: text(256, 1),

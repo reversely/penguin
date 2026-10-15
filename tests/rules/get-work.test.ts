@@ -11,7 +11,7 @@ import test from "node:test";
 import { Client } from "@modelcontextprotocol/client";
 import { InMemoryTransport } from "@modelcontextprotocol/server";
 
-import { INSTRUCTIONS, createPenguinMcpServer, type CallerPacketView, type CallerSummaryView, type McpProject, type PlanWorkView } from "../../services/mcp/src/tools.ts";
+import { CALLER_SUDO_INSTRUCTIONS, INSTRUCTIONS, createPenguinMcpServer, instructionsFor, type CallerPacketView, type CallerSummaryView, type McpFeatures, type McpProject, type PlanWorkView } from "../../services/mcp/src/tools.ts";
 
 const LARDER = JSON.parse(readFileSync(new URL("../../examples/money-minor-units/larder.json", import.meta.url), "utf8")) as {
   readonly features: readonly { readonly id: string; readonly owner: string; readonly role: string; readonly area: readonly string[] }[];
@@ -227,4 +227,21 @@ test("the server's instructions carry Penguin's working guide", () => {
     assert.ok(INSTRUCTIONS.includes(point), point);
   }
   assert.ok(INSTRUCTIONS.length < 4000, `${INSTRUCTIONS.length} characters`);
+});
+
+test("caller sudo: the instructions say so and caller_read_token is served only while PENGUIN_CALLER_SUDO is on", async () => {
+  assert.equal(instructionsFor({}), INSTRUCTIONS);
+  assert.equal(instructionsFor({ callerSudo: false }), INSTRUCTIONS);
+  assert.equal(instructionsFor({ callerSudo: true }), INSTRUCTIONS + CALLER_SUDO_INSTRUCTIONS);
+  assert.match(CALLER_SUDO_INSTRUCTIONS, /Caller sudo is on/u);
+  const features = { callerReadToken: async () => ({ status: "ok", value: {} }) } as unknown as McpFeatures;
+  const tools = async (callerSudo: boolean) => {
+    const [client, server] = InMemoryTransport.createLinkedPair();
+    await createPenguinMcpServer("priya", priyasProject([]), { issues: "issues", base: "base", ownerFork: "owner-priya" }, features, { callerSudo }).connect(server);
+    const mcp = new Client({ name: "test", version: "0" });
+    await mcp.connect(client);
+    return (await mcp.listTools()).tools.map((tool) => tool.name);
+  };
+  assert.ok((await tools(true)).includes("caller_read_token"));
+  assert.ok(!(await tools(false)).includes("caller_read_token"));
 });

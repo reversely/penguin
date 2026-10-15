@@ -423,6 +423,9 @@ feature's page it names the originating feature and its person. Below the name i
 
 - the contract as code;
 - the item's state and who it waits on;
+- for a fix Penguin approved under caller sudo ([review-policies.md](review-policies.md#caller-sudo)),
+  Approved by Penguin (caller sudo), until the receiving agent approves it. From then on the tag
+  reads Approved by and that agent's handle;
 - why it went to the worktree owner, when it did, with the count of rejections once there is one;
 - what Penguin replayed, as one line: `Penguin ran <receiving feature>'s tests on main and with
   <originating feature>`, with a tag counting the calls that changed. The line is absent when no test

@@ -4074,6 +4074,12 @@ label.button:has(input:focus-visible) {
   overflow-wrap: anywhere;
 }
 
+/* A caller card's approver tag names an agent handle, which has no spaces to wrap at (#222). */
+.caller-approval {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .approval-reasons {
   display: grid;
   gap: var(--space-1);
